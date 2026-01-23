@@ -31,6 +31,31 @@ from .validator import (
     validate_skill_file,
 )
 
+# MCP Protocol adapter
+from .mcp import (
+    # Conversion functions
+    skill_to_mcp_tool,
+    mcp_tool_to_skill,
+    skills_to_mcp_tools,
+    mcp_tools_to_skills,
+    # Transport
+    MCPTransport,
+    StdioTransport,
+    HTTPTransport,
+    # Client
+    MCPClient,
+    MCPTool,
+    MCPServerInfo,
+    MCPToolProvider,
+    # JSON-RPC
+    JSONRPCError,
+    JSONRPCRequest,
+    JSONRPCResponse,
+    # Convenience functions
+    create_mcp_client_stdio,
+    create_mcp_client_http,
+)
+
 __all__ = [
     # Chat skills
     "chat",
@@ -60,4 +85,21 @@ __all__ = [
     "ValidationError",
     "validate_skill",
     "validate_skill_file",
+    # MCP Protocol adapter
+    "skill_to_mcp_tool",
+    "mcp_tool_to_skill",
+    "skills_to_mcp_tools",
+    "mcp_tools_to_skills",
+    "MCPTransport",
+    "StdioTransport",
+    "HTTPTransport",
+    "MCPClient",
+    "MCPTool",
+    "MCPServerInfo",
+    "MCPToolProvider",
+    "JSONRPCError",
+    "JSONRPCRequest",
+    "JSONRPCResponse",
+    "create_mcp_client_stdio",
+    "create_mcp_client_http",
 ]

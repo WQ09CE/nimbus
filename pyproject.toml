@@ -1,0 +1,84 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nimbus"
+version = "0.2.0"
+description = "Nimbus Agent Framework - A notebook-style AI assistant with DAG planning and tiered memory"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Nimbus Team" },
+]
+keywords = ["agent", "ai", "llm", "notebook", "dag", "memory"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "aiosqlite>=0.19.0",
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.20.0",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "pydantic>=2.0.0",
+    "sse-starlette>=1.6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "httpx>=0.24.0",
+]
+llm = [
+    "anthropic>=0.20.0",
+    "openai>=1.0.0",
+]
+rag = [
+    "chromadb>=0.4.0",
+]
+
+[project.scripts]
+nimbus = "nimbus.cli.main:cli"
+
+[project.urls]
+Homepage = "https://github.com/nimbus-ai/nimbus"
+Documentation = "https://nimbus-ai.github.io/nimbus"
+Repository = "https://github.com/nimbus-ai/nimbus"
+
+# Flat layout - all modules are in root, packaged as "nimbus"
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+# Rename root to nimbus for the wheel
+[tool.hatch.build.targets.wheel.shared-data]
+
+[tool.hatch.build]
+directory = "dist"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
