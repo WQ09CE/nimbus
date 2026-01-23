@@ -23,8 +23,11 @@ console = Console()
 
 
 def _get_default_port() -> int:
-    """Get default port from environment or fallback."""
-    return int(os.environ.get("NIMBUS_PORT", "8080"))
+    """Get default port from environment or fallback.
+
+    Default is 4096 to match OpenCode's default port for OpenWork compatibility.
+    """
+    return int(os.environ.get("NIMBUS_PORT", "4096"))
 
 
 def _get_default_host() -> str:
@@ -135,7 +138,7 @@ def serve(
     real-time updates.
 
     Environment Variables:
-        NIMBUS_PORT: Default port (default: 8080)
+        NIMBUS_PORT: Default port (default: 4096, OpenCode compatible)
         NIMBUS_HOST: Default host (default: 127.0.0.1)
         NIMBUS_DB: Default database path (default: .nimbus/nimbus.db)
 

@@ -91,6 +91,10 @@ def create_app() -> FastAPI:
     from .api import router
     app.include_router(router, prefix="/api/v1")
 
+    # Register OpenCode compatible routes (no prefix)
+    from .compat import opencode_router
+    app.include_router(opencode_router, tags=["opencode"])
+
     return app
 
 
