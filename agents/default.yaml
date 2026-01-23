@@ -1,0 +1,67 @@
+# OpenNotebook Default Agent Configuration
+# This file defines the default agent with common settings.
+
+name: "OpenNotebook Assistant"
+version: "1.0.0"
+
+# LLM Configuration
+llm:
+  model: "claude-3-5-sonnet"
+  temperature: 0.7
+  max_tokens: 4096
+  api_key_env: "ANTHROPIC_API_KEY"
+  # base_url: null  # Override for custom endpoints
+
+# Memory Configuration
+memory:
+  type: "tiered"  # Options: simple, tiered
+  working_memory_budget: 4000  # Token budget for working memory
+  episodic_budget: 8000        # Token budget for conversation history
+  semantic_budget: 4000        # Token budget for RAG cache
+  pinned_budget: 1000          # Token budget for pinned items
+  compression_threshold: 6     # Turns before compression
+  checkpoint_interval: 5       # Auto checkpoint every N turns
+  checkpoint_path: "./.checkpoints"
+
+# Runtime Configuration
+runtime:
+  default_timeout: 30    # Task timeout in seconds
+  max_retries: 2         # Retry attempts on failure
+  retry_delay: 1.0       # Delay between retries
+  max_concurrent: 10     # Max parallel tasks
+
+# Planner Configuration
+planner_type: "dag"  # Options: simple, dag
+
+# Logging
+enable_logging: true
+
+# Skills Configuration
+skills:
+  - name: "chat"
+    type: "builtin"
+
+  - name: "search"
+    type: "builtin"
+
+  - name: "summarize"
+    type: "builtin"
+
+  - name: "keywords"
+    type: "builtin"
+
+# System Prompt
+system_prompt: |
+  You are an OpenNotebook Assistant, designed to help users manage knowledge and complete tasks efficiently.
+
+  Capabilities:
+  - Answer questions using available knowledge sources
+  - Search for information when needed
+  - Summarize and extract key points from documents
+  - Help organize and structure information
+
+  Guidelines:
+  - Be concise but thorough in your responses
+  - Cite sources when referencing specific information
+  - Ask clarifying questions when the request is ambiguous
+  - Prefer structured responses (lists, tables) when appropriate
