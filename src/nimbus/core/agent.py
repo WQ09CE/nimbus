@@ -2,7 +2,17 @@
 
 import uuid
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Coroutine, Dict, List, Optional, TYPE_CHECKING, Union
+from typing import (
+    Any,
+    AsyncIterator,
+    Callable,
+    Coroutine,
+    Dict,
+    List,
+    Optional,
+    TYPE_CHECKING,
+    Union,
+)
 
 from .memory import SimpleMemory, TieredMemoryManager, MemoryConfig, PinnedItem
 from .planner import (
@@ -15,8 +25,15 @@ from .planner import (
 from .executor import SimpleExecutor
 from .runtime import AsyncRuntime
 from .types import (
-    AgentResponse, Plan, TaskDAG, RuntimeConfig, ExecutionResult,
-    Artifact, ArtifactType, TaskStatus,
+    AgentResponse,
+    Plan,
+    TaskDAG,
+    RuntimeConfig,
+    ExecutionResult,
+    Artifact,
+    ArtifactType,
+    TaskStatus,
+    TaskSource,
 )
 from .logging import get_logger, setup_logging
 from .tracing import get_tracer, Tracer
@@ -86,9 +103,7 @@ class CodeAgent:
         if memory_type == "tiered":
             config = memory_config or MemoryConfig()
             self.memory = TieredMemoryManager(
-                config=config,
-                llm_client=llm_client,
-                session_id=self.session_id
+                config=config, llm_client=llm_client, session_id=self.session_id
             )
         else:
             self.memory = SimpleMemory()
@@ -187,9 +202,7 @@ class CodeAgent:
                 names.update(self.tool_registry.list_tools())
             return names
 
-    def on_file_upload(
-        self, filename: str, file_type: str, summary: str
-    ) -> None:
+    def on_file_upload(self, filename: str, file_type: str, summary: str) -> None:
         """Handle file upload event.
 
         Args:
@@ -202,7 +215,7 @@ class CodeAgent:
                 id=f"file:{filename}",
                 type="file_meta",
                 content=f"[{file_type}] {filename}: {summary}",
-                priority=10
+                priority=10,
             )
             self.memory.pin(item)
         else:
@@ -245,44 +258,60 @@ class CodeAgent:
             if self.logger:
                 self.logger.info("agent_run_start", user_input=user_input[:100])
 
-            # Add user input to memory
+            available_skills = self.get_skill_names()
+
+            # Fast path: try rule matching first (skip context construction)
+            plan = None
+            if self._planner_type == "dag" and hasattr(self.planner, "try_rule_match"):
+                plan = await self.planner.try_rule_match(
+                    goal=user_input,
+                    available_skills=available_skills,
+                )
+                if plan is not None:
+                    dag = plan
+                    if self.logger:
+                        self.logger.debug("fast_rule_match", goal=user_input[:50])
+
+            # Add user input to memory (after rule check to avoid delay)
             if self._memory_type == "tiered":
-                await self.memory.add_turn("user", user_input)
+                self.memory.add_turn_sync("user", user_input)
             else:
                 self.memory.add_turn("user", user_input)
 
-            # Get context for planning
-            if self.tracer and span:
-                with self.tracer.start_span("memory.get_context") as ctx_span:
+            # Slow path: build context and run full pipeline
+            if plan is None:
+                # Get context for planning
+                if self.tracer and span:
+                    with self.tracer.start_span("memory.get_context") as ctx_span:
+                        context = self.memory.get_context()
+                        ctx_span.set_attribute("context_length", len(context))
+                else:
                     context = self.memory.get_context()
-                    ctx_span.set_attribute("context_length", len(context))
-            else:
-                context = self.memory.get_context()
 
-            available_skills = self.get_skill_names()
-
-            # Create execution plan (DAG or simple Plan)
-            if self.tracer and span:
-                with self.tracer.start_span("planner.plan") as plan_span:
+                # Create execution plan (DAG or simple Plan)
+                if self.tracer and span:
+                    with self.tracer.start_span("planner.plan") as plan_span:
+                        plan = await self.planner.plan(
+                            goal=user_input,
+                            context=context,
+                            available_skills=available_skills,
+                        )
+                        if isinstance(plan, TaskDAG):
+                            plan_span.set_attribute("plan_mode", "dag")
+                            plan_span.set_attribute("task_count", len(plan.nodes))
+                            dag = plan
+                        else:
+                            plan_span.set_attribute(
+                                "plan_mode", plan.mode if hasattr(plan, "mode") else "unknown"
+                            )
+                else:
                     plan = await self.planner.plan(
                         goal=user_input,
                         context=context,
                         available_skills=available_skills,
                     )
                     if isinstance(plan, TaskDAG):
-                        plan_span.set_attribute("plan_mode", "dag")
-                        plan_span.set_attribute("task_count", len(plan.nodes))
                         dag = plan
-                    else:
-                        plan_span.set_attribute("plan_mode", plan.mode if hasattr(plan, 'mode') else "unknown")
-            else:
-                plan = await self.planner.plan(
-                    goal=user_input,
-                    context=context,
-                    available_skills=available_skills,
-                )
-                if isinstance(plan, TaskDAG):
-                    dag = plan
 
             # Handle empty DAG edge case
             if isinstance(plan, TaskDAG) and len(plan.nodes) == 0:
@@ -315,11 +344,19 @@ class CodeAgent:
                         original_length=len(response_text),
                         truncated_length=max_response_length,
                     )
-                response_text = response_text[:max_response_length] + "\n\n[Response truncated due to length]"
+                response_text = (
+                    response_text[:max_response_length] + "\n\n[Response truncated due to length]"
+                )
 
             # Add response to memory
+            fast_rule_plan = False
+            if isinstance(plan, TaskDAG) and plan.nodes:
+                fast_rule_plan = all(node.source == TaskSource.RULE for node in plan.nodes.values())
             if self._memory_type == "tiered":
-                await self.memory.add_turn("assistant", response_text)
+                if fast_rule_plan:
+                    self.memory.add_turn_sync("assistant", response_text)
+                else:
+                    await self.memory.add_turn("assistant", response_text)
             else:
                 self.memory.add_turn("assistant", response_text)
 
@@ -357,9 +394,7 @@ class CodeAgent:
                 memory_stats=self.get_memory_stats(),
             )
 
-    async def _execute_plan(
-        self, plan: Union[Plan, TaskDAG], user_input: str, context: str
-    ) -> str:
+    async def _execute_plan(self, plan: Union[Plan, TaskDAG], user_input: str, context: str) -> str:
         """Execute plan and return response text.
 
         Args:
@@ -614,8 +649,7 @@ class CodeAgent:
         # Analyze executed skills to suggest complementary actions
         if dag:
             executed_skills = {
-                node.skill for node in dag.nodes.values()
-                if node.status == TaskStatus.COMPLETED
+                node.skill for node in dag.nodes.values() if node.status == TaskStatus.COMPLETED
             }
 
             # Suggest based on what was executed
@@ -631,10 +665,7 @@ class CodeAgent:
                 suggestions.append("Ask a follow-up question")
 
             # If there were failures, suggest retry
-            failed_count = sum(
-                1 for node in dag.nodes.values()
-                if node.status == TaskStatus.FAILED
-            )
+            failed_count = sum(1 for node in dag.nodes.values() if node.status == TaskStatus.FAILED)
             if failed_count > 0:
                 suggestions.append("Retry the failed operations")
 
@@ -649,9 +680,7 @@ class CodeAgent:
         """Fully reset the agent state."""
         self.memory.clear()
 
-    async def run_stream(
-        self, user_input: str
-    ) -> AsyncIterator[Dict[str, Any]]:
+    async def run_stream(self, user_input: str) -> AsyncIterator[Dict[str, Any]]:
         """Process user input with streaming status updates.
 
         Args:
@@ -675,35 +704,83 @@ class CodeAgent:
             if self.logger:
                 self.logger.info("agent_run_stream_start", user_input=user_input[:100])
 
-            # Add user input to memory
+            available_skills = self.get_skill_names()
+
+            # Fast path: try rule matching first (skip context construction)
+            plan = None
+            rule_matched = False
+            if self._planner_type == "dag" and hasattr(self.planner, "try_rule_match"):
+                plan = await self.planner.try_rule_match(
+                    goal=user_input,
+                    available_skills=available_skills,
+                )
+                if plan is not None:
+                    rule_matched = True
+                    if self.logger:
+                        self.logger.debug("fast_rule_match", goal=user_input[:50])
+
+            # Add user input to memory (after rule check to avoid delay)
             if self._memory_type == "tiered":
-                await self.memory.add_turn("user", user_input)
+                self.memory.add_turn_sync("user", user_input)
             else:
                 self.memory.add_turn("user", user_input)
 
-            # Get context for planning
-            context = self.memory.get_context()
-            available_skills = self.get_skill_names()
+            # Slow path: build context and run full pipeline
+            if plan is None:
+                yield {"type": "planning", "content": "Creating execution plan..."}
 
-            yield {"type": "planning", "content": "Creating execution plan..."}
+                # Get context for planning (expensive operation)
+                context = self.memory.get_context()
 
-            # Create execution plan
-            plan = await self.planner.plan(
-                goal=user_input,
-                context=context,
-                available_skills=available_skills,
-            )
+                # Create execution plan
+                plan = await self.planner.plan(
+                    goal=user_input,
+                    context=context,
+                    available_skills=available_skills,
+                )
+
+            # Check if rule matched (either fast path or from full pipeline)
+            if not rule_matched and isinstance(plan, TaskDAG) and plan.nodes:
+                rule_matched = all(
+                    node.source == TaskSource.RULE for node in plan.nodes.values()
+                )
+            if rule_matched:
+                yield {"type": "metadata", "matched_rule": "rule"}
 
             # Stream execution based on planner type
             if self._planner_type == "dag" and isinstance(plan, TaskDAG):
                 # DAG mode - use runtime streaming
                 response_text = "Task completed."
+                fast_single_rule = False
+                rule_task_id: Optional[str] = None
+                early_complete_sent = False
+                if plan.nodes and len(plan.nodes) == 1:
+                    node = next(iter(plan.nodes.values()))
+                    if node.source == TaskSource.RULE:
+                        fast_single_rule = True
+                        rule_task_id = node.id
                 async for status in self.runtime.execute_stream(plan):
                     yield status
                     if status.get("type") == "dag_complete":
                         # Extract final response from dag_complete event
                         results = status.get("results", {})
                         response_text = self._extract_response_from_results(results)
+                    if status.get("type") == "task_done" and fast_single_rule:
+                        if status.get("task_id") == rule_task_id:
+                            result = status.get("result")
+                            response_text = str(result) if result is not None else "Task completed."
+                            yield {"type": "complete", "content": response_text}
+                            early_complete_sent = True
+                            break
+
+                if early_complete_sent:
+                    if self._memory_type == "tiered":
+                        self.memory.add_turn_sync("assistant", response_text)
+                    else:
+                        self.memory.add_turn("assistant", response_text)
+                    if self.logger:
+                        self.logger.info("agent_run_stream_complete")
+                    return
             else:
                 # Simple mode - use executor streaming
                 if plan.is_direct():

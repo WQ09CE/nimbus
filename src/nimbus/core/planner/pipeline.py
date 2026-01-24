@@ -320,3 +320,57 @@ class PlannerPipeline:
         original_count = len(self.stages)
         self.stages = [s for s in self.stages if s.name != name]
         return len(self.stages) < original_count
+
+    async def try_rule_match(
+        self,
+        goal: str,
+        available_skills: Set[str],
+    ) -> Optional[TaskDAG]:
+        """Try fast rule matching without context construction.
+
+        This method only executes the RulePlanner stage to check if
+        the goal matches any predefined patterns. If matched, returns
+        the DAG immediately without needing conversation context.
+
+        This is an optimization to skip expensive context construction
+        for simple, rule-matched requests.
+
+        Args:
+            goal: User's goal/request.
+            available_skills: Set of available skill names.
+
+        Returns:
+            TaskDAG if rule matched and early_exit, None otherwise.
+        """
+        # Find rule planner stage
+        rule_planner = None
+        for stage in self.stages:
+            if stage.name == "rule_planner":
+                rule_planner = stage
+                break
+
+        if rule_planner is None:
+            return None
+
+        # Create minimal context (no conversation context)
+        ctx = PlanningContext(
+            goal=goal,
+            conversation_context="",  # Skip context
+            available_skills=available_skills,
+            skill_whitelist=self.config.skill_whitelist or available_skills,
+            planning_mode=self.config.planning_mode,
+        )
+
+        # Execute only rule planner
+        try:
+            ctx = await rule_planner.process(ctx)
+
+            # If rule matched with early exit, return the DAG
+            if ctx.early_exit and ctx.final_dag:
+                logger.debug(f"Fast rule match: {ctx.metadata.get('matched_rule', 'unknown')}")
+                return ctx.final_dag
+
+        except Exception as e:
+            logger.debug(f"Rule match failed: {e}")
+
+        return None
