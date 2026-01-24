@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Coroutine, Dict, Optional, Union
 
-from .agent import NotebookAgent
+from .agent import CodeAgent
 from .config import AgentConfig, LLMConfig, SkillConfig
 from .logging import get_logger
 
@@ -31,7 +31,7 @@ class MockLLMClient:
 
 
 class AgentFactory:
-    """Factory for creating NotebookAgent instances from configuration.
+    """Factory for creating CodeAgent instances from configuration.
 
     The factory supports:
     - Loading configuration from YAML files
@@ -113,7 +113,7 @@ class AgentFactory:
         cls,
         config_path: Union[str, Path],
         llm_client: Optional[Any] = None,
-    ) -> NotebookAgent:
+    ) -> CodeAgent:
         """Create Agent from YAML configuration file.
 
         Args:
@@ -122,7 +122,7 @@ class AgentFactory:
                        If not provided, will be created from config.
 
         Returns:
-            Configured NotebookAgent instance.
+            Configured CodeAgent instance.
 
         Raises:
             FileNotFoundError: If config file doesn't exist.
@@ -137,7 +137,7 @@ class AgentFactory:
         cls,
         config: Dict[str, Any],
         llm_client: Optional[Any] = None,
-    ) -> NotebookAgent:
+    ) -> CodeAgent:
         """Create Agent from dictionary configuration.
 
         Args:
@@ -145,7 +145,7 @@ class AgentFactory:
             llm_client: Optional pre-configured LLM client.
 
         Returns:
-            Configured NotebookAgent instance.
+            Configured CodeAgent instance.
         """
         agent_config = AgentConfig.from_dict(config)
         logger.info(f"Creating agent '{agent_config.name}' from dict")
@@ -156,7 +156,7 @@ class AgentFactory:
         cls,
         config: AgentConfig,
         llm_client: Optional[Any] = None,
-    ) -> NotebookAgent:
+    ) -> CodeAgent:
         """Create Agent from AgentConfig instance.
 
         Args:
@@ -164,7 +164,7 @@ class AgentFactory:
             llm_client: Optional pre-configured LLM client.
 
         Returns:
-            Configured NotebookAgent instance.
+            Configured CodeAgent instance.
         """
         # Create LLM client if not provided
         if llm_client is None:
@@ -175,7 +175,7 @@ class AgentFactory:
         runtime_config = config.runtime.to_runtime_config()
 
         # Create agent
-        agent = NotebookAgent(
+        agent = CodeAgent(
             llm_client=llm_client,
             system_prompt=config.system_prompt,
             memory_type=config.memory.type,
@@ -284,14 +284,14 @@ class AgentFactory:
     @classmethod
     def _register_skills(
         cls,
-        agent: NotebookAgent,
+        agent: CodeAgent,
         skills: list,
         llm_client: Any,
     ) -> None:
         """Load and register skills for the agent.
 
         Args:
-            agent: NotebookAgent to register skills on.
+            agent: CodeAgent to register skills on.
             skills: List of SkillConfig.
             llm_client: LLM client for skills that need it.
         """
@@ -427,7 +427,7 @@ class AgentFactory:
 def create_agent(
     config: Union[str, Path, Dict[str, Any]],
     llm_client: Optional[Any] = None,
-) -> NotebookAgent:
+) -> CodeAgent:
     """Convenience function to create an agent from config.
 
     Args:
@@ -435,7 +435,7 @@ def create_agent(
         llm_client: Optional pre-configured LLM client.
 
     Returns:
-        Configured NotebookAgent instance.
+        Configured CodeAgent instance.
 
     Example:
         ```python

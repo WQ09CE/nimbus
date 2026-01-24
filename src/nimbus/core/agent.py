@@ -1,25 +1,34 @@
-"""NotebookAgent - Main orchestrator for OpenNotebook."""
+"""CodeAgent - Main orchestrator for code exploration and analysis."""
 
 import uuid
-from typing import Any, AsyncIterator, Callable, Coroutine, Dict, List, Optional, Union
+from pathlib import Path
+from typing import Any, AsyncIterator, Callable, Coroutine, Dict, List, Optional, TYPE_CHECKING, Union
 
 from .memory import SimpleMemory, TieredMemoryManager, MemoryConfig, PinnedItem
 from .planner import SimplePlanner, DAGPlanner, LLMClient
 from .executor import SimpleExecutor
 from .runtime import AsyncRuntime
 from .types import (
-    NotebookResponse, Plan, TaskDAG, RuntimeConfig, ExecutionResult,
+    AgentResponse, Plan, TaskDAG, RuntimeConfig, ExecutionResult,
     Artifact, ArtifactType, TaskStatus,
 )
 from .logging import get_logger, setup_logging
 from .tracing import get_tracer, Tracer
 
+if TYPE_CHECKING:
+    from nimbus.tools import ToolRegistry
 
 SkillFunc = Callable[..., Coroutine[Any, Any, Any]]
 
 
-class NotebookAgent:
-    """Main agent that orchestrates memory, planning, and execution.
+class CodeAgent:
+    """Agent for code exploration and analysis.
+
+    Features:
+    - Read/Glob/Grep tools for code exploration
+    - DAG-based parallel task execution
+    - Memory for conversation context
+    - Extensible skill system
 
     Supports two memory implementations:
     - "simple": Basic memory with conversation history (default, backward compatible)
@@ -36,12 +45,14 @@ class NotebookAgent:
         system_prompt: str = "",
         memory_type: str = "simple",
         memory_config: Optional[MemoryConfig] = None,
-        planner_type: str = "simple",
+        planner_type: str = "dag",
         runtime_config: Optional[RuntimeConfig] = None,
         enable_logging: bool = True,
         session_id: Optional[str] = None,
+        workspace: Optional[Path] = None,
+        tool_registry: Optional["ToolRegistry"] = None,
     ):
-        """Initialize the notebook agent.
+        """Initialize the code agent.
 
         Args:
             llm_client: LLM client with async complete(prompt) method.
@@ -52,10 +63,17 @@ class NotebookAgent:
             runtime_config: Configuration for AsyncRuntime (DAG mode only).
             enable_logging: Enable structured logging and tracing.
             session_id: Session identifier for checkpointing.
+            workspace: Workspace directory for tool sandbox validation.
+            tool_registry: Optional tool registry for code tools. If not provided,
+                          default tools (Read, Glob, Grep) are registered automatically.
         """
         self.llm_client = llm_client
         self.system_prompt = system_prompt
         self.session_id = session_id or str(uuid.uuid4())[:8]
+        self.workspace = workspace or Path.cwd()
+
+        # Initialize tool registry
+        self.tool_registry = tool_registry or self._create_default_tools()
 
         # Initialize memory based on type
         self._memory_type = memory_type
@@ -73,7 +91,11 @@ class NotebookAgent:
         self._planner_type = planner_type
         if planner_type == "dag":
             self.planner = DAGPlanner(llm_client)
-            self.runtime = AsyncRuntime(config=runtime_config or RuntimeConfig())
+            self.runtime = AsyncRuntime(
+                config=runtime_config or RuntimeConfig(),
+                tool_registry=self.tool_registry,
+                workspace=self.workspace,
+            )
             self.executor = None  # Not used in DAG mode
         else:
             self.planner = SimplePlanner(llm_client)
@@ -91,6 +113,22 @@ class NotebookAgent:
             self.tracer = None
 
         self._register_default_skills()
+
+    def _create_default_tools(self) -> "ToolRegistry":
+        """Create registry with default code exploration tools.
+
+        Registers the Read, Glob, and Grep tools for file operations.
+
+        Returns:
+            ToolRegistry with default tools registered.
+        """
+        from nimbus.tools import ToolRegistry, read_file, glob_files, grep_content
+
+        registry = ToolRegistry()
+        registry.register_decorated(read_file)
+        registry.register_decorated(glob_files)
+        registry.register_decorated(grep_content)
+        return registry
 
     def _register_default_skills(self) -> None:
         """Register built-in skills."""
@@ -117,11 +155,20 @@ class NotebookAgent:
             self.executor.register_skill(name, func)
 
     def get_skill_names(self) -> set:
-        """Get set of registered skill names."""
+        """Get set of registered skill and tool names.
+
+        Returns:
+            Set of all skill names plus tool names from the tool registry.
+        """
         if self._planner_type == "dag":
+            # Runtime already includes tool names via get_skill_names()
             return self.runtime.get_skill_names()
         else:
-            return set(self.executor.get_skill_names())
+            # For simple mode, combine executor skills with tool names
+            names = set(self.executor.get_skill_names())
+            if self.tool_registry:
+                names.update(self.tool_registry.list_tools())
+            return names
 
     def on_file_upload(
         self, filename: str, file_type: str, summary: str
@@ -156,14 +203,14 @@ class NotebookAgent:
         else:
             self.memory.unpin(filename)
 
-    async def run(self, user_input: str) -> NotebookResponse:
+    async def run(self, user_input: str) -> AgentResponse:
         """Process user input and generate response.
 
         Args:
             user_input: User's message or command.
 
         Returns:
-            NotebookResponse with text and optional artifacts.
+            AgentResponse with text and optional artifacts.
         """
         # Start tracing if enabled
         if self.tracer:
@@ -172,7 +219,7 @@ class NotebookAgent:
         else:
             return await self._run_internal(user_input, None)
 
-    async def _run_internal(self, user_input: str, span=None) -> NotebookResponse:
+    async def _run_internal(self, user_input: str, span=None) -> AgentResponse:
         """Internal run implementation with tracing support."""
         dag: Optional[TaskDAG] = None
         execution_result: Optional[ExecutionResult] = None
@@ -224,7 +271,7 @@ class NotebookAgent:
             if isinstance(plan, TaskDAG) and len(plan.nodes) == 0:
                 if self.logger:
                     self.logger.warning("empty_dag_created", goal=user_input[:50])
-                return NotebookResponse(
+                return AgentResponse(
                     text="I understand your request but couldn't determine specific actions to take. Could you please provide more details?",
                     dag=dag,
                     memory_stats=self.get_memory_stats(),
@@ -274,7 +321,7 @@ class NotebookAgent:
                     suggestion_count=len(suggestions),
                 )
 
-            return NotebookResponse(
+            return AgentResponse(
                 text=response_text,
                 artifacts=artifacts,
                 suggestions=suggestions,
@@ -286,7 +333,7 @@ class NotebookAgent:
             if self.logger:
                 self.logger.error("agent_run_failed", error=str(e))
             error_msg = f"An error occurred: {str(e)}"
-            return NotebookResponse(
+            return AgentResponse(
                 text=error_msg,
                 error=str(e),
                 dag=dag,
@@ -688,165 +735,6 @@ class NotebookAgent:
         return "Task completed."
 
     # =========================================================================
-    # Notebook-specific methods (AI Notebook layer)
-    # =========================================================================
-
-    def set_notebook_context(self, context: "NotebookContext") -> None:
-        """Set the notebook context.
-
-        Args:
-            context: NotebookContext instance.
-        """
-        self.notebook_context = context
-        self._update_system_prompt()
-
-    def get_notebook_context(self) -> Optional["NotebookContext"]:
-        """Get the current notebook context.
-
-        Returns:
-            NotebookContext if set, None otherwise.
-        """
-        return getattr(self, 'notebook_context', None)
-
-    def _update_system_prompt(self) -> None:
-        """Update system prompt based on notebook context."""
-        if not hasattr(self, 'notebook_context'):
-            return
-
-        ctx = self.notebook_context
-
-        # Build sources info
-        sources_info = "\n".join([
-            f"- {s.title} (ID: {s.id}, {len(s.chunks)} chunks)"
-            for s in ctx.sources
-            if s.id in ctx.active_source_ids
-        ])
-
-        self.system_prompt = f"""You are an AI Notebook assistant.
-
-The user is currently working with the following documents:
-{sources_info if sources_info else "(No documents loaded)"}
-
-Available actions:
-- When answering questions, use 'rag_search' skill to find answers from documents
-- Use 'draft_outline' skill to generate outlines
-- Use 'draft_summary' skill to generate summaries
-- Use 'draft_notes' skill to extract key notes
-
-Please answer in Chinese and cite document sources when referencing content."""
-
-    def add_source(self, source: "Source") -> None:
-        """Add a knowledge source to the notebook.
-
-        Args:
-            source: Source object to add.
-        """
-        from ..domain.models import NotebookContext
-
-        # Initialize context if not exists
-        if not hasattr(self, 'notebook_context') or self.notebook_context is None:
-            self.notebook_context = NotebookContext(notebook_id="default")
-
-        self.notebook_context.sources.append(source)
-        self.notebook_context.active_source_ids.append(source.id)
-
-        # Sync to retrieval service if available
-        if hasattr(self, 'retrieval') and self.retrieval is not None:
-            self.retrieval.add_source(source)
-
-        # Update memory pin for quick reference
-        if self._memory_type == "tiered":
-            item = PinnedItem(
-                id=f"source:{source.id}",
-                type="file_meta",
-                content=f"{source.title} ({len(source.chunks)} chunks)",
-                priority=10
-            )
-            self.memory.pin(item)
-        else:
-            self.memory.pin(
-                f"source:{source.id}",
-                f"{source.title} ({len(source.chunks)} chunks)"
-            )
-        self._update_system_prompt()
-
-    def remove_source(self, source_id: str) -> bool:
-        """Remove a knowledge source from the notebook.
-
-        Args:
-            source_id: ID of source to remove.
-
-        Returns:
-            True if removed, False if not found.
-        """
-        if not hasattr(self, 'notebook_context') or self.notebook_context is None:
-            return False
-
-        # Find and remove source
-        for i, source in enumerate(self.notebook_context.sources):
-            if source.id == source_id:
-                self.notebook_context.sources.pop(i)
-                if source_id in self.notebook_context.active_source_ids:
-                    self.notebook_context.active_source_ids.remove(source_id)
-
-                # Remove from retrieval service
-                if hasattr(self, 'retrieval') and self.retrieval is not None:
-                    self.retrieval.remove_source(source_id)
-
-                # Remove from memory
-                self.memory.unpin(f"source:{source_id}")
-                self._update_system_prompt()
-                return True
-
-        return False
-
-    def set_active_sources(self, source_ids: list) -> None:
-        """Set which sources are active for queries.
-
-        Args:
-            source_ids: List of source IDs to activate.
-        """
-        if not hasattr(self, 'notebook_context') or self.notebook_context is None:
-            return
-
-        # Validate source IDs
-        valid_ids = {s.id for s in self.notebook_context.sources}
-        self.notebook_context.active_source_ids = [
-            sid for sid in source_ids if sid in valid_ids
-        ]
-        self._update_system_prompt()
-
-    def setup_retrieval(self, retrieval_service: "RetrievalService") -> None:
-        """Set up retrieval service for RAG.
-
-        Args:
-            retrieval_service: RetrievalService instance.
-        """
-        self.retrieval = retrieval_service
-
-        # Index existing sources
-        if hasattr(self, 'notebook_context') and self.notebook_context is not None:
-            for source in self.notebook_context.sources:
-                self.retrieval.add_source(source)
-
-    def register_notebook_skills(self) -> None:
-        """Register notebook-specific skills (RAG, draft)."""
-        if not hasattr(self, 'retrieval') or self.retrieval is None:
-            raise RuntimeError("Retrieval service must be set up first")
-
-        from ..skills.rag import create_rag_skill
-        from ..skills.draft import create_draft_skill
-
-        # Register RAG skill
-        rag_skill = create_rag_skill(self.retrieval, self.llm_client)
-        self.register_skill("rag_search", rag_skill)
-
-        # Register draft skills
-        draft_skills = create_draft_skill(self.llm_client)
-        for name, skill_func in draft_skills.items():
-            self.register_skill(f"draft_{name}", skill_func)
-
-    # =========================================================================
     # Memory and Tracing utilities
     # =========================================================================
 
@@ -928,3 +816,7 @@ Please answer in Chinese and cite document sources when referencing content."""
         if self._memory_type == "tiered":
             return self.memory.get_working(key, default)
         return default
+
+
+# Backward compatibility alias
+NotebookAgent = CodeAgent

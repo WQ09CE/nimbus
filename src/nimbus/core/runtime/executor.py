@@ -1,10 +1,32 @@
-"""Async Runtime for parallel DAG execution."""
+"""Async Runtime for parallel DAG execution.
+
+This module provides the AsyncRuntime class which executes TaskDAGs
+in parallel with support for:
+
+- Parallel task execution with concurrency control
+- Timeout and retry handling
+- Checkpoint persistence
+- Tool registry integration
+- Optional ReplanCoordinator for dynamic replanning
+
+Example:
+    ```python
+    runtime = AsyncRuntime(
+        skills={"search": search_skill, "summarize": summarize_skill},
+        config=RuntimeConfig(max_concurrent=5),
+    )
+
+    result = await runtime.execute_dag(dag)
+    print(f"Completed: {result.stats.completed}")
+    ```
+"""
 
 import asyncio
 from datetime import datetime
+from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Coroutine, Dict, Optional, TYPE_CHECKING
 
-from .types import (
+from ..types import (
     TaskDAG,
     TaskNode,
     TaskStatus,
@@ -12,10 +34,13 @@ from .types import (
     ExecutionResult,
     ExecutionStats,
 )
-from .logging import get_agent_logger, agent_context
+from ..logging import get_agent_logger
+from .cancellation import CancellationToken
+from .coordinator import ReplanCoordinator
 
 if TYPE_CHECKING:
-    from .checkpoint import CheckpointSaver
+    from ..checkpoint import CheckpointSaver
+    from nimbus.tools import ToolRegistry
 
 # Type alias for skill functions
 SkillFunc = Callable[..., Coroutine[Any, Any, Any]]
@@ -25,6 +50,30 @@ class AsyncRuntime:
     """Executes TaskDAG in parallel with timeout and retry support.
 
     Supports optional checkpoint persistence for durable execution.
+    Also supports ToolRegistry for code exploration tools (Read, Glob, Grep).
+    Optionally integrates with ReplanCoordinator for dynamic replanning.
+
+    Attributes:
+        skills: Dictionary mapping skill names to async functions.
+        config: Runtime configuration (timeout, retries, etc.).
+        checkpointer: Optional checkpoint saver for durable execution.
+        tool_registry: Optional tool registry for code tools.
+        workspace: Workspace directory for tool sandbox validation.
+        coordinator: Optional replan coordinator for dynamic replanning.
+
+    Example:
+        ```python
+        # Basic usage
+        runtime = AsyncRuntime(skills={"chat": chat_skill})
+        result = await runtime.execute_dag(dag)
+
+        # With coordinator for replanning
+        coordinator = ReplanCoordinator()
+        runtime = AsyncRuntime(
+            skills={"search": search_skill},
+            coordinator=coordinator,
+        )
+        ```
     """
 
     def __init__(
@@ -32,6 +81,9 @@ class AsyncRuntime:
         skills: Optional[Dict[str, SkillFunc]] = None,
         config: Optional[RuntimeConfig] = None,
         checkpointer: Optional["CheckpointSaver"] = None,
+        tool_registry: Optional["ToolRegistry"] = None,
+        workspace: Optional[Path] = None,
+        coordinator: Optional[ReplanCoordinator] = None,
     ):
         """Initialize async runtime.
 
@@ -39,11 +91,18 @@ class AsyncRuntime:
             skills: Dictionary mapping skill names to async functions.
             config: Runtime configuration (timeout, retries, etc.).
             checkpointer: Optional checkpoint saver for durable execution.
+            tool_registry: Optional tool registry for code tools (Read, Glob, Grep).
+            workspace: Optional workspace directory for tool sandbox validation.
+            coordinator: Optional replan coordinator for dynamic replanning.
         """
         self.skills: Dict[str, SkillFunc] = skills or {}
         self.config = config or RuntimeConfig()
         self.checkpointer = checkpointer
+        self.tool_registry = tool_registry
+        self.workspace = workspace or Path.cwd()
+        self.coordinator = coordinator
         self._semaphore: Optional[asyncio.Semaphore] = None
+        self._task_tokens: Dict[str, CancellationToken] = {}
 
     def register_skill(self, name: str, func: SkillFunc) -> None:
         """Register a skill function.
@@ -55,8 +114,14 @@ class AsyncRuntime:
         self.skills[name] = func
 
     def get_skill_names(self) -> set:
-        """Get set of registered skill names."""
-        return set(self.skills.keys())
+        """Get set of registered skill names.
+
+        Includes both registered skills and tools from the tool registry.
+        """
+        names = set(self.skills.keys())
+        if self.tool_registry:
+            names.update(self.tool_registry.list_tools())
+        return names
 
     async def execute_dag(
         self,
@@ -69,6 +134,9 @@ class AsyncRuntime:
         - Empty DAG (no tasks)
         - All tasks failing
         - Partial failures with graceful degradation
+
+        When a coordinator is configured, tasks are registered for
+        potential cancellation during replanning.
 
         Args:
             dag: TaskDAG to execute.
@@ -136,6 +204,11 @@ class AsyncRuntime:
                         node.status = TaskStatus.FAILED
                         node.error = "Execution timeout: max iterations exceeded"
                 break
+
+            # Check if coordinator has paused scheduling
+            if self.coordinator and self.coordinator.is_paused():
+                await asyncio.sleep(0.1)
+                continue
 
             ready_tasks = dag.get_ready_tasks()
 
@@ -213,66 +286,110 @@ class AsyncRuntime:
     async def _execute_task(self, task: TaskNode, dag: TaskDAG) -> None:
         """Execute a single task with retry support.
 
+        When a coordinator is configured, registers the task for
+        potential cancellation and checks the cancel token periodically.
+
         Args:
             task: TaskNode to execute.
             dag: Parent DAG (for marking downstream on failure).
         """
         log = get_agent_logger("runtime", task_id=task.id)
 
-        async with self._semaphore:
-            task.status = TaskStatus.RUNNING
-            task.started_at = datetime.now()
+        # Create cancellation token for this task
+        cancel_token = CancellationToken()
+        self._task_tokens[task.id] = cancel_token
 
-            log.info(f"Task started: skill={task.skill}")
+        # Register with coordinator if available
+        current_async_task: Optional[asyncio.Task[Any]] = None
+        if self.coordinator:
+            current_async_task = asyncio.current_task()
+            if current_async_task:
+                self.coordinator.register_task(task.id, current_async_task, cancel_token)
 
-            for attempt in range(self.config.max_retries + 1):
-                try:
-                    result = await self._execute_with_timeout(task)
-                    task.status = TaskStatus.COMPLETED
-                    task.result = result
-                    task.finished_at = datetime.now()
+        try:
+            async with self._semaphore:  # type: ignore
+                task.status = TaskStatus.RUNNING
+                task.started_at = datetime.now()
 
-                    log.success(
-                        f"Task completed: skill={task.skill}, "
-                        f"duration={task.duration_ms}ms"
-                    )
+                log.info(f"Task started: skill={task.skill}")
 
-                    # Save checkpoint after successful completion
+                for attempt in range(self.config.max_retries + 1):
+                    # Check for cancellation before each attempt
+                    if cancel_token.is_cancelled():
+                        task.status = TaskStatus.FAILED
+                        task.error = f"Cancelled: {cancel_token.reason}"
+                        task.finished_at = datetime.now()
+                        log.info(f"Task cancelled: {cancel_token.reason}")
+                        return
+
+                    try:
+                        result = await self._execute_with_timeout(task, cancel_token)
+
+                        # Check cancellation after execution
+                        if cancel_token.is_cancelled():
+                            task.status = TaskStatus.FAILED
+                            task.error = f"Cancelled: {cancel_token.reason}"
+                            task.finished_at = datetime.now()
+                            return
+
+                        task.status = TaskStatus.COMPLETED
+                        task.result = result
+                        task.finished_at = datetime.now()
+
+                        log.success(
+                            f"Task completed: skill={task.skill}, "
+                            f"duration={task.duration_ms}ms"
+                        )
+
+                        # Save checkpoint after successful completion
+                        self._save_checkpoint(dag, log)
+                        return
+
+                    except asyncio.CancelledError:
+                        # Handle asyncio cancellation
+                        task.status = TaskStatus.FAILED
+                        task.error = "Cancelled by coordinator"
+                        task.finished_at = datetime.now()
+                        raise
+
+                    except asyncio.TimeoutError:
+                        error_msg = f"Timeout after {self.config.default_timeout}s"
+                        log.warning(f"Task timeout (attempt {attempt + 1}): {error_msg}")
+
+                        if attempt < self.config.max_retries:
+                            await asyncio.sleep(self.config.retry_delay)
+                            continue
+
+                        task.status = TaskStatus.FAILED
+                        task.error = error_msg
+                        task.finished_at = datetime.now()
+
+                    except Exception as e:
+                        error_msg = str(e)
+                        log.warning(
+                            f"Task error (attempt {attempt + 1}): {error_msg}"
+                        )
+
+                        if attempt < self.config.max_retries and self._is_retryable(e):
+                            await asyncio.sleep(self.config.retry_delay)
+                            continue
+
+                        task.status = TaskStatus.FAILED
+                        task.error = error_msg
+                        task.finished_at = datetime.now()
+
+                # Task failed - mark downstream as skipped
+                if task.status == TaskStatus.FAILED:
+                    log.error(f"Task failed: skill={task.skill}, error={task.error}")
+                    dag.mark_downstream_skipped(task.id)
+                    # Save checkpoint after failure too
                     self._save_checkpoint(dag, log)
-                    return
 
-                except asyncio.TimeoutError:
-                    error_msg = f"Timeout after {self.config.default_timeout}s"
-                    log.warning(f"Task timeout (attempt {attempt + 1}): {error_msg}")
-
-                    if attempt < self.config.max_retries:
-                        await asyncio.sleep(self.config.retry_delay)
-                        continue
-
-                    task.status = TaskStatus.FAILED
-                    task.error = error_msg
-                    task.finished_at = datetime.now()
-
-                except Exception as e:
-                    error_msg = str(e)
-                    log.warning(
-                        f"Task error (attempt {attempt + 1}): {error_msg}"
-                    )
-
-                    if attempt < self.config.max_retries and self._is_retryable(e):
-                        await asyncio.sleep(self.config.retry_delay)
-                        continue
-
-                    task.status = TaskStatus.FAILED
-                    task.error = error_msg
-                    task.finished_at = datetime.now()
-
-            # Task failed - mark downstream as skipped
-            if task.status == TaskStatus.FAILED:
-                log.error(f"Task failed: skill={task.skill}, error={task.error}")
-                dag.mark_downstream_skipped(task.id)
-                # Save checkpoint after failure too
-                self._save_checkpoint(dag, log)
+        finally:
+            # Clean up
+            self._task_tokens.pop(task.id, None)
+            if self.coordinator:
+                self.coordinator.unregister_task(task.id)
 
     def _save_checkpoint(self, dag: TaskDAG, log: Any) -> None:
         """Save checkpoint if checkpointer is configured.
@@ -288,22 +405,41 @@ class AsyncRuntime:
             except Exception as e:
                 log.warning(f"Failed to save checkpoint: {e}")
 
-    async def _execute_with_timeout(self, task: TaskNode) -> Any:
+    async def _execute_with_timeout(
+        self,
+        task: TaskNode,
+        cancel_token: Optional[CancellationToken] = None,
+    ) -> Any:
         """Execute task with timeout.
+
+        First checks if the task is a registered tool, then falls back to skills.
 
         Args:
             task: TaskNode to execute.
+            cancel_token: Optional cancellation token for cooperative cancellation.
 
         Returns:
-            Result from skill execution.
+            Result from tool or skill execution.
 
         Raises:
             asyncio.TimeoutError: If execution exceeds timeout.
-            ValueError: If skill is not registered.
+            ValueError: If neither tool nor skill is registered.
         """
+        # First check if it's a tool
+        if self.tool_registry and task.skill in self.tool_registry:
+            return await asyncio.wait_for(
+                self.tool_registry.execute(
+                    task.skill,
+                    task.params,
+                    workspace=self.workspace,
+                ),
+                timeout=self.config.default_timeout,
+            )
+
+        # Otherwise check skills
         skill_func = self.skills.get(task.skill)
         if not skill_func:
-            raise ValueError(f"Unknown skill: {task.skill}")
+            raise ValueError(f"Unknown skill or tool: {task.skill}")
 
         return await asyncio.wait_for(
             skill_func(**task.params),
@@ -326,6 +462,17 @@ class AsyncRuntime:
         )
         return isinstance(error, retryable_types)
 
+    def get_cancel_token(self, task_id: str) -> Optional[CancellationToken]:
+        """Get the cancellation token for a running task.
+
+        Args:
+            task_id: ID of the task.
+
+        Returns:
+            CancellationToken if task is running, None otherwise.
+        """
+        return self._task_tokens.get(task_id)
+
     async def execute_stream(
         self, dag: TaskDAG
     ) -> AsyncIterator[Dict[str, Any]]:
@@ -345,15 +492,20 @@ class AsyncRuntime:
         }
 
         # Track which tasks we've reported
-        reported_started = set()
-        reported_completed = set()
+        reported_started: set[str] = set()
+        reported_completed: set[str] = set()
 
         self._semaphore = asyncio.Semaphore(self.config.max_concurrent)
 
         # Create task execution futures
-        pending_futures = {}
+        pending_futures: Dict[str, asyncio.Task[Any]] = {}
 
         while not dag.is_completed():
+            # Check if coordinator has paused scheduling
+            if self.coordinator and self.coordinator.is_paused():
+                await asyncio.sleep(0.1)
+                continue
+
             # Start ready tasks
             ready_tasks = dag.get_ready_tasks()
 

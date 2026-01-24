@@ -46,3 +46,11 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Nimbus runtime
+.nimbus/
+.checkpoints/
+.wukong/
+
+# Lock files (regenerated)
+# uv.lock

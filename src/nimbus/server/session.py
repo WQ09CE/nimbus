@@ -157,7 +157,7 @@ class SessionManager:
             raise ValueError(f"Session not found: {session_id}")
 
         # Import here to avoid circular imports
-        from nimbus.core.agent import NotebookAgent
+        from nimbus.core.agent import CodeAgent
         from nimbus.core.memory import MemoryConfig
 
         # Create default LLM client if not provided
@@ -165,7 +165,7 @@ class SessionManager:
             llm_client = await self._create_default_llm_client()
 
         # Create agent with appropriate memory and planner type
-        agent = NotebookAgent(
+        agent = CodeAgent(
             llm_client=llm_client,
             memory_type=session.get("memory_type", "tiered"),
             memory_config=MemoryConfig(),
@@ -179,38 +179,15 @@ class SessionManager:
         return agent
 
     async def _create_default_llm_client(self):
-        """Create default Ollama LLM client."""
-        import os
-        import aiohttp
+        """Create default LLM client using the factory.
 
-        ollama_model = os.environ.get("NIMBUS_LLM_MODEL", "qwen3:8b")
-        ollama_url = os.environ.get("NIMBUS_LLM_URL", "http://localhost:11434")
-
-        class OllamaClient:
-            def __init__(self, model: str, base_url: str):
-                self.model = model
-                self.base_url = base_url
-
-            async def complete(self, prompt: str) -> str:
-                url = f"{self.base_url}/api/generate"
-                payload = {
-                    "model": self.model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"temperature": 0.7, "num_predict": 1024},
-                }
-                async with aiohttp.ClientSession() as http_session:
-                    async with http_session.post(
-                        url, json=payload,
-                        timeout=aiohttp.ClientTimeout(total=120)
-                    ) as resp:
-                        if resp.status != 200:
-                            text = await resp.text()
-                            raise RuntimeError(f"Ollama error: {resp.status} - {text}")
-                        result = await resp.json()
-                        return result.get("response", "")
-
-        return OllamaClient(model=ollama_model, base_url=ollama_url)
+        The factory uses configuration from:
+        1. Environment variables (NIMBUS_LLM_PROVIDER, etc.)
+        2. Configuration files (.nimbus/llm.json, ~/.nimbus/llm.json)
+        3. Auto-detection based on available API keys
+        """
+        from nimbus.llm import create_llm_client
+        return create_llm_client()
 
     async def save_session_state(self, session_id: str) -> None:
         """

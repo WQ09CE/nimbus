@@ -4,7 +4,8 @@ from .types import (
     Task,
     TaskType,
     Plan,
-    NotebookResponse,
+    AgentResponse,
+    NotebookResponse,  # Backward compatibility alias
     # DAG types
     TaskStatus,
     TaskNode,
@@ -15,6 +16,10 @@ from .types import (
     # Artifact types (Phase 4)
     Artifact,
     ArtifactType,
+    # Planner refactor Phase 2 types
+    TaskSource,
+    Constraint,
+    ReplanRecord,
 )
 from .memory import (
     SimpleMemory,
@@ -25,13 +30,24 @@ from .memory import (
     Message,
     MemoryTier,
 )
+# Planner (legacy + new pipeline)
 from .planner import (
+    # Legacy (backward compatibility)
     SimplePlanner,
     DAGPlanner,
-    # Phase 3: Re-planning
     AdaptivePlanner,
     ReplanRequest,
     ReplanningStrategy,
+    # Phase 3-4: New pipeline
+    PlanningMode,
+    PlanningContext,
+    PlannerStage,
+    ValidationResult,
+    DAGValidator,
+    RulePlanner,
+    LLMEnhancer,
+    PipelineConfig,
+    PlannerPipeline,
 )
 from .config import (
     AgentConfig,
@@ -46,8 +62,13 @@ from .factory import (
     create_agent,
 )
 from .executor import SimpleExecutor
-from .runtime import AsyncRuntime
-from .agent import NotebookAgent
+from .runtime import (
+    AsyncRuntime,
+    ReplanCoordinator,
+    CoordinatorConfig,
+    CancellationToken,
+)
+from .agent import CodeAgent, NotebookAgent  # NotebookAgent is backward compatibility alias
 from .logging import (
     logger,
     LogLevel,
@@ -86,7 +107,8 @@ __all__ = [
     "Task",
     "TaskType",
     "Plan",
-    "NotebookResponse",
+    "AgentResponse",
+    "NotebookResponse",  # Backward compatibility alias
     # DAG types
     "TaskStatus",
     "TaskNode",
@@ -97,6 +119,10 @@ __all__ = [
     # Artifact types (Phase 4)
     "Artifact",
     "ArtifactType",
+    # Planner refactor Phase 2 types
+    "TaskSource",
+    "Constraint",
+    "ReplanRecord",
     # Memory
     "SimpleMemory",
     "TieredMemoryManager",
@@ -115,17 +141,31 @@ __all__ = [
     # Factory (Phase 3)
     "AgentFactory",
     "create_agent",
-    # Core components
+    # Core components - Legacy Planners
     "SimplePlanner",
     "DAGPlanner",
     # Re-planning (Phase 3)
     "AdaptivePlanner",
     "ReplanRequest",
     "ReplanningStrategy",
+    # Phase 3-4: Planner Pipeline
+    "PlanningMode",
+    "PlanningContext",
+    "PlannerStage",
+    "ValidationResult",
+    "DAGValidator",
+    "RulePlanner",
+    "LLMEnhancer",
+    "PipelineConfig",
+    "PlannerPipeline",
     # Executor & Runtime
     "SimpleExecutor",
     "AsyncRuntime",
-    "NotebookAgent",
+    "ReplanCoordinator",
+    "CoordinatorConfig",
+    "CancellationToken",
+    "CodeAgent",
+    "NotebookAgent",  # Backward compatibility alias
     # Logging
     "logger",
     "LogLevel",

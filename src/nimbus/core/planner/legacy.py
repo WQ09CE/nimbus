@@ -6,6 +6,7 @@ This module provides:
 - AdaptivePlanner: Dynamic re-planning based on execution results
 """
 
+import hashlib
 import json
 import re
 import uuid
@@ -13,8 +14,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Protocol, Set
 
-from .types import Plan, Task, TaskType, TaskDAG, TaskNode, TaskStatus
-from .logging import get_logger
+from ..types import Plan, Task, TaskType, TaskDAG, TaskNode, TaskStatus
+from ..logging import get_logger
 
 logger = get_logger("planner")
 
@@ -180,6 +181,13 @@ class SimplePlanner:
     def _fix_json(self, text: str) -> Optional[Dict[str, Any]]:
         """Attempt to fix common JSON formatting issues.
 
+        Handles:
+        - Trailing content after JSON object
+        - Nested arrays and objects (tracks both {} and [])
+        - Trailing commas in arrays and objects
+        - Missing quotes around keys
+        - Single quotes instead of double quotes
+
         Args:
             text: Potentially malformed JSON string.
 
@@ -189,21 +197,51 @@ class SimplePlanner:
         fixed = text.strip()
 
         # Remove trailing content after the JSON object
-        brace_count = 0
+        # Track both {} and [] to handle nested structures correctly
+        brace_count = 0  # For {}
+        bracket_count = 0  # For []
+        in_string = False
+        escape_next = False
         end_pos = 0
+
         for i, c in enumerate(fixed):
+            if escape_next:
+                escape_next = False
+                continue
+
+            if c == '\\':
+                escape_next = True
+                continue
+
+            if c == '"' and not escape_next:
+                in_string = not in_string
+                continue
+
+            if in_string:
+                continue
+
             if c == "{":
                 brace_count += 1
             elif c == "}":
                 brace_count -= 1
-                if brace_count == 0:
+            elif c == "[":
+                bracket_count += 1
+            elif c == "]":
+                bracket_count -= 1
+
+            # End of root object when both counts are zero after seeing at least one brace
+            if brace_count == 0 and bracket_count == 0 and i > 0:
+                # Check if we started with a brace
+                if fixed[0] == "{":
                     end_pos = i + 1
                     break
+
         if end_pos > 0:
             fixed = fixed[:end_pos]
 
-        # Fix trailing commas before ] or }
-        fixed = re.sub(r",\s*([}\]])", r"\1", fixed)
+        # Fix trailing commas before ] or } (handles arrays and objects)
+        # This regex handles multiple trailing commas and whitespace
+        fixed = re.sub(r",(\s*[}\]])", r"\1", fixed)
 
         # Fix missing quotes around keys (simple cases)
         fixed = re.sub(r"(\{|,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:", r'\1"\2":', fixed)
@@ -231,6 +269,25 @@ DAG_PLANNING_PROMPT = """你是一个任务规划器。根据用户目标，生�
 ## 可用技能
 {skills}
 
+## 可用工具 (用于代码探索)
+
+- **Read**: 读取文件内容
+  - file_path (string, required): 文件路径
+  - offset (integer, optional): 起始行号，默认 0
+  - limit (integer, optional): 最大行数，默认 2000
+
+- **Glob**: 查找匹配模式的文件
+  - pattern (string, required): glob 模式，如 **/*.py
+  - path (string, optional): 搜索目录，默认 "."
+  - limit (integer, optional): 最大结果数，默认 100
+
+- **Grep**: 在文件中搜索正则表达式
+  - pattern (string, required): 正则表达式
+  - path (string, optional): 搜索目录，默认 "."
+  - glob (string, optional): 文件模式过滤
+  - type (string, optional): 文件类型 (py, js, ts, go...)
+  - max_matches (integer, optional): 最大匹配数，默认 50
+
 ## 上下文
 {context}
 
@@ -254,7 +311,7 @@ DAG_PLANNING_PROMPT = """你是一个任务规划器。根据用户目标，生�
 ## 规则
 1. 如果任务可以并行执行，depends_on 设为空数组 []
 2. 每个任务只能依赖 id 比自己小的任务
-3. skill 必须从可用技能列表中选择
+3. skill 必须从可用技能列表或可用工具中选择
 4. id 必须唯一，建议使用 t1, t2, t3...
 
 ## 示例
@@ -277,6 +334,31 @@ DAG_PLANNING_PROMPT = """你是一个任务规划器。根据用户目标，生�
   "tasks": [
     {{"id": "t1", "skill": "search", "params": {{"query": "Python 教程"}}, "depends_on": []}},
     {{"id": "t2", "skill": "search", "params": {{"query": "Rust 教程"}}, "depends_on": []}}
+  ]
+}}
+
+示例4：用户说"找到项目入口文件"
+{{
+  "mode": "dag",
+  "tasks": [
+    {{"id": "t1", "skill": "Glob", "params": {{"pattern": "**/main.py"}}, "depends_on": []}},
+    {{"id": "t2", "skill": "Glob", "params": {{"pattern": "**/__main__.py"}}, "depends_on": []}}
+  ]
+}}
+
+示例5：用户说"搜索所有定义了 Agent 类的文件"
+{{
+  "mode": "dag",
+  "tasks": [
+    {{"id": "t1", "skill": "Grep", "params": {{"pattern": "class Agent", "type": "py"}}, "depends_on": []}}
+  ]
+}}
+
+示例6：用户说"读取 core/agent.py 的前 50 行"
+{{
+  "mode": "dag",
+  "tasks": [
+    {{"id": "t1", "skill": "Read", "params": {{"file_path": "core/agent.py", "limit": 50}}, "depends_on": []}}
   ]
 }}
 
@@ -773,6 +855,118 @@ class AdaptivePlanner(DAGPlanner):
 
         if self.strategy == ReplanningStrategy.ON_CHECKPOINT:
             return request.reason in ("checkpoint_reached", "task_failed")
+
+        return False
+
+    def _task_signature(self, node: TaskNode) -> str:
+        """Generate stable signature for task comparison.
+
+        The signature is based on the skill and params, allowing
+        comparison of tasks across different DAGs to detect
+        meaningful changes.
+
+        Args:
+            node: TaskNode to generate signature for.
+
+        Returns:
+            8-character hex string signature.
+        """
+        # Use the TaskNode's built-in signature if available
+        if hasattr(node, 'get_signature'):
+            return node.get_signature()[:8]
+
+        # Fallback for older TaskNode without get_signature
+        content = json.dumps({
+            "skill": node.skill,
+            "params": node.params,
+        }, sort_keys=True)
+        return hashlib.md5(content.encode()).hexdigest()[:8]
+
+    def _is_meaningful_change(
+        self,
+        old_dag: TaskDAG,
+        new_dag: TaskDAG,
+    ) -> bool:
+        """Check if new plan represents meaningful change from old plan.
+
+        Compares:
+        1. Number of pending tasks
+        2. Task signatures (skill + params hash)
+        3. Dependency structure
+
+        Args:
+            old_dag: Current DAG being executed.
+            new_dag: Proposed new DAG from replan.
+
+        Returns:
+            True if the new plan is meaningfully different.
+        """
+        # Get pending tasks from old DAG (only compare pending tasks)
+        old_pending = {
+            node.id: self._task_signature(node)
+            for node in old_dag.nodes.values()
+            if node.status == TaskStatus.PENDING
+        }
+
+        # Get all tasks from new DAG
+        new_signatures = {
+            node.id: self._task_signature(node)
+            for node in new_dag.nodes.values()
+        }
+
+        # Check 1: Different number of tasks
+        if len(old_pending) != len(new_signatures):
+            return True
+
+        # Check 2: Different task signatures
+        old_sig_set = set(old_pending.values())
+        new_sig_set = set(new_signatures.values())
+        if old_sig_set != new_sig_set:
+            return True
+
+        # Check 3: Different dependency structure
+        if self._dependency_changed(old_dag, new_dag):
+            return True
+
+        return False
+
+    def _dependency_changed(self, old_dag: TaskDAG, new_dag: TaskDAG) -> bool:
+        """Check if dependency structure changed between DAGs.
+
+        Args:
+            old_dag: Current DAG.
+            new_dag: Proposed new DAG.
+
+        Returns:
+            True if dependency structure is different.
+        """
+        # Build dependency maps for pending tasks in old DAG
+        old_deps = {}
+        for node in old_dag.nodes.values():
+            if node.status == TaskStatus.PENDING:
+                sig = self._task_signature(node)
+                dep_sigs = frozenset(
+                    self._task_signature(old_dag.nodes[dep_id])
+                    for dep_id in node.depends_on
+                    if dep_id in old_dag.nodes
+                )
+                old_deps[sig] = dep_sigs
+
+        # Build dependency maps for new DAG
+        new_deps = {}
+        for node in new_dag.nodes.values():
+            sig = self._task_signature(node)
+            dep_sigs = frozenset(
+                self._task_signature(new_dag.nodes[dep_id])
+                for dep_id in node.depends_on
+                if dep_id in new_dag.nodes
+            )
+            new_deps[sig] = dep_sigs
+
+        # Compare dependency structures
+        for sig, deps in old_deps.items():
+            if sig in new_deps and new_deps[sig] != deps:
+                return True
 
         return False
 

@@ -31,6 +31,8 @@ dependencies = [
     "rich>=13.0.0",
     "pydantic>=2.0.0",
     "sse-starlette>=1.6.0",
+    "loguru>=0.7.0",
+    "aiohttp>=3.9.0",
 ]
 
 [project.optional-dependencies]
@@ -55,12 +57,12 @@ Homepage = "https://github.com/nimbus-ai/nimbus"
 Documentation = "https://nimbus-ai.github.io/nimbus"
 Repository = "https://github.com/nimbus-ai/nimbus"
 
-# Flat layout - all modules are in root, packaged as "nimbus"
+# src layout
 [tool.hatch.build.targets.wheel]
-packages = ["."]
+packages = ["src/nimbus"]
 
-# Rename root to nimbus for the wheel
-[tool.hatch.build.targets.wheel.shared-data]
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""
 
 [tool.hatch.build]
 directory = "dist"

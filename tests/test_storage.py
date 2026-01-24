@@ -111,7 +111,12 @@ class TestSQLiteStorage:
 
         await storage.delete_session("sess_001", hard_delete=False)
 
+        # Without include_deleted, should return None
         session = await storage.get_session("sess_001")
+        assert session is None
+
+        # With include_deleted, should return the deleted session
+        session = await storage.get_session("sess_001", include_deleted=True)
         assert session["status"] == "deleted"
 
     @pytest.mark.asyncio

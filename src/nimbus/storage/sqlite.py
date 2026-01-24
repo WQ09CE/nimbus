@@ -144,19 +144,25 @@ class SQLiteStorage:
             row = await cursor.fetchone()
             return self._row_to_dict(row)
 
-    async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+    async def get_session(self, session_id: str, include_deleted: bool = False) -> Optional[Dict[str, Any]]:
         """Get session by ID.
 
         Args:
             session_id: Session identifier.
+            include_deleted: If True, also return deleted sessions.
 
         Returns:
             Session data dictionary, or None if not found.
         """
         async with self._get_connection() as db:
-            cursor = await db.execute(
-                "SELECT * FROM sessions WHERE id = ?", (session_id,)
-            )
+            if include_deleted:
+                cursor = await db.execute(
+                    "SELECT * FROM sessions WHERE id = ?", (session_id,)
+                )
+            else:
+                cursor = await db.execute(
+                    "SELECT * FROM sessions WHERE id = ? AND status != 'deleted'", (session_id,)
+                )
             row = await cursor.fetchone()
             if row:
                 result = self._row_to_dict(row)

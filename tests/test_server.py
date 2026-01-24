@@ -22,7 +22,7 @@ class TestServerModels:
 
     def test_session_create_defaults(self):
         """Test SessionCreate with default values."""
-        from server.models import SessionCreate
+        from nimbus.server.models import SessionCreate
 
         session = SessionCreate()
         assert session.name is None
@@ -32,7 +32,7 @@ class TestServerModels:
 
     def test_session_create_custom(self):
         """Test SessionCreate with custom values."""
-        from server.models import SessionCreate
+        from nimbus.server.models import SessionCreate
 
         session = SessionCreate(
             name="test-session",
@@ -47,7 +47,7 @@ class TestServerModels:
 
     def test_session_response(self):
         """Test SessionResponse model."""
-        from server.models import SessionResponse, SessionStatus
+        from nimbus.server.models import SessionResponse, SessionStatus
 
         response = SessionResponse(
             id="sess_12345",
@@ -61,7 +61,7 @@ class TestServerModels:
 
     def test_permission_decision_enum(self):
         """Test PermissionDecision enum values."""
-        from server.models import PermissionDecision
+        from nimbus.server.models import PermissionDecision
 
         assert PermissionDecision.ASK == "ask"
         assert PermissionDecision.ALLOW_ONCE == "allow_once"
@@ -70,7 +70,7 @@ class TestServerModels:
 
     def test_chat_request(self):
         """Test ChatRequest model."""
-        from server.models import ChatRequest, AttachmentCreate
+        from nimbus.server.models import ChatRequest, AttachmentCreate
 
         request = ChatRequest(
             content="Hello, world!",
@@ -84,7 +84,7 @@ class TestServerModels:
 
     def test_dag_response(self):
         """Test DAGResponse model."""
-        from server.models import DAGResponse, DAGStatsResponse, TaskNodeResponse, TaskStatusEnum
+        from nimbus.server.models import DAGResponse, DAGStatsResponse, TaskNodeResponse, TaskStatusEnum
 
         stats = DAGStatsResponse(
             total=5,
@@ -114,7 +114,7 @@ class TestServerModels:
 
     def test_skill_response(self):
         """Test SkillResponse model."""
-        from server.models import SkillResponse, SkillParameter
+        from nimbus.server.models import SkillResponse, SkillParameter
 
         skill = SkillResponse(
             name="chat",
@@ -138,7 +138,7 @@ class TestPermissionManager:
 
     def test_default_rules(self):
         """Test default permission rules."""
-        from server.permission import PermissionManager
+        from nimbus.server.permission import PermissionManager
 
         manager = PermissionManager()
 
@@ -152,8 +152,8 @@ class TestPermissionManager:
 
     def test_set_rule(self):
         """Test setting permission rules."""
-        from server.permission import PermissionManager
-        from server.models import PermissionDecision
+        from nimbus.server.permission import PermissionManager
+        from nimbus.server.models import PermissionDecision
 
         manager = PermissionManager()
 
@@ -165,7 +165,7 @@ class TestPermissionManager:
 
     def test_get_all_rules(self):
         """Test getting all permission rules."""
-        from server.permission import PermissionManager
+        from nimbus.server.permission import PermissionManager
 
         manager = PermissionManager()
         rules = manager.get_all_rules()
@@ -176,8 +176,8 @@ class TestPermissionManager:
 
     def test_unknown_tool_defaults_to_ask(self):
         """Test that unknown tools default to ASK."""
-        from server.permission import PermissionManager
-        from server.models import PermissionDecision
+        from nimbus.server.permission import PermissionManager
+        from nimbus.server.models import PermissionDecision
 
         manager = PermissionManager()
 
@@ -194,7 +194,7 @@ class TestSSEHub:
     @pytest.mark.asyncio
     async def test_create_sse_hub(self):
         """Test SSE hub creation."""
-        from server.sse import SSEHub
+        from nimbus.server.sse import SSEHub
 
         hub = SSEHub(heartbeat_interval=5.0)
         assert hub.get_connection_count() == 0
@@ -203,7 +203,7 @@ class TestSSEHub:
     @pytest.mark.asyncio
     async def test_sse_format(self):
         """Test SSE event formatting."""
-        from server.sse import SSEHub
+        from nimbus.server.sse import SSEHub
 
         hub = SSEHub()
         formatted = hub._format_sse("test_event", {"key": "value"})
@@ -219,7 +219,7 @@ class TestSSEEventBuilder:
 
     def test_connected_event(self):
         """Test connected event creation."""
-        from server.sse import SSEEventBuilder, SSEHub
+        from nimbus.server.sse import SSEEventBuilder, SSEHub
 
         event = SSEEventBuilder.connected("sess_123")
         assert event.event == SSEHub.EVENT_CONNECTED
@@ -227,7 +227,7 @@ class TestSSEEventBuilder:
 
     def test_planning_event(self):
         """Test planning event creation."""
-        from server.sse import SSEEventBuilder, SSEHub
+        from nimbus.server.sse import SSEEventBuilder, SSEHub
 
         event = SSEEventBuilder.planning("analyzing")
         assert event.event == SSEHub.EVENT_PLANNING
@@ -235,7 +235,7 @@ class TestSSEEventBuilder:
 
     def test_dag_created_event(self):
         """Test dag_created event creation."""
-        from server.sse import SSEEventBuilder, SSEHub
+        from nimbus.server.sse import SSEEventBuilder, SSEHub
 
         event = SSEEventBuilder.dag_created(
             dag_id="dag_123",
@@ -248,7 +248,7 @@ class TestSSEEventBuilder:
 
     def test_task_done_event(self):
         """Test task_done event creation."""
-        from server.sse import SSEEventBuilder, SSEHub
+        from nimbus.server.sse import SSEEventBuilder, SSEHub
 
         event = SSEEventBuilder.task_done(
             task_id="task_1",
@@ -261,7 +261,7 @@ class TestSSEEventBuilder:
 
     def test_permission_request_event(self):
         """Test permission_request event creation."""
-        from server.sse import SSEEventBuilder, SSEHub
+        from nimbus.server.sse import SSEEventBuilder, SSEHub
 
         event = SSEEventBuilder.permission_request(
             request_id="perm_123",
@@ -274,7 +274,7 @@ class TestSSEEventBuilder:
 
     def test_error_event(self):
         """Test error event creation."""
-        from server.sse import SSEEventBuilder, SSEHub
+        from nimbus.server.sse import SSEEventBuilder, SSEHub
 
         event = SSEEventBuilder.error("execution_error", "Task failed")
         assert event.event == SSEHub.EVENT_ERROR
@@ -287,7 +287,7 @@ class TestMiddleware:
 
     def test_create_error_response(self):
         """Test error response creation."""
-        from server.middleware import create_error_response
+        from nimbus.server.middleware import create_error_response
 
         response = create_error_response(
             status_code=404,
@@ -307,7 +307,7 @@ class TestAPIRouter:
 
     def test_router_creation(self):
         """Test that API router can be created."""
-        from server.api import router
+        from nimbus.server.api import router
 
         assert router is not None
 
@@ -321,7 +321,7 @@ class TestAPIRouter:
     def test_fastapi_app_creation(self):
         """Test FastAPI app can be created with router."""
         from fastapi import FastAPI
-        from server.api import router
+        from nimbus.server.api import router
 
         app = FastAPI()
         app.include_router(router, prefix="/api/v1")
