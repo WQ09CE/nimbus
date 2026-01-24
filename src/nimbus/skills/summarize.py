@@ -5,7 +5,11 @@ from collections import Counter
 from typing import List
 
 
-async def summarize_text(text: str, max_length: int = 200) -> str:
+async def summarize_text(
+    text: str = "",
+    max_length: int = 200,
+    **kwargs,
+) -> str:
     """Summarize text by extracting key sentences.
 
     MVP implementation uses simple heuristics. Can be extended
@@ -14,14 +18,17 @@ async def summarize_text(text: str, max_length: int = 200) -> str:
     Args:
         text: Text to summarize.
         max_length: Maximum length of summary in characters.
+        **kwargs: Accepts 'prompt' or 'source' as aliases for 'text'.
 
     Returns:
         Summarized text.
     """
-    if not text or not text.strip():
+    # Support 'prompt' or 'source' as aliases for 'text' (LLM may generate either)
+    actual_text = text or kwargs.get("prompt", "") or kwargs.get("source", "")
+    if not actual_text or not actual_text.strip():
         return "\u65e0\u5185\u5bb9\u53ef\u4ee5\u603b\u7ed3\u3002"
 
-    text = text.strip()
+    text = actual_text.strip()
 
     # If text is already short, return as-is
     if len(text) <= max_length:

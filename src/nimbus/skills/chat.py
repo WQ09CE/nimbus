@@ -55,7 +55,15 @@ def create_chat_skill(
         Async function that can be registered as a skill.
     """
 
-    async def chat_skill(message: str, context: str = "") -> str:
-        return await chat(message, context, llm_client)
+    async def chat_skill(
+        message: str = "",
+        context: str = "",
+        **kwargs,
+    ) -> str:
+        # Support 'prompt' as alias for 'message' (LLM may generate either)
+        actual_message = message or kwargs.get("prompt", "")
+        if not actual_message:
+            raise ValueError("Either 'message' or 'prompt' parameter is required")
+        return await chat(actual_message, context, llm_client)
 
     return chat_skill
