@@ -17,37 +17,123 @@ logger = get_logger("planner.rule")
 
 # Default planning rules
 PLANNING_RULES: List[Dict[str, Any]] = [
-    # Greetings (direct response)
+    # ==========================================================================
+    # Greetings and Common Phrases
+    # ==========================================================================
     {
         "name": "greeting",
         "pattern": r"^(你好|hello|hi|hey|嗨|哈喽)\s*[!！。.]*\s*$",
         "mode": "direct",
         "response_template": "你好！有什么可以帮你的吗？",
     },
-    # Thanks (direct response)
     {
         "name": "thanks",
         "pattern": r"^(谢谢|thanks|thank you|感谢)\s*[!！。.]*\s*$",
         "mode": "direct",
         "response_template": "不客气！还有什么可以帮你的吗？",
     },
-    # Goodbye (direct response)
     {
         "name": "goodbye",
         "pattern": r"^(再见|bye|goodbye|拜拜)\s*[!！。.]*\s*$",
         "mode": "direct",
         "response_template": "再见！期待下次与你交流。",
     },
-    # Simple search (single task)
+
+    # ==========================================================================
+    # File Operations (Read)
+    # ==========================================================================
+    # Read specific file - Chinese
+    {
+        "name": "read_file_cn",
+        "pattern": r"^(?:读取|读|查看|打开|看看|显示)\s*(?:一下\s*)?(?:文件\s*)?([^\s]+\.[\w]+)\s*(?:文件)?(?:的)?(?:内容)?$",
+        "mode": "dag",
+        "tasks": [
+            {"skill": "Read", "params_template": {"file_path": "$1"}},
+        ],
+    },
+    # Read specific file - English
+    {
+        "name": "read_file_en",
+        "pattern": r"^(?:read|show|display|open|cat|view)\s+(?:the\s+)?(?:file\s+)?([^\s]+\.[\w]+)(?:\s+file)?(?:\s+content)?$",
+        "mode": "dag",
+        "tasks": [
+            {"skill": "Read", "params_template": {"file_path": "$1"}},
+        ],
+    },
+    # Read file with "content of" pattern
+    {
+        "name": "read_file_content_of",
+        "pattern": r"^(?:read\s+)?(?:the\s+)?content\s+of\s+([^\s]+)$",
+        "mode": "dag",
+        "tasks": [
+            {"skill": "Read", "params_template": {"file_path": "$1"}},
+        ],
+    },
+
+    # ==========================================================================
+    # File Operations (Glob - List files)
+    # ==========================================================================
+    # List files in directory - Chinese
+    {
+        "name": "list_files_cn",
+        "pattern": r"^(?:列出|列|显示|查看)\s*(?:一下\s*)?([^\s]+?)(?:目录|文件夹)?(?:下|里|中)?(?:的)?(?:所有)?(?:文件|\.py文件|Python文件)$",
+        "mode": "dag",
+        "tasks": [
+            {"skill": "Glob", "params_template": {"pattern": "*", "path": "$1"}},
+        ],
+    },
+    # List Python files - English
+    {
+        "name": "list_python_files",
+        "pattern": r"^(?:list|show|find)\s+(?:the\s+)?(?:all\s+)?(?:python\s+)?files?\s+(?:in\s+)?(?:the\s+)?(?:current\s+)?(?:directory)?(.*)$",
+        "mode": "dag",
+        "tasks": [
+            {"skill": "Glob", "params_template": {"pattern": "*.py", "path": "."}},
+        ],
+    },
+    # List all files in directory
+    {
+        "name": "list_all_files",
+        "pattern": r"^(?:list|ls|show)\s+(?:all\s+)?(?:files?\s+)?(?:in\s+)?([^\s]+)$",
+        "mode": "dag",
+        "tasks": [
+            {"skill": "Glob", "params_template": {"pattern": "*", "path": "$1"}},
+        ],
+    },
+
+    # ==========================================================================
+    # Code Search (Grep)
+    # ==========================================================================
+    # Search for pattern in code - Chinese
+    {
+        "name": "grep_code_cn",
+        "pattern": r"^(?:搜索|查找|找)\s*(?:代码中)?['\"]?(.+?)['\"]?\s*(?:的)?(?:定义)?$",
+        "mode": "dag",
+        "tasks": [
+            {"skill": "Grep", "params_template": {"pattern": "$1", "type": "py"}},
+        ],
+    },
+    # Search for pattern - English
+    {
+        "name": "grep_code_en",
+        "pattern": r"^(?:search|grep|find)\s+(?:for\s+)?(?:the\s+)?(?:definition\s+of\s+)?['\"]?(.+?)['\"]?\s*(?:in\s+(?:the\s+)?(?:code(?:base)?)?)?$",
+        "mode": "dag",
+        "tasks": [
+            {"skill": "Grep", "params_template": {"pattern": "$1", "type": "py"}},
+        ],
+    },
+
+    # ==========================================================================
+    # Search and Summarize
+    # ==========================================================================
     {
         "name": "search",
-        "pattern": r"^(?:搜索|查找|查询|查|找|search)\s+(.+)$",
+        "pattern": r"^(?:搜索|查询|search)\s+(.+)$",
         "mode": "dag",
         "tasks": [
             {"skill": "search", "params_template": {"query": "$1"}},
         ],
     },
-    # Search and summarize (two tasks with dependency)
     {
         "name": "search_and_summarize",
         "pattern": r"^(?:搜索|查找)\s+(.+)\s*[,，]\s*(?:然后)?(?:总结|概括).*$",
@@ -57,7 +143,6 @@ PLANNING_RULES: List[Dict[str, Any]] = [
             {"skill": "summarize", "params_template": {"source": "$t1"}, "depends_on": ["$t1"]},
         ],
     },
-    # Summarize text (single task)
     {
         "name": "summarize",
         "pattern": r"^(?:总结|概括|summarize)\s*[:：]?\s*(.+)$",
@@ -66,7 +151,6 @@ PLANNING_RULES: List[Dict[str, Any]] = [
             {"skill": "summarize", "params_template": {"text": "$1"}},
         ],
     },
-    # Draft/write (single task)
     {
         "name": "draft",
         "pattern": r"^(?:写|撰写|起草|draft|write)\s*(?:一篇|一份|一个)?\s*(.+)$",

@@ -20,6 +20,7 @@ class PipelineConfig:
     """Configuration for the planning pipeline.
 
     Attributes:
+        enable_context_analyzer: Whether to include context analysis.
         enable_rule_planner: Whether to include rule-based planning.
         enable_llm_enhancer: Whether to include LLM-based planning.
         enable_validator: Whether to validate the final DAG.
@@ -29,6 +30,7 @@ class PipelineConfig:
         max_llm_tasks: Maximum tasks the LLM can generate.
         max_depth: Maximum DAG depth.
     """
+    enable_context_analyzer: bool = True
     enable_rule_planner: bool = True
     enable_llm_enhancer: bool = True
     enable_validator: bool = True
@@ -212,9 +214,10 @@ class PlannerPipeline:
         """Create a default pipeline with all stages.
 
         Creates a pipeline with:
-        1. RulePlanner - fast rule-based matching
-        2. LLMEnhancer - LLM-based planning/enhancement
-        3. Validation via pipeline config
+        1. ContextAnalyzer - analyze context dependencies
+        2. RulePlanner - fast rule-based matching
+        3. LLMEnhancer - LLM-based planning/enhancement
+        4. Validation via pipeline config
 
         Args:
             llm_client: LLM client for LLMEnhancer.
@@ -223,11 +226,15 @@ class PlannerPipeline:
         Returns:
             Configured PlannerPipeline instance.
         """
+        from .context_analyzer import ContextAnalyzer
         from .rule_planner import RulePlanner
         from .llm_enhancer import LLMEnhancer
 
         config = config or PipelineConfig()
         stages: List[PlannerStage] = []
+
+        if config.enable_context_analyzer:
+            stages.append(ContextAnalyzer())
 
         if config.enable_rule_planner:
             stages.append(RulePlanner())

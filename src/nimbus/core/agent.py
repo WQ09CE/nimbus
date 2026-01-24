@@ -5,7 +5,13 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Coroutine, Dict, List, Optional, TYPE_CHECKING, Union
 
 from .memory import SimpleMemory, TieredMemoryManager, MemoryConfig, PinnedItem
-from .planner import SimplePlanner, DAGPlanner, LLMClient
+from .planner import (
+    PlannerPipeline,
+    PipelineConfig,
+    PlanningMode,
+    AdaptivePlanner,
+    LLMClient,
+)
 from .executor import SimpleExecutor
 from .runtime import AsyncRuntime
 from .types import (
@@ -90,17 +96,28 @@ class CodeAgent:
         # Initialize planner and executor/runtime based on type
         self._planner_type = planner_type
         if planner_type == "dag":
-            self.planner = DAGPlanner(llm_client)
+            # Use new PlannerPipeline with context analysis
+            pipeline_config = PipelineConfig(
+                enable_context_analyzer=True,
+                enable_rule_planner=True,
+                enable_llm_enhancer=True,
+                planning_mode=PlanningMode.HYBRID,
+            )
+            self.planner = PlannerPipeline.default(llm_client, pipeline_config)
             self.runtime = AsyncRuntime(
                 config=runtime_config or RuntimeConfig(),
                 tool_registry=self.tool_registry,
                 workspace=self.workspace,
             )
             self.executor = None  # Not used in DAG mode
+            # Keep AdaptivePlanner for re-planning support
+            self._adaptive_planner = AdaptivePlanner(llm_client)
         else:
-            self.planner = SimplePlanner(llm_client)
+            # Rule-only mode for simple planner
+            self.planner = PlannerPipeline.rule_only()
             self.executor = SimpleExecutor()
             self.runtime = None  # Not used in simple mode
+            self._adaptive_planner = None
 
         # Logging and tracing
         self._enable_logging = enable_logging
@@ -246,8 +263,8 @@ class CodeAgent:
 
             # Create execution plan (DAG or simple Plan)
             if self.tracer and span:
-                with self.tracer.start_span("planner.create_plan") as plan_span:
-                    plan = await self.planner.create_plan(
+                with self.tracer.start_span("planner.plan") as plan_span:
+                    plan = await self.planner.plan(
                         goal=user_input,
                         context=context,
                         available_skills=available_skills,
@@ -259,7 +276,7 @@ class CodeAgent:
                     else:
                         plan_span.set_attribute("plan_mode", plan.mode if hasattr(plan, 'mode') else "unknown")
             else:
-                plan = await self.planner.create_plan(
+                plan = await self.planner.plan(
                     goal=user_input,
                     context=context,
                     available_skills=available_skills,
@@ -369,10 +386,21 @@ class CodeAgent:
         Returns:
             Tuple of (response_text, ExecutionResult or None).
         """
-        # Handle TaskDAG (DAG mode)
+        # Handle TaskDAG
         if isinstance(plan, TaskDAG):
-            result: ExecutionResult = await self.runtime.execute_dag(plan)
-            return self._extract_response_from_dag_result(result), result
+            # DAG mode with runtime
+            if self.runtime is not None:
+                result: ExecutionResult = await self.runtime.execute_dag(plan)
+                return self._extract_response_from_dag_result(result), result
+
+            # Simple mode fallback: extract response from DAG directly
+            # For rule-based DAGs with chat/direct response
+            for node in plan.nodes.values():
+                if node.skill == "chat" and "message" in node.params:
+                    return node.params["message"], None
+
+            # Fallback for other DAG types in simple mode
+            return "Task completed.", None
 
         # Handle Plan (simple mode)
         if plan.is_direct():
@@ -660,7 +688,7 @@ class CodeAgent:
             yield {"type": "planning", "content": "Creating execution plan..."}
 
             # Create execution plan
-            plan = await self.planner.create_plan(
+            plan = await self.planner.plan(
                 goal=user_input,
                 context=context,
                 available_skills=available_skills,

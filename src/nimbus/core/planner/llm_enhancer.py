@@ -28,38 +28,76 @@ class LLMClient(Protocol):
 # LLM Planning prompt
 LLM_PLANNING_PROMPT = """你是一个任务规划器。根据用户目标，生成一个可并行执行的任务 DAG（有向无环图）。
 
-【重要】只输出 JSON，不要输出任何其他内容。
+【重要规则】
+1. 只输出 JSON，不要输出任何其他内容。
+2. **优先使用上下文回答** - 如果用户的问题可以基于对话历史中的信息直接回答，使用 direct 模式直接回答，无需调用工具。
+3. 如果用户使用指代词（"它"、"这个"、"那个"、"刚才"、"其中"等），先从对话历史中找到指代对象。
 
 ## 可用技能
 {skills}
 
-## 上下文
+## 可用工具 (用于代码探索)
+
+- **Read**: 读取文件内容
+  - file_path (string, required): 文件路径
+  - offset (integer, optional): 起始行号，默认 0
+  - limit (integer, optional): 最大行数，默认 2000
+
+- **Glob**: 查找匹配模式的文件
+  - pattern (string, required): glob 模式，如 "*.py" 或 "**/*.py"
+  - path (string, optional): 搜索目录，默认 "."
+  - limit (integer, optional): 最大结果数，默认 100
+
+- **Grep**: 在文件中搜索正则表达式
+  - pattern (string, required): 正则表达式
+  - path (string, optional): 搜索目录，默认 "."
+  - glob (string, optional): 文件模式过滤
+  - type (string, optional): 文件类型 (py, js, ts, go...)
+  - max_matches (integer, optional): 最大匹配数，默认 50
+
+## 对话历史
 {context}
 
-## 用户目标
+## 当前用户目标
 {goal}
 
 {existing_plan_section}
 
+## 判断流程
+1. 用户的问题能否从对话历史中直接回答？
+   - 能 → 使用 direct 模式
+   - 不能 → 使用 dag 模式
+
 ## 输出格式
 
-简单对话（问候、闲聊、不需要技能）:
+简单对话或基于上下文可直接回答的问题:
 {{"mode": "direct", "response": "你的回复"}}
 
-需要执行技能的任务:
+需要执行工具/技能的任务:
 {{
   "mode": "dag",
   "tasks": [
-    {{"id": "t1", "skill": "技能名", "params": {{参数}}, "depends_on": []}},
-    {{"id": "t2", "skill": "技能名", "params": {{参数}}, "depends_on": ["t1"]}}
+    {{"id": "t1", "skill": "Read", "params": {{"file_path": "pyproject.toml"}}, "depends_on": []}},
+    {{"id": "t2", "skill": "Glob", "params": {{"pattern": "**/*.py"}}, "depends_on": []}}
   ]
 }}
 
 ## 规则
 1. 如果任务可以并行执行，depends_on 设为空数组 []
-2. 每个任务只能依赖 id 比自己小的任务
-3. skill 必须从可用技能列表中选择
-4. id 必须唯一，建议使用 t1, t2, t3...
+2. skill 必须从可用技能或工具列表中选择
+3. 工具参数必须按照上面的说明格式
+4. **基于上下文能回答的问题，必须使用 direct 模式**
+
+## 示例
+
+示例1：用户说"读取 pyproject.toml"
+{{"mode": "dag", "tasks": [{{"id": "t1", "skill": "Read", "params": {{"file_path": "pyproject.toml"}}, "depends_on": []}}]}}
+
+示例2：用户说"列出 src 目录的 Python 文件"
+{{"mode": "dag", "tasks": [{{"id": "t1", "skill": "Glob", "params": {{"pattern": "**/*.py", "path": "src"}}, "depends_on": []}}]}}
+
+示例3：（对话历史中已读取了 pyproject.toml 显示 name="nimbus"）用户问"这个项目叫什么"
+{{"mode": "direct", "response": "根据 pyproject.toml，这个项目叫 nimbus。"}}
 
 JSON:"""
 

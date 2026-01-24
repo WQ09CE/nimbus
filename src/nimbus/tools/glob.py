@@ -99,6 +99,10 @@ async def glob_files(
     if limit <= 0:
         raise ValueError(f"limit must be positive, got {limit}")
 
+    # Handle empty path - default to current directory
+    if not path or path.strip() == "":
+        path = "."
+
     # Determine workspace
     if workspace is None:
         workspace = Path.cwd()
