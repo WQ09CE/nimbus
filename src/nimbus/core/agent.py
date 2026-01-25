@@ -1,4 +1,9 @@
-"""CodeAgent - Main orchestrator for code exploration and analysis."""
+"""CodeAgent - Main orchestrator for code exploration and analysis.
+
+Simplified execution model: Uses task mode (SubagentDAG orchestration) exclusively.
+The previous dag/agentic modes have been removed in favor of the unified task mode
+which provides subagent-level DAG orchestration with internal AgenticRunner execution.
+"""
 
 import uuid
 from pathlib import Path
@@ -14,32 +19,18 @@ from typing import (
     Union,
 )
 
-from .memory import SimpleMemory, TieredMemoryManager, MemoryConfig, PinnedItem
-from .planner import (
-    PlannerPipeline,
-    PipelineConfig,
-    PlanningMode,
-    AdaptivePlanner,
-    LLMClient,
-)
-from .executor import SimpleExecutor
-from .runtime import AsyncRuntime
-from .types import (
-    AgentResponse,
-    Plan,
-    TaskDAG,
-    RuntimeConfig,
-    ExecutionResult,
-    Artifact,
-    ArtifactType,
-    TaskStatus,
-    TaskSource,
-)
+from .memory import SimpleMemory, TieredMemoryManager, MemoryConfig, PinnedItem, SubagentContext
+from .agent_config import SubagentRegistry, SubagentConfig
+from .permission import create_permission_manager, CODER_PERMISSIONS
+from .config import CoreAgentConfig, load_core_agent_config
+from .planner import LLMClient
+from .types import AgentResponse
 from .logging import get_logger, setup_logging
 from .tracing import get_tracer, Tracer
 
 if TYPE_CHECKING:
     from nimbus.tools import ToolRegistry
+    from nimbus.tools.subagent import SubagentExecutor
 
 SkillFunc = Callable[..., Coroutine[Any, Any, Any]]
 
@@ -49,7 +40,8 @@ class CodeAgent:
 
     Features:
     - Read/Glob/Grep tools for code exploration
-    - DAG-based parallel task execution
+    - SubagentDAG orchestration for task decomposition
+    - Subagents use AgenticRunner for LLM-driven tool selection
     - Memory for conversation context
     - Extensible skill system
 
@@ -57,39 +49,162 @@ class CodeAgent:
     - "simple": Basic memory with conversation history (default, backward compatible)
     - "tiered": Advanced multi-tier memory with compression and checkpointing
 
-    Supports two planner/executor modes:
-    - "simple": SimplePlanner + SimpleExecutor (serial execution)
-    - "dag": DAGPlanner + AsyncRuntime (parallel execution with dependencies)
+    Execution Model:
+    - Uses task mode (SubagentDAG) exclusively
+    - User goals are decomposed into subagent tasks (eye, body, mind, tongue, nose)
+    - Each subagent runs independently with isolated context and permissions
+    - Subagents execute in parallel when dependencies allow
+
+    Configuration:
+    - The agent can be configured via YAML file (core.yaml)
+    - Default config location: src/nimbus/data/agents/core.yaml
+    - Constructor parameters override YAML configuration
     """
+
+    # Class-level default config (loaded once)
+    _default_config: Optional[CoreAgentConfig] = None
+
+    @classmethod
+    def get_default_config(cls) -> CoreAgentConfig:
+        """Get the default core agent configuration.
+
+        Loads from YAML file on first call and caches the result.
+
+        Returns:
+            CoreAgentConfig instance with default settings.
+        """
+        if cls._default_config is None:
+            cls._default_config = load_core_agent_config()
+        return cls._default_config
+
+    @classmethod
+    def reset_default_config(cls) -> None:
+        """Reset the cached default configuration.
+
+        Useful for testing or when configuration files have changed.
+        """
+        cls._default_config = None
+
+    @classmethod
+    def from_config(
+        cls,
+        llm_client: LLMClient,
+        config: Optional[CoreAgentConfig] = None,
+        session_id: Optional[str] = None,
+        workspace: Optional[Path] = None,
+        tool_registry: Optional["ToolRegistry"] = None,
+        **overrides: Any,
+    ) -> "CodeAgent":
+        """Create a CodeAgent from configuration.
+
+        This is the recommended way to create a CodeAgent with YAML configuration.
+        The config parameter provides base settings which can be overridden by
+        explicit keyword arguments.
+
+        Args:
+            llm_client: LLM client with async complete(prompt) method.
+            config: CoreAgentConfig instance. If None, loads default config.
+            session_id: Session identifier for checkpointing.
+            workspace: Workspace directory for tool sandbox validation.
+            tool_registry: Optional tool registry for code tools.
+            **overrides: Override specific config values:
+                - system_prompt: Override system prompt
+                - memory_type: Override memory type
+                - enable_logging: Override logging setting
+
+        Returns:
+            Configured CodeAgent instance.
+
+        Example:
+            ```python
+            # Use default config
+            agent = CodeAgent.from_config(llm_client)
+
+            # Use custom config
+            config = CoreAgentConfig.from_yaml("my_config.yaml")
+            agent = CodeAgent.from_config(llm_client, config=config)
+
+            # Override specific settings
+            agent = CodeAgent.from_config(
+                llm_client,
+                system_prompt="Custom prompt",
+                memory_type="tiered",
+            )
+            ```
+        """
+        if config is None:
+            config = cls.get_default_config()
+
+        # Apply overrides
+        system_prompt = overrides.get("system_prompt", config.system_prompt)
+        memory_type = overrides.get("memory_type", config.memory.type)
+        enable_logging = overrides.get("enable_logging", config.enable_logging)
+
+        # Convert config specs to core types
+        memory_config = config.memory.to_memory_config()
+
+        return cls(
+            llm_client=llm_client,
+            system_prompt=system_prompt,
+            memory_type=memory_type,
+            memory_config=memory_config,
+            enable_logging=enable_logging,
+            session_id=session_id,
+            workspace=workspace,
+            tool_registry=tool_registry,
+        )
 
     def __init__(
         self,
         llm_client: LLMClient,
-        system_prompt: str = "",
-        memory_type: str = "simple",
+        system_prompt: Optional[str] = None,
+        memory_type: Optional[str] = None,
         memory_config: Optional[MemoryConfig] = None,
-        planner_type: str = "dag",
-        runtime_config: Optional[RuntimeConfig] = None,
-        enable_logging: bool = True,
+        enable_logging: Optional[bool] = None,
         session_id: Optional[str] = None,
         workspace: Optional[Path] = None,
         tool_registry: Optional["ToolRegistry"] = None,
+        load_yaml_config: bool = True,
+        # Deprecated parameters (kept for backward compatibility, ignored)
+        planner_type: Optional[str] = None,
+        runtime_config: Any = None,
+        execution_mode: Optional[str] = None,
     ):
         """Initialize the code agent.
 
         Args:
             llm_client: LLM client with async complete(prompt) method.
-            system_prompt: Optional system prompt for the agent.
-            memory_type: Memory implementation ("simple" or "tiered").
+            system_prompt: Optional system prompt for the agent. If None and
+                          load_yaml_config is True, uses value from YAML config.
+            memory_type: Memory implementation ("simple" or "tiered"). If None and
+                        load_yaml_config is True, uses value from YAML config.
             memory_config: Configuration for TieredMemoryManager.
-            planner_type: Planner implementation ("simple" or "dag").
-            runtime_config: Configuration for AsyncRuntime (DAG mode only).
-            enable_logging: Enable structured logging and tracing.
+            enable_logging: Enable structured logging and tracing. If None and
+                           load_yaml_config is True, uses value from YAML config.
             session_id: Session identifier for checkpointing.
             workspace: Workspace directory for tool sandbox validation.
             tool_registry: Optional tool registry for code tools. If not provided,
                           default tools (Read, Glob, Grep) are registered automatically.
+            load_yaml_config: Whether to load defaults from YAML config file.
+                             Set to False for backward compatibility or testing.
+            planner_type: Deprecated, ignored. Kept for backward compatibility.
+            runtime_config: Deprecated, ignored. Kept for backward compatibility.
+            execution_mode: Deprecated, ignored. Task mode is now the only mode.
         """
+        # Load YAML config for default values if requested
+        if load_yaml_config:
+            yaml_config = self.get_default_config()
+        else:
+            yaml_config = None
+
+        # Apply YAML defaults for None values
+        if system_prompt is None:
+            system_prompt = yaml_config.system_prompt if yaml_config else ""
+        if memory_type is None:
+            memory_type = yaml_config.memory.type if yaml_config else "simple"
+        if enable_logging is None:
+            enable_logging = yaml_config.enable_logging if yaml_config else True
+
         self.llm_client = llm_client
         self.system_prompt = system_prompt
         self.session_id = session_id or str(uuid.uuid4())[:8]
@@ -105,34 +220,19 @@ class CodeAgent:
             self.memory = TieredMemoryManager(
                 config=config, llm_client=llm_client, session_id=self.session_id
             )
+            # Add workspace info to pinned memory
+            if self.workspace:
+                workspace_item = PinnedItem(
+                    id="workspace",
+                    type="system",
+                    content=f"Current workspace: {self.workspace}",
+                    priority=100,  # High priority
+                    description="Agent workspace directory, all relative paths are based on this",
+                    read_only=True,
+                )
+                self.memory.pin(workspace_item)
         else:
             self.memory = SimpleMemory()
-
-        # Initialize planner and executor/runtime based on type
-        self._planner_type = planner_type
-        if planner_type == "dag":
-            # Use new PlannerPipeline with context analysis
-            pipeline_config = PipelineConfig(
-                enable_context_analyzer=True,
-                enable_rule_planner=True,
-                enable_llm_enhancer=True,
-                planning_mode=PlanningMode.HYBRID,
-            )
-            self.planner = PlannerPipeline.default(llm_client, pipeline_config)
-            self.runtime = AsyncRuntime(
-                config=runtime_config or RuntimeConfig(),
-                tool_registry=self.tool_registry,
-                workspace=self.workspace,
-            )
-            self.executor = None  # Not used in DAG mode
-            # Keep AdaptivePlanner for re-planning support
-            self._adaptive_planner = AdaptivePlanner(llm_client)
-        else:
-            # Rule-only mode for simple planner
-            self.planner = PlannerPipeline.rule_only()
-            self.executor = SimpleExecutor()
-            self.runtime = None  # Not used in simple mode
-            self._adaptive_planner = None
 
         # Logging and tracing
         self._enable_logging = enable_logging
@@ -144,32 +244,63 @@ class CodeAgent:
             self.logger = None
             self.tracer = None
 
+        # Initialize subagent system
+        self._subagent_registry = SubagentRegistry()
+        try:
+            self._subagent_registry.load_from_directories(include_builtin=True)
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"Failed to load subagent configs: {e}")
+        self._permission_manager = create_permission_manager(CODER_PERMISSIONS)
+        self._subagent_executor: Optional["SubagentExecutor"] = None
+
         self._register_default_skills()
 
     def _create_default_tools(self) -> "ToolRegistry":
         """Create registry with default code exploration tools.
 
-        Registers the Read, Glob, and Grep tools for file operations.
+        Registers the Read, Glob, Grep, Bash, Subagent and Batch tools for
+        file operations, command execution, and task delegation.
 
         Returns:
             ToolRegistry with default tools registered.
         """
-        from nimbus.tools import ToolRegistry, read_file, glob_files, grep_content
+        from nimbus.tools import (
+            ToolRegistry,
+            read_file,
+            glob_files,
+            grep_content,
+            bash_command,
+            subagent_task,
+            get_subagent_result,
+            cancel_subagent,
+            list_subagents,
+            batch_tool,
+        )
 
         registry = ToolRegistry()
+        # Core file operation tools
         registry.register_decorated(read_file)
         registry.register_decorated(glob_files)
         registry.register_decorated(grep_content)
+        registry.register_decorated(bash_command)
+        # Subagent tools
+        registry.register_decorated(subagent_task)
+        registry.register_decorated(get_subagent_result)
+        registry.register_decorated(cancel_subagent)
+        registry.register_decorated(list_subagents)
+        # Batch tool
+        registry.register_decorated(batch_tool)
         return registry
 
     def _register_default_skills(self) -> None:
         """Register built-in skills."""
-        from ..skills.chat import create_chat_skill
+        from ..skills.synthesize import create_synthesize_skill
         from ..skills.search import web_search
         from ..skills.summarize import summarize_text, extract_keywords
 
-        chat_skill = create_chat_skill(self.llm_client)
-        self.register_skill("chat", chat_skill)
+        synthesize_skill = create_synthesize_skill(self.llm_client)
+        self.register_skill("synthesize", synthesize_skill)
         self.register_skill("search", web_search)
         self.register_skill("summarize", summarize_text)
         self.register_skill("keywords", extract_keywords)
@@ -177,14 +308,15 @@ class CodeAgent:
     def register_skill(self, name: str, func: SkillFunc) -> None:
         """Register a custom skill.
 
+        Skills are stored in an internal registry for use by subagents.
+
         Args:
             name: Skill name for routing.
             func: Async function implementing the skill.
         """
-        if self._planner_type == "dag":
-            self.runtime.register_skill(name, func)
-        else:
-            self.executor.register_skill(name, func)
+        if not hasattr(self, "_skills"):
+            self._skills: Dict[str, SkillFunc] = {}
+        self._skills[name] = func
 
     def get_skill_names(self) -> set:
         """Get set of registered skill and tool names.
@@ -192,15 +324,12 @@ class CodeAgent:
         Returns:
             Set of all skill names plus tool names from the tool registry.
         """
-        if self._planner_type == "dag":
-            # Runtime already includes tool names via get_skill_names()
-            return self.runtime.get_skill_names()
-        else:
-            # For simple mode, combine executor skills with tool names
-            names = set(self.executor.get_skill_names())
-            if self.tool_registry:
-                names.update(self.tool_registry.list_tools())
-            return names
+        names: set = set()
+        if hasattr(self, "_skills"):
+            names.update(self._skills.keys())
+        if self.tool_registry:
+            names.update(self.tool_registry.list_tools())
+        return names
 
     def on_file_upload(self, filename: str, file_type: str, summary: str) -> None:
         """Handle file upload event.
@@ -234,7 +363,9 @@ class CodeAgent:
             self.memory.unpin(filename)
 
     async def run(self, user_input: str) -> AgentResponse:
-        """Process user input and generate response.
+        """Process user input and generate response using task mode.
+
+        Uses SubagentDAG orchestration to decompose and execute the user's goal.
 
         Args:
             user_input: User's message or command.
@@ -242,98 +373,27 @@ class CodeAgent:
         Returns:
             AgentResponse with text and optional artifacts.
         """
-        # Start tracing if enabled
-        if self.tracer:
-            with self.tracer.start_span("agent.run", {"input_length": len(user_input)}) as span:
-                return await self._run_internal(user_input, span)
-        else:
-            return await self._run_internal(user_input, None)
-
-    async def _run_internal(self, user_input: str, span=None) -> AgentResponse:
-        """Internal run implementation with tracing support."""
-        dag: Optional[TaskDAG] = None
-        execution_result: Optional[ExecutionResult] = None
-
         try:
             if self.logger:
                 self.logger.info("agent_run_start", user_input=user_input[:100])
 
-            available_skills = self.get_skill_names()
-
-            # Fast path: try rule matching first (skip context construction)
-            plan = None
-            if self._planner_type == "dag" and hasattr(self.planner, "try_rule_match"):
-                plan = await self.planner.try_rule_match(
-                    goal=user_input,
-                    available_skills=available_skills,
-                )
-                if plan is not None:
-                    dag = plan
-                    if self.logger:
-                        self.logger.debug("fast_rule_match", goal=user_input[:50])
-
-            # Add user input to memory (after rule check to avoid delay)
+            # Add user input to memory
             if self._memory_type == "tiered":
                 self.memory.add_turn_sync("user", user_input)
             else:
                 self.memory.add_turn("user", user_input)
 
-            # Slow path: build context and run full pipeline
-            if plan is None:
-                # Get context for planning
-                if self.tracer and span:
-                    with self.tracer.start_span("memory.get_context") as ctx_span:
-                        context = self.memory.get_context()
-                        ctx_span.set_attribute("context_length", len(context))
-                else:
-                    context = self.memory.get_context()
+            # Get context for planning
+            context = self.memory.get_context()
 
-                # Create execution plan (DAG or simple Plan)
-                if self.tracer and span:
-                    with self.tracer.start_span("planner.plan") as plan_span:
-                        plan = await self.planner.plan(
-                            goal=user_input,
-                            context=context,
-                            available_skills=available_skills,
-                        )
-                        if isinstance(plan, TaskDAG):
-                            plan_span.set_attribute("plan_mode", "dag")
-                            plan_span.set_attribute("task_count", len(plan.nodes))
-                            dag = plan
-                        else:
-                            plan_span.set_attribute(
-                                "plan_mode", plan.mode if hasattr(plan, "mode") else "unknown"
-                            )
-                else:
-                    plan = await self.planner.plan(
-                        goal=user_input,
-                        context=context,
-                        available_skills=available_skills,
-                    )
-                    if isinstance(plan, TaskDAG):
-                        dag = plan
-
-            # Handle empty DAG edge case
-            if isinstance(plan, TaskDAG) and len(plan.nodes) == 0:
-                if self.logger:
-                    self.logger.warning("empty_dag_created", goal=user_input[:50])
-                return AgentResponse(
-                    text="I understand your request but couldn't determine specific actions to take. Could you please provide more details?",
-                    dag=dag,
-                    memory_stats=self.get_memory_stats(),
-                )
-
-            # Execute plan (DAG or simple)
-            if self.tracer and span:
-                with self.tracer.start_span("runtime.execute") as exec_span:
-                    response_text, execution_result = await self._execute_plan_with_result(
-                        plan, user_input, context
-                    )
-                    exec_span.set_attribute("response_length", len(response_text))
-            else:
-                response_text, execution_result = await self._execute_plan_with_result(
-                    plan, user_input, context
-                )
+            # Execute using task mode
+            response_text = ""
+            async for event in self._run_task_mode(user_input, context):
+                if event.get("type") == "response":
+                    response_text = event.get("content", "")
+                elif event.get("type") == "complete":
+                    if not response_text:
+                        response_text = event.get("content", "Task completed.")
 
             # Truncate overly long responses
             max_response_length = 50000  # ~12k tokens
@@ -349,37 +409,16 @@ class CodeAgent:
                 )
 
             # Add response to memory
-            fast_rule_plan = False
-            if isinstance(plan, TaskDAG) and plan.nodes:
-                fast_rule_plan = all(node.source == TaskSource.RULE for node in plan.nodes.values())
             if self._memory_type == "tiered":
-                if fast_rule_plan:
-                    self.memory.add_turn_sync("assistant", response_text)
-                else:
-                    await self.memory.add_turn("assistant", response_text)
+                await self.memory.add_turn("assistant", response_text)
             else:
                 self.memory.add_turn("assistant", response_text)
 
-            # Collect artifacts from execution
-            artifacts = self._collect_artifacts(dag, execution_result)
-
-            # Generate suggestions for follow-up
-            suggestions = self._generate_suggestions(user_input, response_text, dag)
-
             if self.logger:
-                duration_ms = span.duration_ms if span else 0
-                self.logger.info(
-                    "agent_run_complete",
-                    duration_ms=duration_ms,
-                    artifact_count=len(artifacts),
-                    suggestion_count=len(suggestions),
-                )
+                self.logger.info("agent_run_complete")
 
             return AgentResponse(
                 text=response_text,
-                artifacts=artifacts,
-                suggestions=suggestions,
-                dag=dag,
                 memory_stats=self.get_memory_stats(),
             )
 
@@ -390,287 +429,46 @@ class CodeAgent:
             return AgentResponse(
                 text=error_msg,
                 error=str(e),
-                dag=dag,
                 memory_stats=self.get_memory_stats(),
             )
 
-    async def _execute_plan(self, plan: Union[Plan, TaskDAG], user_input: str, context: str) -> str:
-        """Execute plan and return response text.
-
-        Args:
-            plan: Execution plan (Plan for simple mode, TaskDAG for DAG mode).
-            user_input: Original user input.
-            context: Conversation context.
-
-        Returns:
-            Response text.
-        """
-        response_text, _ = await self._execute_plan_with_result(plan, user_input, context)
-        return response_text
-
-    async def _execute_plan_with_result(
-        self, plan: Union[Plan, TaskDAG], user_input: str, context: str
-    ) -> tuple[str, Optional[ExecutionResult]]:
-        """Execute plan and return response text with execution result.
-
-        Args:
-            plan: Execution plan (Plan for simple mode, TaskDAG for DAG mode).
-            user_input: Original user input.
-            context: Conversation context.
-
-        Returns:
-            Tuple of (response_text, ExecutionResult or None).
-        """
-        # Handle TaskDAG
-        if isinstance(plan, TaskDAG):
-            # DAG mode with runtime
-            if self.runtime is not None:
-                result: ExecutionResult = await self.runtime.execute_dag(plan)
-                return self._extract_response_from_dag_result(result), result
-
-            # Simple mode fallback: extract response from DAG directly
-            # For rule-based DAGs with chat/direct response
-            for node in plan.nodes.values():
-                if node.skill == "chat" and "message" in node.params:
-                    return node.params["message"], None
-
-            # Fallback for other DAG types in simple mode
-            return "Task completed.", None
-
-        # Handle Plan (simple mode)
-        if plan.is_direct():
-            return plan.direct_response or "", None
-
-        # Execute multi-step plan
-        results = await self.executor.execute(plan)
-
-        # Combine results into response
-        if results:
-            # For now, return the last result as the response
-            last_result = results[-1]
-            if isinstance(last_result, str):
-                return last_result, None
-            return (str(last_result) if last_result else "Task completed."), None
-
-        return "I completed the task but have no output to show.", None
-
-    def _extract_response_from_dag_result(self, result: ExecutionResult) -> str:
-        """Extract response text from DAG execution result.
-
-        Args:
-            result: ExecutionResult from DAG execution.
-
-        Returns:
-            Response text to return to user.
-        """
-        if result.status == "failed":
-            # All tasks failed - provide graceful degradation message
-            error_msgs = [f"- {tid}: {err}" for tid, err in result.errors.items()]
-            if self.logger:
-                self.logger.error(
-                    "all_tasks_failed",
-                    error_count=len(result.errors),
-                    errors=result.errors,
-                )
-            return (
-                "I encountered errors while processing your request:\n"
-                + "\n".join(error_msgs)
-                + "\n\nPlease try rephrasing your request or breaking it into smaller parts."
-            )
-
-        if result.status == "partial":
-            # Some tasks succeeded, some failed - graceful degradation
-            response_parts = []
-            for task_id, task_result in result.results.items():
-                if task_result:
-                    response_parts.append(str(task_result))
-
-            if result.errors:
-                error_summary = ", ".join(result.errors.keys())
-                response_parts.append(
-                    f"\n(Note: Some operations could not be completed: {error_summary})"
-                )
-                if self.logger:
-                    self.logger.warning(
-                        "partial_execution",
-                        completed=result.stats.completed,
-                        failed=result.stats.failed,
-                        errors=result.errors,
-                    )
-
-            return "\n\n".join(response_parts) if response_parts else "Partial completion."
-
-        # Success - combine all results
-        if result.results:
-            # Return the last non-None result, or combine them
-            values = [v for v in result.results.values() if v is not None]
-            if values:
-                last_result = values[-1]
-                if isinstance(last_result, str):
-                    return last_result
-                return str(last_result)
-
-        return "Task completed."
-
-    def _collect_artifacts(
-        self,
-        dag: Optional[TaskDAG],
-        execution_result: Optional[ExecutionResult],
-    ) -> List[Artifact]:
-        """Collect artifacts from DAG execution results.
-
-        Artifacts are extracted from task results that contain structured data.
-
-        Args:
-            dag: The executed TaskDAG (if any).
-            execution_result: The execution result (if any).
-
-        Returns:
-            List of Artifact objects.
-        """
-        artifacts: List[Artifact] = []
-
-        if dag is None or execution_result is None:
-            return artifacts
-
-        for task_id, node in dag.nodes.items():
-            if node.status != TaskStatus.COMPLETED or node.result is None:
-                continue
-
-            result = node.result
-
-            # Check if result contains artifact data
-            if isinstance(result, dict):
-                # Look for artifact markers in the result
-                if "artifact_type" in result:
-                    artifact = self._create_artifact_from_result(task_id, node.skill, result)
-                    if artifact:
-                        artifacts.append(artifact)
-                        if self.logger:
-                            self.logger.debug(
-                                "artifact_collected",
-                                artifact_id=artifact.id,
-                                artifact_type=artifact.type.value,
-                            )
-
-                # Check for nested artifacts
-                elif "artifacts" in result and isinstance(result["artifacts"], list):
-                    for i, artifact_data in enumerate(result["artifacts"]):
-                        artifact = self._create_artifact_from_result(
-                            f"{task_id}_artifact_{i}",
-                            node.skill,
-                            artifact_data,
-                        )
-                        if artifact:
-                            artifacts.append(artifact)
-
-        return artifacts
-
-    def _create_artifact_from_result(
-        self,
-        task_id: str,
-        skill: str,
-        result: Dict[str, Any],
-    ) -> Optional[Artifact]:
-        """Create an Artifact from a task result dictionary.
-
-        Args:
-            task_id: ID of the source task.
-            skill: Name of the skill that produced the result.
-            result: Result dictionary with artifact data.
-
-        Returns:
-            Artifact instance or None if not valid artifact data.
-        """
-        try:
-            artifact_type_str = result.get("artifact_type", "")
-            if not artifact_type_str:
-                return None
-
-            # Map string to ArtifactType
-            try:
-                artifact_type = ArtifactType(artifact_type_str)
-            except ValueError:
-                if self.logger:
-                    self.logger.warning(
-                        "unknown_artifact_type",
-                        type=artifact_type_str,
-                        task_id=task_id,
-                    )
-                return None
-
-            artifact_id = result.get("id", f"artifact_{task_id}")
-            title = result.get("title", f"Output from {skill}")
-            data = result.get("data")
-
-            return Artifact(
-                id=artifact_id,
-                type=artifact_type,
-                title=title,
-                data=data,
-                mime_type=result.get("mime_type"),
-                url=result.get("url"),
-                metadata={
-                    "source_task": task_id,
-                    "source_skill": skill,
-                    **result.get("metadata", {}),
-                },
-            )
-        except Exception as e:
-            if self.logger:
-                self.logger.warning(
-                    "artifact_creation_failed",
-                    task_id=task_id,
-                    error=str(e),
-                )
-            return None
-
-    def _generate_suggestions(
+    async def _run_task_mode(
         self,
         user_input: str,
-        response_text: str,
-        dag: Optional[TaskDAG],
-    ) -> List[str]:
-        """Generate follow-up action suggestions.
-
-        Based on the user input, response, and executed tasks, suggest
-        potential next steps the user might want to take.
+        context: str,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """Execute using task mode (SubagentDAG orchestration).
 
         Args:
-            user_input: Original user input.
-            response_text: Generated response text.
-            dag: Executed TaskDAG (if any).
+            user_input: User's message or command.
+            context: Conversation context.
 
-        Returns:
-            List of suggestion strings.
+        Yields:
+            Status events from SubagentRuntime.
         """
-        suggestions: List[str] = []
+        from .task import TaskPlanner, SubagentRuntime, SubagentRuntimeConfig
 
-        # Analyze executed skills to suggest complementary actions
-        if dag:
-            executed_skills = {
-                node.skill for node in dag.nodes.values() if node.status == TaskStatus.COMPLETED
-            }
+        # Create TaskPlanner and plan the SubagentDAG
+        planner = TaskPlanner(self.llm_client)
+        dag = await planner.plan(goal=user_input, context=context)
 
-            # Suggest based on what was executed
-            if "search" in executed_skills:
-                suggestions.append("Summarize the search results")
-                suggestions.append("Search for related topics")
+        # Create SubagentRuntime
+        runtime = SubagentRuntime(
+            llm_client=self.llm_client,
+            tool_registry=self.tool_registry,
+            workspace=self.workspace,
+            config=SubagentRuntimeConfig(max_concurrent=3),
+        )
 
-            if "summarize" in executed_skills:
-                suggestions.append("Generate a detailed outline")
-                suggestions.append("Extract key action items")
+        # Execute with streaming
+        async for event in runtime.execute_stream(dag, parent_context=context):
+            yield event
 
-            if "chat" in executed_skills:
-                suggestions.append("Ask a follow-up question")
-
-            # If there were failures, suggest retry
-            failed_count = sum(1 for node in dag.nodes.values() if node.status == TaskStatus.FAILED)
-            if failed_count > 0:
-                suggestions.append("Retry the failed operations")
-
-        # Limit suggestions
-        return suggestions[:3]
+            # Convert task_complete to response event for run() compatibility
+            if event.get("type") == "task_complete":
+                final_summary = event.get("final_summary", "")
+                if final_summary:
+                    yield {"type": "response", "content": final_summary}
 
     def clear_memory(self) -> None:
         """Clear conversation history."""
@@ -680,164 +478,159 @@ class CodeAgent:
         """Fully reset the agent state."""
         self.memory.clear()
 
-    async def run_stream(self, user_input: str) -> AsyncIterator[Dict[str, Any]]:
+    async def run_stream(
+        self,
+        user_input: str,
+        history: Optional[List[Dict[str, Any]]] = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
         """Process user input with streaming status updates.
+
+        Uses SubagentDAG orchestration to decompose and execute the user's goal.
 
         Args:
             user_input: User's message or command.
+            history: Optional conversation history from external cache.
+                     List of dicts with 'role' and 'content' keys.
+                     If provided, this history is injected into memory context
+                     for planning, enabling multi-turn conversations.
 
         Yields:
             Status dicts with type and content fields:
             - {"type": "status", "content": "..."}
-            - {"type": "planning", "content": "..."}
-            - {"type": "task_start", "task_id": "...", "skill": "..."}
-            - {"type": "task_done", "task_id": "...", "result": "..."}
+            - {"type": "task_dag", "dag": {...}}
+            - {"type": "task_start", "dag_id": "...", "nodes": N}
+            - {"type": "subagent_start", "node_id": "...", "subagent_type": "...", "goal": "..."}
+            - {"type": "subagent_progress", "node_id": "...", "tool_call": {...}}
+            - {"type": "subagent_complete", "node_id": "...", "status": "...", "summary": "..."}
+            - {"type": "task_complete", "dag_id": "...", "status": "...", "stats": {...}}
+            - {"type": "response", "content": "..."}
             - {"type": "error", "content": "..."}
             - {"type": "complete", "content": "..."}
-            DAG mode additional events:
-            - {"type": "dag_start", "dag_id": "...", "goal": "...", "total_tasks": N}
-            - {"type": "dag_complete", "dag_id": "...", "completed": N, ...}
         """
+        from .task import TaskPlanner, SubagentRuntime, SubagentRuntimeConfig
+
         try:
-            yield {"type": "status", "content": "Analyzing input..."}
+            yield {"type": "status", "content": "Starting task mode..."}
 
             if self.logger:
                 self.logger.info("agent_run_stream_start", user_input=user_input[:100])
 
-            available_skills = self.get_skill_names()
-
-            # Fast path: try rule matching first (skip context construction)
-            plan = None
-            rule_matched = False
-            if self._planner_type == "dag" and hasattr(self.planner, "try_rule_match"):
-                plan = await self.planner.try_rule_match(
-                    goal=user_input,
-                    available_skills=available_skills,
-                )
-                if plan is not None:
-                    rule_matched = True
-                    if self.logger:
-                        self.logger.debug("fast_rule_match", goal=user_input[:50])
-
-            # Add user input to memory (after rule check to avoid delay)
+            # Add user input to memory
             if self._memory_type == "tiered":
                 self.memory.add_turn_sync("user", user_input)
             else:
                 self.memory.add_turn("user", user_input)
 
-            # Slow path: build context and run full pipeline
-            if plan is None:
-                yield {"type": "planning", "content": "Creating execution plan..."}
-
-                # Get context for planning (expensive operation)
+            # Build context
+            if history:
+                context = self._build_context_from_history(history)
+            else:
                 context = self.memory.get_context()
 
-                # Create execution plan
-                plan = await self.planner.plan(
-                    goal=user_input,
-                    context=context,
-                    available_skills=available_skills,
-                )
+            yield {"type": "status", "content": "Planning subagent tasks..."}
 
-            # Check if rule matched (either fast path or from full pipeline)
-            if not rule_matched and isinstance(plan, TaskDAG) and plan.nodes:
-                rule_matched = all(
-                    node.source == TaskSource.RULE for node in plan.nodes.values()
-                )
-            if rule_matched:
-                yield {"type": "metadata", "matched_rule": "rule"}
+            # Create TaskPlanner and plan the SubagentDAG
+            planner = TaskPlanner(self.llm_client)
+            dag = await planner.plan(goal=user_input, context=context)
 
-            # Stream execution based on planner type
-            if self._planner_type == "dag" and isinstance(plan, TaskDAG):
-                # DAG mode - use runtime streaming
-                response_text = "Task completed."
-                fast_single_rule = False
-                rule_task_id: Optional[str] = None
-                early_complete_sent = False
-                if plan.nodes and len(plan.nodes) == 1:
-                    node = next(iter(plan.nodes.values()))
-                    if node.source == TaskSource.RULE:
-                        fast_single_rule = True
-                        rule_task_id = node.id
-                async for status in self.runtime.execute_stream(plan):
-                    yield status
-                    if status.get("type") == "dag_complete":
-                        # Extract final response from dag_complete event
-                        results = status.get("results", {})
-                        response_text = self._extract_response_from_results(results)
-                    if status.get("type") == "task_done" and fast_single_rule:
-                        if status.get("task_id") == rule_task_id:
-                            result = status.get("result")
-                            response_text = str(result) if result is not None else "Task completed."
-                            yield {"type": "complete", "content": response_text}
-                            early_complete_sent = True
-                            break
+            # Emit DAG planning event
+            yield {"type": "task_dag", "dag": dag.to_dict()}
 
-                if early_complete_sent:
-                    if self._memory_type == "tiered":
-                        self.memory.add_turn_sync("assistant", response_text)
-                    else:
-                        self.memory.add_turn("assistant", response_text)
-                    if self.logger:
-                        self.logger.info("agent_run_stream_complete")
-                    return
-            else:
-                # Simple mode - use executor streaming
-                if plan.is_direct():
-                    response_text = plan.direct_response or ""
-                    yield {"type": "direct", "content": response_text}
-                else:
-                    yield {"type": "status", "content": f"Executing {len(plan.tasks)} task(s)..."}
+            yield {"type": "status", "content": f"Executing {len(dag.nodes)} subagent task(s)..."}
 
-                    results = []
-                    async for status in self.executor.execute_stream(plan):
-                        yield status
-                        if status.get("type") == "task_done":
-                            results.append(status.get("result"))
+            # Create SubagentRuntime
+            runtime = SubagentRuntime(
+                llm_client=self.llm_client,
+                tool_registry=self.tool_registry,
+                workspace=self.workspace,
+                config=SubagentRuntimeConfig(max_concurrent=3),
+            )
 
-                    # Generate final response
-                    if results:
-                        last_result = results[-1]
-                        response_text = str(last_result) if last_result else "Task completed."
-                    else:
-                        response_text = "I completed the task but have no output to show."
+            # Execute with streaming
+            response_text = ""
+            async for event in runtime.execute_stream(dag, parent_context=context):
+                yield event
+
+                if event.get("type") == "task_complete":
+                    # Extract final response from task_complete event
+                    final_summary = event.get("final_summary", "")
+                    response_text = final_summary if final_summary else "Task completed."
 
             # Add response to memory
-            if self._memory_type == "tiered":
-                await self.memory.add_turn("assistant", response_text)
-            else:
-                self.memory.add_turn("assistant", response_text)
+            if response_text:
+                if self._memory_type == "tiered":
+                    await self.memory.add_turn("assistant", response_text)
+                else:
+                    self.memory.add_turn("assistant", response_text)
 
             if self.logger:
                 self.logger.info("agent_run_stream_complete")
 
-            yield {"type": "complete", "content": response_text}
+            yield {"type": "response", "content": response_text}
+            yield {"type": "complete", "content": response_text or "Task completed."}
 
         except Exception as e:
             if self.logger:
                 self.logger.error("agent_run_stream_failed", error=str(e))
             yield {"type": "error", "content": f"An error occurred: {str(e)}"}
 
-    def _extract_response_from_results(self, results: Dict[str, Any]) -> str:
-        """Extract response text from DAG results dict.
+    def _build_context_from_history(self, history: List[Dict[str, Any]]) -> str:
+        """Build context string from external conversation history.
+
+        Converts a list of message dicts into a formatted context string
+        suitable for the planner and synthesize skill.
 
         Args:
-            results: Dictionary of task_id -> result.
+            history: List of message dicts with 'role' and 'content' keys.
 
         Returns:
-            Response text.
+            Formatted context string with conversation history.
         """
-        if not results:
-            return "Task completed."
+        if not history:
+            return ""
 
-        values = [v for v in results.values() if v is not None]
-        if values:
-            last_result = values[-1]
-            if isinstance(last_result, str):
-                return last_result
-            return str(last_result)
+        parts = []
 
-        return "Task completed."
+        # Add workspace info if available
+        if self.workspace:
+            parts.append(f"[Workspace: {self.workspace}]")
+
+        # Format conversation history with clear role labels
+        parts.append("=== Conversation History ===")
+        parts.append(
+            "(注意: 'User'=人类用户, 'Assistant'=AI助手)"
+        )
+        for msg in history:
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            if role == "user":
+                parts.append(f"User(人类): {content}")
+            elif role == "assistant":
+                parts.append(f"Assistant(AI): {content}")
+            elif role == "system":
+                parts.append(f"System: {content}")
+        parts.append("=== End History ===")
+
+        return "\n".join(parts)
+
+    def _build_system_instruction(self) -> str:
+        """Build system instruction for the agent.
+
+        Combines the system_prompt with workspace information.
+
+        Returns:
+            System instruction string.
+        """
+        parts = []
+
+        if self.system_prompt:
+            parts.append(self.system_prompt)
+
+        # Add workspace info
+        if self.workspace:
+            parts.append(f"\nWorkspace: {self.workspace}")
+
+        return "\n".join(parts) if parts else ""
 
     # =========================================================================
     # Memory and Tracing utilities
@@ -921,6 +714,269 @@ class CodeAgent:
         if self._memory_type == "tiered":
             return self.memory.get_working(key, default)
         return default
+
+    # =========================================================================
+    # Subagent System (Phase 4)
+    # =========================================================================
+
+    async def spawn_subagent(
+        self,
+        prompt: str,
+        subagent_type: str,
+        run_in_background: bool = False,
+        allowed_tools: Optional[List[str]] = None,
+        max_turns: int = 50,
+        **kwargs: Any,
+    ) -> Union[str, Dict[str, Any]]:
+        """Spawn a subagent to handle a subtask.
+
+        Creates an isolated child agent with restricted permissions to handle
+        specific tasks like exploration, research, implementation, or review.
+
+        Args:
+            prompt: Task description for the subagent.
+            subagent_type: Type of subagent (explorer, researcher, coder, reviewer).
+            run_in_background: If True, return immediately with agent_id.
+            allowed_tools: Optional explicit tool permissions.
+            max_turns: Maximum conversation turns.
+            **kwargs: Additional arguments passed to the subagent.
+
+        Returns:
+            For foreground execution: Result dictionary with summary and details.
+            For background execution: Agent ID string for later retrieval.
+
+        Raises:
+            ValueError: If subagent_type is unknown or tools are invalid.
+
+        Example:
+            >>> result = await agent.spawn_subagent(
+            ...     prompt="Explore the src/nimbus directory",
+            ...     subagent_type="explorer",
+            ... )
+            >>> print(result["summary"])
+        """
+        from nimbus.tools.subagent import get_executor
+
+        # Get subagent configuration
+        config = self._subagent_registry.get(subagent_type)
+        if config is None:
+            available = self._subagent_registry.list_names(mode="subagent")
+            raise ValueError(
+                f"Unknown subagent type: {subagent_type}. "
+                f"Available types: {available}"
+            )
+
+        # Determine allowed tools
+        if allowed_tools is None:
+            allowed_tools = config.allowed_tools
+
+        # Validate tools against available tools
+        available_tools = set(self.tool_registry.list_tools())
+        invalid_tools = self._subagent_registry.validate_tools(config, list(available_tools))
+        if invalid_tools:
+            if self.logger:
+                self.logger.warning(
+                    "subagent_invalid_tools",
+                    subagent_type=subagent_type,
+                    invalid_tools=invalid_tools,
+                )
+            # Filter out invalid tools
+            allowed_tools = [t for t in allowed_tools if t not in invalid_tools]
+
+        # Create isolated context from parent memory
+        context = SubagentContext.from_parent_memory(
+            parent_memory=self.memory,
+            subagent_id="",  # Will be auto-generated
+            subagent_type=subagent_type,
+            max_history=5,
+        )
+
+        # Get or create executor
+        if self._subagent_executor is None:
+            self._subagent_executor = get_executor(
+                workspace=self.workspace,
+                tool_registry=self.tool_registry,
+                llm_client=self.llm_client,
+                parent_tools=available_tools,
+            )
+
+        # Get parent context string
+        parent_context = context.get_context()
+
+        # Spawn subagent
+        result = await self._subagent_executor.spawn(
+            prompt=prompt,
+            subagent_type=subagent_type,
+            description=f"{subagent_type}: {prompt[:30]}...",
+            run_in_background=run_in_background,
+            max_turns=max_turns,
+            allowed_tools=set(allowed_tools) if allowed_tools else None,
+            parent_context=parent_context,
+        )
+
+        if self.logger:
+            self.logger.info(
+                "subagent_spawned",
+                subagent_type=subagent_type,
+                background=run_in_background,
+                agent_id=result.get("agent_id"),
+            )
+
+        # For background execution, return just the agent_id
+        if run_in_background:
+            return result.get("agent_id", "")
+
+        return result
+
+    async def spawn_subagent_and_verify(
+        self,
+        prompt: str,
+        subagent_type: str,
+        verify: bool = True,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Spawn a subagent and optionally verify results.
+
+        This method extends spawn_subagent with an additional verification step
+        that checks if files reported as modified actually exist on disk.
+
+        Args:
+            prompt: Task description for the subagent.
+            subagent_type: Type of subagent (explorer, researcher, coder, reviewer).
+            verify: If True, verify that modified files exist after completion.
+            **kwargs: Additional arguments passed to spawn_subagent.
+
+        Returns:
+            Result dictionary with additional 'verification' field:
+            - "verification": "PASSED" if all checks pass
+            - "verification": "FAILED: <reason>" if verification fails
+            - "verification": "SKIPPED" if verify=False
+
+        Raises:
+            ValueError: If subagent_type is unknown or tools are invalid.
+
+        Example:
+            >>> result = await agent.spawn_subagent_and_verify(
+            ...     prompt="Refactor auth.py to use new API",
+            ...     subagent_type="coder",
+            ...     verify=True,
+            ... )
+            >>> if result.get("verification") == "PASSED":
+            ...     print("Changes verified successfully")
+        """
+        # Spawn the subagent (always foreground for verification)
+        result = await self.spawn_subagent(
+            prompt=prompt,
+            subagent_type=subagent_type,
+            run_in_background=False,  # Must be foreground for verification
+            **kwargs,
+        )
+
+        # Handle case where spawn_subagent returns a string (background agent_id)
+        if isinstance(result, str):
+            return {
+                "agent_id": result,
+                "status": "running",
+                "verification": "SKIPPED",
+                "message": "Background execution - verification not applicable",
+            }
+
+        # Skip verification if not requested
+        if not verify:
+            result["verification"] = "SKIPPED"
+            return result
+
+        # Only verify completed tasks
+        if result.get("status") != "completed":
+            result["verification"] = "SKIPPED"
+            return result
+
+        # Verify that modified files exist
+        modified_files = result.get("files_modified", [])
+        for file_path in modified_files:
+            if not Path(file_path).exists():
+                result["verification"] = f"FAILED: File not found - {file_path}"
+                if self.logger:
+                    self.logger.warning(
+                        "subagent_verification_failed",
+                        file_path=file_path,
+                        reason="file_not_found",
+                    )
+                return result
+
+        result["verification"] = "PASSED"
+        if self.logger:
+            self.logger.info(
+                "subagent_verification_passed",
+                files_verified=len(modified_files),
+            )
+
+        return result
+
+    async def get_subagent_result(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        """Get the result of a background subagent.
+
+        Args:
+            agent_id: ID of the subagent.
+
+        Returns:
+            Result dictionary if available, None if not found.
+        """
+        if self._subagent_executor is None:
+            return None
+        return await self._subagent_executor.get_result(agent_id)
+
+    async def cancel_subagent(self, agent_id: str) -> bool:
+        """Cancel a running background subagent.
+
+        Args:
+            agent_id: ID of the subagent to cancel.
+
+        Returns:
+            True if cancelled, False if not found or already complete.
+        """
+        if self._subagent_executor is None:
+            return False
+        return await self._subagent_executor.cancel(agent_id)
+
+    def get_subagent_types(self) -> List[str]:
+        """Get all available subagent types.
+
+        Returns:
+            List of subagent type names.
+        """
+        return self._subagent_registry.list_names(mode="subagent")
+
+    def get_subagent_config(self, subagent_type: str) -> Optional[SubagentConfig]:
+        """Get configuration for a specific subagent type.
+
+        Args:
+            subagent_type: Name of the subagent type.
+
+        Returns:
+            SubagentConfig if found, None otherwise.
+        """
+        return self._subagent_registry.get(subagent_type)
+
+    def list_running_subagents(self) -> List[str]:
+        """List IDs of all running background subagents.
+
+        Returns:
+            List of agent IDs.
+        """
+        if self._subagent_executor is None:
+            return []
+        return self._subagent_executor.list_running()
+
+    def list_completed_subagents(self) -> List[str]:
+        """List IDs of all completed subagents.
+
+        Returns:
+            List of agent IDs.
+        """
+        if self._subagent_executor is None:
+            return []
+        return self._subagent_executor.list_completed()
 
 
 # Backward compatibility alias

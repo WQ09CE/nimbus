@@ -22,7 +22,62 @@ Example:
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator, Dict, List, Optional, Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from typing import Any, AsyncIterator, Dict, List, Optional, Protocol, Union, runtime_checkable
+
+
+@dataclass
+class ToolCall:
+    """Represents a tool call from the LLM.
+
+    Attributes:
+        id: Unique identifier for this tool call.
+        name: Name of the tool to call.
+        arguments: Arguments to pass to the tool (as dict).
+    """
+    id: str
+    name: str
+    arguments: Dict[str, Any]
+
+
+@dataclass
+class ToolResult:
+    """Result of a tool execution.
+
+    Attributes:
+        tool_call_id: ID of the tool call this is responding to.
+        content: Result content (string or structured data).
+        is_error: Whether this result represents an error.
+    """
+    tool_call_id: str
+    content: str
+    is_error: bool = False
+
+
+@dataclass
+class CompletionResponse:
+    """Response from LLM completion with tool calling support.
+
+    Attributes:
+        content: Text content of the response (may be None if tool calls).
+        tool_calls: List of tool calls requested by the LLM.
+        finish_reason: Why the completion stopped ('stop', 'tool_calls', 'length').
+        raw_response: Original response from provider for debugging.
+    """
+    content: Optional[str] = None
+    tool_calls: List[ToolCall] = field(default_factory=list)
+    finish_reason: str = "stop"
+    raw_response: Optional[Dict[str, Any]] = None
+
+    @property
+    def has_tool_calls(self) -> bool:
+        """Check if response contains tool calls."""
+        return len(self.tool_calls) > 0
+
+    @property
+    def is_complete(self) -> bool:
+        """Check if this is a final response (no more tool calls)."""
+        return not self.has_tool_calls and self.finish_reason == "stop"
 
 
 @runtime_checkable
@@ -73,6 +128,30 @@ class LLMClient(Protocol):
         """
         ...
 
+    async def complete_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        system_instruction: Optional[str] = None,
+        **kwargs: Any,
+    ) -> CompletionResponse:
+        """Generate completion with tool calling support.
+
+        This is the core method for agentic loops. The LLM can either:
+        1. Return text content (final response)
+        2. Request tool calls (to be executed and fed back)
+
+        Args:
+            messages: Conversation messages in OpenAI format.
+            tools: List of tool definitions (OpenAI function calling format).
+            system_instruction: Optional system instruction.
+            **kwargs: Additional provider-specific options.
+
+        Returns:
+            CompletionResponse with content and/or tool calls.
+        """
+        ...
+
 
 class BaseLLMClient(ABC):
     """Abstract base class for LLM clients.
@@ -102,6 +181,32 @@ class BaseLLMClient(ABC):
     ) -> AsyncIterator[str]:
         """Stream a completion for the given prompt."""
         pass
+
+    async def complete_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        system_instruction: Optional[str] = None,
+        **kwargs: Any,
+    ) -> CompletionResponse:
+        """Generate completion with tool calling support.
+
+        Default implementation raises NotImplementedError.
+        Providers should override this for tool calling support.
+
+        Args:
+            messages: Conversation messages in OpenAI format.
+            tools: List of tool definitions.
+            system_instruction: Optional system instruction.
+            **kwargs: Additional options.
+
+        Returns:
+            CompletionResponse with content and/or tool calls.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support tool calling. "
+            "Override complete_with_tools() to add support."
+        )
 
     async def close(self) -> None:
         """Close any resources held by the client.

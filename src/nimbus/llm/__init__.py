@@ -54,7 +54,14 @@ Environment Variables:
 """
 
 # Base protocol and errors
-from .base import LLMClient, BaseLLMClient, LLMError
+from .base import (
+    LLMClient,
+    BaseLLMClient,
+    LLMError,
+    ToolCall,
+    ToolResult,
+    CompletionResponse,
+)
 
 # Configuration
 from .config import (
@@ -83,6 +90,9 @@ __all__ = [
     "LLMClient",
     "BaseLLMClient",
     "LLMError",
+    "ToolCall",
+    "ToolResult",
+    "CompletionResponse",
     # Configuration
     "LLMConfig",
     "ProviderConfig",

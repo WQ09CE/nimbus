@@ -65,6 +65,7 @@ class GeminiConfig:
         timeout: Request timeout in seconds.
         max_retries: Maximum number of retry attempts on failure.
         retry_delay: Base delay between retries in seconds.
+        max_concurrent: Maximum concurrent API requests (rate limiting).
     """
     model: str = "gemini-2.0-flash"
     api_key: Optional[str] = None
@@ -76,6 +77,7 @@ class GeminiConfig:
     timeout: float = 120.0
     max_retries: int = 3
     retry_delay: float = 1.0
+    max_concurrent: int = 3  # Gemini API has strict rate limits
 
 
 class GeminiError(Exception):
@@ -126,6 +128,14 @@ class GeminiClient:
             )
 
         self._session: Optional[aiohttp.ClientSession] = None
+        # Semaphore for rate limiting concurrent requests
+        self._semaphore: Optional[asyncio.Semaphore] = None
+
+    def _get_semaphore(self) -> asyncio.Semaphore:
+        """Get or create the semaphore for rate limiting."""
+        if self._semaphore is None:
+            self._semaphore = asyncio.Semaphore(self.config.max_concurrent)
+        return self._semaphore
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create aiohttp session."""
@@ -243,7 +253,10 @@ class GeminiClient:
         body: Dict[str, Any],
         stream: bool = False,
     ) -> aiohttp.ClientResponse:
-        """Make request with retry logic.
+        """Make request with retry logic and rate limiting.
+
+        Uses a semaphore to limit concurrent requests to avoid hitting
+        Gemini API rate limits.
 
         Args:
             url: API URL.
@@ -256,54 +269,58 @@ class GeminiClient:
         Raises:
             GeminiError: If all retries fail.
         """
-        session = await self._get_session()
-        headers = {"Content-Type": "application/json"}
+        # Acquire semaphore for rate limiting
+        semaphore = self._get_semaphore()
 
-        last_error: Optional[Exception] = None
+        async with semaphore:
+            session = await self._get_session()
+            headers = {"Content-Type": "application/json"}
 
-        for attempt in range(self.config.max_retries):
-            try:
-                resp = await session.post(url, json=body, headers=headers)
+            last_error: Optional[Exception] = None
 
-                if resp.status == 200:
-                    return resp
-
-                # Handle specific error codes
-                error_text = await resp.text()
+            for attempt in range(self.config.max_retries):
                 try:
-                    error_data = json.loads(error_text)
-                    error_message = error_data.get("error", {}).get("message", error_text)
-                except json.JSONDecodeError:
-                    error_message = error_text
+                    resp = await session.post(url, json=body, headers=headers)
 
-                # Retryable errors: 429 (rate limit), 500, 502, 503, 504
-                if resp.status in (429, 500, 502, 503, 504):
-                    last_error = GeminiError(
-                        f"Gemini API error (attempt {attempt + 1}): {error_message}",
+                    if resp.status == 200:
+                        return resp
+
+                    # Handle specific error codes
+                    error_text = await resp.text()
+                    try:
+                        error_data = json.loads(error_text)
+                        error_message = error_data.get("error", {}).get("message", error_text)
+                    except json.JSONDecodeError:
+                        error_message = error_text
+
+                    # Retryable errors: 429 (rate limit), 500, 502, 503, 504
+                    if resp.status in (429, 500, 502, 503, 504):
+                        last_error = GeminiError(
+                            f"Gemini API error (attempt {attempt + 1}): {error_message}",
+                            status_code=resp.status,
+                        )
+                        if attempt < self.config.max_retries - 1:
+                            delay = self.config.retry_delay * (2 ** attempt)
+                            logger.warning(f"Retrying in {delay}s: {error_message}")
+                            await asyncio.sleep(delay)
+                            continue
+
+                    # Non-retryable error
+                    raise GeminiError(
+                        f"Gemini API error: {error_message}",
                         status_code=resp.status,
+                        details=error_data if 'error_data' in dir() else {},
                     )
+
+                except aiohttp.ClientError as e:
+                    last_error = GeminiError(f"Request failed: {str(e)}")
                     if attempt < self.config.max_retries - 1:
                         delay = self.config.retry_delay * (2 ** attempt)
-                        logger.warning(f"Retrying in {delay}s: {error_message}")
+                        logger.warning(f"Retrying in {delay}s due to: {e}")
                         await asyncio.sleep(delay)
                         continue
 
-                # Non-retryable error
-                raise GeminiError(
-                    f"Gemini API error: {error_message}",
-                    status_code=resp.status,
-                    details=error_data if 'error_data' in dir() else {},
-                )
-
-            except aiohttp.ClientError as e:
-                last_error = GeminiError(f"Request failed: {str(e)}")
-                if attempt < self.config.max_retries - 1:
-                    delay = self.config.retry_delay * (2 ** attempt)
-                    logger.warning(f"Retrying in {delay}s due to: {e}")
-                    await asyncio.sleep(delay)
-                    continue
-
-        raise last_error or GeminiError("Request failed after all retries")
+            raise last_error or GeminiError("Request failed after all retries")
 
     def _extract_text_from_response(self, data: Dict[str, Any]) -> str:
         """Extract text content from Gemini response.

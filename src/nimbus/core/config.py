@@ -6,6 +6,7 @@ This module provides type-safe configuration classes for:
 - Runtime settings (timeout, retries, concurrency)
 - Skill definitions (builtin, markdown, wukong)
 - Agent configuration (combines all above)
+- Core agent configuration (from YAML)
 """
 
 from dataclasses import dataclass, field
@@ -14,6 +15,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import yaml
+
+from .logging import get_logger
+
+logger = get_logger("config")
 
 
 class SkillType(Enum):
@@ -169,6 +174,58 @@ class RuntimeConfigSpec:
             max_retries=self.max_retries,
             retry_delay=self.retry_delay,
             max_concurrent=self.max_concurrent,
+        )
+
+
+@dataclass
+class PlannerConfigSpec:
+    """Configuration for planner pipeline.
+
+    Attributes:
+        enable_router: Use TaskRouter for complexity-based routing.
+        use_tool_planner: Use ToolDAGPlanner for MODERATE tasks.
+        enable_context_analyzer: Enable context dependency analysis.
+        enable_rule_planner: Enable rule-based fast path.
+        enable_llm_enhancer: Enable LLM-based planning.
+    """
+    enable_router: bool = False
+    use_tool_planner: bool = False
+    enable_context_analyzer: bool = True
+    enable_rule_planner: bool = True
+    enable_llm_enhancer: bool = True
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "PlannerConfigSpec":
+        """Create PlannerConfigSpec from dictionary.
+
+        Args:
+            data: Dictionary with planner configuration.
+
+        Returns:
+            PlannerConfigSpec instance.
+        """
+        return cls(
+            enable_router=data.get("enable_router", False),
+            use_tool_planner=data.get("use_tool_planner", False),
+            enable_context_analyzer=data.get("enable_context_analyzer", True),
+            enable_rule_planner=data.get("enable_rule_planner", True),
+            enable_llm_enhancer=data.get("enable_llm_enhancer", True),
+        )
+
+    def to_pipeline_config(self) -> "PipelineConfig":
+        """Convert to PipelineConfig.
+
+        Returns:
+            PipelineConfig instance for PlannerPipeline.
+        """
+        from .planner import PipelineConfig, PlanningMode
+        return PipelineConfig(
+            enable_router=self.enable_router,
+            use_tool_planner=self.use_tool_planner,
+            enable_context_analyzer=self.enable_context_analyzer,
+            enable_rule_planner=self.enable_rule_planner,
+            enable_llm_enhancer=self.enable_llm_enhancer,
+            planning_mode=PlanningMode.HYBRID,
         )
 
 
@@ -350,3 +407,228 @@ class AgentConfig:
 
         with open(path, "w", encoding="utf-8") as f:
             yaml.dump(self.to_dict(), f, default_flow_style=False, allow_unicode=True)
+
+
+@dataclass
+class CoreAgentConfig:
+    """Configuration for the core CodeAgent loaded from YAML.
+
+    This configuration uses the same format as subagent configs (coder, reviewer, etc.)
+    with additional fields specific to the core agent.
+
+    Attributes:
+        name: Agent name.
+        description: Agent description.
+        mode: Agent mode ("primary" for core, "subagent" for others).
+        model: LLM model identifier.
+        temperature: Sampling temperature.
+        max_tokens: Maximum tokens in response.
+        allowed_tools: List of allowed tool names.
+        prompt: System prompt for the agent (unified with subagent format).
+        max_turns: Maximum conversation turns.
+        memory: Memory configuration spec (core agent only).
+        runtime: Runtime configuration spec (core agent only).
+        planner_type: Planner type ("simple" or "dag", core agent only).
+        planner: Planner configuration spec (router, tool planner, etc.).
+        enable_logging: Whether to enable logging.
+    """
+    name: str = "core"
+    description: str = "核心 Agent，负责任务规划、分发和协调"
+    mode: str = "primary"
+    model: str = "claude-sonnet-4-20250514"
+    temperature: float = 0.7
+    max_tokens: int = 8192
+    allowed_tools: List[str] = field(default_factory=lambda: [
+        "Read", "Write", "Edit", "Bash", "Glob", "Grep", "Subagent"
+    ])
+    prompt: str = ""  # 统一使用 prompt 字段
+    max_turns: int = 100
+    memory: MemoryConfigSpec = field(default_factory=MemoryConfigSpec)
+    runtime: RuntimeConfigSpec = field(default_factory=RuntimeConfigSpec)
+    planner_type: str = "dag"
+    planner: PlannerConfigSpec = field(default_factory=PlannerConfigSpec)
+    enable_logging: bool = True
+
+    # Alias for backward compatibility
+    @property
+    def system_prompt(self) -> str:
+        """Alias for prompt (backward compatibility)."""
+        return self.prompt
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CoreAgentConfig":
+        """Create CoreAgentConfig from dictionary.
+
+        Supports both 'prompt' (new format) and 'system_prompt' (legacy format).
+
+        Args:
+            data: Dictionary with core agent configuration.
+
+        Returns:
+            CoreAgentConfig instance.
+        """
+        memory_data = data.get("memory", {})
+        runtime_data = data.get("runtime", {})
+        planner_data = data.get("planner", {})
+
+        # Support both 'prompt' and 'system_prompt' for backward compatibility
+        prompt = data.get("prompt", data.get("system_prompt", ""))
+
+        return cls(
+            name=data.get("name", "core"),
+            description=data.get("description", "核心 Agent，负责任务规划、分发和协调"),
+            mode=data.get("mode", "primary"),
+            model=data.get("model", "claude-sonnet-4-20250514"),
+            temperature=data.get("temperature", 0.7),
+            max_tokens=data.get("max_tokens", 8192),
+            allowed_tools=data.get("allowed_tools", [
+                "Read", "Write", "Edit", "Bash", "Glob", "Grep", "Subagent"
+            ]),
+            prompt=prompt,
+            max_turns=data.get("max_turns", 100),
+            memory=MemoryConfigSpec.from_dict(memory_data),
+            runtime=RuntimeConfigSpec.from_dict(runtime_data),
+            planner_type=data.get("planner_type", "dag"),
+            planner=PlannerConfigSpec.from_dict(planner_data),
+            enable_logging=data.get("enable_logging", True),
+        )
+
+    @classmethod
+    def from_yaml(cls, path: Union[str, Path]) -> "CoreAgentConfig":
+        """Load CoreAgentConfig from YAML file.
+
+        Args:
+            path: Path to YAML configuration file.
+
+        Returns:
+            CoreAgentConfig instance.
+
+        Raises:
+            FileNotFoundError: If config file doesn't exist.
+            yaml.YAMLError: If YAML parsing fails.
+        """
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Config file not found: {path}")
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+
+        return cls.from_dict(data or {})
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization.
+
+        Uses the unified format compatible with subagent configs.
+
+        Returns:
+            Dictionary representation.
+        """
+        return {
+            "name": self.name,
+            "description": self.description,
+            "mode": self.mode,
+            "model": self.model,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "allowed_tools": self.allowed_tools,
+            "prompt": self.prompt,
+            "max_turns": self.max_turns,
+            "memory": {
+                "type": self.memory.type,
+                "pinned_budget": self.memory.pinned_budget,
+                "working_budget": self.memory.working_budget,
+                "episodic_budget": self.memory.episodic_budget,
+                "semantic_budget": self.memory.semantic_budget,
+            },
+            "runtime": {
+                "default_timeout": self.runtime.default_timeout,
+                "max_retries": self.runtime.max_retries,
+                "max_concurrent": self.runtime.max_concurrent,
+            },
+            "planner_type": self.planner_type,
+            "planner": {
+                "enable_router": self.planner.enable_router,
+                "use_tool_planner": self.planner.use_tool_planner,
+                "enable_context_analyzer": self.planner.enable_context_analyzer,
+                "enable_rule_planner": self.planner.enable_rule_planner,
+                "enable_llm_enhancer": self.planner.enable_llm_enhancer,
+            },
+            "enable_logging": self.enable_logging,
+        }
+
+
+# Default core agent config path
+_DEFAULT_CORE_CONFIG_PATH = Path(__file__).parent.parent / "data" / "agents" / "core.yaml"
+
+# Cached core agent config
+_cached_core_config: Optional[CoreAgentConfig] = None
+
+
+def load_core_agent_config(
+    config_path: Optional[Union[str, Path]] = None,
+    use_cache: bool = True,
+) -> CoreAgentConfig:
+    """Load core agent configuration from YAML file.
+
+    This function provides a convenient way to load the core agent configuration
+    with caching support. If no config_path is provided, it loads from the
+    default location (src/nimbus/data/agents/core.yaml).
+
+    Args:
+        config_path: Optional path to YAML config file. If None, uses default.
+        use_cache: Whether to use cached config (default: True).
+                  Set to False to force reload.
+
+    Returns:
+        CoreAgentConfig instance.
+
+    Example:
+        ```python
+        # Load default config
+        config = load_core_agent_config()
+
+        # Load custom config
+        config = load_core_agent_config("~/.nimbus/agents/my_core.yaml")
+
+        # Force reload (bypass cache)
+        config = load_core_agent_config(use_cache=False)
+        ```
+    """
+    global _cached_core_config
+
+    # Use cache if available and requested
+    if use_cache and _cached_core_config is not None and config_path is None:
+        return _cached_core_config
+
+    # Determine config path
+    if config_path is None:
+        path = _DEFAULT_CORE_CONFIG_PATH
+    else:
+        path = Path(config_path).expanduser()
+
+    # Load config
+    try:
+        config = CoreAgentConfig.from_yaml(path)
+        logger.debug(f"Loaded core agent config from: {path}")
+
+        # Cache if using default path
+        if config_path is None:
+            _cached_core_config = config
+
+        return config
+    except FileNotFoundError:
+        logger.warning(f"Core agent config not found at {path}, using defaults")
+        return CoreAgentConfig()
+    except Exception as e:
+        logger.warning(f"Failed to load core agent config from {path}: {e}, using defaults")
+        return CoreAgentConfig()
+
+
+def reset_core_config_cache() -> None:
+    """Reset the cached core agent configuration.
+
+    Useful for testing or when configuration files have changed.
+    """
+    global _cached_core_config
+    _cached_core_config = None

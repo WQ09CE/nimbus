@@ -44,7 +44,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import aiohttp
 
-from .base import BaseLLMClient, LLMError
+from .base import BaseLLMClient, LLMError, ToolCall, CompletionResponse
 from ..core.logging import get_logger
 
 logger = get_logger("openrouter")
@@ -423,3 +423,135 @@ class OpenRouterClient(BaseLLMClient):
 
             data = await resp.json()
             return data.get("data", [])
+
+    async def complete_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        system_instruction: Optional[str] = None,
+        **kwargs: Any,
+    ) -> CompletionResponse:
+        """Generate completion with tool calling support.
+
+        Uses OpenAI-compatible function calling format.
+
+        Args:
+            messages: Conversation messages in OpenAI format.
+            tools: List of tool definitions in OpenAI format.
+            system_instruction: Optional system instruction.
+            **kwargs: Additional options (model, temperature, etc.)
+
+        Returns:
+            CompletionResponse with content and/or tool calls.
+
+        Example:
+            ```python
+            tools = [{
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read file content",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {"type": "string"}
+                        },
+                        "required": ["file_path"]
+                    }
+                }
+            }]
+
+            response = await client.complete_with_tools(
+                messages=[{"role": "user", "content": "Read config.py"}],
+                tools=tools
+            )
+
+            if response.has_tool_calls:
+                for call in response.tool_calls:
+                    print(f"Call {call.name} with {call.arguments}")
+            ```
+        """
+        # Build messages with optional system instruction
+        full_messages = []
+        if system_instruction:
+            full_messages.append({
+                "role": "system",
+                "content": system_instruction,
+            })
+        full_messages.extend(messages)
+
+        body: Dict[str, Any] = {
+            "model": kwargs.get("model", self.config.model),
+            "messages": full_messages,
+            "temperature": kwargs.get("temperature", self.config.temperature),
+            "max_tokens": kwargs.get("max_tokens", self.config.max_tokens),
+            "top_p": kwargs.get("top_p", self.config.top_p),
+            "stream": False,
+        }
+
+        # Add tools if provided
+        if tools:
+            body["tools"] = tools
+            # Allow model to choose whether to call tools
+            body["tool_choice"] = kwargs.get("tool_choice", "auto")
+
+        logger.debug(
+            f"OpenRouter tool request: model={body['model']}, "
+            f"messages={len(full_messages)}, tools={len(tools) if tools else 0}"
+        )
+
+        resp = await self._request_with_retry(body)
+        data = await resp.json()
+
+        # Parse response
+        try:
+            choices = data.get("choices", [])
+            if not choices:
+                return CompletionResponse(
+                    content="",
+                    finish_reason="stop",
+                    raw_response=data,
+                )
+
+            choice = choices[0]
+            message = choice.get("message", {})
+            finish_reason = choice.get("finish_reason", "stop")
+
+            # Extract content
+            content = message.get("content")
+
+            # Extract tool calls
+            tool_calls_data = message.get("tool_calls", [])
+            tool_calls = []
+            for tc in tool_calls_data:
+                tc_id = tc.get("id", "")
+                function = tc.get("function", {})
+                name = function.get("name", "")
+                arguments_str = function.get("arguments", "{}")
+
+                # Parse arguments JSON
+                try:
+                    arguments = json.loads(arguments_str)
+                except json.JSONDecodeError:
+                    arguments = {"raw": arguments_str}
+
+                tool_calls.append(ToolCall(
+                    id=tc_id,
+                    name=name,
+                    arguments=arguments,
+                ))
+
+            logger.debug(
+                f"OpenRouter tool response: content_len={len(content) if content else 0}, "
+                f"tool_calls={len(tool_calls)}, finish_reason={finish_reason}"
+            )
+
+            return CompletionResponse(
+                content=content,
+                tool_calls=tool_calls,
+                finish_reason=finish_reason,
+                raw_response=data,
+            )
+
+        except (KeyError, IndexError) as e:
+            raise OpenRouterError(f"Failed to parse tool response: {e}")

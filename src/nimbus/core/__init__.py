@@ -1,4 +1,9 @@
-"""OpenNotebook Core Module."""
+"""OpenNotebook Core Module.
+
+Simplified execution model: CodeAgent now uses task mode (SubagentDAG) exclusively.
+The previous dag/agentic modes have been removed. Legacy planner/runtime components
+are still available for internal use but not directly used by CodeAgent.
+"""
 
 from .types import (
     Task,
@@ -6,7 +11,7 @@ from .types import (
     Plan,
     AgentResponse,
     NotebookResponse,  # Backward compatibility alias
-    # DAG types
+    # DAG types (used by SubagentDAG internally)
     TaskStatus,
     TaskNode,
     TaskDAG,
@@ -20,6 +25,8 @@ from .types import (
     TaskSource,
     Constraint,
     ReplanRecord,
+    # Retry loop support (ADR-007)
+    RetryLoopConfig,
 )
 from .memory import (
     SimpleMemory,
@@ -30,7 +37,20 @@ from .memory import (
     Message,
     MemoryTier,
 )
-# Planner (legacy + new pipeline)
+# Task mode components (primary execution path)
+from .task import (
+    TaskPlanner,
+    SubagentRuntime,
+    SubagentRuntimeConfig,
+    SubagentType,
+    SubagentStatus,
+    SubagentNode,
+    SubagentDAG,
+    SubagentResult,
+    SubagentExecutionResult,
+    SubagentExecutionStats,
+)
+# Legacy planner components (kept for internal use)
 from .planner import (
     # Legacy (backward compatibility)
     SimplePlanner,
@@ -38,7 +58,7 @@ from .planner import (
     AdaptivePlanner,
     ReplanRequest,
     ReplanningStrategy,
-    # Phase 3-4: New pipeline
+    # Phase 3-4: Pipeline components
     PlanningMode,
     PlanningContext,
     PlannerStage,
@@ -56,12 +76,47 @@ from .config import (
     MemoryConfigSpec,
     RuntimeConfigSpec,
     SkillType,
+    # Core agent config (Phase 5)
+    CoreAgentConfig,
+    load_core_agent_config,
+    reset_core_config_cache,
 )
 from .factory import (
     AgentFactory,
     create_agent,
 )
+from .agent_config import (
+    SubagentConfig,
+    SubagentConfigLoader,
+    SubagentRegistry,
+    get_default_registry,
+    reset_default_registry,
+)
+from .permission import (
+    PermissionRule,
+    PermissionSet,
+    PermissionManager,
+    READONLY_PERMISSIONS,
+    CODER_PERMISSIONS,
+    FULL_ACCESS_PERMISSIONS,
+    SAFE_BASH_PERMISSIONS,
+    EXPLORER_PERMISSIONS,
+    create_permission_manager,
+    create_subagent_permissions,
+)
+from .memory import (
+    SubagentContextSnapshot,
+    SubagentContext,
+)
+from .context import (
+    ContextFrame,
+    ContextStack,
+    FrameFactory,
+    ContextStackOverflow,
+    ContextStackUnderflow,
+)
 from .executor import SimpleExecutor
+# Legacy runtime components (kept for internal use)
 from .runtime import (
     AsyncRuntime,
     ReplanCoordinator,
@@ -109,7 +164,7 @@ __all__ = [
     "Plan",
     "AgentResponse",
     "NotebookResponse",  # Backward compatibility alias
-    # DAG types
+    # DAG types (legacy, used internally)
     "TaskStatus",
     "TaskNode",
     "TaskDAG",
@@ -123,6 +178,8 @@ __all__ = [
     "TaskSource",
     "Constraint",
     "ReplanRecord",
+    # Retry loop support (ADR-007)
+    "RetryLoopConfig",
     # Memory
     "SimpleMemory",
     "TieredMemoryManager",
@@ -131,6 +188,17 @@ __all__ = [
     "PinnedItem",
     "Message",
     "MemoryTier",
+    # Task mode components (primary execution path)
+    "TaskPlanner",
+    "SubagentRuntime",
+    "SubagentRuntimeConfig",
+    "SubagentType",
+    "SubagentStatus",
+    "SubagentNode",
+    "SubagentDAG",
+    "SubagentResult",
+    "SubagentExecutionResult",
+    "SubagentExecutionStats",
     # Config (Phase 3)
     "AgentConfig",
     "LLMConfig",
@@ -138,17 +206,45 @@ __all__ = [
     "MemoryConfigSpec",
     "RuntimeConfigSpec",
     "SkillType",
+    # Core agent config (Phase 5)
+    "CoreAgentConfig",
+    "load_core_agent_config",
+    "reset_core_config_cache",
     # Factory (Phase 3)
     "AgentFactory",
     "create_agent",
-    # Core components - Legacy Planners
+    # Subagent Config (Phase 4)
+    "SubagentConfig",
+    "SubagentConfigLoader",
+    "SubagentRegistry",
+    "get_default_registry",
+    "reset_default_registry",
+    # Permission System (Phase 4)
+    "PermissionRule",
+    "PermissionSet",
+    "PermissionManager",
+    "READONLY_PERMISSIONS",
+    "CODER_PERMISSIONS",
+    "FULL_ACCESS_PERMISSIONS",
+    "SAFE_BASH_PERMISSIONS",
+    "EXPLORER_PERMISSIONS",
+    "create_permission_manager",
+    "create_subagent_permissions",
+    # Subagent Context (Phase 4)
+    "SubagentContextSnapshot",
+    "SubagentContext",
+    # Context Stack (ADR-010)
+    "ContextFrame",
+    "ContextStack",
+    "FrameFactory",
+    "ContextStackOverflow",
+    "ContextStackUnderflow",
+    # Legacy components (kept for backward compatibility)
     "SimplePlanner",
     "DAGPlanner",
-    # Re-planning (Phase 3)
     "AdaptivePlanner",
     "ReplanRequest",
     "ReplanningStrategy",
-    # Phase 3-4: Planner Pipeline
     "PlanningMode",
     "PlanningContext",
     "PlannerStage",
@@ -158,12 +254,12 @@ __all__ = [
     "LLMEnhancer",
     "PipelineConfig",
     "PlannerPipeline",
-    # Executor & Runtime
     "SimpleExecutor",
     "AsyncRuntime",
     "ReplanCoordinator",
     "CoordinatorConfig",
     "CancellationToken",
+    # Main agent
     "CodeAgent",
     "NotebookAgent",  # Backward compatibility alias
     # Logging
