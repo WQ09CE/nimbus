@@ -7,14 +7,26 @@ This module provides the core kernel abstractions for Agent OS:
 - AgentProcess: Process Control Block (PCB)
 - ProcessManager: Process lifecycle management (fork/exec/wait/kill)
 - AgentOS: Unified kernel interface (spawn/wait/ps)
+- vCPU: Virtual processor for executing processes
 - IPC: Inter-process communication primitives
+
+Von Neumann Architecture Mapping:
+- vCPU = Control Unit + MMU + Interrupt Handler
+- LLMClient = ALU (Arithmetic Logic Unit)
+- ToolRegistry = ISA (Instruction Set Architecture)
+- AgentProcess.memory = Registers (context window)
 
 Usage Example:
 
     from nimbus.kernel import AgentOS
+    from nimbus.llm.factory import create_llm_client
+    from nimbus.tools.base import ToolRegistry
 
     async def main():
-        kernel = AgentOS()
+        # Create kernel with LLM and tools
+        llm = create_llm_client()
+        tools = ToolRegistry()
+        kernel = AgentOS(llm_client=llm, tool_registry=tools)
 
         # Spawn a process
         pid = await kernel.spawn(role="Brain", goal="Analyze code")
@@ -28,13 +40,14 @@ Usage Example:
 """
 
 __layer__ = 1
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from typing import Any, Callable, Dict, List, Optional, Set
 
 from .ipc import IPCMessage, MessageType, Signal
 from .proc import AgentProcess, ProcessState
 from .scheduler import ProcessManager
+from .vcpu import vCPU, vCPUError, ResourceLimitError, MaxIterationsError
 
 
 class AgentOS:
@@ -44,13 +57,51 @@ class AgentOS:
     Provides a high-level API for managing agent processes,
     abstracting the complexity of process management.
 
+    The AgentOS integrates all kernel components:
+    - ProcessManager: Process lifecycle management
+    - vCPU: Virtual processor for execution
+    - LLMClient: ALU for reasoning
+    - ToolRegistry: ISA for actions
+
     Attributes:
         process_manager: The underlying process manager
+        vcpu: Virtual CPU for process execution (optional)
+        llm_client: LLM client for reasoning (optional)
+        tool_registry: Tool registry for actions (optional)
     """
 
-    def __init__(self) -> None:
-        """Initialize Agent OS with default process manager."""
+    def __init__(
+        self,
+        llm_client: Optional[Any] = None,
+        tool_registry: Optional[Any] = None,
+        max_iterations: int = 50,
+    ) -> None:
+        """Initialize Agent OS with optional vCPU components.
+
+        Args:
+            llm_client: LLM client (ALU) for reasoning. If provided with
+                       tool_registry, enables vCPU execution.
+            tool_registry: Tool registry (ISA) for actions.
+            max_iterations: Maximum iterations per process for vCPU.
+        """
+        self.llm_client = llm_client
+        self.tool_registry = tool_registry
+
+        # Create vCPU if both LLM and tools are provided
+        self.vcpu: Optional[vCPU] = None
+        if llm_client is not None and tool_registry is not None:
+            self.vcpu = vCPU(
+                llm_client=llm_client,
+                tool_registry=tool_registry,
+                max_iterations=max_iterations,
+            )
+
+        # Initialize process manager
         self.process_manager = ProcessManager()
+
+        # Connect vCPU as executor if available
+        if self.vcpu is not None:
+            self.process_manager.set_executor(self.vcpu.execute)
 
     def set_executor(self, executor: Callable) -> None:
         """
@@ -224,6 +275,11 @@ class AgentOS:
 __all__ = [
     # Main interface
     "AgentOS",
+    # vCPU
+    "vCPU",
+    "vCPUError",
+    "ResourceLimitError",
+    "MaxIterationsError",
     # Process
     "AgentProcess",
     "ProcessState",
