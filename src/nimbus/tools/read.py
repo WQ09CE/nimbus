@@ -14,7 +14,7 @@ Example:
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .base import ToolParameter, tool
 from .sandbox import Sandbox, SandboxError
@@ -129,7 +129,7 @@ async def read_file(
     offset: int = 0,
     limit: int = DEFAULT_LIMIT,
     workspace: Optional[Path] = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> str:
     """Read file contents with line numbers.
 
@@ -224,8 +224,8 @@ async def read_file(
     end_line = min(offset + limit, total_lines)
 
     # Calculate line number width for alignment
-    max_line_num = offset + len(selected_lines)
-    num_width = max(5, len(str(max_line_num)))
+    # Always use fixed 5-digit width for Claude Code compatibility
+    num_width = 5
 
     # Format lines with numbers
     formatted_lines = []

@@ -515,14 +515,14 @@ async def list_skills():
     # TODO: Load from skill registry
     skills = [
         SkillResponse(
-            name="chat",
-            description="Chat with the user",
+            name="synthesize",
+            description="Synthesize tool results into human-readable reports",
             source="builtin",
             parameters=[
                 SkillParameter(
                     name="message",
                     type="string",
-                    description="Message to send",
+                    description="User's question to answer based on tool results",
                     required=True,
                 )
             ],

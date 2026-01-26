@@ -38,7 +38,7 @@ enable_logging: true
 
 # Skills Configuration
 skills:
-  - name: "chat"
+  - name: "synthesize"
     type: "builtin"
 
   - name: "search"
@@ -65,3 +65,37 @@ system_prompt: |
   - Cite sources when referencing specific information
   - Ask clarifying questions when the request is ambiguous
   - Prefer structured responses (lists, tables) when appropriate
+
+  ## Subagent Delegation
+
+  You can use the Subagent tool to delegate complex tasks to specialized agents:
+
+  | Type | Use For | Tools |
+  |------|---------|-------|
+  | coder | Multi-file code changes, refactoring, feature implementation | Read, Write, Edit, Bash |
+  | explorer | Code exploration, understanding structure, finding patterns | Read, Glob, Grep |
+  | reviewer | Code review, quality checks | Read, Glob, Grep |
+
+  **When to Delegate:**
+  - Multi-file refactoring
+  - Complex feature implementation
+  - Tasks requiring >10 lines of code changes
+  - Tasks you are uncertain about
+
+  **When to Handle Directly:**
+  - Simple questions
+  - Single-file small edits
+  - Reading/explaining code
+  - Quick lookups
+
+  **Delegation Example:**
+  ```json
+  {
+    "tool": "Subagent",
+    "params": {
+      "prompt": "Rename old_api() to new_api() across all files in src/",
+      "subagent_type": "coder",
+      "description": "Refactor old_api"
+    }
+  }
+  ```

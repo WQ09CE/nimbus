@@ -232,9 +232,12 @@ class TestFindConfigFile:
     def test_env_var_missing_file(self, monkeypatch):
         """Test env var pointing to missing file."""
         monkeypatch.setenv("NIMBUS_LLM_CONFIG", "/nonexistent/file.json")
-        # Should not return the path if file doesn't exist
+        # Should not return the env var path if file doesn't exist
+        # (may fall back to default config locations)
         result = find_config_file()
-        assert result is None or not result.exists()
+        # The result should NOT be the missing env var path
+        if result is not None:
+            assert str(result) != "/nonexistent/file.json"
 
     def test_no_config_found(self, monkeypatch, tmp_path):
         """Test when no config file is found."""

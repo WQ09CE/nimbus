@@ -64,7 +64,7 @@ class AsyncRuntime:
     Example:
         ```python
         # Basic usage
-        runtime = AsyncRuntime(skills={"chat": chat_skill})
+        runtime = AsyncRuntime(skills={"synthesize": synthesize_skill})
         result = await runtime.execute_dag(dag)
 
         # With coordinator for replanning
@@ -84,6 +84,7 @@ class AsyncRuntime:
         tool_registry: Optional["ToolRegistry"] = None,
         workspace: Optional[Path] = None,
         coordinator: Optional[ReplanCoordinator] = None,
+        llm_client: Optional[Any] = None,
     ):
         """Initialize async runtime.
 
@@ -94,6 +95,7 @@ class AsyncRuntime:
             tool_registry: Optional tool registry for code tools (Read, Glob, Grep).
             workspace: Optional workspace directory for tool sandbox validation.
             coordinator: Optional replan coordinator for dynamic replanning.
+            llm_client: Optional LLM client for subagent execution.
         """
         self.skills: Dict[str, SkillFunc] = skills or {}
         self.config = config or RuntimeConfig()
@@ -101,8 +103,11 @@ class AsyncRuntime:
         self.tool_registry = tool_registry
         self.workspace = workspace or Path.cwd()
         self.coordinator = coordinator
+        self.llm_client = llm_client
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._task_tokens: Dict[str, CancellationToken] = {}
+        # NEW: Retry tracking for on_failure handling (ADR-007)
+        self._retry_counts: Dict[str, int] = {}
 
     def register_skill(self, name: str, func: SkillFunc) -> None:
         """Register a skill function.
@@ -323,7 +328,7 @@ class AsyncRuntime:
                         return
 
                     try:
-                        result = await self._execute_with_timeout(task, cancel_token)
+                        result = await self._execute_with_timeout(task, dag, cancel_token)
 
                         # Check cancellation after execution
                         if cancel_token.is_cancelled():
@@ -378,12 +383,17 @@ class AsyncRuntime:
                         task.error = error_msg
                         task.finished_at = datetime.now()
 
-                # Task failed - mark downstream as skipped
+                # Task failed - check for on_failure handler or mark downstream as skipped
                 if task.status == TaskStatus.FAILED:
                     log.error(f"Task failed: skill={task.skill}, error={task.error}")
-                    dag.mark_downstream_skipped(task.id)
-                    # Save checkpoint after failure too
-                    self._save_checkpoint(dag, log)
+
+                    # NEW: Check for on_failure handler (ADR-007)
+                    if task.on_failure and self._can_retry(task):
+                        await self._handle_task_failure(task, dag, log)
+                    else:
+                        dag.mark_downstream_skipped(task.id)
+                        # Save checkpoint after failure too
+                        self._save_checkpoint(dag, log)
 
         finally:
             # Clean up
@@ -408,14 +418,17 @@ class AsyncRuntime:
     async def _execute_with_timeout(
         self,
         task: TaskNode,
+        dag: TaskDAG,
         cancel_token: Optional[CancellationToken] = None,
     ) -> Any:
         """Execute task with timeout.
 
         First checks if the task is a registered tool, then falls back to skills.
+        For chat skill, injects dependency task results into context.
 
         Args:
             task: TaskNode to execute.
+            dag: Parent DAG (for accessing dependency results).
             cancel_token: Optional cancellation token for cooperative cancellation.
 
         Returns:
@@ -425,13 +438,18 @@ class AsyncRuntime:
             asyncio.TimeoutError: If execution exceeds timeout.
             ValueError: If neither tool nor skill is registered.
         """
+        # Prepare params, potentially injecting dependency results for chat skill
+        params = self._prepare_params_with_dependencies(task, dag)
+
         # First check if it's a tool
         if self.tool_registry and task.skill in self.tool_registry:
             return await asyncio.wait_for(
                 self.tool_registry.execute(
                     task.skill,
-                    task.params,
+                    params,
                     workspace=self.workspace,
+                    tool_registry=self.tool_registry,
+                    llm_client=self.llm_client,
                 ),
                 timeout=self.config.default_timeout,
             )
@@ -442,9 +460,81 @@ class AsyncRuntime:
             raise ValueError(f"Unknown skill or tool: {task.skill}")
 
         return await asyncio.wait_for(
-            skill_func(**task.params),
+            skill_func(**params),
             timeout=self.config.default_timeout,
         )
+
+    def _prepare_params_with_dependencies(
+        self,
+        task: TaskNode,
+        dag: TaskDAG,
+    ) -> Dict[str, Any]:
+        """Prepare task params, injecting dependency results for chat skill.
+
+        Args:
+            task: TaskNode to execute.
+            dag: Parent DAG for accessing dependency results.
+
+        Returns:
+            Modified params dict with injected context for chat skill.
+        """
+        params = task.params.copy()
+
+        # Special handling for chat skill: inject dependency results
+        if task.skill == "synthesize" and task.depends_on:
+            source_results = []
+            for dep_id in task.depends_on:
+                dep_node = dag.nodes.get(dep_id)
+                if dep_node and dep_node.result is not None:
+                    result_str = self._format_task_result(dep_node)
+                    source_results.append(result_str)
+
+            # Inject into context
+            if source_results:
+                existing_context = params.get("context", "")
+                injected_context = "\n\n## Collected Information\n\n" + "\n\n---\n\n".join(source_results)
+                params["context"] = (existing_context + injected_context).strip()
+
+        return params
+
+    def _format_task_result(self, node: TaskNode) -> str:
+        """Format a task result for injection into chat context.
+
+        Args:
+            node: TaskNode with completed result.
+
+        Returns:
+            Formatted string representation of the result.
+        """
+        result = node.result
+        skill = node.skill
+        params = node.params
+
+        if skill == "Glob":
+            pattern = params.get("pattern", "")
+            if isinstance(result, list):
+                files = result[:20]  # Limit count
+                more = f"\n... and {len(result) - 20} more files" if len(result) > 20 else ""
+                return f"### Glob Results (pattern: {pattern})\nFound {len(result)} files:\n" + "\n".join(f"- {f}" for f in files) + more
+            return f"### Glob Results (pattern: {pattern})\n{result}"
+
+        elif skill == "Read":
+            file_path = params.get("file_path", "")
+            # Truncate long content
+            content = str(result)[:3000] if result else ""
+            truncated = "... (truncated)" if result and len(str(result)) > 3000 else ""
+            return f"### File Content: {file_path}\n```\n{content}{truncated}\n```"
+
+        elif skill == "Grep":
+            pattern = params.get("pattern", "")
+            content = str(result)[:2000] if result else ""
+            truncated = "... (truncated)" if result and len(str(result)) > 2000 else ""
+            return f"### Grep Results (pattern: {pattern})\n{content}{truncated}"
+
+        else:
+            content = str(result)[:2000] if result else ""
+            truncated = "... (truncated)" if result and len(str(result)) > 2000 else ""
+            return f"### {skill} Result\n{content}{truncated}"
 
     def _is_retryable(self, error: Exception) -> bool:
         """Check if an error is retryable.
@@ -461,6 +551,90 @@ class AsyncRuntime:
             OSError,
         )
         return isinstance(error, retryable_types)
+
+    def _can_retry(self, task: TaskNode) -> bool:
+        """Check if task can be retried via on_failure handler.
+
+        Args:
+            task: TaskNode that failed.
+
+        Returns:
+            True if retry is allowed (retry count < max_retries).
+        """
+        current_count = self._retry_counts.get(task.id, 0)
+        return current_count < task.max_retries
+
+    async def _handle_task_failure(
+        self,
+        task: TaskNode,
+        dag: TaskDAG,
+        log: Any,
+    ) -> None:
+        """Handle task failure by executing failure handler and retrying.
+
+        This implements the fix-and-retry loop pattern from ADR-007.
+
+        Args:
+            task: TaskNode that failed.
+            dag: Parent DAG.
+            log: Logger instance.
+        """
+        fix_task_id = task.on_failure
+        fix_task = dag.nodes.get(fix_task_id)
+
+        if not fix_task:
+            log.warning(f"on_failure handler {fix_task_id} not found")
+            dag.mark_downstream_skipped(task.id)
+            self._save_checkpoint(dag, log)
+            return
+
+        # Record retry attempt
+        self._retry_counts[task.id] = self._retry_counts.get(task.id, 0) + 1
+        task.retry_count = self._retry_counts[task.id]
+
+        log.info(
+            f"Task failed, executing handler: {fix_task_id} "
+            f"(attempt {task.retry_count}/{task.max_retries})"
+        )
+
+        # Activate and reset fix task status (it was inactive)
+        fix_task.inactive = False
+        fix_task.status = TaskStatus.PENDING
+        fix_task.result = None
+        fix_task.error = None
+
+        # Inject error info into fix task params if it has $error placeholder
+        if fix_task.params:
+            for key, value in list(fix_task.params.items()):
+                if isinstance(value, str) and "$error" in value:
+                    fix_task.params[key] = value.replace("$error", task.error or "Unknown error")
+
+        # Execute fix task
+        await self._execute_task(fix_task, dag)
+
+        if fix_task.status == TaskStatus.COMPLETED:
+            # Fix succeeded, retry original task (or retry_target)
+            target_id = fix_task.retry_target if fix_task.retry_target else task.id
+            target_task = dag.nodes.get(target_id)
+
+            if target_task:
+                log.info(f"Fix succeeded, retrying task: {target_id}")
+                # Reset target task for retry
+                target_task.status = TaskStatus.PENDING
+                target_task.result = None
+                target_task.error = None
+                target_task.started_at = None
+                target_task.finished_at = None
+                # Will be picked up by get_ready_tasks in next iteration
+            else:
+                log.warning(f"retry_target {target_id} not found")
+                dag.mark_downstream_skipped(task.id)
+        else:
+            # Fix also failed, give up
+            log.error(f"Fix task {fix_task_id} failed, giving up retry")
+            dag.mark_downstream_skipped(task.id)
+
+        self._save_checkpoint(dag, log)
 
     def get_cancel_token(self, task_id: str) -> Optional[CancellationToken]:
         """Get the cancellation token for a running task.

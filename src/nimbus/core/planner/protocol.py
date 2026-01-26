@@ -4,9 +4,9 @@ This module defines the protocol for planning stages and the context
 passed through the planning pipeline.
 """
 
-from typing import Protocol, Optional, Set, List, Any
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any, Dict, List, Optional, Protocol, Set
 
 from ..types import TaskDAG
 
@@ -22,6 +22,24 @@ class PlanningMode(str, Enum):
     RULE_ONLY = "rule_only"
     LLM_FULL = "llm_full"
     HYBRID = "hybrid"
+
+
+@dataclass
+class FailedTaskInfo:
+    """Information about a failed task for replanning.
+
+    Attributes:
+        task_id: ID of the failed task.
+        skill: Skill that was being executed.
+        params: Parameters passed to the skill.
+        error: Error message from the failure.
+        depends_on: List of task IDs this task depended on.
+    """
+    task_id: str
+    skill: str
+    params: dict
+    error: str
+    depends_on: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -44,6 +62,11 @@ class PlanningContext:
         warnings: List of warnings generated during planning.
         metadata: Additional metadata from planning stages.
         early_exit: Whether to exit early (skip remaining stages).
+        is_replan: Whether this is a replanning attempt.
+        failed_tasks: List of failed tasks from previous execution.
+        replan_attempt: Current replan attempt number (0 = initial plan).
+        completed_task_ids: Set of task IDs that completed successfully.
+        completed_task_results: Dict mapping task IDs to their results.
     """
     goal: str
     conversation_context: str
@@ -64,6 +87,13 @@ class PlanningContext:
     # Control flow
     early_exit: bool = False
 
+    # Replanning support
+    is_replan: bool = False
+    failed_tasks: List[FailedTaskInfo] = field(default_factory=list)
+    replan_attempt: int = 0
+    completed_task_ids: Set[str] = field(default_factory=set)
+    completed_task_results: Dict[str, Any] = field(default_factory=dict)  # task_id -> result
+
     def add_error(self, error: str) -> None:
         """Add an error message."""
         self.errors.append(error)
@@ -83,6 +113,23 @@ class PlanningContext:
     def get_dag(self) -> Optional[TaskDAG]:
         """Get the best available DAG (final > llm > rule)."""
         return self.final_dag or self.llm_dag or self.rule_dag
+
+    def get_failure_summary(self) -> str:
+        """Get a summary of failed tasks for LLM replanning.
+
+        Returns:
+            Human-readable summary of failures.
+        """
+        if not self.failed_tasks:
+            return ""
+
+        lines = ["## Previous Execution Failures"]
+        for ft in self.failed_tasks:
+            lines.append(f"- Task `{ft.task_id}` ({ft.skill}): {ft.error}")
+            if ft.params:
+                params_str = ", ".join(f"{k}={v!r}" for k, v in list(ft.params.items())[:3])
+                lines.append(f"  Params: {params_str}")
+        return "\n".join(lines)
 
 
 class PlannerStage(Protocol):

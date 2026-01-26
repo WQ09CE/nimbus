@@ -48,7 +48,7 @@ class AgentFactory:
         config = {
             "name": "My Agent",
             "llm": {"model": "claude-3-5-sonnet"},
-            "skills": [{"name": "chat", "type": "builtin"}]
+            "skills": [{"name": "synthesize", "type": "builtin"}]
         }
         agent = AgentFactory.create_from_dict(config)
         ```
@@ -359,9 +359,9 @@ class AgentFactory:
 
         # Import builtin skills
         try:
-            if skill_name == "chat":
-                from ..skills.chat import create_chat_skill
-                return create_chat_skill(llm_client)
+            if skill_name == "synthesize":
+                from ..skills.synthesize import create_synthesize_skill
+                return create_synthesize_skill(llm_client)
 
             elif skill_name == "search":
                 from ..skills.search import web_search

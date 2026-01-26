@@ -221,3 +221,33 @@ src/nimbus/
 ## License
 
 MIT
+
+## Nimbus 架构概述
+
+根据提供的文件列表，Nimbus 似乎是一个 AI 代理框架，其架构可以概括为以下几个主要部分：
+
+1.  **核心组件 (`src/nimbus/core`)**:
+    *   **规划器 (Planner)**: 位于 `src/nimbus/core/planner`，包含 `pipeline.py`（规划流程）、`rule_planner.py`（规则规划）、`llm_enhancer.py`（LLM增强）、`validator.py`（验证器）等，负责任务分解、策略制定和验证。
+    *   **运行时 (Runtime)**: `src/nimbus/core/runtime/executor.py` 表明存在一个执行器，负责执行规划器生成的任务。
+    *   **代理 (Agent)**: `src/nimbus/core/agent.py` 可能是代理的核心协调逻辑。
+    *   **工厂 (Factory)**: `src/nimbus/core/factory.py` 用于创建和管理不同组件的实例。
+    *   **类型 (Types)**: `src/nimbus/core/types.py` 定义了系统中的数据结构。
+
+2.  **服务器组件 (`src/nimbus/server`)**:
+    *   **API**: `src/nimbus/server/api.py` 和 `src/nimbus/server/api_ai_sdk.py` 提供对外接口，可能用于与其他系统或前端交互。
+    *   **应用**: `src/nimbus/server/app.py` 是服务器的主应用入口。
+    *   **会话与权限**: `src/nimbus/server/session.py` 和 `src/nimbus/server/permission.py` 处理用户会话和访问权限。
+
+3.  **技能组件 (`src/nimbus/skills`)**:
+    *   `src/nimbus/skills/synthesize.py` 和 `src/nimbus/skills/delegation.py` 表明 Nimbus 具备信息综合、任务委托等特定技能。
+
+4.  **工具组件 (`src/nimbus/tools`)**:
+    *   提供了一系列工具供代理执行操作，例如：
+        *   文件系统操作: `read.py`, `write.py`, `edit.py`, `glob.py`
+        *   搜索与网络: `search.py`, `websearch.py`, `webfetch.py`
+        *   命令行执行: `bash.py`
+
+此外，`examples/` 目录下包含使用示例，而 `tests/` 目录下的测试文件（如 `tests/capabilities/` 中的 `test_task_decomposition.py`, `test_code_search.py`, `test_repo_understanding.py` 等）进一步揭示了 Nimbus 在任务分解、代码理解和修改、上下文理解等方面的能力。
+
+总结来说，Nimbus 架构围绕一个核心代理构建，该代理通过规划器制定执行计划，利用各种工具与环境交互，并通过服务器提供服务接口，并具备多种特定技能。
+

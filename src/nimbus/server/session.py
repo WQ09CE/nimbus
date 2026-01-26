@@ -7,6 +7,7 @@ This module provides:
 """
 
 import asyncio
+import os
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -55,6 +56,7 @@ class SessionManager:
         workspace_path: Optional[str] = None,
         memory_type: str = "tiered",
         planner_type: str = "dag",
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Create a new session.
@@ -64,11 +66,13 @@ class SessionManager:
             workspace_path: Optional working directory.
             memory_type: Memory type (simple, tiered).
             planner_type: Planner type (simple, dag).
+            session_id: Optional session ID. If not provided, a random one will be generated.
 
         Returns:
             Session info dictionary.
         """
-        session_id = f"sess_{uuid.uuid4().hex[:12]}"
+        if session_id is None:
+            session_id = f"sess_{uuid.uuid4().hex[:12]}"
 
         session = await self._storage.create_session(
             session_id=session_id,
@@ -147,9 +151,14 @@ class SessionManager:
         Raises:
             ValueError: If session not found.
         """
+        import logging
+        logger = logging.getLogger(__name__)
+
         async with self._lock:
             if session_id in self._agents:
-                return self._agents[session_id]
+                agent = self._agents[session_id]
+                logger.info(f"📦 Returning cached agent for session {session_id}, workspace: {agent.workspace}")
+                return agent
 
         # Get session info
         session = await self._storage.get_session(session_id)
@@ -157,12 +166,24 @@ class SessionManager:
             raise ValueError(f"Session not found: {session_id}")
 
         # Import here to avoid circular imports
+        from pathlib import Path
         from nimbus.core.agent import CodeAgent
         from nimbus.core.memory import MemoryConfig
 
         # Create default LLM client if not provided
         if llm_client is None:
             llm_client = await self._create_default_llm_client()
+
+        # Get workspace path from session (expand ~ to full path)
+        workspace_path = session.get("workspace_path")
+        if workspace_path:
+            workspace_path = os.path.expanduser(workspace_path)
+        workspace = Path(workspace_path) if workspace_path else None
+
+        # Log workspace for debugging
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"🔧 Creating agent for session {session_id} with workspace: {workspace}")
 
         # Create agent with appropriate memory and planner type
         agent = CodeAgent(
@@ -171,6 +192,7 @@ class SessionManager:
             memory_config=MemoryConfig(),
             planner_type=session.get("planner_type", "dag"),
             session_id=session_id,
+            workspace=workspace,
         )
 
         async with self._lock:

@@ -15,7 +15,7 @@ Example:
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .base import ToolParameter, tool
 from .sandbox import Sandbox, SandboxError
@@ -26,12 +26,12 @@ DEFAULT_LIMIT = 100
 
 @tool(
     name="Glob",
-    description="Find files matching a glob pattern. Returns file paths sorted by modification time (newest first).",
+    description="Find files and directories matching a glob pattern. Returns paths sorted by modification time (newest first).",
     parameters=[
         ToolParameter(
             "pattern",
             "string",
-            "Glob pattern (e.g., **/*.py, src/**/*.ts, *.json)",
+            "Glob pattern (e.g., **/*.py, src/**/*.ts, *.json, src/*/)",
             required=True,
         ),
         ToolParameter(
@@ -44,7 +44,7 @@ DEFAULT_LIMIT = 100
         ToolParameter(
             "limit",
             "integer",
-            f"Maximum files to return. Defaults to {DEFAULT_LIMIT}.",
+            f"Maximum paths to return. Defaults to {DEFAULT_LIMIT}.",
             required=False,
             default=DEFAULT_LIMIT,
         ),
@@ -55,29 +55,30 @@ async def glob_files(
     path: str = ".",
     limit: int = DEFAULT_LIMIT,
     workspace: Optional[Path] = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> str:
-    """Find files matching glob pattern.
+    """Find files and directories matching glob pattern.
 
-    Searches for files matching a glob pattern within a directory,
+    Searches for files and directories matching a glob pattern within a directory,
     returning results sorted by modification time (newest first).
 
     Features:
         - Standard glob patterns (**/*.py, *.ts, etc.)
         - Recursive matching with **
+        - Matches both files and directories
         - Sort by modification time (newest first)
         - Result limiting
         - Returns relative paths
 
     Args:
-        pattern: Glob pattern to match (e.g., "**/*.py", "src/*.ts").
+        pattern: Glob pattern to match (e.g., "**/*.py", "src/*.ts", "src/*/").
         path: Base directory to search in. Defaults to ".".
-        limit: Maximum number of files to return. Defaults to 100.
+        limit: Maximum number of paths to return. Defaults to 100.
         workspace: Workspace directory for sandbox validation.
                    Required for security.
 
     Returns:
-        Formatted list of matching file paths, sorted by modification time.
+        Formatted list of matching paths, sorted by modification time.
 
     Raises:
         SandboxError: If base path escapes workspace.
@@ -86,10 +87,15 @@ async def glob_files(
     Example:
         >>> result = await glob_files("**/*.py", path="src", limit=10)
         >>> print(result)
-        Found 5 files:
         src/main.py
         src/utils.py
         src/core/engine.py
+        ...
+
+        >>> result = await glob_files("src/*/", limit=5)  # Match directories
+        >>> print(result)
+        src/core
+        src/utils
         ...
     """
     # Validate parameters
@@ -126,15 +132,13 @@ async def glob_files(
     except OSError as e:
         raise OSError(f"Glob error: {e}")
 
-    # Filter to only files (exclude directories)
-    files = [p for p in matches if p.is_file()]
-
-    # Also validate that all matched files are within sandbox
+    # Include both files and directories
+    # Also validate that all matched paths are within sandbox
     # (glob shouldn't escape, but symlinks could)
     safe_files = []
-    for f in files:
-        if sandbox.is_safe(f):
-            safe_files.append(f)
+    for p in matches:
+        if sandbox.is_safe(p):
+            safe_files.append(p)
 
     # Sort by modification time (newest first)
     try:
@@ -149,7 +153,7 @@ async def glob_files(
 
     # Format output with relative paths
     if not limited_files:
-        return f"No files found matching pattern '{pattern}' in '{path}'"
+        return f"No matches found for pattern '{pattern}' in '{path}'"
 
     # Convert to relative paths for cleaner output
     relative_paths = []
@@ -161,11 +165,10 @@ async def glob_files(
             # Fallback to absolute path if relative_to fails
             relative_paths.append(str(f))
 
-    # Build output
-    lines = [f"Found {total_count} file(s) matching '{pattern}':"]
-    lines.extend(relative_paths)
+    # Build output - Claude Code compatible format (pure path list, no header)
+    lines = relative_paths
 
     if total_count > limit:
-        lines.append(f"\n[Showing {limit} of {total_count} files]")
+        lines.append(f"\n[Showing {limit} of {total_count} matches]")
 
     return "\n".join(lines)

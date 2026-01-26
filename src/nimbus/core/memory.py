@@ -3,12 +3,14 @@
 This module provides:
 - SimpleMemory: Basic memory with conversation history and pinned items
 - TieredMemoryManager: Advanced multi-tier memory with compression and checkpointing
+- SubagentContext: Isolated context for subagent execution
 """
 
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol, Union
+import uuid
 
 from ..utils.tokens import estimate_tokens
 from ..utils.checkpoint import CheckpointManager
@@ -611,6 +613,52 @@ class TieredMemoryManager:
         """Get number of pinned items."""
         return len(self.pinned)
 
+    def create_snapshot(self, max_history: int = 5) -> "SubagentContextSnapshot":
+        """Create a context snapshot for subagent.
+
+        Creates a read-only snapshot of the current memory state that can be
+        passed to a subagent for isolated execution.
+
+        Args:
+            max_history: Maximum number of recent conversation turns to include.
+
+        Returns:
+            SubagentContextSnapshot containing pinned items, working context,
+            and recent conversation history.
+        """
+        # Convert PinnedItem objects to simple key-value pairs
+        pinned_items = {
+            item.id: item.content
+            for item in self.pinned
+        }
+
+        # Copy working context
+        working_context = dict(self.working)
+
+        # Recent history - convert Message objects to dicts (handle max_history=0 case)
+        if max_history <= 0:
+            recent_history: List[Dict[str, str]] = []
+        else:
+            recent_messages = self.episodic[-max_history:] if self.episodic else []
+            recent_history = [
+                {"role": msg.role, "content": msg.content}
+                for msg in recent_messages
+            ]
+
+        # System info from working memory
+        system_info: Dict[str, str] = {}
+        if "workspace" in self.working:
+            system_info["workspace"] = str(self.working["workspace"])
+        if "session_id" in self.working:
+            system_info["session_id"] = str(self.working["session_id"])
+
+        return SubagentContextSnapshot(
+            pinned_items=pinned_items,
+            working_context=working_context,
+            recent_history=recent_history,
+            system_info=system_info,
+        )
+
 
 class SimpleMemory:
     """Manages conversation history and pinned context."""
@@ -705,3 +753,323 @@ class SimpleMemory:
     def get_pinned_count(self) -> int:
         """Get the number of pinned items."""
         return len(self.pinned)
+
+    def create_snapshot(self, max_history: int = 5) -> "SubagentContextSnapshot":
+        """Create a context snapshot for subagent.
+
+        Creates a read-only snapshot of the current memory state that can be
+        passed to a subagent for isolated execution.
+
+        Args:
+            max_history: Maximum number of recent conversation turns to include.
+
+        Returns:
+            SubagentContextSnapshot containing pinned items, working context,
+            and recent conversation history.
+        """
+        # Convert pinned dict to snapshot format
+        pinned_items = {
+            filename: metadata
+            for filename, metadata in self.pinned.items()
+        }
+
+        # Working context (SimpleMemory doesn't have explicit working memory)
+        working_context: Dict[str, Any] = {}
+
+        # Recent history (handle max_history=0 case)
+        if max_history <= 0:
+            recent_history: List[Dict[str, str]] = []
+        else:
+            recent_history = self.history[-max_history:] if self.history else []
+
+        # System info
+        system_info: Dict[str, str] = {}
+
+        return SubagentContextSnapshot(
+            pinned_items=pinned_items,
+            working_context=working_context,
+            recent_history=recent_history,
+            system_info=system_info,
+        )
+
+
+@dataclass
+class SubagentContextSnapshot:
+    """Read-only snapshot of parent context for subagent.
+
+    This snapshot captures the essential context from a parent agent's memory
+    that should be available to a subagent. The snapshot is immutable to ensure
+    subagent operations don't affect the parent's state.
+
+    Attributes:
+        pinned_items: Key information that should always be remembered.
+        working_context: Current task state from parent.
+        recent_history: Recent conversation history (limited turns).
+        system_info: System information like workspace path.
+    """
+    pinned_items: Dict[str, str]
+    working_context: Dict[str, Any]
+    recent_history: List[Dict[str, str]]
+    system_info: Dict[str, str]
+
+    def __post_init__(self) -> None:
+        """Freeze the snapshot to prevent modifications."""
+        # Convert mutable dicts to immutable copies
+        object.__setattr__(self, 'pinned_items', dict(self.pinned_items))
+        object.__setattr__(self, 'working_context', dict(self.working_context))
+        object.__setattr__(self, 'recent_history', list(self.recent_history))
+        object.__setattr__(self, 'system_info', dict(self.system_info))
+
+
+class SubagentContext:
+    """Isolated context for subagent execution.
+
+    Provides a subagent with:
+    1. Read-only access to parent context (via snapshot)
+    2. Independent local memory for subagent's own conversation
+    3. Summary generation for returning results to parent
+
+    This ensures that:
+    - Subagent can see relevant parent context
+    - Subagent modifications don't affect parent state
+    - Parent receives a clean summary of subagent work
+
+    Example:
+        >>> parent_memory = TieredMemoryManager()
+        >>> # ... parent adds context ...
+        >>> subagent_ctx = SubagentContext.from_parent_memory(
+        ...     parent_memory,
+        ...     subagent_id="sub-123",
+        ...     subagent_type="eye"
+        ... )
+        >>> # Subagent uses its own memory
+        >>> subagent_ctx.add_turn("user", "Explore the codebase")
+        >>> subagent_ctx.add_turn("assistant", "Found 50 Python files...")
+        >>> # Get summary to return to parent
+        >>> summary = subagent_ctx.get_summary()
+    """
+
+    def __init__(
+        self,
+        parent_snapshot: SubagentContextSnapshot,
+        subagent_id: str,
+        subagent_type: str,
+    ) -> None:
+        """Initialize subagent context.
+
+        Args:
+            parent_snapshot: Read-only snapshot from parent memory.
+            subagent_id: Unique identifier for this subagent instance.
+            subagent_type: Type of subagent (e.g., "eye", "body", "mind").
+        """
+        self.subagent_id = subagent_id
+        self.subagent_type = subagent_type
+        self._parent_snapshot = parent_snapshot
+
+        # Independent memory instance for subagent's own conversation
+        self.memory = SimpleMemory(max_turns=20)
+
+        # Build the read-only context string
+        self._readonly_context = self._build_readonly_context()
+
+        # Track execution metadata
+        self._created_at = datetime.now()
+        self._tool_calls: List[Dict[str, Any]] = []
+
+    @property
+    def parent_snapshot(self) -> SubagentContextSnapshot:
+        """Get the parent snapshot (read-only access)."""
+        return self._parent_snapshot
+
+    def _build_readonly_context(self) -> str:
+        """Build read-only context string from parent snapshot.
+
+        Returns:
+            Formatted context string containing parent's key information.
+        """
+        parts = []
+
+        # System info
+        if self._parent_snapshot.system_info:
+            info_lines = [
+                f"- {key}: {value}"
+                for key, value in self._parent_snapshot.system_info.items()
+            ]
+            if info_lines:
+                parts.append("## System Info\n" + "\n".join(info_lines))
+
+        # Pinned items (key information)
+        if self._parent_snapshot.pinned_items:
+            pinned_lines = [
+                f"- {key}: {value}"
+                for key, value in self._parent_snapshot.pinned_items.items()
+            ]
+            parts.append("## Key Information (from parent)\n" + "\n".join(pinned_lines))
+
+        # Working context (current task state)
+        if self._parent_snapshot.working_context:
+            working_lines = [
+                f"- {key}: {value}"
+                for key, value in self._parent_snapshot.working_context.items()
+            ]
+            parts.append("## Parent Task State\n" + "\n".join(working_lines))
+
+        # Recent history (limited)
+        if self._parent_snapshot.recent_history:
+            history_lines = []
+            for turn in self._parent_snapshot.recent_history:
+                role = turn.get("role", "unknown").capitalize()
+                content = turn.get("content", "")
+                # Truncate long content
+                if len(content) > 300:
+                    content = content[:300] + "..."
+                history_lines.append(f"{role}: {content}")
+            parts.append("## Recent Parent Conversation\n" + "\n".join(history_lines))
+
+        return "\n\n".join(parts) if parts else ""
+
+    def get_context(self) -> str:
+        """Get complete context for subagent (parent context + local memory).
+
+        Returns:
+            Formatted context string combining parent context and local memory.
+        """
+        parts = []
+
+        # Add subagent identification
+        parts.append(f"## Subagent: {self.subagent_type} ({self.subagent_id})")
+
+        # Add read-only parent context
+        if self._readonly_context:
+            parts.append("---\n# Parent Context (Read-Only)")
+            parts.append(self._readonly_context)
+
+        # Add local memory (subagent's own conversation)
+        local_context = self.memory.get_context(recent_count=10)
+        if local_context:
+            parts.append("---\n# Subagent Conversation")
+            parts.append(local_context)
+
+        return "\n\n".join(parts)
+
+    def add_turn(self, role: str, content: str) -> None:
+        """Add a conversation turn to local memory.
+
+        Args:
+            role: Message role ("user", "assistant", "system").
+            content: Message content.
+        """
+        self.memory.add_turn(role, content)
+
+    def record_tool_call(self, tool_name: str, args: Dict[str, Any], result: Any) -> None:
+        """Record a tool call for summary generation.
+
+        Args:
+            tool_name: Name of the tool called.
+            args: Arguments passed to the tool.
+            result: Result returned by the tool.
+        """
+        self._tool_calls.append({
+            "tool": tool_name,
+            "args": args,
+            "result_preview": str(result)[:200] if result else None,
+            "timestamp": datetime.now().isoformat(),
+        })
+
+    def get_summary(self) -> str:
+        """Get execution summary to return to parent.
+
+        Generates a concise summary of the subagent's work, including:
+        - Task performed
+        - Key findings
+        - Tool calls made
+        - Duration
+
+        Returns:
+            Formatted summary string.
+        """
+        parts = []
+
+        # Header
+        duration = (datetime.now() - self._created_at).total_seconds()
+        parts.append(f"## Subagent Summary: {self.subagent_type}")
+        parts.append(f"- ID: {self.subagent_id}")
+        parts.append(f"- Duration: {duration:.1f}s")
+        parts.append(f"- Turns: {self.memory.get_turn_count()}")
+
+        # Tool calls summary
+        if self._tool_calls:
+            parts.append(f"\n### Tools Used ({len(self._tool_calls)} calls)")
+            # Group by tool name
+            tool_counts: Dict[str, int] = {}
+            for call in self._tool_calls:
+                tool_name = call["tool"]
+                tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
+            for tool_name, count in tool_counts.items():
+                parts.append(f"- {tool_name}: {count}x")
+
+        # Last assistant response as main result
+        last_response = None
+        for turn in reversed(self.memory.history):
+            if turn["role"] == "assistant":
+                last_response = turn["content"]
+                break
+
+        if last_response:
+            parts.append("\n### Result")
+            # Truncate if too long
+            if len(last_response) > 1000:
+                parts.append(last_response[:1000] + "\n...(truncated)")
+            else:
+                parts.append(last_response)
+
+        return "\n".join(parts)
+
+    def get_local_history(self) -> List[Dict[str, str]]:
+        """Get local conversation history.
+
+        Returns:
+            List of conversation turns in the subagent's local memory.
+        """
+        return list(self.memory.history)
+
+    @classmethod
+    def from_parent_memory(
+        cls,
+        parent_memory: Union[SimpleMemory, TieredMemoryManager],
+        subagent_id: str,
+        subagent_type: str,
+        max_history: int = 5,
+    ) -> "SubagentContext":
+        """Create subagent context from parent memory.
+
+        Factory method that creates a snapshot from parent memory and
+        initializes an isolated subagent context.
+
+        Args:
+            parent_memory: Parent's memory instance (SimpleMemory or TieredMemoryManager).
+            subagent_id: Unique identifier for the subagent. If empty, generates UUID.
+            subagent_type: Type of subagent (e.g., "eye", "body", "mind").
+            max_history: Maximum conversation turns to include from parent.
+
+        Returns:
+            New SubagentContext with isolated memory.
+
+        Example:
+            >>> parent = TieredMemoryManager()
+            >>> parent.pin(PinnedItem(id="p1", type="instruction", content="Be helpful"))
+            >>> ctx = SubagentContext.from_parent_memory(parent, "sub-1", "eye")
+            >>> ctx.parent_snapshot.pinned_items  # Contains {"p1": "Be helpful"}
+        """
+        # Generate ID if not provided
+        if not subagent_id:
+            subagent_id = f"{subagent_type}-{uuid.uuid4().hex[:8]}"
+
+        # Create snapshot from parent
+        snapshot = parent_memory.create_snapshot(max_history=max_history)
+
+        return cls(
+            parent_snapshot=snapshot,
+            subagent_id=subagent_id,
+            subagent_type=subagent_type,
+        )

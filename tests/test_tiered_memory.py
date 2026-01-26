@@ -7,8 +7,7 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 
-# Configure pytest-asyncio
-pytestmark = pytest.mark.asyncio(loop_scope="function")
+# Note: Only async test functions should use @pytest.mark.asyncio decorator
 
 from nimbus.core.memory import (
     TieredMemoryManager,

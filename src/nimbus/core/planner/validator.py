@@ -48,7 +48,7 @@ class DAGValidator:
     Example:
         ```python
         validator = DAGValidator(
-            skill_whitelist={"search", "summarize", "chat"},
+            skill_whitelist={"search", "summarize", "synthesize"},
             max_tasks=20,
             max_depth=10,
         )
@@ -279,8 +279,8 @@ class DAGValidator:
 
         invalid = []
         for node in dag.nodes.values():
-            # 'chat' is always allowed as a fallback
-            if node.skill != "chat" and node.skill not in self.skill_whitelist:
+            # 'synthesize' is always allowed as a fallback
+            if node.skill != "synthesize" and node.skill not in self.skill_whitelist:
                 invalid.append(node.skill)
 
         return list(set(invalid))  # Deduplicate
@@ -425,9 +425,9 @@ class DAGValidator:
             # 1. Fix invalid skills by replacing with chat
             if self.skill_whitelist:
                 for node in repaired.nodes.values():
-                    if node.skill != "chat" and node.skill not in self.skill_whitelist:
-                        warnings.append(f"Replaced invalid skill '{node.skill}' with 'chat' in node '{node.id}'")
-                        node.skill = "chat"
+                    if node.skill != "synthesize" and node.skill not in self.skill_whitelist:
+                        warnings.append(f"Replaced invalid skill '{node.skill}' with 'synthesize' in node '{node.id}'")
+                        node.skill = "synthesize"
                         node.source = TaskSource.RULE
 
             # 2. Remove missing dependencies

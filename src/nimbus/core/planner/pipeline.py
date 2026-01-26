@@ -5,12 +5,15 @@ multi-stage planning through a series of PlannerStage instances.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Set, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Set
 
-from ..types import TaskDAG
+if TYPE_CHECKING:
+    from ..context import ContextStack
+
 from ..logging import get_logger
-from .protocol import PlannerStage, PlanningContext, PlanningMode
-from .validator import DAGValidator, ValidationResult
+from ..types import TaskDAG
+from .protocol import FailedTaskInfo, PlannerStage, PlanningContext, PlanningMode
+from .validator import DAGValidator
 
 logger = get_logger("planner.pipeline")
 
@@ -29,6 +32,8 @@ class PipelineConfig:
         skill_whitelist: Set of allowed skills.
         max_llm_tasks: Maximum tasks the LLM can generate.
         max_depth: Maximum DAG depth.
+        enable_router: Whether to enable TaskRouter for complexity-based routing.
+        use_tool_planner: Whether to use ToolDAGPlanner for MODERATE tasks.
     """
     enable_context_analyzer: bool = True
     enable_rule_planner: bool = True
@@ -39,6 +44,9 @@ class PipelineConfig:
     skill_whitelist: Set[str] = field(default_factory=set)
     max_llm_tasks: int = 20
     max_depth: int = 10
+    # New router mode options
+    enable_router: bool = False
+    use_tool_planner: bool = False
 
 
 class LLMClient(Protocol):
@@ -62,7 +70,7 @@ class PlannerPipeline:
         dag = await pipeline.plan(
             goal="搜索 AI 趋势，然后总结",
             context="用户是技术从业者",
-            available_skills={"search", "summarize", "chat"},
+            available_skills={"search", "summarize", "synthesize"},
         )
         ```
     """
@@ -172,7 +180,7 @@ class PlannerPipeline:
             Simple chat DAG as fallback.
         """
         logger.warning("Creating fallback DAG")
-        return TaskDAG.create_simple("chat", {"message": ctx.goal})
+        return TaskDAG.create_simple("synthesize", {"message": ctx.goal})
 
     async def plan_with_context(
         self,
@@ -210,6 +218,7 @@ class PlannerPipeline:
         cls,
         llm_client: LLMClient,
         config: Optional[PipelineConfig] = None,
+        context_stack: Optional["ContextStack"] = None,
     ) -> "PlannerPipeline":
         """Create a default pipeline with all stages.
 
@@ -219,18 +228,28 @@ class PlannerPipeline:
         3. LLMEnhancer - LLM-based planning/enhancement
         4. Validation via pipeline config
 
+        If config.enable_router is True, uses the router-based architecture:
+        1. TaskRouter - classify task complexity (SIMPLE/MODERATE/COMPLEX)
+        2. ToolDAGPlanner - generate DAG for MODERATE tasks (read-only tools)
+
         Args:
-            llm_client: LLM client for LLMEnhancer.
+            llm_client: LLM client for LLMEnhancer or router.
             config: Optional pipeline configuration.
+            context_stack: Optional ContextStack for focused context views.
 
         Returns:
             Configured PlannerPipeline instance.
         """
-        from .context_analyzer import ContextAnalyzer
-        from .rule_planner import RulePlanner
-        from .llm_enhancer import LLMEnhancer
-
         config = config or PipelineConfig()
+
+        # If router mode is enabled, delegate to with_router
+        if config.enable_router:
+            return cls.with_router(llm_client, config, context_stack)
+
+        from .context_analyzer import ContextAnalyzer
+        from .llm_enhancer import LLMEnhancer
+        from .rule_planner import RulePlanner
+
         stages: List[PlannerStage] = []
 
         if config.enable_context_analyzer:
@@ -295,6 +314,71 @@ class PlannerPipeline:
         )
 
         return cls([LLMEnhancer(llm_client, validator)], config)
+
+    @classmethod
+    def with_router(
+        cls,
+        llm_client: LLMClient,
+        config: Optional[PipelineConfig] = None,
+        context_stack: Optional["ContextStack"] = None,
+    ) -> "PlannerPipeline":
+        """Create a pipeline with TaskRouter for complexity-based routing.
+
+        This pipeline uses a lightweight router (400 char prompt) to classify
+        task complexity:
+        - SIMPLE: Direct synthesize response (early exit)
+        - MODERATE: ToolDAGPlanner with Read/Glob/Grep only
+        - COMPLEX: Subagent delegation (early exit)
+
+        Architecture:
+            ```
+            User Goal
+                |
+                v
+            [try_rule_match] ---- Fast path (skip all if matched)
+                | (miss)
+                v
+            [TaskRouter] ---- 400 char prompt
+                |
+                +-- SIMPLE --> Direct synthesize DAG (early_exit)
+                |
+                +-- MODERATE --> [ToolDAGPlanner] (compact prompt, read-only tools)
+                |
+                +-- COMPLEX --> Subagent DAG (early_exit)
+            ```
+
+        Args:
+            llm_client: LLM client for router and tool planner.
+            config: Optional pipeline configuration.
+            context_stack: Optional ContextStack for focused context views.
+
+        Returns:
+            Pipeline configured for router mode.
+
+        Example:
+            ```python
+            pipeline = PlannerPipeline.with_router(llm_client)
+            dag = await pipeline.plan("Read main.py", "", {"Read", "synthesize"})
+            ```
+        """
+        from .router import TaskRouter, TaskRouterStage
+        from .tool_planner import ToolPlannerStage
+
+        config = config or PipelineConfig()
+        config.enable_router = True
+        config.use_tool_planner = True
+        config.planning_mode = PlanningMode.HYBRID
+
+        stages: List[PlannerStage] = []
+
+        # 1. TaskRouter stage (routes SIMPLE/COMPLEX to early exit)
+        router = TaskRouter(llm_client, enable_llm=True)
+        stages.append(TaskRouterStage(router))
+
+        # 2. ToolPlannerStage (only for MODERATE tasks)
+        stages.append(ToolPlannerStage(llm_client, context_stack))
+
+        return cls(stages, config)
 
     def add_stage(self, stage: PlannerStage, index: Optional[int] = None) -> None:
         """Add a stage to the pipeline.
@@ -374,3 +458,93 @@ class PlannerPipeline:
             logger.debug(f"Rule match failed: {e}")
 
         return None
+
+    async def replan(
+        self,
+        goal: str,
+        context: str,
+        available_skills: Set[str],
+        failed_tasks: List[FailedTaskInfo],
+        completed_task_ids: Optional[Set[str]] = None,
+        completed_task_results: Optional[Dict[str, Any]] = None,
+        replan_attempt: int = 1,
+    ) -> TaskDAG:
+        """Replan based on failed task information.
+
+        This method creates a new plan that accounts for previous failures.
+        It skips rule-based planning and goes directly to LLM enhancement
+        with additional context about what went wrong.
+
+        Args:
+            goal: User's original goal/request.
+            context: Conversation context.
+            available_skills: Set of available skill names.
+            failed_tasks: List of FailedTaskInfo from previous execution.
+            completed_task_ids: Set of task IDs that completed successfully.
+            completed_task_results: Dict mapping task IDs to their results.
+            replan_attempt: Current replan attempt number (1-based).
+
+        Returns:
+            New TaskDAG to execute.
+        """
+        logger.info(
+            f"Replanning (attempt {replan_attempt}) for: {goal[:50]}... "
+            f"with {len(failed_tasks)} failed tasks"
+        )
+
+        # Create replanning context
+        ctx = PlanningContext(
+            goal=goal,
+            conversation_context=context,
+            available_skills=available_skills,
+            skill_whitelist=self.config.skill_whitelist or available_skills,
+            planning_mode=PlanningMode.LLM_FULL,  # Force LLM for replanning
+            is_replan=True,
+            failed_tasks=failed_tasks,
+            replan_attempt=replan_attempt,
+            completed_task_ids=completed_task_ids or set(),
+            completed_task_results=completed_task_results or {},
+        )
+
+        # Skip rule planner for replanning - go directly to LLM
+        for stage in self.stages:
+            # Only run LLM enhancer for replanning
+            if stage.name != "llm_enhancer":
+                continue
+
+            try:
+                logger.debug(f"Replan: executing stage {stage.name}")
+                ctx = await stage.process(ctx)
+
+                if ctx.final_dag:
+                    logger.debug(f"Replan: DAG generated with {len(ctx.final_dag.nodes)} tasks")
+                    break
+
+            except Exception as e:
+                logger.error(f"Replan stage {stage.name} failed: {e}")
+                ctx.add_error(f"Replan stage {stage.name} failed: {str(e)}")
+
+        # Validation
+        if self.config.enable_validator and ctx.final_dag:
+            self._validator.skill_whitelist = ctx.skill_whitelist
+            result = self._validator.validate(ctx.final_dag)
+            if not result.valid:
+                if result.repaired_dag:
+                    ctx.final_dag = result.repaired_dag
+                    ctx.warnings.extend(result.warnings)
+                    logger.info("Replan DAG was repaired")
+                else:
+                    ctx.errors.extend(result.errors)
+                    logger.warning(f"Replan DAG validation failed: {result.errors}")
+                    ctx.final_dag = self._create_fallback(ctx)
+
+        # Ensure we have a DAG
+        if not ctx.final_dag:
+            ctx.final_dag = ctx.get_dag() or self._create_fallback(ctx)
+
+        logger.info(
+            f"Replan complete: {len(ctx.final_dag.nodes)} tasks, "
+            f"{len(ctx.errors)} errors"
+        )
+
+        return ctx.final_dag

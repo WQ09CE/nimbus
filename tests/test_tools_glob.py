@@ -23,7 +23,7 @@ class TestGlobFiles:
         assert "test1.py" in result
         assert "test2.py" in result
         assert "other.txt" not in result
-        assert "Found 2 file(s)" in result
+        # New format: no header, just paths
 
     @pytest.mark.asyncio
     async def test_glob_recursive_pattern(self, tmp_path):
@@ -40,7 +40,7 @@ class TestGlobFiles:
 
         assert "root.py" in result
         assert "subdir/nested.py" in result or "subdir\\nested.py" in result
-        assert "Found 3 file(s)" in result
+        # New format: no header, just paths
 
     @pytest.mark.asyncio
     async def test_glob_with_base_path(self, tmp_path):
@@ -62,7 +62,7 @@ class TestGlobFiles:
 
         result = await glob_files("*.py", workspace=tmp_path)
 
-        assert "No files found matching pattern" in result
+        assert "No matches found" in result
 
     @pytest.mark.asyncio
     async def test_glob_with_limit(self, tmp_path):
@@ -72,7 +72,7 @@ class TestGlobFiles:
 
         result = await glob_files("*.py", limit=3, workspace=tmp_path)
 
-        assert "Showing 3 of 10 files" in result
+        assert "Showing 3 of 10 matches" in result
 
     @pytest.mark.asyncio
     async def test_glob_sorted_by_mtime(self, tmp_path):
@@ -95,8 +95,8 @@ class TestGlobFiles:
         assert file_lines[1].endswith("old.py")
 
     @pytest.mark.asyncio
-    async def test_glob_excludes_directories(self, tmp_path):
-        """Test that directories are excluded from results."""
+    async def test_glob_includes_directories(self, tmp_path):
+        """Test that directories are included in results."""
         (tmp_path / "file.py").write_text("# file")
         subdir = tmp_path / "subdir.py"
         subdir.mkdir()  # Directory with .py extension
@@ -104,7 +104,10 @@ class TestGlobFiles:
         result = await glob_files("*.py", workspace=tmp_path)
 
         assert "file.py" in result
-        assert "Found 1 file(s)" in result  # Only the file, not the directory
+        assert "subdir.py" in result
+        # Both file and directory should be included
+        lines = [l for l in result.strip().split("\n") if l.endswith(".py")]
+        assert len(lines) == 2
 
     @pytest.mark.asyncio
     async def test_glob_empty_pattern(self, tmp_path):

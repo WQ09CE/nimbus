@@ -3,7 +3,7 @@
 Tests the integration of ToolRegistry with:
 - AsyncRuntime: Tool execution in DAG workflows
 - NotebookAgent: Default tool registration and availability
-- DAGPlanner: Tool availability in planning prompts
+- PlannerPipeline: Tool availability in planning
 """
 
 import pytest
@@ -13,6 +13,7 @@ from pathlib import Path
 
 from nimbus.core.runtime import AsyncRuntime
 from nimbus.core.types import TaskDAG, TaskStatus, RuntimeConfig
+from nimbus.core.planner import PlannerPipeline, PipelineConfig, DAGValidator
 from nimbus.tools import ToolRegistry, read_file, glob_files, grep_content
 
 
@@ -119,7 +120,7 @@ class TestRuntimeToolIntegration:
             {
                 "id": "t1",
                 "skill": "Grep",
-                "params": {"pattern": "class Agent", "type": "py"},
+                "params": {"pattern": "class Agent", "type": "py", "output_mode": "content"},
                 "depends_on": [],
             },
         ])
@@ -324,8 +325,8 @@ class TestAgentToolIntegration:
         assert "Grep" in names
 
 
-class TestDAGPlannerToolAwareness:
-    """Tests for DAGPlanner awareness of tools."""
+class TestPlannerPipelineToolAwareness:
+    """Tests for PlannerPipeline awareness of tools."""
 
     def test_planner_prompt_includes_tools(self):
         """Test that DAG planning prompt includes tool descriptions."""
@@ -344,6 +345,37 @@ class TestDAGPlannerToolAwareness:
     @pytest.mark.asyncio
     async def test_planner_validates_tool_names(self):
         """Test that planner accepts tool names as valid skills."""
+        class MockLLM:
+            async def complete(self, prompt: str) -> str:
+                return '{"mode": "dag", "tasks": [{"id": "t1", "skill": "Read", "params": {"file_path": "test.py"}, "depends_on": []}]}'
+
+        pipeline = PlannerPipeline.default(MockLLM())
+
+        # Available skills should include tools
+        available = {"synthesize", "search", "Read", "Glob", "Grep"}
+        dag = await pipeline.plan(
+            goal="Read test.py",
+            context="",
+            available_skills=available,
+        )
+
+        # Should not report validation errors for tool names
+        validator = DAGValidator(skill_whitelist=available)
+        result = validator.validate(dag)
+        assert result.valid
+
+
+# =============================================================================
+# Legacy DAGPlanner Tool Tests (with deprecation warning suppressed)
+# =============================================================================
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+class TestDAGPlannerToolAwarenessLegacy:
+    """Legacy tests for DAGPlanner awareness of tools (deprecated)."""
+
+    @pytest.mark.asyncio
+    async def test_planner_validates_tool_names(self):
+        """Test that planner accepts tool names as valid skills."""
         from nimbus.core.planner import DAGPlanner
         from nimbus.core.types import TaskDAG
 
@@ -354,7 +386,7 @@ class TestDAGPlannerToolAwareness:
         planner = DAGPlanner(MockLLM())
 
         # Available skills should include tools
-        available = {"chat", "search", "Read", "Glob", "Grep"}
+        available = {"synthesize", "search", "Read", "Glob", "Grep"}
         dag = await planner.create_plan(
             goal="Read test.py",
             context="",

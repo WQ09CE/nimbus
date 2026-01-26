@@ -97,7 +97,7 @@ class TestServerModels:
 
         node = TaskNodeResponse(
             id="task_1",
-            skill="chat",
+            skill="synthesize",
             status=TaskStatusEnum.COMPLETED,
         )
 
@@ -117,7 +117,7 @@ class TestServerModels:
         from nimbus.server.models import SkillResponse, SkillParameter
 
         skill = SkillResponse(
-            name="chat",
+            name="synthesize",
             description="Chat skill",
             source="builtin",
             parameters=[
@@ -129,7 +129,7 @@ class TestServerModels:
                 )
             ],
         )
-        assert skill.name == "chat"
+        assert skill.name == "synthesize"
         assert len(skill.parameters) == 1
 
 
@@ -148,7 +148,7 @@ class TestPermissionManager:
 
         # Safe tools should default to ALLOW_ALWAYS
         assert manager.get_rule("read_file").value == "allow_always"
-        assert manager.get_rule("chat").value == "allow_always"
+        assert manager.get_rule("synthesize").value == "allow_always"
 
     def test_set_rule(self):
         """Test setting permission rules."""

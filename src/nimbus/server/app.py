@@ -17,6 +17,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from .sse import SSEHub
 from .session import SessionManager
 from .permission import PermissionManager
+from .message_cache import MessageCache
+from .log_hub import log_hub, setup_log_hub_handler
 
 
 @asynccontextmanager
@@ -50,11 +52,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     permission_manager = PermissionManager()
     session_manager = SessionManager(storage, sse_hub, permission_manager)
 
+    # Initialize message cache for conversation history
+    message_cache = MessageCache(
+        storage=storage,
+        max_messages=50,
+        cache_ttl_minutes=30,
+    )
+
+    # Set up log hub for real-time log streaming
+    setup_log_hub_handler(log_hub)
+
     # Store in app state
     app.state.storage = storage
+    app.state.log_hub = log_hub
     app.state.sse_hub = sse_hub
     app.state.permission_manager = permission_manager
     app.state.session_manager = session_manager
+    app.state.message_cache = message_cache
 
     yield
 
@@ -78,10 +92,13 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Configure CORS
+    # Configure CORS - specific origins for credentials support
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # Configure appropriately for production
+        allow_origins=[
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -95,6 +112,14 @@ def create_app() -> FastAPI:
     from .compat import opencode_router
     app.include_router(opencode_router, tags=["opencode"])
 
+    # Register AI SDK compatible routes (Vercel AI SDK Data Protocol)
+    from .api_ai_sdk import router as ai_sdk_router
+    app.include_router(ai_sdk_router, tags=["AI SDK"])
+
+    # Register frontend logging routes
+    from .api_logs import router as logs_router
+    app.include_router(logs_router, tags=["Logs"])
+
     return app
 
 
@@ -102,3 +127,7 @@ def create_app() -> FastAPI:
 def get_app() -> FastAPI:
     """Get the FastAPI application (alias for create_app)."""
     return create_app()
+
+
+# Create the app instance for uvicorn
+app = create_app()

@@ -1,9 +1,23 @@
-"""Planners for creating execution plans using LLM.
+"""Legacy planners for creating execution plans using LLM.
+
+DEPRECATED: SimplePlanner and DAGPlanner are deprecated.
+Use PlannerPipeline from nimbus.core.planner instead.
 
 This module provides:
-- SimplePlanner: Basic sequential planning
-- DAGPlanner: Parallel task DAG planning
-- AdaptivePlanner: Dynamic re-planning based on execution results
+- SimplePlanner: Basic sequential planning (DEPRECATED)
+- DAGPlanner: Parallel task DAG planning (DEPRECATED)
+- AdaptivePlanner: Dynamic re-planning based on execution results (still used by coordinators)
+
+Migration Guide:
+    # Old way (deprecated):
+    from nimbus.core.planner import DAGPlanner
+    planner = DAGPlanner(llm_client)
+    dag = await planner.create_plan(goal, context, skills)
+
+    # New way (recommended):
+    from nimbus.core.planner import PlannerPipeline
+    pipeline = PlannerPipeline.default(llm_client)
+    dag = await pipeline.plan(goal, context, skills)
 """
 
 import hashlib
@@ -87,7 +101,7 @@ class SimplePlanner:
             Plan with either direct response or tasks to execute.
         """
         prompt = PLANNING_PROMPT.format(
-            skills=", ".join(available_skills) if available_skills else "chat",
+            skills=", ".join(available_skills) if available_skills else "synthesize",
             context=context or "No prior context.",
             goal=goal,
         )
@@ -113,11 +127,11 @@ class SimplePlanner:
             # Multi-step mode
             tasks = []
             for i, task_data in enumerate(data.get("tasks", [])):
-                task_type = TaskType(task_data.get("type", "chat"))
+                task_type = TaskType(task_data.get("type", "synthesize"))
                 task = Task(
                     id=f"task_{uuid.uuid4().hex[:8]}",
                     type=task_type,
-                    skill=task_data.get("skill", "chat"),
+                    skill=task_data.get("skill", "synthesize"),
                     params=task_data.get("params", {}),
                 )
                 tasks.append(task)
@@ -410,7 +424,7 @@ class DAGPlanner:
         if errors:
             logger.warning(f"DAG validation errors: {errors}")
             # Fallback to simple chat
-            return TaskDAG.create_simple("chat", {"message": goal})
+            return TaskDAG.create_simple("synthesize", {"message": goal})
 
         logger.info(f"Created DAG with {len(dag.nodes)} tasks")
         return dag
@@ -444,14 +458,14 @@ class DAGPlanner:
             if data.get("mode") == "direct":
                 # Direct response - create simple chat DAG
                 direct_text = data.get("response", "")
-                return TaskDAG.create_simple("chat", {"message": direct_text})
+                return TaskDAG.create_simple("synthesize", {"message": direct_text})
 
             # DAG mode - parse tasks with dependencies
             tasks = []
             for task_data in data.get("tasks", []):
                 task = {
                     "id": task_data.get("id", f"t{len(tasks)+1}"),
-                    "skill": task_data.get("skill", "chat"),
+                    "skill": task_data.get("skill", "synthesize"),
                     "params": task_data.get("params", {}),
                     "depends_on": task_data.get("depends_on", []),
                     "is_checkpoint": task_data.get("is_checkpoint", False),
@@ -460,7 +474,7 @@ class DAGPlanner:
 
             if not tasks:
                 # Fallback to direct response
-                return TaskDAG.create_simple("chat", {"message": goal})
+                return TaskDAG.create_simple("synthesize", {"message": goal})
 
             # Auto-mark checkpoints
             self._auto_mark_checkpoints(tasks)
@@ -471,7 +485,7 @@ class DAGPlanner:
             logger.warning(f"Failed to parse DAG response: {e}")
             # Fallback: return LLM's raw response as direct result
             # (rather than re-processing the goal)
-            return TaskDAG.create_simple("chat", {"message": response})
+            return TaskDAG.create_simple("synthesize", {"message": response})
 
     def _extract_json(self, text: str) -> Dict[str, Any]:
         """Extract JSON from text (reuse SimplePlanner logic)."""
@@ -520,7 +534,7 @@ class DAGPlanner:
 
         # 1. Check skill existence
         for node in dag.nodes.values():
-            if node.skill not in available_skills and node.skill != "chat":
+            if node.skill not in available_skills and node.skill != "synthesize":
                 errors.append(f"Unknown skill '{node.skill}' in task {node.id}")
 
         # 2. Check dependency existence
@@ -806,7 +820,7 @@ class AdaptivePlanner(DAGPlanner):
                 for task_data in data.get("tasks", []):
                     task = {
                         "id": task_data.get("id", f"t{len(tasks)+1}"),
-                        "skill": task_data.get("skill", "chat"),
+                        "skill": task_data.get("skill", "synthesize"),
                         "params": task_data.get("params", {}),
                         "depends_on": task_data.get("depends_on", []),
                         "is_checkpoint": task_data.get("is_checkpoint", False),

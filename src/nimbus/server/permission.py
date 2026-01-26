@@ -52,7 +52,7 @@ class PermissionManager:
     # Tools that default to 'allow_always'
     SAFE_TOOLS = {
         "read_file", "list_directory", "search",
-        "chat", "summarize", "analyze",
+        "synthesize", "summarize", "analyze",
     }
 
     def __init__(self):

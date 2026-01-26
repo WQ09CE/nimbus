@@ -1,4 +1,4 @@
-"""Tests for DAG types, DAGPlanner, and AsyncRuntime."""
+"""Tests for DAG types, PlannerPipeline, and AsyncRuntime."""
 
 import pytest
 import asyncio
@@ -12,7 +12,12 @@ from nimbus.core.types import (
     ExecutionStats,
     ExecutionResult,
 )
-from nimbus.core.planner import DAGPlanner
+from nimbus.core.planner import (
+    PlannerPipeline,
+    PipelineConfig,
+    PlanningMode,
+    DAGValidator,
+)
 from nimbus.core.runtime import AsyncRuntime
 
 
@@ -94,11 +99,11 @@ class TestTaskDAG:
 
     def test_dag_create_simple(self):
         """Test creating simple single-task DAG."""
-        dag = TaskDAG.create_simple("chat", {"message": "hello"})
+        dag = TaskDAG.create_simple("synthesize", {"message": "hello"})
 
         assert len(dag.nodes) == 1
         task = list(dag.nodes.values())[0]
-        assert task.skill == "chat"
+        assert task.skill == "synthesize"
         assert task.params == {"message": "hello"}
 
     def test_get_ready_tasks_initial(self):
@@ -203,8 +208,8 @@ class TestTaskDAG:
         assert "t1" in dag.nodes["t2"].error
 
 
-class TestDAGPlanner:
-    """Tests for DAGPlanner."""
+class TestPlannerPipelineDAG:
+    """Tests for PlannerPipeline DAG creation."""
 
     @pytest.fixture
     def mock_llm(self):
@@ -212,8 +217,10 @@ class TestDAGPlanner:
         class MockLLM:
             def __init__(self, response: str):
                 self.response = response
+                self.calls = []
 
             async def complete(self, prompt: str) -> str:
+                self.calls.append(prompt)
                 return self.response
 
         return MockLLM
@@ -221,18 +228,18 @@ class TestDAGPlanner:
     @pytest.mark.asyncio
     async def test_plan_direct_response(self, mock_llm):
         """Test planning direct response."""
-        llm = mock_llm('{"mode": "direct", "response": "你好！"}')
-        planner = DAGPlanner(llm)
+        llm = mock_llm('{"mode": "direct", "response": "Hello!"}')
+        pipeline = PlannerPipeline.default(llm)
 
-        dag = await planner.create_plan(
-            goal="你好",
+        dag = await pipeline.plan(
+            goal="Say hi",
             context="",
-            available_skills={"chat", "search"},
+            available_skills={"synthesize", "search"},
         )
 
         assert len(dag.nodes) == 1
         task = list(dag.nodes.values())[0]
-        assert task.skill == "chat"
+        assert task.skill == "synthesize"
 
     @pytest.mark.asyncio
     async def test_plan_dag_with_dependencies(self, mock_llm):
@@ -245,12 +252,12 @@ class TestDAGPlanner:
             ]
         }'''
         llm = mock_llm(response)
-        planner = DAGPlanner(llm)
+        pipeline = PlannerPipeline.default(llm)
 
-        dag = await planner.create_plan(
-            goal="搜索 AI 然后总结",
+        dag = await pipeline.plan(
+            goal="Search AI and summarize",
             context="",
-            available_skills={"chat", "search", "summarize"},
+            available_skills={"synthesize", "search", "summarize"},
         )
 
         assert len(dag.nodes) == 2
@@ -268,18 +275,22 @@ class TestDAGPlanner:
             ]
         }'''
         llm = mock_llm(response)
-        planner = DAGPlanner(llm)
+        pipeline = PlannerPipeline.default(llm)
 
-        dag = await planner.create_plan(
-            goal="搜索 Python 和 Rust",
+        dag = await pipeline.plan(
+            goal="Search Python and Rust",
             context="",
-            available_skills={"chat", "search"},
+            available_skills={"synthesize", "search"},
         )
 
         assert len(dag.nodes) == 2
         # Both should be ready (no dependencies)
         ready = dag.get_ready_tasks()
         assert len(ready) == 2
+
+
+class TestDAGValidatorIntegration:
+    """Tests for DAGValidator used in planning."""
 
     def test_validate_dag_valid(self):
         """Test validating a valid DAG."""
@@ -289,10 +300,11 @@ class TestDAGPlanner:
         ]
         dag = TaskDAG.create("Test", tasks)
 
-        planner = DAGPlanner(None)
-        errors = planner.validate_dag(dag, {"search", "summarize"})
+        validator = DAGValidator(skill_whitelist={"search", "summarize"})
+        result = validator.validate(dag)
 
-        assert errors == []
+        assert result.valid
+        assert len(result.errors) == 0
 
     def test_validate_dag_unknown_skill(self):
         """Test validating DAG with unknown skill."""
@@ -301,11 +313,11 @@ class TestDAGPlanner:
         ]
         dag = TaskDAG.create("Test", tasks)
 
-        planner = DAGPlanner(None)
-        errors = planner.validate_dag(dag, {"search", "summarize"})
+        validator = DAGValidator(skill_whitelist={"search", "summarize"})
+        result = validator.validate(dag)
 
-        assert len(errors) == 1
-        assert "unknown_skill" in errors[0]
+        assert not result.valid
+        assert any("unknown_skill" in err for err in result.errors)
 
     def test_validate_dag_missing_dependency(self):
         """Test validating DAG with missing dependency."""
@@ -314,11 +326,11 @@ class TestDAGPlanner:
         ]
         dag = TaskDAG.create("Test", tasks)
 
-        planner = DAGPlanner(None)
-        errors = planner.validate_dag(dag, {"search"})
+        validator = DAGValidator()
+        result = validator.validate(dag)
 
-        assert len(errors) == 1
-        assert "t0" in errors[0]
+        assert not result.valid
+        assert any("t0" in err for err in result.errors)
 
     def test_validate_dag_cycle(self):
         """Test validating DAG with cycle."""
@@ -332,10 +344,11 @@ class TestDAGPlanner:
             },
         )
 
-        planner = DAGPlanner(None)
-        errors = planner.validate_dag(dag, {"a", "b"})
+        validator = DAGValidator(skill_whitelist={"a", "b"})
+        result = validator.validate(dag)
 
-        assert any("cycle" in e.lower() for e in errors)
+        assert not result.valid
+        assert any("cycle" in e.lower() for e in result.errors)
 
 
 class TestAsyncRuntime:
@@ -501,3 +514,260 @@ class TestRuntimeConfig:
         assert config.default_timeout == 60.0
         assert config.max_retries == 5
         assert config.max_concurrent == 20
+
+
+class TestChatDependencyInjection:
+    """Tests for chat skill dependency result injection."""
+
+    @pytest.fixture
+    def chat_skills(self):
+        """Create skills for testing chat dependency injection."""
+        async def glob(pattern: str = "") -> list:
+            await asyncio.sleep(0.01)
+            return ["file1.py", "file2.py", "file3.py"]
+
+        async def read(file_path: str = "") -> str:
+            await asyncio.sleep(0.01)
+            return f"Content of {file_path}:\ndef hello():\n    print('Hello')"
+
+        async def grep(pattern: str = "", path: str = "") -> str:
+            await asyncio.sleep(0.01)
+            return f"file1.py:10: {pattern} found here"
+
+        async def synthesize(message: str = "", context: str = "", **kwargs) -> str:
+            await asyncio.sleep(0.01)
+            # Return the context so we can verify injection
+            return f"Context received: {context}"
+
+        return {
+            "Glob": glob,
+            "Read": read,
+            "Grep": grep,
+            "synthesize": synthesize,
+        }
+
+    @pytest.mark.asyncio
+    async def test_chat_receives_glob_results(self, chat_skills):
+        """Test chat skill receives glob results in context."""
+        runtime = AsyncRuntime(skills=chat_skills)
+
+        dag = TaskDAG.create("Test chat with glob", [
+            {"id": "t1", "skill": "Glob", "params": {"pattern": "*.py"}, "depends_on": []},
+            {"id": "t2", "skill": "synthesize", "params": {"message": "What files?", "context": ""}, "depends_on": ["t1"]},
+        ])
+
+        result = await runtime.execute_dag(dag)
+
+        assert result.status == "success"
+        assert result.stats.completed == 2
+
+        # Verify chat received the glob results
+        chat_result = result.results["t2"]
+        assert "Glob Results" in chat_result
+        assert "file1.py" in chat_result
+
+    @pytest.mark.asyncio
+    async def test_chat_receives_read_results(self, chat_skills):
+        """Test chat skill receives file read results in context."""
+        runtime = AsyncRuntime(skills=chat_skills)
+
+        dag = TaskDAG.create("Test chat with read", [
+            {"id": "t1", "skill": "Read", "params": {"file_path": "test.py"}, "depends_on": []},
+            {"id": "t2", "skill": "synthesize", "params": {"message": "Explain code", "context": ""}, "depends_on": ["t1"]},
+        ])
+
+        result = await runtime.execute_dag(dag)
+
+        assert result.status == "success"
+        chat_result = result.results["t2"]
+        assert "File Content" in chat_result
+        assert "test.py" in chat_result
+        assert "def hello():" in chat_result
+
+    @pytest.mark.asyncio
+    async def test_chat_receives_multiple_dependency_results(self, chat_skills):
+        """Test chat skill receives results from multiple dependencies."""
+        runtime = AsyncRuntime(skills=chat_skills)
+
+        dag = TaskDAG.create("Test chat with multiple deps", [
+            {"id": "t1", "skill": "Glob", "params": {"pattern": "*.py"}, "depends_on": []},
+            {"id": "t2", "skill": "Read", "params": {"file_path": "main.py"}, "depends_on": []},
+            {"id": "t3", "skill": "synthesize", "params": {"message": "Analyze", "context": "User context"}, "depends_on": ["t1", "t2"]},
+        ])
+
+        result = await runtime.execute_dag(dag)
+
+        assert result.status == "success"
+        chat_result = result.results["t3"]
+
+        # Should have both glob and read results
+        assert "Glob Results" in chat_result
+        assert "File Content" in chat_result
+        # Should preserve original context
+        assert "User context" in chat_result
+
+    @pytest.mark.asyncio
+    async def test_non_chat_skills_not_affected(self, chat_skills):
+        """Test non-chat skills don't get dependency injection."""
+        runtime = AsyncRuntime(skills=chat_skills)
+
+        dag = TaskDAG.create("Test non-chat", [
+            {"id": "t1", "skill": "Glob", "params": {"pattern": "*.py"}, "depends_on": []},
+            {"id": "t2", "skill": "Read", "params": {"file_path": "test.py"}, "depends_on": ["t1"]},
+        ])
+
+        result = await runtime.execute_dag(dag)
+
+        assert result.status == "success"
+        # Read should get its normal params, not injected context
+        read_result = result.results["t2"]
+        assert "Content of test.py" in read_result
+
+    @pytest.mark.asyncio
+    async def test_chat_with_grep_results(self, chat_skills):
+        """Test chat skill receives grep results in context."""
+        runtime = AsyncRuntime(skills=chat_skills)
+
+        dag = TaskDAG.create("Test chat with grep", [
+            {"id": "t1", "skill": "Grep", "params": {"pattern": "TODO", "path": "."}, "depends_on": []},
+            {"id": "t2", "skill": "synthesize", "params": {"message": "Fix TODOs", "context": ""}, "depends_on": ["t1"]},
+        ])
+
+        result = await runtime.execute_dag(dag)
+
+        assert result.status == "success"
+        chat_result = result.results["t2"]
+        assert "Grep Results" in chat_result
+        assert "TODO" in chat_result
+
+
+# =============================================================================
+# Legacy DAGPlanner Tests (with deprecation warning suppressed)
+# =============================================================================
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+class TestDAGPlannerLegacy:
+    """Legacy tests for DAGPlanner (deprecated).
+
+    These tests verify backward compatibility with the deprecated DAGPlanner.
+    New code should use PlannerPipeline instead.
+    """
+
+    @pytest.fixture
+    def mock_llm(self):
+        """Create a mock LLM client."""
+        class MockLLM:
+            def __init__(self, response: str):
+                self.response = response
+
+            async def complete(self, prompt: str) -> str:
+                return self.response
+
+        return MockLLM
+
+    @pytest.mark.asyncio
+    async def test_plan_direct_response(self, mock_llm):
+        """Test planning direct response."""
+        from nimbus.core.planner import DAGPlanner
+
+        llm = mock_llm('{"mode": "direct", "response": "Hello!"}')
+        planner = DAGPlanner(llm)
+
+        dag = await planner.create_plan(
+            goal="Say hi",
+            context="",
+            available_skills={"synthesize", "search"},
+        )
+
+        assert len(dag.nodes) == 1
+        task = list(dag.nodes.values())[0]
+        assert task.skill == "synthesize"
+
+    @pytest.mark.asyncio
+    async def test_plan_dag_with_dependencies(self, mock_llm):
+        """Test planning DAG with dependencies."""
+        from nimbus.core.planner import DAGPlanner
+
+        response = '''{
+            "mode": "dag",
+            "tasks": [
+                {"id": "t1", "skill": "search", "params": {"query": "AI"}, "depends_on": []},
+                {"id": "t2", "skill": "summarize", "params": {}, "depends_on": ["t1"]}
+            ]
+        }'''
+        llm = mock_llm(response)
+        planner = DAGPlanner(llm)
+
+        dag = await planner.create_plan(
+            goal="Search and summarize",
+            context="",
+            available_skills={"synthesize", "search", "summarize"},
+        )
+
+        assert len(dag.nodes) == 2
+        assert dag.nodes["t1"].depends_on == []
+        assert dag.nodes["t2"].depends_on == ["t1"]
+
+    def test_validate_dag_valid(self, mock_llm):
+        """Test validating a valid DAG."""
+        from nimbus.core.planner import DAGPlanner
+
+        tasks = [
+            {"id": "t1", "skill": "search", "params": {}, "depends_on": []},
+            {"id": "t2", "skill": "summarize", "params": {}, "depends_on": ["t1"]},
+        ]
+        dag = TaskDAG.create("Test", tasks)
+
+        planner = DAGPlanner(None)
+        errors = planner.validate_dag(dag, {"search", "summarize"})
+
+        assert errors == []
+
+    def test_validate_dag_unknown_skill(self, mock_llm):
+        """Test validating DAG with unknown skill."""
+        from nimbus.core.planner import DAGPlanner
+
+        tasks = [
+            {"id": "t1", "skill": "unknown_skill", "params": {}, "depends_on": []},
+        ]
+        dag = TaskDAG.create("Test", tasks)
+
+        planner = DAGPlanner(None)
+        errors = planner.validate_dag(dag, {"search", "summarize"})
+
+        assert len(errors) == 1
+        assert "unknown_skill" in errors[0]
+
+    def test_validate_dag_missing_dependency(self, mock_llm):
+        """Test validating DAG with missing dependency."""
+        from nimbus.core.planner import DAGPlanner
+
+        tasks = [
+            {"id": "t1", "skill": "search", "params": {}, "depends_on": ["t0"]},
+        ]
+        dag = TaskDAG.create("Test", tasks)
+
+        planner = DAGPlanner(None)
+        errors = planner.validate_dag(dag, {"search"})
+
+        assert len(errors) == 1
+        assert "t0" in errors[0]
+
+    def test_validate_dag_cycle(self, mock_llm):
+        """Test validating DAG with cycle."""
+        from nimbus.core.planner import DAGPlanner
+
+        # Create nodes directly to introduce a cycle
+        dag = TaskDAG(
+            id="dag_test",
+            goal="Test",
+            nodes={
+                "t1": TaskNode(id="t1", skill="a", params={}, depends_on=["t2"]),
+                "t2": TaskNode(id="t2", skill="b", params={}, depends_on=["t1"]),
+            },
+        )
+
+        planner = DAGPlanner(None)
+        errors = planner.validate_dag(dag, {"a", "b"})
+
+        assert any("cycle" in e.lower() for e in errors)

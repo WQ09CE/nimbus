@@ -204,7 +204,7 @@ async def test_3_factory_config():
             "max_retries": 1,
         },
         "skills": [
-            {"name": "chat", "type": "builtin"},
+            {"name": "synthesize", "type": "builtin"},
             {"name": "search", "type": "builtin"},
         ],
         "system_prompt": "你是一个测试助手。",

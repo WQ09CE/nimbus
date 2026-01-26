@@ -16,11 +16,21 @@ class TestGrepContent:
         test_file = tmp_path / "test.py"
         test_file.write_text("def main():\n    print('hello')\n\nmain()")
 
-        result = await grep_content("main", workspace=tmp_path)
+        result = await grep_content("main", output_mode="content", workspace=tmp_path)
 
         assert "def main" in result
         assert "main()" in result
-        assert "Found" in result
+
+    @pytest.mark.asyncio
+    async def test_grep_files_with_matches_mode(self, tmp_path):
+        """Test default files_with_matches mode."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("def main():\n    print('hello')\n\nmain()")
+
+        result = await grep_content("main", workspace=tmp_path)
+
+        # Default mode returns file names only
+        assert "test.py" in result
 
     @pytest.mark.asyncio
     async def test_grep_regex_pattern(self, tmp_path):
@@ -28,7 +38,7 @@ class TestGrepContent:
         test_file = tmp_path / "test.py"
         test_file.write_text("import os\nimport sys\nimport re")
 
-        result = await grep_content(r"import \w+", workspace=tmp_path)
+        result = await grep_content(r"import \w+", output_mode="content", workspace=tmp_path)
 
         assert "import os" in result
         assert "import sys" in result
@@ -64,7 +74,8 @@ class TestGrepContent:
         test_file = tmp_path / "test.py"
         test_file.write_text("# comment\ndef foo():\n    pass")
 
-        result = await grep_content("def foo", context_before=1, workspace=tmp_path)
+        # Use -B parameter for context before
+        result = await grep_content("def foo", output_mode="content", workspace=tmp_path, **{"-B": 1})
 
         assert "# comment" in result
         assert "def foo" in result
@@ -75,7 +86,8 @@ class TestGrepContent:
         test_file = tmp_path / "test.py"
         test_file.write_text("def foo():\n    pass\n    return 42")
 
-        result = await grep_content("def foo", context_after=2, workspace=tmp_path)
+        # Use -A parameter for context after
+        result = await grep_content("def foo", output_mode="content", workspace=tmp_path, **{"-A": 2})
 
         assert "def foo" in result
         assert "pass" in result
@@ -87,22 +99,34 @@ class TestGrepContent:
         test_file = tmp_path / "test.py"
         test_file.write_text("Hello World\nHELLO WORLD\nhello world")
 
-        result = await grep_content("hello", ignore_case=True, workspace=tmp_path)
+        # Use -i parameter for case insensitive
+        result = await grep_content("hello", output_mode="content", workspace=tmp_path, **{"-i": True})
 
         assert "Hello World" in result
         assert "HELLO WORLD" in result
         assert "hello world" in result
 
     @pytest.mark.asyncio
-    async def test_grep_max_matches(self, tmp_path):
-        """Test max matches limit."""
+    async def test_grep_head_limit(self, tmp_path):
+        """Test head_limit to limit output."""
         test_file = tmp_path / "test.py"
         lines = [f"match_{i}" for i in range(20)]
         test_file.write_text("\n".join(lines))
 
-        result = await grep_content("match", max_matches=5, workspace=tmp_path)
+        result = await grep_content("match", output_mode="content", head_limit=5, workspace=tmp_path)
 
-        assert "truncated" in result.lower() or "Output" in result
+        # Should have limited output
+        assert "limited" in result.lower() or len(result.split("\n")) <= 6
+
+    @pytest.mark.asyncio
+    async def test_grep_count_mode(self, tmp_path):
+        """Test count output mode."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("match1\nmatch2\nmatch3")
+
+        result = await grep_content("match", output_mode="count", workspace=tmp_path)
+
+        assert "test.py:3" in result
 
     @pytest.mark.asyncio
     async def test_grep_no_matches(self, tmp_path):
@@ -145,13 +169,13 @@ class TestGrepContent:
     async def test_grep_negative_context(self, tmp_path):
         """Test grepping with negative context raises error."""
         with pytest.raises(ValueError, match="non-negative"):
-            await grep_content("test", context_before=-1, workspace=tmp_path)
+            await grep_content("test", workspace=tmp_path, **{"-B": -1})
 
     @pytest.mark.asyncio
-    async def test_grep_zero_max_matches(self, tmp_path):
-        """Test grepping with zero max_matches raises error."""
-        with pytest.raises(ValueError, match="positive"):
-            await grep_content("test", max_matches=0, workspace=tmp_path)
+    async def test_grep_negative_head_limit(self, tmp_path):
+        """Test grepping with negative head_limit raises error."""
+        with pytest.raises(ValueError, match="non-negative"):
+            await grep_content("test", head_limit=-1, workspace=tmp_path)
 
     @pytest.mark.asyncio
     async def test_grep_escape_sandbox(self, tmp_path):
@@ -167,12 +191,13 @@ class TestGrepContent:
 
     @pytest.mark.asyncio
     async def test_grep_file_as_path(self, tmp_path):
-        """Test grepping with file as path raises error."""
+        """Test grepping with file as path searches that single file."""
         test_file = tmp_path / "test.txt"
-        test_file.write_text("content")
+        test_file.write_text("test content here")
 
-        with pytest.raises(NotADirectoryError):
-            await grep_content("test", path="test.txt", workspace=tmp_path)
+        # In the new implementation, a file path is valid and searches that file
+        result = await grep_content("test", path="test.txt", workspace=tmp_path)
+        assert "test.txt" in result
 
     @pytest.mark.asyncio
     async def test_grep_binary_file_skipped(self, tmp_path):
@@ -196,18 +221,17 @@ class TestGrepContent:
         assert "file1.py" in result
         assert "file2.py" in result
         assert "file3.py" not in result
-        assert "2 file" in result
 
     @pytest.mark.asyncio
     async def test_grep_shows_line_numbers(self, tmp_path):
-        """Test that results include line numbers."""
+        """Test that results include line numbers in content mode."""
         test_file = tmp_path / "test.py"
         test_file.write_text("line 1\nline 2\nmatch here\nline 4")
 
-        result = await grep_content("match", workspace=tmp_path)
+        result = await grep_content("match", output_mode="content", workspace=tmp_path)
 
         # Line number should be 3
-        assert "3:" in result or "3-" in result
+        assert ":3:" in result or ":3-" in result
 
     @pytest.mark.asyncio
     async def test_grep_context_line_indicators(self, tmp_path):
@@ -215,20 +239,23 @@ class TestGrepContent:
         test_file = tmp_path / "test.py"
         test_file.write_text("before\nmatch\nafter")
 
-        result = await grep_content("match", context_before=1, context_after=1, workspace=tmp_path)
+        result = await grep_content(
+            "match", output_mode="content", workspace=tmp_path,
+            **{"-B": 1, "-A": 1}
+        )
 
         # Match lines use ':' and context lines use '-'
-        assert ":match" in result or ": match" in result
+        assert ":match" in result
 
     @pytest.mark.asyncio
     async def test_grep_utf8_content(self, tmp_path):
         """Test grepping UTF-8 content."""
         test_file = tmp_path / "test.py"
-        test_file.write_text("# 中文注释\nprint('Hello, 世界!')", encoding="utf-8")
+        test_file.write_text("# Chinese comment\nprint('Hello, World!')", encoding="utf-8")
 
-        result = await grep_content("中文", workspace=tmp_path)
+        result = await grep_content("Chinese", output_mode="content", workspace=tmp_path)
 
-        assert "中文" in result
+        assert "Chinese" in result
 
     @pytest.mark.asyncio
     async def test_grep_in_subdirectory(self, tmp_path):

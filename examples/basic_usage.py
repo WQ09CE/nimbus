@@ -29,8 +29,8 @@ class MockLLMClient:
             return """{
                 "mode": "multi_step",
                 "tasks": [{
-                    "type": "chat",
-                    "skill": "chat",
+                    "type": "synthesize",
+                    "skill": "synthesize",
                     "params": {
                         "message": "Analyzing the CSV file...",
                         "context": "User wants to analyze data"
@@ -58,7 +58,7 @@ async def main():
         system_prompt="You are a helpful data analysis assistant.",
     )
 
-    print("\n[1] Agent initialized with default 'chat' skill")
+    print("\n[1] Agent initialized with default 'synthesize' skill")
     print(f"    Available skills: {agent.executor.get_skill_names()}")
 
     # 2. Simulate file upload

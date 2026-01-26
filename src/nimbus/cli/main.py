@@ -12,7 +12,7 @@ Usage:
 import typer
 from typing import Optional
 
-from .commands import serve, session, config
+from .commands import serve, session, config, acp
 
 # Create main app
 app = typer.Typer(
@@ -26,6 +26,7 @@ app = typer.Typer(
 app.add_typer(serve.app, name="serve", help="Start the Nimbus HTTP server")
 app.add_typer(session.app, name="session", help="Manage sessions")
 app.add_typer(config.app, name="config", help="Manage configuration")
+app.add_typer(acp.app, name="acp", help="Start Nimbus as an ACP agent")
 
 
 def version_callback(value: bool) -> None:

@@ -1,13 +1,13 @@
 """OpenNotebook Skills.
 
 This module provides:
-1. Builtin skill functions (chat, search, summarize, rag, draft)
+1. Builtin skill functions (synthesize, search, summarize, rag, draft)
 2. Skill definition schema for loading skills from Markdown files
 3. Skill loader for discovering and loading skills
 4. Skill validator for validating skill definitions
 """
 
-from .chat import chat, create_chat_skill
+from .synthesize import synthesize, create_synthesize_skill
 from .search import web_search, search_with_context
 from .summarize import summarize_text, extract_keywords, summarize_with_keywords
 from .rag import RAGResult, create_rag_skill
@@ -57,9 +57,9 @@ from .mcp import (
 )
 
 __all__ = [
-    # Chat skills
-    "chat",
-    "create_chat_skill",
+    # Synthesize skills
+    "synthesize",
+    "create_synthesize_skill",
     # Search skills
     "web_search",
     "search_with_context",

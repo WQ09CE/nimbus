@@ -52,5 +52,8 @@ Thumbs.db
 .checkpoints/
 .wukong/
 
+# Sandbox test workspace
+tests/sandbox/workspace/
+
 # Lock files (regenerated)
 # uv.lock

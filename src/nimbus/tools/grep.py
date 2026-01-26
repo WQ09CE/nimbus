@@ -1,25 +1,24 @@
 """Content grep tool for regex-based file content searching.
 
-This module provides a tool for searching file contents with regex patterns,
-supporting context lines and file type filtering.
+This module provides a powerful tool for searching file contents with regex patterns,
+supporting multiple output modes, context lines, and pagination.
 
 Example:
     >>> from pathlib import Path
     >>> result = await grep_content("def main", path="src", workspace=Path("/project"))
     >>> print(result)
-    Found 3 matches in 2 files:
+    src/main.py
+    src/cli.py
 
-    src/main.py:
-      10:def main():
-      11-    parser = argparse.ArgumentParser()
-
-    src/cli.py:
-      25:def main():
+    >>> result = await grep_content("def main", output_mode="content", workspace=Path("/project"))
+    >>> print(result)
+    src/main.py:10:def main():
+    src/cli.py:25:def main():
 """
 
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from .base import ToolParameter, tool
 from .sandbox import Sandbox, SandboxError
@@ -66,7 +65,7 @@ FILE_TYPE_PATTERNS: dict[str, str] = {
 }
 
 # Default values
-DEFAULT_MAX_MATCHES = 50
+DEFAULT_HEAD_LIMIT = 0  # 0 means unlimited
 BINARY_CHECK_BYTES = 8192
 
 
@@ -140,6 +139,7 @@ def _search_file(
     pattern: re.Pattern,
     context_before: int,
     context_after: int,
+    multiline: bool = False,
 ) -> List[Tuple[int, str, bool]]:
     """Search a file for pattern matches with context.
 
@@ -152,10 +152,26 @@ def _search_file(
     results: List[Tuple[int, str, bool]] = []
     match_indices: set[int] = set()
 
-    # Find all matching line indices
-    for i, line in enumerate(lines):
-        if pattern.search(line):
-            match_indices.add(i)
+    if multiline:
+        # For multiline mode, join lines and find match positions
+        full_content = "".join(lines)
+        # Track which lines have matches
+        for match in pattern.finditer(full_content):
+            # Find line numbers for this match
+            start_pos = match.start()
+            end_pos = match.end()
+            char_count = 0
+            for i, line in enumerate(lines):
+                line_start = char_count
+                line_end = char_count + len(line)
+                if line_start < end_pos and line_end > start_pos:
+                    match_indices.add(i)
+                char_count = line_end
+    else:
+        # Standard line-by-line search
+        for i, line in enumerate(lines):
+            if pattern.search(line):
+                match_indices.add(i)
 
     # Collect matches with context
     context_indices: set[int] = set()
@@ -177,30 +193,32 @@ def _search_file(
     return results
 
 
-def _format_results(
+def _count_matches_in_file(file_path: Path, pattern: re.Pattern) -> int:
+    """Count total pattern matches in a file."""
+    lines = _read_file_lines(file_path)
+    if lines is None:
+        return 0
+
+    count = 0
+    for line in lines:
+        count += len(pattern.findall(line))
+    return count
+
+
+def _format_content_output(
     file_matches: dict[Path, List[Tuple[int, str, bool]]],
     workspace: Path,
-    max_matches: int,
-) -> Tuple[str, int]:
-    """Format search results into output string.
-
-    Returns (formatted_output, total_match_count).
-    """
-    total_matches = 0
-    file_count = 0
-    output_parts: List[str] = []
-    truncated = False
+    show_line_numbers: bool,
+    head_limit: int,
+    offset: int,
+) -> str:
+    """Format search results in content mode (matching lines)."""
+    output_lines: List[str] = []
+    total_lines = 0
 
     for file_path, matches in file_matches.items():
         if not matches:
             continue
-
-        file_count += 1
-        match_count = sum(1 for _, _, is_match in matches if is_match)
-        total_matches += match_count
-
-        if total_matches > max_matches and not truncated:
-            truncated = True
 
         # Get relative path
         try:
@@ -208,89 +226,209 @@ def _format_results(
         except ValueError:
             rel_path = file_path
 
-        # Format file header and matches
-        file_output = [f"\n{rel_path}:"]
-
         prev_line_num = -2  # Track for gap detection
         for line_num, content, is_match in matches:
-            # Add gap indicator if lines are not consecutive
-            if line_num > prev_line_num + 1 and prev_line_num > 0:
-                file_output.append("  ...")
+            total_lines += 1
 
-            # Format line with match indicator
+            # Apply offset
+            if total_lines <= offset:
+                prev_line_num = line_num
+                continue
+
+            # Apply head_limit
+            if head_limit > 0 and len(output_lines) >= head_limit:
+                output_lines.append(f"\n[Output limited to {head_limit} lines]")
+                return "\n".join(output_lines)
+
+            # Add gap indicator if lines are not consecutive
+            if line_num > prev_line_num + 1 and prev_line_num > 0 and output_lines:
+                output_lines.append("--")
+
+            # Format line
             prefix = ":" if is_match else "-"
-            file_output.append(f"  {line_num}{prefix}{content}")
+            if show_line_numbers:
+                output_lines.append(f"{rel_path}:{line_num}{prefix}{content}")
+            else:
+                output_lines.append(f"{rel_path}{prefix}{content}")
+
             prev_line_num = line_num
 
-        output_parts.append("\n".join(file_output))
+    if not output_lines:
+        return "No matches found."
 
-    # Build final output
-    if not output_parts:
-        return "No matches found.", 0
+    return "\n".join(output_lines)
 
-    header = f"Found {total_matches} match(es) in {file_count} file(s):"
-    result = header + "".join(output_parts)
 
-    if truncated:
-        result += f"\n\n[Output truncated at {max_matches} matches]"
+def _format_files_output(
+    file_matches: dict[Path, List[Tuple[int, str, bool]]],
+    workspace: Path,
+    head_limit: int,
+    offset: int,
+) -> str:
+    """Format search results as file list only."""
+    output_lines: List[str] = []
+    file_count = 0
 
-    return result, total_matches
+    for file_path, matches in file_matches.items():
+        if not matches:
+            continue
+
+        file_count += 1
+
+        # Apply offset
+        if file_count <= offset:
+            continue
+
+        # Apply head_limit
+        if head_limit > 0 and len(output_lines) >= head_limit:
+            break
+
+        # Get relative path
+        try:
+            rel_path = file_path.relative_to(workspace)
+        except ValueError:
+            rel_path = file_path
+
+        output_lines.append(str(rel_path))
+
+    if not output_lines:
+        return "No matches found."
+
+    return "\n".join(output_lines)
+
+
+def _format_count_output(
+    file_matches: dict[Path, int],
+    workspace: Path,
+    head_limit: int,
+    offset: int,
+) -> str:
+    """Format search results as match counts per file."""
+    output_lines: List[str] = []
+    file_count = 0
+
+    for file_path, count in file_matches.items():
+        if count == 0:
+            continue
+
+        file_count += 1
+
+        # Apply offset
+        if file_count <= offset:
+            continue
+
+        # Apply head_limit
+        if head_limit > 0 and len(output_lines) >= head_limit:
+            break
+
+        # Get relative path
+        try:
+            rel_path = file_path.relative_to(workspace)
+        except ValueError:
+            rel_path = file_path
+
+        output_lines.append(f"{rel_path}:{count}")
+
+    if not output_lines:
+        return "No matches found."
+
+    return "\n".join(output_lines)
 
 
 @tool(
     name="Grep",
-    description="Search file contents with regex pattern. Returns matching lines with file:line:content format.",
+    description=(
+        "Search file contents with regex pattern. "
+        "Output modes: 'files_with_matches' (default) shows file paths, "
+        "'content' shows matching lines, 'count' shows match counts."
+    ),
     parameters=[
         ToolParameter(
             "pattern",
             "string",
-            "Regex pattern to search for (e.g., 'def main', 'import.*os')",
+            "Regular expression pattern to search for (e.g., 'log.*Error', 'function\\s+\\w+')",
             required=True,
         ),
         ToolParameter(
             "path",
             "string",
-            "Directory to search in. Defaults to workspace root.",
+            "File or directory to search in. Defaults to current working directory.",
             required=False,
             default=".",
         ),
         ToolParameter(
             "glob",
             "string",
-            "File pattern filter (e.g., '*.py', '**/*.ts')",
+            "Glob pattern to filter files (e.g., '*.js', '**/*.tsx')",
             required=False,
         ),
         ToolParameter(
             "type",
             "string",
-            "File type to search (py, js, ts, go, java, etc.)",
+            "File type to search (py, js, ts, go, java, etc.). More efficient than glob for standard file types.",
             required=False,
         ),
         ToolParameter(
-            "context_before",
+            "output_mode",
+            "string",
+            "Output mode: 'content' shows matching lines, 'files_with_matches' shows file paths (default), 'count' shows match counts.",
+            required=False,
+            default="files_with_matches",
+            enum=["content", "files_with_matches", "count"],
+        ),
+        ToolParameter(
+            "-A",
             "integer",
-            "Lines of context before each match (like grep -B)",
+            "Number of lines to show after each match. Requires output_mode='content'.",
             required=False,
             default=0,
         ),
         ToolParameter(
-            "context_after",
+            "-B",
             "integer",
-            "Lines of context after each match (like grep -A)",
+            "Number of lines to show before each match. Requires output_mode='content'.",
             required=False,
             default=0,
         ),
         ToolParameter(
-            "max_matches",
+            "-C",
             "integer",
-            f"Maximum matches to return. Defaults to {DEFAULT_MAX_MATCHES}.",
+            "Number of lines to show before and after each match. Requires output_mode='content'.",
             required=False,
-            default=DEFAULT_MAX_MATCHES,
+            default=0,
         ),
         ToolParameter(
-            "ignore_case",
+            "-n",
             "boolean",
-            "Case-insensitive search. Defaults to False.",
+            "Show line numbers in output. Requires output_mode='content'. Defaults to True.",
+            required=False,
+            default=True,
+        ),
+        ToolParameter(
+            "-i",
+            "boolean",
+            "Case insensitive search",
+            required=False,
+            default=False,
+        ),
+        ToolParameter(
+            "head_limit",
+            "integer",
+            "Limit output to first N lines/entries. Works across all output modes. Defaults to 0 (unlimited).",
+            required=False,
+            default=0,
+        ),
+        ToolParameter(
+            "offset",
+            "integer",
+            "Skip first N lines/entries before applying head_limit. Defaults to 0.",
+            required=False,
+            default=0,
+        ),
+        ToolParameter(
+            "multiline",
+            "boolean",
+            "Enable multiline mode where patterns can span across lines. Default: False.",
             required=False,
             default=False,
         ),
@@ -301,55 +439,92 @@ async def grep_content(
     path: str = ".",
     glob: Optional[str] = None,
     type: Optional[str] = None,
-    context_before: int = 0,
-    context_after: int = 0,
-    max_matches: int = DEFAULT_MAX_MATCHES,
-    ignore_case: bool = False,
+    output_mode: str = "files_with_matches",
     workspace: Optional[Path] = None,
-    **kwargs,
+    multiline: bool = False,
+    head_limit: int = 0,
+    offset: int = 0,
+    **kwargs: Any,
 ) -> str:
     """Search file contents with regex pattern.
 
-    Searches for regex pattern matches within files, supporting
-    file type filtering and context lines around matches.
+    A powerful search tool inspired by ripgrep, supporting multiple output modes,
+    context lines, and pagination.
 
     Features:
         - Full regex pattern support
-        - File type filtering (py, js, ts, go, etc.)
+        - Multiple output modes (content, files_with_matches, count)
+        - Context lines before/after matches (-A, -B, -C)
+        - Line number display (-n)
+        - Case-insensitive search (-i)
+        - File type filtering
         - Glob pattern filtering
-        - Context lines before/after matches
-        - Case-insensitive search option
-        - Match count limiting
+        - Pagination (head_limit, offset)
+        - Multiline pattern matching
 
     Args:
         pattern: Regex pattern to search for.
-        path: Directory to search in. Defaults to ".".
+        path: Directory or file to search in. Defaults to ".".
         glob: Optional glob pattern to filter files (e.g., "*.py").
         type: Optional file type to filter (e.g., "py", "js").
-        context_before: Number of context lines before each match.
-        context_after: Number of context lines after each match.
-        max_matches: Maximum number of matches to return.
-        ignore_case: If True, perform case-insensitive search.
+        output_mode: Output format - "content", "files_with_matches", or "count".
         workspace: Workspace directory for sandbox validation.
+        multiline: Enable multiline pattern matching.
+        head_limit: Limit output entries. 0 means unlimited.
+        offset: Skip first N entries.
+        **kwargs: Additional parameters (-A, -B, -C, -n, -i).
 
     Returns:
-        Formatted search results with file paths, line numbers, and content.
+        Search results in the specified output format.
 
     Raises:
         SandboxError: If search path escapes workspace.
         ValueError: If pattern is invalid regex or parameters are invalid.
 
     Example:
+        >>> # Find files containing "def main"
         >>> result = await grep_content("def main", type="py")
         >>> print(result)
-        Found 2 matches in 2 files:
+        src/main.py
+        src/cli.py
 
-        src/main.py:
-          10:def main():
+        >>> # Show matching lines with context
+        >>> result = await grep_content("def main", output_mode="content", **{"-C": 2})
+        >>> print(result)
+        src/main.py:8-import sys
+        src/main.py:9-
+        src/main.py:10:def main():
+        src/main.py:11-    pass
+        src/main.py:12-
 
-        src/cli.py:
-          25:def main():
+        >>> # Count matches per file
+        >>> result = await grep_content("TODO", output_mode="count")
+        >>> print(result)
+        src/main.py:3
+        src/utils.py:5
     """
+    # Extract context parameters from kwargs
+    # Support both new style (-A, -B, -C, -i) and legacy style (context_after, context_before, ignore_case)
+    context_after = kwargs.get("-A", kwargs.get("A", kwargs.get("context_after", 0)))
+    context_before = kwargs.get("-B", kwargs.get("B", kwargs.get("context_before", 0)))
+    context_both = kwargs.get("-C", kwargs.get("C", 0))
+    show_line_numbers = kwargs.get("-n", kwargs.get("n", True))
+    ignore_case = kwargs.get("-i", kwargs.get("i", kwargs.get("ignore_case", False)))
+
+    # Legacy max_matches maps to head_limit for content mode
+    if head_limit == 0 and "max_matches" in kwargs:
+        max_matches = kwargs.get("max_matches", 0)
+        if max_matches > 0:
+            head_limit = max_matches
+            # For legacy behavior, use content mode if max_matches is specified
+            if output_mode == "files_with_matches":
+                output_mode = "content"
+
+    # -C overrides -A and -B if provided
+    if context_both > 0:
+        context_after = context_both
+        context_before = context_both
+
     # Validate parameters
     if not pattern:
         raise ValueError("pattern cannot be empty")
@@ -360,12 +535,22 @@ async def grep_content(
     if context_after < 0:
         raise ValueError(f"context_after must be non-negative, got {context_after}")
 
-    if max_matches <= 0:
-        raise ValueError(f"max_matches must be positive, got {max_matches}")
+    if head_limit < 0:
+        raise ValueError(f"head_limit must be non-negative, got {head_limit}")
+
+    if offset < 0:
+        raise ValueError(f"offset must be non-negative, got {offset}")
+
+    if output_mode not in ("content", "files_with_matches", "count"):
+        raise ValueError(
+            f"output_mode must be 'content', 'files_with_matches', or 'count', got '{output_mode}'"
+        )
 
     # Compile regex pattern
     try:
         flags = re.IGNORECASE if ignore_case else 0
+        if multiline:
+            flags |= re.DOTALL | re.MULTILINE
         regex = re.compile(pattern, flags)
     except re.error as e:
         raise ValueError(f"Invalid regex pattern '{pattern}': {e}")
@@ -383,32 +568,44 @@ async def grep_content(
     except FileNotFoundError:
         raise FileNotFoundError(f"Search path not found: {path}")
 
-    # Ensure base path is a directory
-    if not base_path.is_dir():
-        raise NotADirectoryError(f"Search path is not a directory: {path}")
+    # Handle single file search
+    if base_path.is_file():
+        files = [base_path]
+    else:
+        # Get files to search
+        try:
+            files = _get_files_to_search(base_path, glob, type, sandbox)
+        except ValueError:
+            raise
 
-    # Get files to search
-    try:
-        files = _get_files_to_search(base_path, glob, type, sandbox)
-    except ValueError:
-        raise
+        if not files:
+            return f"No files found to search in '{path}'"
 
-    if not files:
-        return f"No files found to search in '{path}'"
+    # Search files based on output mode
+    if output_mode == "count":
+        file_counts: dict[Path, int] = {}
+        for file_path in files:
+            count = _count_matches_in_file(file_path, regex)
+            if count > 0:
+                file_counts[file_path] = count
+        return _format_count_output(file_counts, workspace, head_limit, offset)
 
-    # Search files
-    file_matches: dict[Path, List[Tuple[int, str, bool]]] = {}
-    total_matches = 0
+    elif output_mode == "files_with_matches":
+        file_matches: dict[Path, List[Tuple[int, str, bool]]] = {}
+        for file_path in files:
+            matches = _search_file(file_path, regex, 0, 0, multiline)
+            if matches:
+                file_matches[file_path] = matches
+        return _format_files_output(file_matches, workspace, head_limit, offset)
 
-    for file_path in files:
-        if total_matches >= max_matches:
-            break
-
-        matches = _search_file(file_path, regex, context_before, context_after)
-        if matches:
-            file_matches[file_path] = matches
-            total_matches += sum(1 for _, _, is_match in matches if is_match)
-
-    # Format and return results
-    output, _ = _format_results(file_matches, workspace, max_matches)
-    return output
+    else:  # content mode
+        file_matches = {}
+        for file_path in files:
+            matches = _search_file(
+                file_path, regex, context_before, context_after, multiline
+            )
+            if matches:
+                file_matches[file_path] = matches
+        return _format_content_output(
+            file_matches, workspace, show_line_numbers, head_limit, offset
+        )

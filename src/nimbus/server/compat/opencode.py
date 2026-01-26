@@ -36,14 +36,17 @@ router = APIRouter()
 # OpenCode Compatible Models
 # =============================================================================
 
+
 class TimeInfo(BaseModel):
     """Time information for OpenCode format."""
+
     created: int  # Unix timestamp in milliseconds
     updated: int  # Unix timestamp in milliseconds
 
 
 class SessionInfo(BaseModel):
     """Session info in OpenCode format."""
+
     id: str
     title: str = ""
     directory: str = ""
@@ -54,18 +57,21 @@ class SessionInfo(BaseModel):
 
 class SessionCreateRequest(BaseModel):
     """Request to create a session."""
+
     directory: Optional[str] = None
     title: Optional[str] = None
 
 
 class MessagePartText(BaseModel):
     """Text part in a message."""
+
     type: str = "text"
     text: str
 
 
 class MessagePartToolUse(BaseModel):
     """Tool use part in a message."""
+
     type: str = "tool-use"
     id: str
     name: str
@@ -74,6 +80,7 @@ class MessagePartToolUse(BaseModel):
 
 class MessagePartToolResult(BaseModel):
     """Tool result part in a message."""
+
     type: str = "tool-result"
     id: str
     content: str
@@ -81,6 +88,7 @@ class MessagePartToolResult(BaseModel):
 
 class MessageInfo(BaseModel):
     """Message metadata in OpenCode format."""
+
     id: str
     role: str  # user | assistant
     time: TimeInfo
@@ -88,12 +96,14 @@ class MessageInfo(BaseModel):
 
 class MessageResponse(BaseModel):
     """Message in OpenCode format."""
+
     info: MessageInfo
     parts: List[Any] = Field(default_factory=list)
 
 
 class MessagePartInput(BaseModel):
     """Input part for a message."""
+
     type: str = "text"
     text: Optional[str] = None
     # For file parts
@@ -104,6 +114,7 @@ class MessagePartInput(BaseModel):
 
 class MessageSendRequest(BaseModel):
     """Request to send a message."""
+
     # Support both formats
     content: Optional[str] = None  # Simple format
     parts: Optional[List[MessagePartInput]] = None  # OpenCode format
@@ -129,12 +140,14 @@ class MessageSendRequest(BaseModel):
 
 class PermissionRespondRequest(BaseModel):
     """Request to respond to a permission."""
+
     allow: bool
 
 
 # =============================================================================
 # Dependencies
 # =============================================================================
+
 
 async def get_storage(request: Request):
     """Get storage from app state."""
@@ -159,6 +172,7 @@ async def get_permission_manager(request: Request):
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
 
 def datetime_to_ms(dt: datetime) -> int:
     """Convert datetime to Unix timestamp in milliseconds."""
@@ -204,10 +218,12 @@ def to_message_response(msg: Dict[str, Any]) -> MessageResponse:
     artifacts = msg.get("artifacts") or []
     for artifact in artifacts or []:
         if artifact.get("type") == "code":
-            parts.append({
-                "type": "text",
-                "text": f"```{artifact.get('language', '')}\n{artifact.get('data', '')}\n```"
-            })
+            parts.append(
+                {
+                    "type": "text",
+                    "text": f"```{artifact.get('language', '')}\n{artifact.get('data', '')}\n```",
+                }
+            )
 
     return MessageResponse(
         info=MessageInfo(
@@ -225,6 +241,7 @@ def to_message_response(msg: Dict[str, Any]) -> MessageResponse:
 # =============================================================================
 # Session Routes
 # =============================================================================
+
 
 @router.get("/session", response_model=List[SessionInfo])
 async def list_sessions(
@@ -247,6 +264,7 @@ async def create_session(
     Supports both query param (directory) and body params (title, parentID).
     """
     import os
+
     # Get directory from query param or body, fallback to cwd
     workspace = directory or (data.directory if data else None) or os.getcwd()
     title = (data.title if data else None) or f"Session"
@@ -298,6 +316,7 @@ async def delete_session(
 # =============================================================================
 # Message Routes
 # =============================================================================
+
 
 @router.get("/session/{session_id}/message", response_model=List[MessageResponse])
 async def get_messages(
@@ -355,15 +374,19 @@ async def send_message(
 
     async def event_stream():
         """Generate SSE events in OpenCode format."""
+
         def format_sse(event_type: str, event_data: dict) -> str:
             return f"event: {event_type}\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n"
 
         # Send start event
         response_id = f"msg_{uuid.uuid4().hex[:12]}"
-        yield format_sse("event.start", {
-            "messageID": response_id,
-            "sessionID": session_id,
-        })
+        yield format_sse(
+            "event.start",
+            {
+                "messageID": response_id,
+                "sessionID": session_id,
+            },
+        )
 
         try:
             # Get or create agent
@@ -376,38 +399,57 @@ async def send_message(
                 status_type = status.get("type", "unknown")
 
                 if status_type == "planning":
-                    yield format_sse("event.status", {
-                        "status": "planning",
-                        "message": status.get("content", "Creating plan..."),
-                    })
+                    yield format_sse(
+                        "event.status",
+                        {
+                            "status": "planning",
+                            "message": status.get("content", "Creating plan..."),
+                        },
+                    )
+
+                elif status_type == "metadata":
+                    event_data = {key: value for key, value in status.items() if key != "type"}
+                    yield format_sse("metadata", event_data)
 
                 elif status_type == "dag_created":
                     dag_id = status.get("dag_id")
-                    yield format_sse("event.status", {
-                        "status": "executing",
-                        "dagID": dag_id,
-                        "totalTasks": status.get("total_tasks", 0),
-                    })
+                    yield format_sse(
+                        "event.status",
+                        {
+                            "status": "executing",
+                            "dagID": dag_id,
+                            "totalTasks": status.get("total_tasks", 0),
+                        },
+                    )
 
                 elif status_type == "task_start":
-                    yield format_sse("tool.start", {
-                        "taskID": status.get("task_id", ""),
-                        "name": status.get("skill", ""),
-                        "input": status.get("params", {}),
-                    })
+                    yield format_sse(
+                        "tool.start",
+                        {
+                            "taskID": status.get("task_id", ""),
+                            "name": status.get("skill", ""),
+                            "input": status.get("params", {}),
+                        },
+                    )
 
                 elif status_type == "task_done":
-                    yield format_sse("tool.done", {
-                        "taskID": status.get("task_id", ""),
-                        "result": str(status.get("result", ""))[:1000],
-                        "durationMs": status.get("duration_ms", 0),
-                    })
+                    yield format_sse(
+                        "tool.done",
+                        {
+                            "taskID": status.get("task_id", ""),
+                            "result": str(status.get("result", ""))[:1000],
+                            "durationMs": status.get("duration_ms", 0),
+                        },
+                    )
 
                 elif status_type == "task_failed":
-                    yield format_sse("tool.error", {
-                        "taskID": status.get("task_id", ""),
-                        "error": status.get("error", "Unknown error"),
-                    })
+                    yield format_sse(
+                        "tool.error",
+                        {
+                            "taskID": status.get("task_id", ""),
+                            "error": status.get("error", "Unknown error"),
+                        },
+                    )
 
                 elif status_type == "direct":
                     response_text = status.get("content", "")
@@ -421,10 +463,13 @@ async def send_message(
                     yield format_sse("content.done", {})
 
                 elif status_type == "error":
-                    yield format_sse("event.error", {
-                        "code": "execution_error",
-                        "message": status.get("content", "Unknown error"),
-                    })
+                    yield format_sse(
+                        "event.error",
+                        {
+                            "code": "execution_error",
+                            "message": status.get("content", "Unknown error"),
+                        },
+                    )
 
             # Save assistant message
             if response_text:
@@ -437,16 +482,22 @@ async def send_message(
                 )
 
             # Send done event
-            yield format_sse("event.done", {
-                "messageID": response_id,
-                "sessionID": session_id,
-            })
+            yield format_sse(
+                "event.done",
+                {
+                    "messageID": response_id,
+                    "sessionID": session_id,
+                },
+            )
 
         except Exception as e:
-            yield format_sse("event.error", {
-                "code": "server_error",
-                "message": str(e),
-            })
+            yield format_sse(
+                "event.error",
+                {
+                    "code": "server_error",
+                    "message": str(e),
+                },
+            )
 
     return StreamingResponse(
         event_stream(),
@@ -478,6 +529,7 @@ async def abort_session(
 # Global Event Stream
 # =============================================================================
 
+
 @router.get("/event")
 async def global_event_stream(
     request: Request,
@@ -498,8 +550,10 @@ async def global_event_stream(
     - task.done: Task execution complete
     - task.failed: Task execution failed
     """
+
     async def event_stream():
         """Generate global SSE events."""
+
         def format_sse(event_type: str, event_data: dict) -> str:
             return f"event: {event_type}\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n"
 
@@ -538,6 +592,7 @@ async def global_event_stream(
 # Permission Routes
 # =============================================================================
 
+
 @router.post("/permission/{permission_id}", status_code=200)
 async def respond_to_permission(
     permission_id: str,
@@ -563,6 +618,7 @@ async def respond_to_permission(
 # Root and Health Check Endpoints
 # =============================================================================
 
+
 @router.get("/")
 async def root():
     """Root endpoint for basic connectivity check."""
@@ -585,6 +641,7 @@ async def global_health():
 # Global Event Stream Alias
 # =============================================================================
 
+
 @router.get("/global/event")
 async def global_event_stream_alias(
     request: Request,
@@ -601,6 +658,7 @@ async def global_event_stream_alias(
 # =============================================================================
 # Project Endpoints
 # =============================================================================
+
 
 @router.get("/project")
 async def list_projects():
@@ -623,16 +681,13 @@ async def current_project(request: Request):
     import os
 
     cwd = getattr(request.app.state, "workspace_path", None) or os.getcwd()
-    return {
-        "id": "nimbus-default",
-        "path": cwd,
-        "name": "Nimbus Workspace"
-    }
+    return {"id": "nimbus-default", "path": cwd, "name": "Nimbus Workspace"}
 
 
 # =============================================================================
 # Configuration Endpoints
 # =============================================================================
+
 
 @router.get("/config")
 async def get_config():
@@ -642,12 +697,7 @@ async def get_config():
     Returns minimal configuration since Nimbus manages its own settings.
     model format: "provider/model" string
     """
-    return {
-        "model": "nimbus/nimbus-default",
-        "provider": "nimbus",
-        "theme": "dark",
-        "mcp": {}
-    }
+    return {"model": "nimbus/nimbus-default", "provider": "nimbus", "theme": "dark", "mcp": {}}
 
 
 @router.get("/config/providers")
@@ -667,20 +717,19 @@ async def get_config_providers():
                     "nimbus-default": {
                         "id": "nimbus-default",
                         "name": "Nimbus Default Model",
-                        "contextWindow": 200000
+                        "contextWindow": 200000,
                     }
-                }
+                },
             }
         ],
-        "default": {
-            "nimbus": "nimbus-default"
-        }
+        "default": {"nimbus": "nimbus-default"},
     }
 
 
 # =============================================================================
 # Provider and Agent Endpoints
 # =============================================================================
+
 
 @router.get("/provider")
 async def list_providers():
@@ -698,15 +747,13 @@ async def list_providers():
                     "nimbus-default": {
                         "id": "nimbus-default",
                         "name": "Nimbus Default Model",
-                        "contextWindow": 200000
+                        "contextWindow": 200000,
                     }
-                }
+                },
             }
         ],
-        "defaults": {
-            "nimbus": "nimbus-default"
-        },
-        "connected": ["nimbus"]
+        "defaults": {"nimbus": "nimbus-default"},
+        "connected": ["nimbus"],
     }
 
 
@@ -724,6 +771,7 @@ async def list_agents():
 # Path, VCS, and LSP Endpoints
 # =============================================================================
 
+
 @router.get("/path")
 async def get_path(request: Request):
     """
@@ -737,7 +785,7 @@ async def get_path(request: Request):
     return {
         "cwd": cwd,
         "home": os.path.expanduser("~"),
-        "config": os.path.join(os.path.expanduser("~"), ".nimbus")
+        "config": os.path.join(os.path.expanduser("~"), ".nimbus"),
     }
 
 
@@ -766,6 +814,7 @@ async def get_lsp():
 # MCP Endpoints
 # =============================================================================
 
+
 @router.get("/mcp")
 async def get_mcp_status():
     """
@@ -790,6 +839,7 @@ async def get_mcp_resources():
 # Command Endpoints
 # =============================================================================
 
+
 @router.get("/command")
 async def list_commands():
     """
@@ -803,6 +853,7 @@ async def list_commands():
 # =============================================================================
 # Formatter Endpoints
 # =============================================================================
+
 
 @router.get("/formatter")
 async def get_formatter_status():
@@ -818,6 +869,7 @@ async def get_formatter_status():
 # Provider Auth Endpoints
 # =============================================================================
 
+
 @router.get("/provider/auth")
 async def get_provider_auth():
     """
@@ -832,6 +884,7 @@ async def get_provider_auth():
 # Experimental Endpoints
 # =============================================================================
 
+
 @router.get("/experimental/resource")
 async def list_experimental_resources():
     """
@@ -845,6 +898,7 @@ async def list_experimental_resources():
 # =============================================================================
 # Session Todo/Diff Endpoints
 # =============================================================================
+
 
 @router.get("/session/{session_id}/todo")
 async def get_session_todo(session_id: str):

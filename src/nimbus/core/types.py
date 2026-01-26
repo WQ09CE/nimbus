@@ -98,7 +98,7 @@ class Artifact:
 
 class TaskType(Enum):
     """Types of tasks that can be executed."""
-    CHAT = "chat"
+    SYNTHESIZE = "synthesize"
     SEARCH = "search"
     ANALYZE = "analyze"
     GENERATE = "generate"
@@ -225,6 +225,44 @@ class ReplanRecord:
 
 
 @dataclass
+class RetryLoopConfig:
+    """Configuration for a retry loop in the DAG.
+
+    Defines a verify-fix-retry loop pattern commonly used
+    in test automation and self-healing workflows.
+
+    Attributes:
+        verify_task: Task ID of the verification step.
+        fix_task: Task ID of the fix/repair step.
+        max_attempts: Maximum total attempts (including initial).
+        backoff_seconds: Delay between retries.
+    """
+    verify_task: str
+    fix_task: str
+    max_attempts: int = 3
+    backoff_seconds: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to dictionary."""
+        return {
+            "verify_task": self.verify_task,
+            "fix_task": self.fix_task,
+            "max_attempts": self.max_attempts,
+            "backoff_seconds": self.backoff_seconds,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RetryLoopConfig":
+        """Create RetryLoopConfig from dictionary."""
+        return cls(
+            verify_task=data["verify_task"],
+            fix_task=data["fix_task"],
+            max_attempts=data.get("max_attempts", 3),
+            backoff_seconds=data.get("backoff_seconds", 0.0),
+        )
+
+
+@dataclass
 class TaskNode:
     """A node in the task DAG with dependencies.
 
@@ -288,6 +326,42 @@ class TaskNode:
     Used for ID conflict resolution and tracing.
     """
 
+    # NEW: Failure handling fields (ADR-007)
+    on_failure: Optional[str] = None
+    """
+    Task ID to execute when this task fails.
+    If set, instead of marking downstream as SKIPPED,
+    execute the failure handler task first.
+    Example: on_failure="t4_fix"
+    """
+
+    retry_target: Optional[str] = None
+    """
+    Task ID to retry after this (fix) task completes successfully.
+    Used for fix-and-retry patterns.
+    Example: retry_target="t3_verify"
+    """
+
+    max_retries: int = 0
+    """
+    Maximum number of retry attempts for this task.
+    0 = no retry (default behavior).
+    Works with on_failure to implement retry loops.
+    """
+
+    retry_count: int = 0
+    """
+    Current retry attempt counter (runtime state).
+    Incremented each time the task is retried.
+    """
+
+    inactive: bool = False
+    """
+    Whether this task is initially inactive.
+    Inactive tasks are not scheduled until explicitly activated
+    (e.g., via on_failure trigger).
+    """
+
     # Cached signature
     _signature: Optional[str] = field(default=None, repr=False)
 
@@ -335,6 +409,12 @@ class TaskNode:
             "confidence": self.confidence,
             "constraints": [c.to_dict() for c in self.constraints],
             "generation": self.generation,
+            # Retry/failure handling fields (ADR-007)
+            "on_failure": self.on_failure,
+            "retry_target": self.retry_target,
+            "max_retries": self.max_retries,
+            "retry_count": self.retry_count,
+            "inactive": self.inactive,
         }
 
     @classmethod
@@ -383,6 +463,12 @@ class TaskNode:
             confidence=data.get("confidence", 1.0),
             constraints=constraints,
             generation=data.get("generation", 0),
+            # Retry/failure handling fields (ADR-007)
+            on_failure=data.get("on_failure"),
+            retry_target=data.get("retry_target"),
+            max_retries=data.get("max_retries", 0),
+            retry_count=data.get("retry_count", 0),
+            inactive=data.get("inactive", False),
         )
 
 
@@ -396,6 +482,7 @@ class TaskDAG:
         nodes: Dictionary mapping task ID to TaskNode.
         created_at: When the DAG was created.
         replan_history: History of replans applied to this DAG.
+        retry_loops: Retry loop configurations in this DAG.
     """
     id: str
     goal: str
@@ -405,6 +492,10 @@ class TaskDAG:
     # NEW: Replan history
     replan_history: List[ReplanRecord] = field(default_factory=list)
     """History of replans applied to this DAG."""
+
+    # NEW: Retry loops (ADR-007)
+    retry_loops: List[RetryLoopConfig] = field(default_factory=list)
+    """Retry loop configurations in this DAG."""
 
     @classmethod
     def create(cls, goal: str, tasks: List[Dict[str, Any]]) -> "TaskDAG":
@@ -446,6 +537,12 @@ class TaskDAG:
                 confidence=task.get("confidence", 1.0),
                 constraints=constraints,
                 generation=task.get("generation", 0),
+                # Retry/failure handling fields (ADR-007)
+                on_failure=task.get("on_failure"),
+                retry_target=task.get("retry_target"),
+                max_retries=task.get("max_retries", 0),
+                retry_count=task.get("retry_count", 0),
+                inactive=task.get("inactive", False),
             )
             nodes[node.id] = node
 
@@ -469,6 +566,10 @@ class TaskDAG:
         ready = []
         for node in self.nodes.values():
             if node.status != TaskStatus.PENDING:
+                continue
+
+            # Skip inactive tasks (only executed via on_failure trigger)
+            if node.inactive:
                 continue
 
             # Check all dependencies are completed
@@ -555,6 +656,7 @@ class TaskDAG:
             "created_at": self.created_at.isoformat(),
             # New fields
             "replan_history": [r.to_dict() for r in self.replan_history],
+            "retry_loops": [r.to_dict() for r in self.retry_loops],
         }
 
     @classmethod
@@ -584,12 +686,17 @@ class TaskDAG:
         replan_history_data = data.get("replan_history", [])
         replan_history = [ReplanRecord.from_dict(r) for r in replan_history_data]
 
+        # Restore retry loops (backward compatible)
+        retry_loops_data = data.get("retry_loops", [])
+        retry_loops = [RetryLoopConfig.from_dict(r) for r in retry_loops_data]
+
         return cls(
             id=data["id"],
             goal=data.get("goal", ""),
             nodes=nodes,
             created_at=created_at,
             replan_history=replan_history,
+            retry_loops=retry_loops,
         )
 
     @property
