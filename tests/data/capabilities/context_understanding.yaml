@@ -1,0 +1,167 @@
+# Context Understanding Test Cases
+# Golden dataset for testing context understanding capability
+
+version: "1.0"
+capability: context_understanding
+description: Test cases for verifying context understanding accuracy
+
+test_cases:
+  # ==========================================================================
+  # Pronoun Resolution Tests
+  # ==========================================================================
+  - id: pronoun_it_simple
+    test_type: pronoun
+    context: "User asked about Python. Python is a versatile language."
+    query: "What can I do with it?"
+    expected_reference: "Python"
+    description: "Simple 'it' pronoun referring to Python"
+
+  - id: pronoun_it_nested
+    test_type: pronoun
+    context: |
+      User mentioned TensorFlow for deep learning.
+      Then discussed PyTorch as an alternative.
+    query: "How does it compare to other frameworks?"
+    expected_reference: "PyTorch"
+    description: "Pronoun 'it' should refer to most recent mention"
+
+  - id: pronoun_this_project
+    test_type: pronoun
+    context: "Working on a web scraping project using BeautifulSoup."
+    query: "How complex is this?"
+    expected_reference: "project"
+    description: "Demonstrative 'this' referring to project"
+
+  - id: pronoun_that_file
+    test_type: pronoun
+    context: "User uploaded config.yaml containing database settings."
+    query: "Can you analyze that file?"
+    expected_reference: "config.yaml"
+    description: "Reference 'that file' to uploaded file"
+
+  # ==========================================================================
+  # Cross-Turn Reference Tests
+  # ==========================================================================
+  - id: cross_turn_earlier
+    test_type: cross_turn
+    turns:
+      - role: user
+        content: "My name is Bob"
+      - role: assistant
+        content: "Hello Bob!"
+      - role: user
+        content: "I'm a data scientist"
+      - role: assistant
+        content: "Great profession!"
+    query: "What did I tell you earlier about myself?"
+    expected_info: "Bob"
+    description: "Reference to earlier conversation about name"
+
+  - id: cross_turn_before
+    test_type: cross_turn
+    turns:
+      - role: user
+        content: "The deadline is March 15th"
+      - role: assistant
+        content: "Noted the deadline."
+      - role: user
+        content: "Budget is $50,000"
+      - role: assistant
+        content: "Budget recorded."
+    query: "What was the deadline we discussed before?"
+    expected_info: "March 15"
+    description: "Cross-turn reference to deadline"
+
+  - id: cross_turn_mentioned
+    test_type: cross_turn
+    turns:
+      - role: user
+        content: "Use FastAPI for the backend"
+      - role: assistant
+        content: "FastAPI is a good choice."
+    query: "What framework did I mention?"
+    expected_info: "FastAPI"
+    description: "Reference to mentioned technology"
+
+  # ==========================================================================
+  # Information Recall Tests
+  # ==========================================================================
+  - id: recall_single_fact
+    test_type: recall
+    context: "User's preferred programming language is Rust."
+    query: "What's my preferred language?"
+    required_facts:
+      - "Rust"
+    description: "Recall single fact about preference"
+
+  - id: recall_multiple_facts
+    test_type: recall
+    context: |
+      Project details:
+      - Name: ProjectX
+      - Team size: 5 developers
+      - Stack: Python, PostgreSQL, Redis
+    query: "Summarize the project details"
+    required_facts:
+      - "ProjectX"
+      - "5"
+      - "Python"
+      - "PostgreSQL"
+    description: "Recall multiple project facts"
+
+  - id: recall_numeric_values
+    test_type: recall
+    context: "Server configuration: 16GB RAM, 8 CPU cores, 500GB SSD."
+    query: "What's the server configuration?"
+    required_facts:
+      - "16"
+      - "8"
+      - "500"
+    description: "Recall numeric configuration values"
+
+# ==========================================================================
+# Context Window Utilization Tests
+# ==========================================================================
+window_utilization:
+  - id: efficient_utilization
+    context_tokens: 8000
+    window_size: 16000
+    relevance_score: 0.9
+    expected_min_efficiency: 0.4
+
+  - id: low_utilization
+    context_tokens: 1000
+    window_size: 16000
+    relevance_score: 0.9
+    expected_min_efficiency: 0.05
+
+  - id: irrelevant_context
+    context_tokens: 14000
+    window_size: 16000
+    relevance_score: 0.1
+    expected_max_efficiency: 0.15
+
+# ==========================================================================
+# Edge Cases
+# ==========================================================================
+edge_cases:
+  - id: empty_context
+    test_type: pronoun
+    context: ""
+    query: "What is it?"
+    expected_reference: ""
+    expect_failure: true
+
+  - id: ambiguous_pronoun
+    test_type: pronoun
+    context: "Python and JavaScript are both popular. They have different uses."
+    query: "What can I use it for?"
+    expected_reference: "Python"
+    description: "Ambiguous pronoun should resolve to first/primary"
+
+  - id: no_context_recall
+    test_type: recall
+    context: ""
+    query: "What did we discuss?"
+    required_facts: []
+    expect_failure: true

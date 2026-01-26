@@ -1,0 +1,206 @@
+# Repository Understanding Test Cases
+# Golden dataset for testing repository understanding capability
+
+version: "1.0"
+capability: repo_understanding
+description: Test cases for verifying repository understanding quality
+
+test_cases:
+  # ==========================================================================
+  # Module Structure Understanding
+  # ==========================================================================
+  - id: web_app_structure
+    description: "Understand web application structure"
+    repo_type: web_application
+    key_modules:
+      - "core"
+      - "models"
+      - "api"
+      - "utils"
+      - "tests"
+    key_entry_points:
+      - "main.py"
+      - "app.py"
+
+  - id: cli_tool_structure
+    description: "Understand CLI tool structure"
+    repo_type: cli_tool
+    key_modules:
+      - "cli"
+      - "commands"
+      - "config"
+    key_entry_points:
+      - "__main__.py"
+      - "cli.py"
+
+  - id: library_structure
+    description: "Understand library structure"
+    repo_type: library
+    key_modules:
+      - "src"
+      - "tests"
+      - "docs"
+      - "examples"
+    key_entry_points:
+      - "__init__.py"
+
+  # ==========================================================================
+  # Dependency Awareness
+  # ==========================================================================
+  - id: python_web_deps
+    description: "Identify Python web framework dependencies"
+    dependencies:
+      - "FastAPI"
+      - "SQLAlchemy"
+      - "Pydantic"
+      - "Uvicorn"
+    dev_dependencies:
+      - "pytest"
+      - "black"
+      - "mypy"
+
+  - id: data_science_deps
+    description: "Identify data science dependencies"
+    dependencies:
+      - "pandas"
+      - "numpy"
+      - "scikit-learn"
+      - "matplotlib"
+
+  - id: node_deps
+    description: "Identify Node.js dependencies"
+    dependencies:
+      - "express"
+      - "typescript"
+      - "prisma"
+    package_manager: "npm"
+
+  # ==========================================================================
+  # Navigation Efficiency
+  # ==========================================================================
+  - id: find_main_entry
+    description: "Find main entry point efficiently"
+    target: "main entry point"
+    optimal_steps: 2
+    max_steps: 5
+
+  - id: find_config
+    description: "Find configuration file"
+    target: "configuration"
+    optimal_steps: 1
+    max_steps: 3
+
+  - id: find_test_file
+    description: "Find specific test file"
+    target: "test for user module"
+    optimal_steps: 2
+    max_steps: 4
+
+  - id: find_model_definition
+    description: "Find model definition"
+    target: "User model"
+    optimal_steps: 3
+    max_steps: 6
+
+# ==========================================================================
+# Repository Types
+# ==========================================================================
+repo_types:
+  web_application:
+    common_dirs:
+      - "src"
+      - "app"
+      - "static"
+      - "templates"
+    common_files:
+      - "requirements.txt"
+      - "Dockerfile"
+      - ".env.example"
+
+  cli_tool:
+    common_dirs:
+      - "src"
+      - "commands"
+    common_files:
+      - "setup.py"
+      - "pyproject.toml"
+
+  library:
+    common_dirs:
+      - "src"
+      - "tests"
+      - "docs"
+    common_files:
+      - "setup.py"
+      - "pyproject.toml"
+      - "README.md"
+
+  monorepo:
+    common_dirs:
+      - "packages"
+      - "apps"
+      - "libs"
+    common_files:
+      - "lerna.json"
+      - "pnpm-workspace.yaml"
+
+# ==========================================================================
+# Architecture Patterns
+# ==========================================================================
+architecture_patterns:
+  - id: mvc
+    description: "Model-View-Controller pattern"
+    indicators:
+      - "models/"
+      - "views/"
+      - "controllers/"
+
+  - id: layered
+    description: "Layered architecture"
+    indicators:
+      - "domain/"
+      - "application/"
+      - "infrastructure/"
+
+  - id: microservices
+    description: "Microservices architecture"
+    indicators:
+      - "services/"
+      - "docker-compose.yml"
+      - "api-gateway/"
+
+# ==========================================================================
+# Expected Behaviors
+# ==========================================================================
+behaviors:
+  module_understanding:
+    - "Identify main source directories"
+    - "Distinguish between src, tests, and docs"
+    - "Recognize common patterns (MVC, etc.)"
+
+  dependency_awareness:
+    - "Parse requirements.txt or pyproject.toml"
+    - "Distinguish runtime vs dev dependencies"
+    - "Identify main framework/library"
+
+  navigation:
+    - "Use Glob for file discovery"
+    - "Use Grep for content search"
+    - "Minimize number of search steps"
+
+# ==========================================================================
+# Scoring
+# ==========================================================================
+scoring:
+  module_understanding:
+    weight: 0.4
+    min_threshold: 0.7
+
+  dependency_awareness:
+    weight: 0.3
+    min_threshold: 0.6
+
+  navigation_efficiency:
+    weight: 0.3
+    optimal_ratio: 1.0
+    acceptable_ratio: 0.5

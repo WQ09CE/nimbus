@@ -1,0 +1,109 @@
+# Context Compression Test Cases
+# Golden dataset for testing context compression capability
+
+version: "1.0"
+capability: context_compression
+description: Test cases for verifying context compression quality
+
+test_cases:
+  # ==========================================================================
+  # Compression Trigger Tests
+  # ==========================================================================
+  - id: trigger_by_turn_count
+    description: "Compression should trigger when turn count exceeds threshold"
+    turns:
+      - role: user
+        content: "Hello, how are you?"
+      - role: assistant
+        content: "I'm doing great!"
+      - role: user
+        content: "Tell me about Python"
+      - role: assistant
+        content: "Python is a programming language."
+      - role: user
+        content: "What about machine learning?"
+      - role: assistant
+        content: "ML is a subset of AI."
+    compression_threshold: 3
+    expected_compression: true
+
+  - id: no_compression_below_threshold
+    description: "No compression when under threshold"
+    turns:
+      - role: user
+        content: "Hello"
+      - role: assistant
+        content: "Hi there!"
+    compression_threshold: 3
+    expected_compression: false
+
+  # ==========================================================================
+  # Key Information Preservation Tests
+  # ==========================================================================
+  - id: preserve_user_name
+    description: "User's name should be preserved after compression"
+    turns:
+      - role: user
+        content: "My name is Alice"
+      - role: assistant
+        content: "Nice to meet you, Alice!"
+      - role: user
+        content: "I work at TechCorp"
+      - role: assistant
+        content: "TechCorp is a great company."
+    key_info:
+      - "Alice"
+      - "TechCorp"
+    preserve_all: true
+
+  - id: preserve_technical_details
+    description: "Technical details should be preserved"
+    turns:
+      - role: user
+        content: "The server runs on port 8080"
+      - role: assistant
+        content: "Port 8080 noted."
+      - role: user
+        content: "Database is PostgreSQL version 14"
+      - role: assistant
+        content: "PostgreSQL 14, got it."
+    key_info:
+      - "8080"
+      - "PostgreSQL"
+      - "14"
+
+  # ==========================================================================
+  # Compression Ratio Tests
+  # ==========================================================================
+  - id: high_compression_ratio
+    description: "Long conversations should achieve high compression"
+    turn_count: 20
+    expected_min_ratio: 0.5
+
+  - id: moderate_compression_ratio
+    description: "Medium conversations should achieve moderate compression"
+    turn_count: 10
+    expected_min_ratio: 0.3
+
+# ==========================================================================
+# Compression Quality Expectations
+# ==========================================================================
+quality_expectations:
+  min_compression_ratio: 0.3
+  max_summary_tokens: 200
+  key_info_preservation_rate: 0.9
+
+# ==========================================================================
+# Pinned Items (Never Compressed)
+# ==========================================================================
+pinned_items:
+  - id: user_instruction
+    type: user_instruction
+    content: "Always respond in English"
+    priority: 100
+    read_only: true
+
+  - id: project_context
+    type: key_entity
+    content: "Working on Project Alpha"
+    priority: 50

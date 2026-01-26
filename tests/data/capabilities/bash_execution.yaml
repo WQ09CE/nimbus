@@ -1,0 +1,200 @@
+# Bash Execution Test Cases
+# Golden dataset for testing bash execution capability
+
+version: "1.0"
+capability: bash_execution
+description: Test cases for verifying bash command execution
+
+test_cases:
+  # ==========================================================================
+  # Basic Command Execution
+  # ==========================================================================
+  - id: echo_simple
+    command: "echo 'Hello, World!'"
+    expected_exit_code: 0
+    expected_output_contains:
+      - "Hello, World!"
+    description: "Simple echo command"
+
+  - id: ls_directory
+    command: "ls -la"
+    expected_exit_code: 0
+    expected_output_contains:
+      - "."
+      - ".."
+    description: "List directory contents"
+
+  - id: pwd_command
+    command: "pwd"
+    expected_exit_code: 0
+    description: "Print working directory"
+
+  - id: cat_file
+    command: "cat test.txt"
+    setup: "echo 'content' > test.txt"
+    expected_exit_code: 0
+    expected_output_contains:
+      - "content"
+    description: "Read file content"
+
+  # ==========================================================================
+  # Piped Commands
+  # ==========================================================================
+  - id: pipe_grep
+    command: "echo 'hello\nworld' | grep hello"
+    expected_exit_code: 0
+    expected_output_contains:
+      - "hello"
+    expected_output_not_contains:
+      - "world"
+    description: "Pipe with grep"
+
+  - id: pipe_wc
+    command: "echo -e 'line1\nline2\nline3' | wc -l"
+    expected_exit_code: 0
+    expected_output_contains:
+      - "3"
+    description: "Pipe with word count"
+
+  - id: pipe_sort
+    command: "echo -e 'c\na\nb' | sort"
+    expected_exit_code: 0
+    description: "Pipe with sort"
+
+  # ==========================================================================
+  # Error Handling
+  # ==========================================================================
+  - id: file_not_found
+    command: "cat nonexistent.txt"
+    expected_exit_code: 1
+    expected_output_contains:
+      - "No such file"
+    description: "File not found error"
+
+  - id: command_not_found
+    command: "nonexistentcommand123"
+    expected_exit_code: 127
+    expected_output_contains:
+      - "not found"
+    description: "Command not found error"
+
+  - id: permission_denied
+    command: "cat /etc/shadow"
+    expected_exit_code: 1
+    expected_output_contains:
+      - "Permission denied"
+    description: "Permission denied error"
+
+  # ==========================================================================
+  # Timeout Handling
+  # ==========================================================================
+  - id: quick_command
+    command: "echo 'fast'"
+    timeout_ms: 5000
+    expected_exit_code: 0
+    max_execution_time: 1.0
+    description: "Quick command within timeout"
+
+  - id: slow_command_timeout
+    command: "sleep 10"
+    timeout_ms: 100
+    expect_timeout: true
+    description: "Slow command should timeout"
+
+  # ==========================================================================
+  # Output Parsing
+  # ==========================================================================
+  - id: multiline_output
+    command: "echo -e 'line1\nline2\nline3'"
+    expected_exit_code: 0
+    expected_output_contains:
+      - "line1"
+      - "line2"
+      - "line3"
+    description: "Parse multiline output"
+
+  - id: mixed_stdout_stderr
+    command: "echo 'stdout'; echo 'stderr' >&2"
+    expected_exit_code: 0
+    expected_output_contains:
+      - "stdout"
+      - "stderr"
+    description: "Capture both stdout and stderr"
+
+  - id: long_output_truncation
+    command: "for i in $(seq 1 10000); do echo 'line'; done"
+    expected_exit_code: 0
+    max_output_length: 35000
+    description: "Long output should be truncated"
+
+  # ==========================================================================
+  # Safety Checks
+  # ==========================================================================
+  - id: empty_command_rejected
+    command: ""
+    expect_error: true
+    error_type: "ValueError"
+    description: "Empty command should be rejected"
+
+  - id: whitespace_command_rejected
+    command: "   "
+    expect_error: true
+    error_type: "ValueError"
+    description: "Whitespace-only command should be rejected"
+
+  - id: invalid_timeout_rejected
+    command: "echo test"
+    timeout_ms: 0
+    expect_error: true
+    error_type: "ValueError"
+    description: "Zero timeout should be rejected"
+
+  - id: negative_timeout_rejected
+    command: "echo test"
+    timeout_ms: -1000
+    expect_error: true
+    error_type: "ValueError"
+    description: "Negative timeout should be rejected"
+
+# ==========================================================================
+# Working Directory Tests
+# ==========================================================================
+cwd_tests:
+  - id: cwd_changes_directory
+    command: "ls"
+    cwd: "/tmp"
+    expected_exit_code: 0
+    description: "Command runs in specified directory"
+
+  - id: cwd_not_found
+    command: "ls"
+    cwd: "/nonexistent/directory"
+    expect_error: true
+    error_type: "FileNotFoundError"
+    description: "Non-existent cwd raises error"
+
+  - id: cwd_is_file
+    command: "ls"
+    cwd: "/etc/passwd"
+    expect_error: true
+    error_type: "NotADirectoryError"
+    description: "File as cwd raises error"
+
+# ==========================================================================
+# Expected Behaviors
+# ==========================================================================
+behaviors:
+  execution:
+    - "Commands execute asynchronously"
+    - "Timeout kills long-running processes"
+    - "Exit code is captured correctly"
+
+  output:
+    - "stdout captured separately from stderr"
+    - "Long output truncated at MAX_OUTPUT_LENGTH"
+    - "UTF-8 decoding with latin-1 fallback"
+
+  safety:
+    - "Empty commands rejected"
+    - "Timeout capped at maximum value"
+    - "Working directory validated"
