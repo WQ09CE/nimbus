@@ -1,11 +1,27 @@
 """OpenNotebook Skills.
 
+Architecture Layer: 2 (Application)
+Von Neumann Role: Libraries (libc, shared libraries)
+
+In the Agent OS architecture, skills serve as user-space libraries that
+provide reusable functionality to applications:
+- synthesize -> printf/sprintf (output formatting)
+- search -> DNS/network libraries (external lookups)
+- summarize -> compression libraries (data reduction)
+- rag -> database client libraries (persistent storage access)
+
+Skills are higher-level abstractions built on top of tools (syscalls),
+similar to how libc wraps syscalls with convenient APIs.
+
 This module provides:
 1. Builtin skill functions (synthesize, search, summarize, rag, draft)
 2. Skill definition schema for loading skills from Markdown files
 3. Skill loader for discovering and loading skills
 4. Skill validator for validating skill definitions
 """
+
+__layer__ = 2  # Application Layer
+__role__ = "Libraries"  # Shared libraries and utilities
 
 from .synthesize import synthesize, create_synthesize_skill
 from .search import web_search, search_with_context

@@ -1,5 +1,17 @@
 """Tool base classes and registry for Nimbus Agent Framework.
 
+Architecture Layer: 0 (Infrastructure)
+Von Neumann Role: ISA (Instruction Set Architecture)
+
+In the Agent OS architecture, tools represent the Instruction Set Architecture.
+They define the operations that agents can perform on the external world,
+similar to how CPU instructions define operations on memory and I/O.
+
+Tool definitions are analogous to opcode specifications:
+- ToolParameter -> Operand specification
+- ToolDefinition -> Instruction format
+- ToolRegistry -> Instruction decoder/dispatcher
+
 This module provides the foundation for defining and executing tools that can
 be used by code agents. Tools are similar to skills but designed specifically
 for code-related operations like reading files, searching, and executing commands.
@@ -26,6 +38,9 @@ Example:
     >>> registry.register_decorated(read_file)
     >>> result = await registry.execute("Read", {"file_path": "/tmp/test.txt"})
 """
+
+__layer__ = 0  # Infrastructure Layer
+__role__ = "ISA"  # Instruction Set Architecture - tool interface definitions
 
 import asyncio
 from dataclasses import dataclass, field

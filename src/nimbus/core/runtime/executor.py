@@ -1,5 +1,18 @@
 """Async Runtime for parallel DAG execution.
 
+Architecture Layer: 1 (Agent OS - Kernel)
+Von Neumann Role: Scheduler
+
+In the Agent OS architecture, AsyncRuntime serves as the process scheduler,
+managing task execution similar to an OS kernel scheduler:
+- DAG nodes -> Processes/threads in ready queue
+- Concurrency control -> CPU time slicing
+- Task dependencies -> Process synchronization
+- Timeout handling -> Watchdog timer
+- Checkpoint persistence -> Process state checkpointing
+
+The runtime implements cooperative multitasking for agent "processes".
+
 This module provides the AsyncRuntime class which executes TaskDAGs
 in parallel with support for:
 
@@ -20,6 +33,9 @@ Example:
     print(f"Completed: {result.stats.completed}")
     ```
 """
+
+__layer__ = 1  # Agent OS Layer
+__role__ = "Scheduler"  # Task/process scheduling
 
 import asyncio
 from datetime import datetime

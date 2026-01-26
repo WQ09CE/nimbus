@@ -1,7 +1,17 @@
 """Agentic Loop Runtime for Nimbus.
 
-This module provides the AgenticRunner, which implements an agentic loop
-pattern where the LLM decides when to call tools and when to respond.
+Architecture Layer: 1 (Agent OS - vCPU)
+Von Neumann Role: Control Unit (Fetch-Decode-Execute Loop)
+
+In the Agent OS architecture, AgenticRunner serves as the Control Unit,
+implementing the core fetch-decode-execute cycle:
+- Fetch: Get LLM response (next "instruction")
+- Decode: Parse tool calls vs. final response
+- Execute: Run tools and collect results
+- Repeat: Feed results back to LLM
+
+This is the "instruction cycle" of the agent, where the LLM acts as
+a programmable sequencer deciding the next operation based on state.
 
 Unlike the DAG-based executor, the agentic runner:
 - Lets the LLM see tool results before deciding next action
@@ -27,6 +37,9 @@ Example:
             print(f"Final: {event['content']}")
     ```
 """
+
+__layer__ = 1  # Agent OS Layer
+__role__ = "Control_Unit"  # Fetch-Decode-Execute loop
 
 import json
 import uuid

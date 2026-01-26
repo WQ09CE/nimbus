@@ -1,5 +1,18 @@
 """Permission management system for tool access control.
 
+Architecture Layer: 1 (Agent OS - Kernel)
+Von Neumann Role: ACL (Access Control List) / Security Module
+
+In the Agent OS architecture, PermissionManager serves as the security
+subsystem, implementing access control similar to OS security mechanisms:
+- Permission rules -> ACL entries (allow/deny/ask)
+- Pattern matching -> Resource path matching
+- Priority evaluation -> Security policy ordering
+- Subset creation -> Capability dropping for child processes
+
+This is analogous to Unix permissions, SELinux policies, or Windows ACLs,
+controlling which "syscalls" (tools) can access which "files" (resources).
+
 This module provides a rule-based permission management system for controlling
 access to tools and resources. It supports:
 
@@ -19,6 +32,9 @@ Example usage:
     # Create subset for sub-agent
     sub_manager = manager.create_subset(["Read", "Glob"])
 """
+
+__layer__ = 1  # Agent OS Layer
+__role__ = "ACL"  # Access Control List / Security
 
 from dataclasses import dataclass, field
 from fnmatch import fnmatch

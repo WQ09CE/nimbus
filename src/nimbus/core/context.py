@@ -1,5 +1,18 @@
 """Context Stack for focused LLM calls.
 
+Architecture Layer: 1 (Agent OS - Kernel)
+Von Neumann Role: Context Manager (CPU Context Switching)
+
+In the Agent OS architecture, ContextStack serves as the context
+switching mechanism, similar to how CPUs save/restore register state:
+- ContextFrame -> CPU register snapshot (IP, SP, flags)
+- Push/pop operations -> Context switch on interrupt/syscall
+- Frame inheritance -> Process context inheritance from parent
+- Token budgets -> Register file size limits
+
+Each phase (planner, tool, subagent) gets an isolated "register set",
+preventing interference and enabling efficient execution.
+
 This module provides:
 - ContextFrame: Single context stack frame with isolated data
 - ContextStack: Stack manager for push/pop operations with async context manager
@@ -24,6 +37,9 @@ Example:
     ...     view = context.get_view()  # ~1000 tokens
     ...     result = await execute_tool(view)
 """
+
+__layer__ = 1  # Agent OS Layer
+__role__ = "Context_Manager"  # CPU context switching
 
 import uuid
 from contextlib import asynccontextmanager

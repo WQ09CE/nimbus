@@ -1,5 +1,17 @@
 """Tool middleware for retry and error enhancement.
 
+Architecture Layer: 1 (Agent OS - vCPU)
+Von Neumann Role: Interrupt Handler
+
+In the Agent OS architecture, tool middleware serves as the interrupt
+handler system. When tool execution fails (like a hardware fault),
+the middleware intercepts the error and attempts recovery:
+- Path resolution errors -> Suggest corrections (like page fault handler)
+- Timeout errors -> Retry with backoff
+- Permission errors -> Elevate or deny (like trap handler)
+
+This is similar to how CPU interrupt handlers manage exceptional conditions.
+
 This module provides middleware components for wrapping tool execution
 with intelligent retry logic and error enhancement.
 
@@ -7,6 +19,9 @@ Example:
     >>> middleware = ToolRetryMiddleware(resolver, config)
     >>> result = await middleware.wrap_execute(registry, "Read", {"file_path": "utils"})
 """
+
+__layer__ = 1  # Agent OS Layer
+__role__ = "Interrupt_Handler"  # Error recovery and retry logic
 
 from dataclasses import dataclass, field
 from pathlib import Path

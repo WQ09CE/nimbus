@@ -1,5 +1,19 @@
 """Subagent tool for spawning isolated child agents.
 
+Architecture Layer: 1 (Agent OS - Kernel)
+Von Neumann Role: Process Manager (fork/exec)
+
+In the Agent OS architecture, the subagent system serves as the process
+manager, implementing process creation and lifecycle management:
+- Subagent spawning -> fork() syscall
+- Context isolation -> Process address space isolation
+- Tool permissions -> Process capabilities/privileges
+- Depth limiting -> Process tree depth limits
+- Concurrent limits -> System resource limits (ulimit)
+
+Like Unix process management, subagents inherit restricted permissions
+from their parent but run in isolated contexts.
+
 This module provides SubagentTool for creating and managing child agents with:
 - Isolated context (read-only snapshot from parent)
 - Tool permission restrictions (must be subset of parent)
@@ -18,6 +32,9 @@ Example:
     >>> print(result["summary"])
     Found 12 Python files in the tools directory...
 """
+
+__layer__ = 1  # Agent OS Layer
+__role__ = "Process_Manager"  # Process creation and lifecycle
 
 import asyncio
 import uuid

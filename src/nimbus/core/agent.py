@@ -1,9 +1,25 @@
 """CodeAgent - Main orchestrator for code exploration and analysis.
 
+Architecture Layer: 2 (Application)
+Von Neumann Role: Process Definition (init/systemd)
+
+In the Agent OS architecture, CodeAgent is the "init process" or "PID 1",
+the first user-space process that bootstraps the entire agent system:
+- Creates and manages the tool registry (loads device drivers)
+- Initializes memory subsystem (mounts filesystems)
+- Starts subagent executor (forks child processes)
+- Orchestrates the execution lifecycle
+
+CodeAgent is not part of the "kernel" itself but the primary application
+that uses kernel services to accomplish user goals.
+
 Simplified execution model: Uses task mode (SubagentDAG orchestration) exclusively.
 The previous dag/agentic modes have been removed in favor of the unified task mode
 which provides subagent-level DAG orchestration with internal AgenticRunner execution.
 """
+
+__layer__ = 2  # Application Layer
+__role__ = "Process_Definition"  # Main application process
 
 import uuid
 from pathlib import Path

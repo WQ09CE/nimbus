@@ -1,6 +1,16 @@
 """Tools package for Nimbus Agent Framework.
 
-Provides base classes and registry for code tools that can be executed by agents.
+Architecture Layer: 0 (Infrastructure)
+Von Neumann Role: ISA (Instruction Set Architecture)
+
+The tools package defines the complete instruction set available to agents.
+Each tool is an "instruction" that agents can invoke to interact with
+the external world (filesystem, network, subprocesses, etc.).
+
+In Von Neumann terms:
+- Tool definitions = Instruction formats (opcodes + operands)
+- Tool implementations = Microcode (actual execution logic)
+- Tool registry = Instruction decoder
 
 Core components:
     - ToolParameter, ToolDefinition, ToolRegistry: Base classes for tool definition
@@ -12,6 +22,9 @@ Core components:
     - SmartPathResolver, FileTreeCache: Path resolution and caching
     - ToolRetryMiddleware: Intelligent tool retry with error enhancement
 """
+
+__layer__ = 0  # Infrastructure Layer
+__role__ = "ISA"  # Instruction Set Architecture
 
 from nimbus.tools.base import (
     ToolDefinition,
