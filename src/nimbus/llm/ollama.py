@@ -45,7 +45,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import aiohttp
 
-from .base import BaseLLMClient, LLMError
+from .base import BaseLLMClient, CompletionResponse, LLMError, ToolCall
 from ..core.logging import get_logger
 
 logger = get_logger("ollama")
@@ -306,6 +306,69 @@ class OllamaClient(BaseLLMClient):
         logger.debug(f"Ollama response: len={len(content)}")
 
         return content
+
+    async def complete_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        **kwargs: Any,
+    ) -> CompletionResponse:
+        """Generate a completion with tool calling support.
+
+        Args:
+            messages: List of message dicts (OpenAI format)
+            tools: List of tool definitions (OpenAI format)
+            **kwargs: Additional options
+
+        Returns:
+            CompletionResponse with content and/or tool_calls
+        """
+        url = f"{self.config.base_url}/api/chat"
+        options = self._build_options()
+
+        body = {
+            "model": self.config.model,
+            "messages": messages,
+            "stream": False,
+            "options": options,
+        }
+
+        # Add tools if provided
+        if tools:
+            body["tools"] = tools
+
+        logger.debug(f"Ollama tool request: model={self.config.model}, tools={len(tools) if tools else 0}")
+
+        resp = await self._request_with_retry(url, body)
+        data = await resp.json()
+
+        # Extract response
+        message = data.get("message", {})
+        content = message.get("content", "")
+        raw_tool_calls = message.get("tool_calls", [])
+
+        # Convert tool calls to ToolCall objects
+        tool_calls = []
+        for i, tc in enumerate(raw_tool_calls):
+            func = tc.get("function", {})
+            tool_calls.append(ToolCall(
+                id=f"call_{i}",
+                name=func.get("name", ""),
+                arguments=func.get("arguments", {}),
+            ))
+
+        # Determine finish reason
+        if tool_calls:
+            finish_reason = "tool_calls"
+        else:
+            finish_reason = "stop"
+
+        return CompletionResponse(
+            content=content if content else None,
+            tool_calls=tool_calls,
+            finish_reason=finish_reason,
+            raw_response=data,
+        )
 
     async def stream(
         self,

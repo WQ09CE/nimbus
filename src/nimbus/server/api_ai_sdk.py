@@ -401,84 +401,91 @@ async def chat(
                 logger.debug(f"   📨 Event[{event_count}]: {status_type}")
 
                 # =============================================================
-                # DAG Events (Multi-agent orchestration) - Custom data events
+                # DAG/Task Events (from SubagentRuntime)
+                # Core sends: task_start, task_complete
                 # =============================================================
-                if status_type == "dag_start":
+                if status_type == "task_start":
+                    # DAG execution start
                     dag_id = status.get("dag_id", f"dag_{uuid.uuid4().hex[:8]}")
                     goal = status.get("goal", "")
-                    total_tasks = status.get("total_tasks", 0)
+                    total_tasks = status.get("nodes", 0)
                     current_dag_id = dag_id
                     yield format_dag_start(dag_id, goal, total_tasks)
 
-                elif status_type == "dag_progress":
-                    dag_id = status.get("dag_id", current_dag_id or "")
-                    completed = status.get("completed", 0)
-                    total = status.get("total", 0)
-                    yield format_dag_progress(dag_id, completed, total)
-
-                elif status_type == "dag_end":
+                elif status_type == "task_complete":
+                    # DAG execution complete
                     dag_id = status.get("dag_id", current_dag_id or "")
                     dag_status = status.get("status", "completed")
-                    summary = status.get("summary")
-                    yield format_dag_end(dag_id, dag_status, summary)
+                    final_summary = status.get("final_summary", "")
+                    yield format_dag_end(dag_id, dag_status, final_summary[:200] if final_summary else None)
                     current_dag_id = None
 
-                # =============================================================
-                # Agent Events (Sub-agent execution) - Custom data events
-                # =============================================================
-                elif status_type == "agent_start":
-                    agent_id = status.get("agent_id", "")
-                    agent_name = status.get("agent_name", "Agent")
-                    task_id = status.get("task_id", f"task_{uuid.uuid4().hex[:8]}")
-                    parent_task_id = status.get("parent_task_id")
-                    yield format_agent_start(agent_id, agent_name, task_id, parent_task_id)
-
-                elif status_type == "agent_end":
-                    agent_id = status.get("agent_id", "")
-                    agent_status = status.get("status", "completed")
-                    output = status.get("output")
-                    yield format_agent_end(agent_id, agent_status, output)
+                elif status_type == "task_dag":
+                    # DAG structure event (from CodeAgent.run_stream)
+                    dag_data = status.get("dag", {})
+                    yield format_data_event("dag-structure", dag_data)
 
                 # =============================================================
-                # Tool Events - Standard AI SDK v6 format
+                # Subagent Events (from SubagentRuntime)
+                # Core sends: subagent_start, subagent_progress, subagent_complete
                 # =============================================================
-                elif status_type == "task_start":
-                    # Tool call start
-                    tool_call_id = status.get("task_id", f"tool_{uuid.uuid4().hex[:8]}")
-                    tool_name = status.get("skill", "unknown")
-                    params = status.get("params", {})
-                    current_tool_id = tool_call_id
-                    current_tool_name = tool_name
+                elif status_type == "subagent_start":
+                    node_id = status.get("node_id", "")
+                    subagent_type = status.get("subagent_type", "agent")
+                    goal = status.get("goal", "")
+                    yield format_agent_start(
+                        agent_id=node_id,
+                        agent_name=subagent_type.upper(),
+                        task_id=f"task_{node_id}",
+                    )
 
-                    # Send tool-input-start first
-                    yield format_tool_input_start(tool_call_id, tool_name)
-                    # Then send tool-input-available with full args
-                    yield format_tool_input_available(tool_call_id, tool_name, params)
+                elif status_type == "subagent_progress":
+                    # Tool call or tool result from subagent
+                    node_id = status.get("node_id", "")
+                    event_type = status.get("event_type", "")
 
-                elif status_type == "task_done":
-                    # Tool call result
-                    tool_call_id = status.get("task_id", current_tool_id or "")
-                    result = status.get("result", "")
-                    # Truncate large results for display
-                    if isinstance(result, str) and len(result) > 2000:
-                        result = result[:2000] + "...(truncated)"
-                    yield format_tool_output_available(tool_call_id, result)
-                    current_tool_id = None
-                    current_tool_name = None
+                    if event_type == "tool_call":
+                        tool_name = status.get("tool_name", "unknown")
+                        arguments = status.get("arguments", {})
+                        call_id = status.get("call_id", f"tool_{uuid.uuid4().hex[:8]}")
+                        current_tool_id = call_id
+                        current_tool_name = tool_name
 
-                elif status_type == "task_failed":
-                    # Tool call failed
-                    tool_call_id = status.get("task_id", current_tool_id or "")
-                    error = status.get("error", "Unknown error")
-                    yield format_tool_output_available(tool_call_id, {"error": str(error)})
-                    current_tool_id = None
-                    current_tool_name = None
+                        # Send tool-input-start first
+                        yield format_tool_input_start(call_id, tool_name)
+                        # Then send tool-input-available with full args
+                        yield format_tool_input_available(call_id, tool_name, arguments)
+
+                    elif event_type == "tool_result":
+                        call_id = status.get("call_id", current_tool_id or "")
+                        result = status.get("result_preview", "")
+                        is_error = status.get("is_error", False)
+
+                        if is_error:
+                            yield format_tool_output_available(call_id, {"error": str(result)})
+                        else:
+                            # Truncate large results for display
+                            if isinstance(result, str) and len(result) > 2000:
+                                result = result[:2000] + "...(truncated)"
+                            yield format_tool_output_available(call_id, result)
+
+                        current_tool_id = None
+                        current_tool_name = None
+
+                elif status_type == "subagent_complete":
+                    node_id = status.get("node_id", "")
+                    subagent_status = status.get("status", "completed")
+                    summary = status.get("summary", "")
+                    error = status.get("error")
+                    output = {"summary": summary, "error": error} if error else summary
+                    yield format_agent_end(node_id, subagent_status, output)
 
                 # =============================================================
                 # Text Events - Standard AI SDK v6 format
+                # Core sends: response, complete
                 # =============================================================
-                elif status_type in ("direct", "complete"):
-                    # Complete text response
+                elif status_type == "response":
+                    # Final response text
                     content = status.get("content", "")
                     if content:
                         # Start text block if not started
@@ -493,8 +500,24 @@ async def chat(
                                 yield format_text_delta(text_id, delta)
                         response_text = content
 
+                elif status_type == "complete":
+                    # Completion event - use content if response wasn't already sent
+                    content = status.get("content", "")
+                    if content and not response_text:
+                        # Start text block if not started
+                        if not text_started:
+                            yield format_text_start(text_id)
+                            text_started = True
+                        # Send content in chunks (by line for better performance)
+                        lines = content.split('\n')
+                        for i, line in enumerate(lines):
+                            delta = line + '\n' if i < len(lines) - 1 else line
+                            if delta:
+                                yield format_text_delta(text_id, delta)
+                        response_text = content
+
                 elif status_type == "text_delta":
-                    # Streaming text delta
+                    # Streaming text delta (if core supports it in future)
                     delta = status.get("delta", "")
                     if delta:
                         # Start text block if not started
@@ -506,10 +529,20 @@ async def chat(
 
                 # =============================================================
                 # Status/Progress Events - Custom data events
+                # Core sends: status
                 # =============================================================
+                elif status_type == "status":
+                    message = status.get("content", "")
+                    yield format_status("processing", message)
+
                 elif status_type in ("planning", "executing", "thinking"):
                     message = status.get("message", status_type)
                     yield format_status(status_type, message)
+
+                elif status_type == "error":
+                    # Error event from core
+                    error_content = status.get("content", "Unknown error")
+                    yield format_error(error_content)
 
             # End text block if started
             if text_started:

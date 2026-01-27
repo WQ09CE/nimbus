@@ -48,7 +48,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Union
 from .ipc import IPCMessage, MessageType, Signal
 from .proc import AgentProcess, ProcessState
 from .scheduler import ProcessManager
-from .vcpu import vCPU, vCPUError, ResourceLimitError, MaxIterationsError
+from .vcpu import vCPU, vCPUConfig, vCPUError, ResourceLimitError, MaxIterationsError
 from .vcpu_pool import vCPUPool
 
 
@@ -337,6 +337,7 @@ __all__ = [
     "AgentOS",
     # vCPU
     "vCPU",
+    "vCPUConfig",
     "vCPUPool",
     "vCPUError",
     "ResourceLimitError",

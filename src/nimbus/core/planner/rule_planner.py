@@ -120,10 +120,20 @@ PLANNING_RULES: List[Dict[str, Any]] = [
         ],
     },
     # Search for pattern - English (only match simple patterns, not natural language queries)
-    # e.g., "search for foo", "grep bar", "find baz" but NOT "find all files that contain..."
+    # e.g., "search for foo", "grep bar", "find baz", "find 'async def'" but NOT "find all files that contain..."
     {
         "name": "grep_code_en",
-        "pattern": r"^(?:search|grep|find)\s+(?:for\s+)?(?:the\s+)?(?:definition\s+of\s+)?['\"]?(\w+(?:\.\w+)?)['\"]?\s*(?:in\s+(?:the\s+)?(?:code(?:base)?)?)?$",
+        "pattern": r"^(?:search|grep|find)\s+(?:for\s+)?(?:the\s+)?(?:definition\s+of\s+)?['\"]([^'\"]+)['\"](?:\s+in\s+(?:the\s+)?(?:code(?:base)?)?)?$",
+        "mode": "dag",
+        "tasks": [
+            {"skill": "Grep", "params_template": {"pattern": "$1", "type": "py"}},
+        ],
+    },
+    # Search for simple word patterns without quotes
+    # e.g., "search for foo", "find bar", "grep baz"
+    {
+        "name": "grep_code_en_simple",
+        "pattern": r"^(?:search|grep|find)\s+(?:for\s+)?(?:the\s+)?(?:definition\s+of\s+)?(\w+(?:\.\w+)?)\s*(?:in\s+(?:the\s+)?(?:code(?:base)?)?)?$",
         "mode": "dag",
         "tasks": [
             {"skill": "Grep", "params_template": {"pattern": "$1", "type": "py"}},
@@ -218,7 +228,7 @@ PLANNING_RULES: List[Dict[str, Any]] = [
         "pattern": r"^(?:搜索|查询|search)\s+(.+)$",
         "mode": "dag",
         "tasks": [
-            {"skill": "search", "params_template": {"query": "$1"}},
+            {"skill": "Grep", "params_template": {"pattern": "$1", "type": "py"}},
         ],
     },
     {
@@ -226,7 +236,7 @@ PLANNING_RULES: List[Dict[str, Any]] = [
         "pattern": r"^(?:搜索|查找)\s+(.+)\s*[,，]\s*(?:然后)?(?:总结|概括).*$",
         "mode": "dag",
         "tasks": [
-            {"skill": "search", "params_template": {"query": "$1"}},
+            {"skill": "Grep", "params_template": {"pattern": "$1", "type": "py"}},
             {"skill": "summarize", "params_template": {"source": "$t1"}, "depends_on": ["$t1"]},
         ],
     },

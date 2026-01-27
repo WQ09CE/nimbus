@@ -39,6 +39,7 @@ import ast
 import json
 import logging
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -48,6 +49,61 @@ from ..tools.base import ToolRegistry
 from .proc import AgentProcess, ProcessState
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# vCPU Configuration
+# ============================================================================
+
+
+@dataclass
+class vCPUConfig:
+    """Configuration for vCPU behavior.
+
+    This dataclass centralizes all configurable parameters for the vCPU,
+    replacing scattered magic numbers with a single, documented config object.
+
+    Attributes:
+        max_iterations: Maximum iterations per process execution (safety limit).
+        max_correction_retries: Max retries for "talkative LLM" correction.
+        max_empty_response_retries: Max retries when LLM returns empty response.
+        min_response_length: Minimum chars for a response to be considered valid.
+        retry_temperatures: Temperature values for retry attempts (decaying).
+        enable_temperature_decay: Whether to use temperature decay on retries.
+    """
+    max_iterations: int = 50
+    max_correction_retries: int = 3
+    max_empty_response_retries: int = 2
+    min_response_length: int = 20
+    retry_temperatures: List[float] = field(default_factory=lambda: [0.7, 0.3, 0.0])
+    enable_temperature_decay: bool = True
+
+    def get_retry_temperature(self, retry_count: int) -> Optional[float]:
+        """Get temperature for a given retry attempt.
+
+        Args:
+            retry_count: Current retry number (1-indexed).
+
+        Returns:
+            Temperature value, or None if temperature decay is disabled.
+        """
+        if not self.enable_temperature_decay:
+            return None
+        if retry_count <= 0:
+            return None
+        # Use the temperature at index (retry_count - 1), capped at last value
+        idx = min(retry_count - 1, len(self.retry_temperatures) - 1)
+        return self.retry_temperatures[idx]
+
+
+# Default config instance
+DEFAULT_CONFIG = vCPUConfig()
+
+
+# ============================================================================
+# Constants and Patterns
+# ============================================================================
+
 
 # Patterns that indicate the LLM is describing tool calls in text instead of actually calling them
 # This is the "talkative LLM" problem common with Gemini and other models
@@ -61,12 +117,6 @@ TOOL_DESCRIPTION_PATTERNS = [
     r"Calling (\w+) with",
 ]
 
-# Maximum number of correction retries before giving up
-MAX_CORRECTION_RETRIES = 3
-
-# Temperature stepping for retries (reduces randomness on each retry)
-RETRY_TEMPERATURES = [0.7, 0.3, 0.0]
-
 # Correction message sent to the LLM when it describes tool calls instead of calling them
 # Uses "Contrastive Correction" - explicitly showing what is WRONG vs RIGHT
 TOOL_CALL_CORRECTION_MESSAGE = (
@@ -79,16 +129,11 @@ TOOL_CALL_CORRECTION_MESSAGE = (
 
 # Regex pattern for extracting fake tool calls from text
 # Matches: [Called ToolName with {json_args}] or [Called ToolName with {'key': 'value'}]
+# Uses stack-based matching for nested JSON via findall with non-greedy match
 FAKE_TOOL_CALL_PATTERN = re.compile(
     r"\[Called\s+(\w+)\s+with\s+(\{.+?\})\]",
     re.IGNORECASE | re.DOTALL
 )
-
-# Minimum response length to be considered valid (avoid empty responses)
-MIN_RESPONSE_LENGTH = 20
-
-# Maximum retries for empty response
-MAX_EMPTY_RESPONSE_RETRIES = 2
 
 # Message to force LLM to provide a summary when response is empty
 EMPTY_RESPONSE_PROMPT = (
@@ -96,6 +141,13 @@ EMPTY_RESPONSE_PROMPT = (
     "Please summarize what you found or did. "
     "Provide a clear, concise response to the original task."
 )
+
+
+# Legacy constants for backward compatibility (deprecated, use vCPUConfig instead)
+MAX_CORRECTION_RETRIES = DEFAULT_CONFIG.max_correction_retries
+RETRY_TEMPERATURES = DEFAULT_CONFIG.retry_temperatures
+MIN_RESPONSE_LENGTH = DEFAULT_CONFIG.min_response_length
+MAX_EMPTY_RESPONSE_RETRIES = DEFAULT_CONFIG.max_empty_response_retries
 
 
 class vCPUError(Exception):
@@ -130,7 +182,8 @@ class vCPU:
     Attributes:
         llm: LLM client for generating completions (ALU)
         tools: Tool registry for executing tools (ISA)
-        max_iterations: Maximum iterations per process execution
+        config: vCPU configuration (iteration limits, retry settings, etc.)
+        max_iterations: Maximum iterations per process execution (from config)
     """
 
     def __init__(
@@ -139,19 +192,31 @@ class vCPU:
         tool_registry: ToolRegistry,
         max_iterations: int = 50,
         workspace: Optional[Path] = None,
+        config: Optional[vCPUConfig] = None,
     ):
         """Initialize vCPU.
 
         Args:
             llm_client: LLM client (ALU) for generating completions
             tool_registry: Tool registry (ISA) for executing tools
-            max_iterations: Maximum iterations per process (safety limit)
+            max_iterations: Maximum iterations per process (safety limit).
+                           If config is provided, this is ignored.
             workspace: Working directory for tool execution (file operations)
+            config: Optional vCPUConfig for detailed configuration.
+                   If not provided, uses default config with max_iterations override.
         """
         self.llm = llm_client
         self.tools = tool_registry
-        self.max_iterations = max_iterations
         self.workspace = workspace
+
+        # Use provided config or create default with max_iterations override
+        if config is not None:
+            self.config = config
+        else:
+            self.config = vCPUConfig(max_iterations=max_iterations)
+
+        # Expose max_iterations for backward compatibility
+        self.max_iterations = self.config.max_iterations
 
     async def execute(self, process: AgentProcess) -> Any:
         """Execute a process until completion.
@@ -197,16 +262,15 @@ class vCPU:
             # Initialize memory with system prompt and task
             self._initialize_memory(process)
 
-            # Correction retry counter for "talkative LLM" problem
+            # Retry counters
             correction_retries = 0
-            # Empty response retry counter
             empty_response_retries = 0
 
             # Main execution loop
             iteration = 0
-            while iteration < self.max_iterations:
+            while iteration < self.config.max_iterations:
                 logger.debug(
-                    f"Process {process.pid} iteration {iteration + 1}/{self.max_iterations}"
+                    f"Process {process.pid} iteration {iteration + 1}/{self.config.max_iterations}"
                 )
 
                 # Check resource limits (Interrupt Handler)
@@ -216,101 +280,30 @@ class vCPU:
                 context = self._assemble_context(process)
 
                 # Step 2: Think (Control Unit -> ALU)
-                response = await self._think(context, process)
+                # Apply temperature decay on correction retries
+                temperature = self.config.get_retry_temperature(correction_retries)
+                response = await self._think(context, process, temperature=temperature)
 
-                # Step 2.5: Check for "talkative LLM" problem
-                # If LLM describes tool calls in text but doesn't actually call them,
-                # send a correction message and retry
-                if not response.tool_calls and response.content and self._detect_tool_description_in_text(response.content):
-                    correction_retries += 1
-                    if correction_retries <= MAX_CORRECTION_RETRIES:
-                        logger.warning(
-                            f"Process {process.pid} LLM described tool call in text "
-                            f"(retry {correction_retries}/{MAX_CORRECTION_RETRIES}), "
-                            f"sending correction..."
-                        )
-                        # Add correction message to memory
-                        process.memory.append({
-                            "role": "assistant",
-                            "content": response.content,
-                        })
-                        process.memory.append({
-                            "role": "user",
-                            "content": TOOL_CALL_CORRECTION_MESSAGE,
-                        })
-                        # Don't increment iteration, just retry
-                        continue
-                    else:
-                        # Exceeded retries - try Mimicry Parser as last resort
-                        logger.warning(
-                            f"Process {process.pid} exceeded correction retries "
-                            f"({MAX_CORRECTION_RETRIES}), trying Mimicry Parser..."
-                        )
-                        parsed = self._try_parse_fake_tool_call(response.content)
-                        if parsed:
-                            tool_name, tool_args = parsed
-                            logger.info(
-                                f"Process {process.pid} Mimicry Parser rescued: "
-                                f"executing {tool_name} from text"
-                            )
-                            # Create synthetic tool call and inject into response
-                            synthetic_call = ToolCall(
-                                id=f"mimicry_{iteration}",
-                                name=tool_name,
-                                arguments=tool_args,
-                            )
-                            # Replace response with one that has tool calls
-                            response = CompletionResponse(
-                                content=response.content,
-                                tool_calls=[synthetic_call],
-                                finish_reason="tool_calls",
-                                raw_response=response.raw_response,
-                            )
-                            logger.info(
-                                f"Process {process.pid} Mimicry Parser injected tool call: "
-                                f"{tool_name}"
-                            )
-                        else:
-                            logger.warning(
-                                f"Process {process.pid} Mimicry Parser failed, "
-                                f"proceeding with text response"
-                            )
-                        # Reset counter for future iterations
-                        correction_retries = 0
+                # Step 2.5: Handle "talkative LLM" problem
+                handled, response, correction_retries = self._handle_talkative_llm(
+                    response, process, iteration, correction_retries
+                )
+                if handled == "retry":
+                    continue  # Don't increment iteration, just retry
 
                 # Reset correction counter on successful tool call
                 if response.tool_calls:
                     correction_retries = 0
-                    empty_response_retries = 0  # Reset empty response counter too
+                    empty_response_retries = 0
 
                 # Step 3: Check stop condition
                 if self._is_done(response):
-                    # Step 3.5: Check for empty response and force summary
-                    content = response.content or ""
-                    if len(content.strip()) < MIN_RESPONSE_LENGTH:
-                        empty_response_retries += 1
-                        if empty_response_retries <= MAX_EMPTY_RESPONSE_RETRIES:
-                            logger.warning(
-                                f"Process {process.pid} returned empty/short response "
-                                f"(retry {empty_response_retries}/{MAX_EMPTY_RESPONSE_RETRIES}), "
-                                f"requesting summary..."
-                            )
-                            # Add prompt to force summary
-                            process.memory.append({
-                                "role": "assistant",
-                                "content": content if content else "(no response)",
-                            })
-                            process.memory.append({
-                                "role": "user",
-                                "content": EMPTY_RESPONSE_PROMPT,
-                            })
-                            # Don't increment iteration, just retry
-                            continue
-                        else:
-                            logger.warning(
-                                f"Process {process.pid} still empty after "
-                                f"{MAX_EMPTY_RESPONSE_RETRIES} retries, accepting empty response"
-                            )
+                    # Step 3.5: Handle empty response
+                    should_retry, empty_response_retries = self._handle_empty_response(
+                        response, process, empty_response_retries
+                    )
+                    if should_retry:
+                        continue  # Don't increment iteration, just retry
 
                     result = self._extract_result(response)
                     process.complete(result)
@@ -331,7 +324,7 @@ class vCPU:
 
             # Max iterations reached (Interrupt Handler)
             raise MaxIterationsError(
-                f"Process {process.pid} exceeded maximum iterations ({self.max_iterations})",
+                f"Process {process.pid} exceeded maximum iterations ({self.config.max_iterations})",
                 process_pid=process.pid,
             )
 
@@ -346,6 +339,142 @@ class vCPU:
                 f"Process {process.pid} failed: {e}",
                 process_pid=process.pid,
             ) from e
+
+    def _handle_talkative_llm(
+        self,
+        response: CompletionResponse,
+        process: AgentProcess,
+        iteration: int,
+        correction_retries: int,
+    ) -> Tuple[str, CompletionResponse, int]:
+        """Handle "talkative LLM" problem - LLM describing tool calls instead of calling them.
+
+        This method implements a multi-stage recovery strategy:
+        1. First, send correction messages with temperature decay
+        2. If max retries exceeded, try Mimicry Parser to extract and execute fake tool calls
+
+        Args:
+            response: The LLM response to check
+            process: The process being executed
+            iteration: Current iteration number (for synthetic call IDs)
+            correction_retries: Current retry count
+
+        Returns:
+            Tuple of:
+            - action: "retry" if should retry without incrementing iteration, "continue" otherwise
+            - response: Possibly modified response (with injected tool calls from Mimicry Parser)
+            - correction_retries: Updated retry count
+        """
+        # Check if this is actually a talkative LLM case
+        if response.tool_calls or not response.content:
+            return ("continue", response, correction_retries)
+
+        if not self._detect_tool_description_in_text(response.content):
+            return ("continue", response, correction_retries)
+
+        # Detected tool description in text
+        correction_retries += 1
+
+        if correction_retries <= self.config.max_correction_retries:
+            logger.warning(
+                f"Process {process.pid} LLM described tool call in text "
+                f"(retry {correction_retries}/{self.config.max_correction_retries}), "
+                f"sending correction with temperature={self.config.get_retry_temperature(correction_retries)}..."
+            )
+            # Add correction message to memory
+            process.memory.append({
+                "role": "assistant",
+                "content": response.content,
+            })
+            process.memory.append({
+                "role": "user",
+                "content": TOOL_CALL_CORRECTION_MESSAGE,
+            })
+            return ("retry", response, correction_retries)
+
+        # Exceeded retries - try Mimicry Parser as last resort
+        logger.warning(
+            f"Process {process.pid} exceeded correction retries "
+            f"({self.config.max_correction_retries}), trying Mimicry Parser..."
+        )
+        parsed_calls = self._try_parse_fake_tool_calls(response.content)
+        if parsed_calls:
+            # Create synthetic tool calls
+            synthetic_calls = [
+                ToolCall(
+                    id=f"mimicry_{iteration}_{i}",
+                    name=name,
+                    arguments=args,
+                )
+                for i, (name, args) in enumerate(parsed_calls)
+            ]
+            tool_names = [tc.name for tc in synthetic_calls]
+            logger.info(
+                f"Process {process.pid} Mimicry Parser rescued: "
+                f"extracted {len(synthetic_calls)} tool calls: {tool_names}"
+            )
+            # Replace response with one that has tool calls
+            response = CompletionResponse(
+                content=response.content,
+                tool_calls=synthetic_calls,
+                finish_reason="tool_calls",
+                raw_response=response.raw_response,
+            )
+        else:
+            logger.warning(
+                f"Process {process.pid} Mimicry Parser failed, "
+                f"proceeding with text response"
+            )
+
+        # Reset counter for future iterations
+        return ("continue", response, 0)
+
+    def _handle_empty_response(
+        self,
+        response: CompletionResponse,
+        process: AgentProcess,
+        empty_response_retries: int,
+    ) -> Tuple[bool, int]:
+        """Handle empty or too-short responses from LLM.
+
+        Args:
+            response: The LLM response to check
+            process: The process being executed
+            empty_response_retries: Current retry count
+
+        Returns:
+            Tuple of:
+            - should_retry: True if should retry without incrementing iteration
+            - empty_response_retries: Updated retry count
+        """
+        content = response.content or ""
+        if len(content.strip()) >= self.config.min_response_length:
+            return (False, empty_response_retries)
+
+        empty_response_retries += 1
+
+        if empty_response_retries <= self.config.max_empty_response_retries:
+            logger.warning(
+                f"Process {process.pid} returned empty/short response "
+                f"(retry {empty_response_retries}/{self.config.max_empty_response_retries}), "
+                f"requesting summary..."
+            )
+            # Add prompt to force summary
+            process.memory.append({
+                "role": "assistant",
+                "content": content if content else "(no response)",
+            })
+            process.memory.append({
+                "role": "user",
+                "content": EMPTY_RESPONSE_PROMPT,
+            })
+            return (True, empty_response_retries)
+
+        logger.warning(
+            f"Process {process.pid} still empty after "
+            f"{self.config.max_empty_response_retries} retries, accepting empty response"
+        )
+        return (False, empty_response_retries)
 
     def _initialize_memory(self, process: AgentProcess) -> None:
         """Initialize process memory with system prompt and task.
@@ -417,6 +546,7 @@ class vCPU:
         self,
         context: List[Dict[str, Any]],
         process: AgentProcess,
+        temperature: Optional[float] = None,
     ) -> CompletionResponse:
         """Think step (Control Unit -> ALU).
 
@@ -425,6 +555,9 @@ class vCPU:
         Args:
             context: Assembled context messages
             process: The process (for tool permissions)
+            temperature: Optional temperature override for this call.
+                        Used for temperature decay during correction retries.
+                        If None, uses LLM's default temperature.
 
         Returns:
             CompletionResponse from the LLM
@@ -432,10 +565,17 @@ class vCPU:
         # Get tool schemas for allowed tools only
         tools_schema = self._get_allowed_tools_schema(process)
 
+        # Build kwargs for LLM call
+        llm_kwargs: Dict[str, Any] = {}
+        if temperature is not None:
+            llm_kwargs["temperature"] = temperature
+            logger.debug(f"Process {process.pid} using temperature={temperature}")
+
         # Call LLM (ALU)
         response = await self.llm.complete_with_tools(
             messages=context,
             tools=tools_schema,
+            **llm_kwargs,
         )
 
         # Update resource usage
@@ -508,13 +648,10 @@ class vCPU:
         return False
 
     def _try_parse_fake_tool_call(self, text: str) -> Optional[Tuple[str, Dict[str, Any]]]:
-        """Mimicry Parser: Extract tool call from fake text format.
+        """Mimicry Parser: Extract single tool call from fake text format (legacy).
 
-        When LLM outputs '[Called Edit with {...}]' instead of actual function call,
-        this parser extracts the tool name and arguments so we can execute anyway.
-
-        This is a robust engineering fallback for the "format hallucination" problem
-        where the model believes text representation equals API call.
+        This is kept for backward compatibility. Use _try_parse_fake_tool_calls
+        for multi-tool support.
 
         Args:
             text: The LLM response text that may contain fake tool call
@@ -522,52 +659,147 @@ class vCPU:
         Returns:
             Tuple of (tool_name, arguments_dict) if parseable, None otherwise
         """
+        results = self._try_parse_fake_tool_calls(text)
+        return results[0] if results else None
+
+    def _try_parse_fake_tool_calls(self, text: str) -> List[Tuple[str, Dict[str, Any]]]:
+        """Mimicry Parser: Extract multiple tool calls from fake text format.
+
+        When LLM outputs '[Called Edit with {...}] ... [Called Read with {...}]'
+        instead of actual function calls, this parser extracts all tool names
+        and arguments so we can execute them anyway.
+
+        This is a robust engineering fallback for the "format hallucination" problem
+        where the model believes text representation equals API call.
+
+        Features:
+        - Supports multiple tool calls in one response
+        - Uses stack-based JSON matching for nested structures
+        - Multiple parsing strategies (JSON, Python literal, fixup)
+
+        Args:
+            text: The LLM response text that may contain fake tool calls
+
+        Returns:
+            List of (tool_name, arguments_dict) tuples. Empty list if none found.
+        """
         if not text:
+            return []
+
+        results: List[Tuple[str, Dict[str, Any]]] = []
+
+        # Find all "[Called ToolName with " patterns and extract JSON with stack matching
+        pattern = re.compile(r"\[Called\s+(\w+)\s+with\s+", re.IGNORECASE)
+
+        for match in pattern.finditer(text):
+            tool_name = match.group(1)
+            json_start = match.end()
+
+            # Use stack-based matching to find complete JSON object
+            args_str = self._extract_balanced_json(text, json_start)
+            if not args_str:
+                continue
+
+            # Try to parse the arguments
+            args = self._parse_json_flexible(args_str)
+            if args is not None and isinstance(args, dict):
+                logger.info(
+                    f"Mimicry Parser: Extracted fake tool call -> {tool_name}({list(args.keys())})"
+                )
+                results.append((tool_name, args))
+            else:
+                logger.warning(
+                    f"Mimicry Parser: Found pattern but failed to parse args for {tool_name}: "
+                    f"{args_str[:100]}..."
+                )
+
+        return results
+
+    def _extract_balanced_json(self, text: str, start: int) -> Optional[str]:
+        """Extract a balanced JSON object from text using stack-based matching.
+
+        Handles nested braces properly, unlike simple regex.
+
+        Args:
+            text: The full text
+            start: Position where the JSON object starts (at '{')
+
+        Returns:
+            The extracted JSON string, or None if no valid object found
+        """
+        if start >= len(text) or text[start] != '{':
             return None
 
-        match = FAKE_TOOL_CALL_PATTERN.search(text)
-        if not match:
+        stack = 0
+        in_string = False
+        escape_next = False
+        end = start
+
+        for i in range(start, len(text)):
+            char = text[i]
+
+            if escape_next:
+                escape_next = False
+                continue
+
+            if char == '\\':
+                escape_next = True
+                continue
+
+            if char == '"' and not escape_next:
+                in_string = not in_string
+                continue
+
+            if in_string:
+                continue
+
+            if char == '{':
+                stack += 1
+            elif char == '}':
+                stack -= 1
+                if stack == 0:
+                    end = i + 1
+                    break
+
+        if stack != 0:
             return None
 
-        tool_name = match.group(1)
-        args_str = match.group(2)
+        return text[start:end]
 
-        # Try multiple parsing strategies
-        args = None
+    def _parse_json_flexible(self, args_str: str) -> Optional[Dict[str, Any]]:
+        """Parse JSON-like string with multiple fallback strategies.
 
+        Args:
+            args_str: String that should be a JSON object
+
+        Returns:
+            Parsed dict, or None if all strategies fail
+        """
         # Strategy 1: Standard JSON
         try:
-            args = json.loads(args_str)
+            return json.loads(args_str)
         except json.JSONDecodeError:
             pass
 
         # Strategy 2: Python literal (handles single quotes, True/False/None)
-        if args is None:
-            try:
-                args = ast.literal_eval(args_str)
-            except (ValueError, SyntaxError):
-                pass
+        try:
+            result = ast.literal_eval(args_str)
+            if isinstance(result, dict):
+                return result
+        except (ValueError, SyntaxError):
+            pass
 
         # Strategy 3: Fix common issues and retry
-        if args is None:
-            try:
-                # Replace Python-style booleans/None with JSON equivalents
-                fixed = args_str.replace("True", "true").replace("False", "false").replace("None", "null")
-                # Replace single quotes with double quotes (simple cases)
-                fixed = re.sub(r"'([^']*)'", r'"\1"', fixed)
-                args = json.loads(fixed)
-            except (json.JSONDecodeError, Exception):
-                pass
+        try:
+            # Replace Python-style booleans/None with JSON equivalents
+            fixed = args_str.replace("True", "true").replace("False", "false").replace("None", "null")
+            # Replace single quotes with double quotes (simple cases only)
+            # This regex avoids replacing quotes inside strings
+            fixed = re.sub(r"'([^'\\]*(?:\\.[^'\\]*)*)'", r'"\1"', fixed)
+            return json.loads(fixed)
+        except (json.JSONDecodeError, Exception):
+            pass
 
-        if args is not None and isinstance(args, dict):
-            logger.info(
-                f"Mimicry Parser: Extracted fake tool call -> {tool_name}({list(args.keys())})"
-            )
-            return (tool_name, args)
-
-        logger.warning(
-            f"Mimicry Parser: Found pattern but failed to parse args: {args_str[:100]}..."
-        )
         return None
 
     def _estimate_tokens(

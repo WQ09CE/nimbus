@@ -389,8 +389,14 @@ def analyze_refactoring_diff(
             analysis["files_changed"].append(str(rel_path))
             continue
 
-        orig_content = orig_file.read_text()
-        refactored_content = refactored_file.read_text()
+        try:
+            orig_content = orig_file.read_text(encoding='utf-8')
+        except UnicodeDecodeError:
+            orig_content = orig_file.read_bytes().decode('utf-8', errors='replace')
+        try:
+            refactored_content = refactored_file.read_text(encoding='utf-8')
+        except UnicodeDecodeError:
+            refactored_content = refactored_file.read_bytes().decode('utf-8', errors='replace')
 
         if orig_content != refactored_content:
             analysis["files_changed"].append(str(rel_path))

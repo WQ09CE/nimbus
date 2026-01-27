@@ -34,7 +34,8 @@ from nimbus.tools.base import ToolRegistry, ToolDefinition, ToolParameter, tool
 class MockLLMClient:
     """Mock LLM that completes immediately without tool calls."""
 
-    def __init__(self, response_text: str = "Task completed successfully"):
+    # Default response must be >= MIN_RESPONSE_LENGTH (20 chars) to avoid empty response retries
+    def __init__(self, response_text: str = "Task completed successfully with detailed results and analysis"):
         self.response_text = response_text
         self.call_count = 0
 
@@ -62,10 +63,11 @@ class MockLLMClient:
 class MockToolCallingLLM:
     """Mock LLM that calls tools a specified number of times before completing."""
 
+    # Default final_response must be >= MIN_RESPONSE_LENGTH (20 chars)
     def __init__(
         self,
         tool_calls_sequence: List[List[Dict[str, Any]]],
-        final_response: str = "All done",
+        final_response: str = "All tasks completed successfully with detailed results",
     ):
         """
         Args:
@@ -229,7 +231,7 @@ class TestVCPUBasic:
     @pytest.mark.asyncio
     async def test_execute_simple_task(self):
         """Test executing a simple task without tool calls."""
-        llm = MockLLMClient(response_text="Analysis complete")
+        llm = MockLLMClient(response_text="Analysis complete with detailed results and recommendations")
         tools = create_test_registry()
         vcpu = vCPU(llm, tools)
 
@@ -244,7 +246,7 @@ class TestVCPUBasic:
 
         assert proc.state == ProcessState.COMPLETED
         assert proc.exit_code == 0
-        assert result["text"] == "Analysis complete"
+        assert result["text"] == "Analysis complete with detailed results and recommendations"
         assert llm.call_count == 1
 
     @pytest.mark.asyncio
@@ -287,7 +289,7 @@ class TestVCPUToolExecution:
             tool_calls_sequence=[
                 [{"name": "Echo", "arguments": {"message": "Hello"}}],
             ],
-            final_response="Echoed the message",
+            final_response="Echoed the message successfully to the console",
         )
         tools = create_test_registry()
         vcpu = vCPU(llm, tools)
@@ -302,7 +304,7 @@ class TestVCPUToolExecution:
         result = await vcpu.execute(proc)
 
         assert proc.state == ProcessState.COMPLETED
-        assert result["text"] == "Echoed the message"
+        assert result["text"] == "Echoed the message successfully to the console"
         assert llm.call_count == 2  # First call returns tool, second returns final
 
         # Check tool result is in memory
@@ -318,7 +320,7 @@ class TestVCPUToolExecution:
                 [{"name": "Echo", "arguments": {"message": "First"}}],
                 [{"name": "Add", "arguments": {"a": 1, "b": 2}}],
             ],
-            final_response="Done with all tools",
+            final_response="Done with all tools executed successfully",
         )
         tools = create_test_registry()
         vcpu = vCPU(llm, tools)
@@ -348,7 +350,7 @@ class TestVCPUToolExecution:
                     {"name": "Echo", "arguments": {"message": "Two"}},
                 ],
             ],
-            final_response="Both echoed",
+            final_response="Both messages echoed successfully to output",
         )
         tools = create_test_registry()
         vcpu = vCPU(llm, tools)
@@ -374,7 +376,7 @@ class TestVCPUToolExecution:
             tool_calls_sequence=[
                 [{"name": "Echo", "arguments": {"message": "test"}}],
             ],
-            final_response="Done",
+            final_response="Done - operation completed successfully",
         )
         tools = create_test_registry()
         vcpu = vCPU(llm, tools)
@@ -402,7 +404,7 @@ class TestVCPUToolExecution:
             tool_calls_sequence=[
                 [{"name": "Fail", "arguments": {"reason": "test failure"}}],
             ],
-            final_response="Handled the error",
+            final_response="Handled the error gracefully and recovered",
         )
         tools = create_test_registry()
         vcpu = vCPU(llm, tools)
@@ -524,7 +526,7 @@ class TestVCPUErrorHandling:
     @pytest.mark.asyncio
     async def test_process_already_running(self):
         """Test that vCPU accepts RUNNING state (for scheduler integration)."""
-        llm = MockLLMClient(response_text="done")
+        llm = MockLLMClient(response_text="done - task executed successfully")
         tools = create_test_registry()
         vcpu = vCPU(llm, tools)
 
@@ -538,7 +540,7 @@ class TestVCPUErrorHandling:
         result = await vcpu.execute(proc)
 
         assert proc.state == ProcessState.COMPLETED
-        assert result["text"] == "done"
+        assert result["text"] == "done - task executed successfully"
 
     @pytest.mark.asyncio
     async def test_llm_error_handling(self):
@@ -583,7 +585,7 @@ class TestAgentOSWithVCPU:
     @pytest.mark.asyncio
     async def test_agentos_with_vcpu(self):
         """Test AgentOS with vCPU integration."""
-        llm = MockLLMClient(response_text="Task done")
+        llm = MockLLMClient(response_text="Task done - successfully completed")
         tools = create_test_registry()
 
         kernel = AgentOS(llm_client=llm, tool_registry=tools)
@@ -595,7 +597,7 @@ class TestAgentOSWithVCPU:
     @pytest.mark.asyncio
     async def test_spawn_and_wait_with_vcpu(self):
         """Test spawn and wait with vCPU execution."""
-        llm = MockLLMClient(response_text="Analysis complete")
+        llm = MockLLMClient(response_text="Analysis complete with detailed results and recommendations")
         tools = create_test_registry()
 
         kernel = AgentOS(llm_client=llm, tool_registry=tools)
@@ -609,7 +611,7 @@ class TestAgentOSWithVCPU:
         result = await kernel.wait(pid)
 
         assert result["exit_code"] == 0
-        assert result["result"]["text"] == "Analysis complete"
+        assert result["result"]["text"] == "Analysis complete with detailed results and recommendations"
 
     @pytest.mark.asyncio
     async def test_spawn_with_tools(self):
@@ -618,7 +620,7 @@ class TestAgentOSWithVCPU:
             tool_calls_sequence=[
                 [{"name": "Add", "arguments": {"a": 10, "b": 20}}],
             ],
-            final_response="The sum is 30",
+            final_response="The sum is 30 - calculation complete",
         )
         tools = create_test_registry()
 
@@ -633,7 +635,7 @@ class TestAgentOSWithVCPU:
         result = await kernel.wait(pid)
 
         assert result["exit_code"] == 0
-        assert result["result"]["text"] == "The sum is 30"
+        assert result["result"]["text"] == "The sum is 30 - calculation complete"
 
     @pytest.mark.asyncio
     async def test_agentos_without_vcpu(self):
@@ -709,7 +711,7 @@ class TestVCPUMemory:
                 [{"name": "Echo", "arguments": {"message": "msg1"}}],
                 [{"name": "Echo", "arguments": {"message": "msg2"}}],
             ],
-            final_response="Done",
+            final_response="Done - operation completed successfully",
         )
         tools = create_test_registry()
         vcpu = vCPU(llm, tools)
@@ -760,3 +762,207 @@ class TestVCPUMemory:
 
         # Token usage should have increased
         assert proc.token_usage > initial_tokens
+
+
+# ============================================================================
+# vCPUConfig Tests
+# ============================================================================
+
+
+class TestVCPUConfig:
+    """Test vCPUConfig functionality."""
+
+    def test_default_config(self):
+        """Test default vCPUConfig values."""
+        from nimbus.kernel.vcpu import vCPUConfig
+
+        config = vCPUConfig()
+
+        assert config.max_iterations == 50
+        assert config.max_correction_retries == 3
+        assert config.max_empty_response_retries == 2
+        assert config.min_response_length == 20
+        assert config.retry_temperatures == [0.7, 0.3, 0.0]
+        assert config.enable_temperature_decay is True
+
+    def test_custom_config(self):
+        """Test custom vCPUConfig values."""
+        from nimbus.kernel.vcpu import vCPUConfig
+
+        config = vCPUConfig(
+            max_iterations=100,
+            max_correction_retries=5,
+            retry_temperatures=[0.9, 0.5, 0.2, 0.0],
+        )
+
+        assert config.max_iterations == 100
+        assert config.max_correction_retries == 5
+        assert config.retry_temperatures == [0.9, 0.5, 0.2, 0.0]
+
+    def test_get_retry_temperature(self):
+        """Test temperature decay logic."""
+        from nimbus.kernel.vcpu import vCPUConfig
+
+        config = vCPUConfig(retry_temperatures=[0.7, 0.3, 0.0])
+
+        # No temperature for retry 0
+        assert config.get_retry_temperature(0) is None
+
+        # Temperature decay
+        assert config.get_retry_temperature(1) == 0.7
+        assert config.get_retry_temperature(2) == 0.3
+        assert config.get_retry_temperature(3) == 0.0
+
+        # Caps at last value
+        assert config.get_retry_temperature(4) == 0.0
+        assert config.get_retry_temperature(10) == 0.0
+
+    def test_temperature_decay_disabled(self):
+        """Test disabling temperature decay."""
+        from nimbus.kernel.vcpu import vCPUConfig
+
+        config = vCPUConfig(enable_temperature_decay=False)
+
+        assert config.get_retry_temperature(1) is None
+        assert config.get_retry_temperature(2) is None
+
+    def test_vcpu_with_config(self):
+        """Test vCPU initialization with config."""
+        from nimbus.kernel.vcpu import vCPUConfig
+
+        config = vCPUConfig(max_iterations=25)
+        llm = MockLLMClient()
+        tools = create_test_registry()
+
+        vcpu = vCPU(llm, tools, config=config)
+
+        assert vcpu.config == config
+        assert vcpu.max_iterations == 25
+
+    def test_vcpu_max_iterations_override(self):
+        """Test that config overrides max_iterations parameter."""
+        from nimbus.kernel.vcpu import vCPUConfig
+
+        config = vCPUConfig(max_iterations=100)
+        llm = MockLLMClient()
+        tools = create_test_registry()
+
+        # Even though max_iterations=10 is passed, config takes precedence
+        vcpu = vCPU(llm, tools, max_iterations=10, config=config)
+
+        assert vcpu.max_iterations == 100
+
+
+# ============================================================================
+# Mimicry Parser Tests
+# ============================================================================
+
+
+class TestMimicryParser:
+    """Test Mimicry Parser functionality."""
+
+    def test_parse_single_tool_call(self):
+        """Test parsing a single fake tool call."""
+        llm = MockLLMClient()
+        tools = create_test_registry()
+        vcpu = vCPU(llm, tools)
+
+        text = '[Called Edit with {"file_path": "/test.py", "old_string": "foo", "new_string": "bar"}]'
+        results = vcpu._try_parse_fake_tool_calls(text)
+
+        assert len(results) == 1
+        assert results[0][0] == "Edit"
+        assert results[0][1] == {"file_path": "/test.py", "old_string": "foo", "new_string": "bar"}
+
+    def test_parse_multiple_tool_calls(self):
+        """Test parsing multiple fake tool calls."""
+        llm = MockLLMClient()
+        tools = create_test_registry()
+        vcpu = vCPU(llm, tools)
+
+        text = '''
+        First, I'll read the file.
+        [Called Read with {"file_path": "/test.py"}]
+        Then I'll edit it.
+        [Called Edit with {"file_path": "/test.py", "old_string": "foo", "new_string": "bar"}]
+        '''
+        results = vcpu._try_parse_fake_tool_calls(text)
+
+        assert len(results) == 2
+        assert results[0][0] == "Read"
+        assert results[0][1] == {"file_path": "/test.py"}
+        assert results[1][0] == "Edit"
+
+    def test_parse_nested_json(self):
+        """Test parsing nested JSON structures."""
+        llm = MockLLMClient()
+        tools = create_test_registry()
+        vcpu = vCPU(llm, tools)
+
+        text = '[Called Write with {"file_path": "/test.json", "content": {"nested": {"key": "value"}}}]'
+        results = vcpu._try_parse_fake_tool_calls(text)
+
+        assert len(results) == 1
+        assert results[0][0] == "Write"
+        assert results[0][1]["content"] == {"nested": {"key": "value"}}
+
+    def test_parse_python_style_json(self):
+        """Test parsing Python-style JSON (single quotes, True/False)."""
+        llm = MockLLMClient()
+        tools = create_test_registry()
+        vcpu = vCPU(llm, tools)
+
+        text = "[Called Config with {'enabled': True, 'value': None}]"
+        results = vcpu._try_parse_fake_tool_calls(text)
+
+        assert len(results) == 1
+        assert results[0][0] == "Config"
+        # Note: True/None converted to Python True/None
+        assert results[0][1]["enabled"] is True
+        assert results[0][1]["value"] is None
+
+    def test_parse_no_tool_calls(self):
+        """Test parsing text with no fake tool calls."""
+        llm = MockLLMClient()
+        tools = create_test_registry()
+        vcpu = vCPU(llm, tools)
+
+        text = "This is just regular text with no tool calls."
+        results = vcpu._try_parse_fake_tool_calls(text)
+
+        assert len(results) == 0
+
+    def test_legacy_single_parser(self):
+        """Test legacy _try_parse_fake_tool_call method."""
+        llm = MockLLMClient()
+        tools = create_test_registry()
+        vcpu = vCPU(llm, tools)
+
+        text = '[Called Echo with {"message": "hello"}]'
+        result = vcpu._try_parse_fake_tool_call(text)
+
+        assert result is not None
+        assert result[0] == "Echo"
+        assert result[1] == {"message": "hello"}
+
+    def test_extract_balanced_json(self):
+        """Test stack-based JSON extraction."""
+        llm = MockLLMClient()
+        tools = create_test_registry()
+        vcpu = vCPU(llm, tools)
+
+        text = '{"outer": {"inner": {"deep": "value"}}} extra text'
+        result = vcpu._extract_balanced_json(text, 0)
+
+        assert result == '{"outer": {"inner": {"deep": "value"}}}'
+
+    def test_extract_balanced_json_with_strings(self):
+        """Test JSON extraction with braces in strings."""
+        llm = MockLLMClient()
+        tools = create_test_registry()
+        vcpu = vCPU(llm, tools)
+
+        text = '{"code": "if (x) { y }"}'
+        result = vcpu._extract_balanced_json(text, 0)
+
+        assert result == '{"code": "if (x) { y }"}'
