@@ -18,9 +18,12 @@ __role__ = "Process_Manager"
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, TYPE_CHECKING
 
 from .proc import AgentProcess, ProcessState
+
+if TYPE_CHECKING:
+    from .vcpu_pool import vCPUPool
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +43,19 @@ class ProcessManager:
     DEFAULT_TOKEN_BUDGET = 50000
     DEFAULT_MAX_TURNS = 50
 
-    def __init__(self) -> None:
-        """Initialize process manager with init process."""
+    def __init__(self, vcpu_pool: Optional["vCPUPool"] = None) -> None:
+        """Initialize process manager with init process.
+
+        Args:
+            vcpu_pool: Optional vCPU pool for multi-vCPU support.
+                      If provided, exec() will use the pool to select vCPU
+                      based on process vcpu_affinity.
+        """
         self._process_table: Dict[str, AgentProcess] = {}
         self._current_pid: Optional[str] = None
         self._lock = asyncio.Lock()
-        self._executor: Optional[Callable] = None  # vCPU callback
+        self._executor: Optional[Callable] = None  # vCPU callback (legacy single vCPU)
+        self._vcpu_pool: Optional["vCPUPool"] = vcpu_pool
         self._init_process()
 
     def _init_process(self) -> None:
@@ -61,13 +71,48 @@ class ProcessManager:
 
     def set_executor(self, executor: Callable) -> None:
         """
-        Set the vCPU executor callback.
+        Set the vCPU executor callback (legacy single vCPU mode).
 
         Args:
             executor: Async function that executes a process
                      Signature: async def executor(proc: AgentProcess) -> None
         """
         self._executor = executor
+
+    def set_vcpu_pool(self, vcpu_pool: "vCPUPool") -> None:
+        """
+        Set the vCPU pool for multi-vCPU execution.
+
+        When a vCPU pool is set, exec() will select the appropriate vCPU
+        based on process vcpu_affinity.
+
+        Args:
+            vcpu_pool: The vCPU pool to use
+        """
+        self._vcpu_pool = vcpu_pool
+
+    def _get_executor_for_process(self, proc: AgentProcess) -> Optional[Callable]:
+        """
+        Get the executor function for a process.
+
+        Routing priority:
+        1. If vCPU pool is set, use pool to select based on affinity
+        2. Otherwise, use legacy single executor
+
+        Args:
+            proc: The process to get executor for
+
+        Returns:
+            Executor function, or None if no executor available
+        """
+        # Try vCPU pool first (affinity-aware routing)
+        if self._vcpu_pool is not None:
+            vcpu = self._vcpu_pool.get_for_process(proc)
+            if vcpu is not None:
+                return vcpu.execute
+
+        # Fall back to legacy single executor
+        return self._executor
 
     def fork(
         self,
@@ -79,6 +124,7 @@ class ProcessManager:
         max_turns: int = DEFAULT_MAX_TURNS,
         system_prompt: str = "",
         priority: int = 0,
+        vcpu_affinity: Optional[str] = None,
     ) -> str:
         """
         Create a child process (fork).
@@ -97,6 +143,7 @@ class ProcessManager:
             max_turns: Maximum conversation turns
             system_prompt: System prompt for child
             priority: Scheduling priority
+            vcpu_affinity: Optional vCPU ID to bind process to
 
         Returns:
             Child process ID
@@ -128,6 +175,7 @@ class ProcessManager:
             max_turns=max_turns,
             system_prompt=system_prompt,
             priority=priority,
+            vcpu_affinity=vcpu_affinity,
         )
 
         # Create completion event for wait()
@@ -167,13 +215,15 @@ class ProcessManager:
         proc.started_at = datetime.now()
         logger.debug(f"Process {pid} ready for execution")
 
-        # If executor is set, start execution
-        if self._executor:
+        # Select executor: vCPU pool (affinity-aware) or legacy single executor
+        executor = self._get_executor_for_process(proc)
+
+        if executor is not None:
             proc.state = ProcessState.RUNNING
 
             async def run_with_completion():
                 try:
-                    await self._executor(proc)
+                    await executor(proc)
                 finally:
                     if proc._completion_event:
                         proc._completion_event.set()
@@ -254,6 +304,7 @@ class ProcessManager:
             "error": proc.error,
             "state": proc.state.value,
             "token_usage": proc.token_usage,
+            "turns": proc.current_turn,
         }
 
     def kill(self, pid: str, recursive: bool = True) -> bool:

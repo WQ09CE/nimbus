@@ -76,6 +76,7 @@ class AgentProcess:
     # ========== Scheduling ==========
     priority: int = 0  # Higher = more priority
     depth: int = 0  # Hierarchy depth (init = 0)
+    vcpu_affinity: Optional[str] = None  # Optional vCPU binding (None = use default)
 
     # ========== Timing ==========
     created_at: datetime = field(default_factory=datetime.now)
@@ -205,6 +206,7 @@ class AgentProcess:
             "result": self.result,
             "error": self.error,
             "children": self.children,
+            "vcpu_affinity": self.vcpu_affinity,
             "created_at": self.created_at.isoformat(),
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,

@@ -42,12 +42,14 @@ Usage Example:
 __layer__ = 1
 __version__ = "0.2.0"
 
-from typing import Any, Callable, Dict, List, Optional, Set
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 from .ipc import IPCMessage, MessageType, Signal
 from .proc import AgentProcess, ProcessState
 from .scheduler import ProcessManager
 from .vcpu import vCPU, vCPUError, ResourceLimitError, MaxIterationsError
+from .vcpu_pool import vCPUPool
 
 
 class AgentOS:
@@ -75,32 +77,80 @@ class AgentOS:
         llm_client: Optional[Any] = None,
         tool_registry: Optional[Any] = None,
         max_iterations: int = 50,
+        workspace: Optional[Path] = None,
+        llm_clients: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Initialize Agent OS with optional vCPU components.
 
+        Supports two modes:
+        1. Single vCPU mode (legacy): Pass llm_client + tool_registry
+        2. Multi vCPU mode: Pass llm_clients dict for multiple vCPUs
+
         Args:
             llm_client: LLM client (ALU) for reasoning. If provided with
-                       tool_registry, enables vCPU execution.
+                       tool_registry, enables vCPU execution (single vCPU mode).
             tool_registry: Tool registry (ISA) for actions.
             max_iterations: Maximum iterations per process for vCPU.
+            workspace: Working directory for tool execution (file operations).
+            llm_clients: Dict mapping vcpu_id to LLM client for multi-vCPU mode.
+                        First key becomes the default vCPU.
+                        Example: {"planner": planner_llm, "executor": executor_llm}
+
+        Example (single vCPU - backward compatible):
+            kernel = AgentOS(llm_client=llm, tool_registry=tools)
+
+        Example (multi vCPU):
+            kernel = AgentOS(
+                llm_clients={"planner": planner_llm, "executor": executor_llm},
+                tool_registry=tools
+            )
         """
         self.llm_client = llm_client
         self.tool_registry = tool_registry
+        self.workspace = workspace
 
-        # Create vCPU if both LLM and tools are provided
+        # vCPU pool for multi-vCPU support
+        self.vcpu_pool: Optional[vCPUPool] = None
+
+        # Legacy single vCPU (for backward compatibility)
         self.vcpu: Optional[vCPU] = None
-        if llm_client is not None and tool_registry is not None:
+
+        # Multi-vCPU mode: llm_clients dict provided
+        if llm_clients is not None and tool_registry is not None:
+            self.vcpu_pool = vCPUPool()
+            is_first = True
+            for vcpu_id, client in llm_clients.items():
+                vcpu = vCPU(
+                    llm_client=client,
+                    tool_registry=tool_registry,
+                    max_iterations=max_iterations,
+                    workspace=workspace,
+                )
+                self.vcpu_pool.register(vcpu_id, vcpu, is_default=is_first)
+                is_first = False
+
+            # Also set the first vCPU as self.vcpu for backward compat
+            if self.vcpu_pool.default_id:
+                self.vcpu = self.vcpu_pool.get_default()
+
+        # Single vCPU mode (legacy): llm_client provided
+        elif llm_client is not None and tool_registry is not None:
             self.vcpu = vCPU(
                 llm_client=llm_client,
                 tool_registry=tool_registry,
                 max_iterations=max_iterations,
+                workspace=workspace,
             )
 
-        # Initialize process manager
-        self.process_manager = ProcessManager()
+        # Initialize process manager with optional vCPU pool
+        self.process_manager = ProcessManager(vcpu_pool=self.vcpu_pool)
 
-        # Connect vCPU as executor if available
-        if self.vcpu is not None:
+        # Connect vCPU pool or single vCPU as executor
+        if self.vcpu_pool is not None:
+            # Multi-vCPU mode: pool handles routing
+            pass  # ProcessManager already has vcpu_pool
+        elif self.vcpu is not None:
+            # Single vCPU mode: use legacy executor
             self.process_manager.set_executor(self.vcpu.execute)
 
     def set_executor(self, executor: Callable) -> None:
@@ -123,6 +173,7 @@ class AgentOS:
         max_turns: int = 50,
         system_prompt: str = "",
         priority: int = 0,
+        vcpu_affinity: Optional[str] = None,
     ) -> str:
         """
         Spawn a new agent process (fork + exec).
@@ -139,6 +190,7 @@ class AgentOS:
             max_turns: Maximum conversation turns
             system_prompt: System prompt for the agent
             priority: Scheduling priority (higher = more priority)
+            vcpu_affinity: vCPU ID to bind process to (None = use default)
 
         Returns:
             Process ID of the spawned process
@@ -148,6 +200,13 @@ class AgentOS:
                 role="Coder",
                 goal="Implement feature X",
                 allowed_tools={"Read", "Write", "Bash"},
+            )
+
+        Example (with vCPU affinity):
+            pid = await kernel.spawn(
+                role="Planner",
+                goal="Create execution plan",
+                vcpu_affinity="planner",
             )
         """
         if parent_pid is None:
@@ -163,6 +222,7 @@ class AgentOS:
             max_turns=max_turns,
             system_prompt=system_prompt,
             priority=priority,
+            vcpu_affinity=vcpu_affinity,
         )
 
         # Exec
@@ -277,6 +337,7 @@ __all__ = [
     "AgentOS",
     # vCPU
     "vCPU",
+    "vCPUPool",
     "vCPUError",
     "ResourceLimitError",
     "MaxIterationsError",
