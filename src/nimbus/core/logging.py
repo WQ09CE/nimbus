@@ -1,4 +1,4 @@
-"""Logging system for OpenNotebook using Loguru.
+"""Logging system for Nimbus using Loguru.
 
 Features:
 - Beautiful colored console output
@@ -7,8 +7,10 @@ Features:
 - Structured logging with context binding
 - Multi-agent support with agent_id/task_id/trace_id context
 - Process-safe logging with enqueue
+- Intercepts standard logging module (for kernel layer compatibility)
 """
 
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -21,6 +23,32 @@ from loguru import logger as _loguru_logger
 
 # Re-export loguru's logger for direct use
 logger = _loguru_logger
+
+
+class InterceptHandler(logging.Handler):
+    """Handler to intercept standard logging and redirect to loguru.
+
+    This allows kernel layer (vcpu, scheduler) which uses standard logging
+    to have their logs unified into the loguru system.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # Get corresponding Loguru level if it exists
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+
+        # Use record's pathname and lineno directly for accurate source info
+        # Bind the original logger name and location
+        logger.bind(
+            name=record.name,
+        ).opt(
+            exception=record.exc_info,
+        ).log(
+            level,
+            f"{record.name}:{record.funcName}:{record.lineno} - {record.getMessage()}"
+        )
 
 # Default configuration
 DEFAULT_LOG_DIR = "./.logs"
@@ -84,6 +112,7 @@ def setup_logging(
     colorize: bool = True,
     json_file: bool = False,
     enqueue: bool = True,
+    intercept_stdlib: bool = True,
 ) -> str:
     """Configure logging with console and file output.
 
@@ -97,12 +126,23 @@ def setup_logging(
         colorize: Enable colored console output.
         json_file: Enable JSON format for file logs (for ELK/Grafana).
         enqueue: Enable queue-based logging for multi-process safety.
+        intercept_stdlib: Intercept standard logging module (for kernel layer).
 
     Returns:
         Path to the log file.
     """
     # Remove default handler
     logger.remove()
+
+    # Intercept standard logging module (for kernel layer: vcpu, scheduler)
+    if intercept_stdlib:
+        logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
+        # Also intercept specific loggers used by kernel
+        for logger_name in ["nimbus.kernel.vcpu", "nimbus.kernel.scheduler",
+                           "nimbus.apps.code_agent", "nimbus.llm.gemini"]:
+            stdlib_logger = logging.getLogger(logger_name)
+            stdlib_logger.handlers = [InterceptHandler()]
+            stdlib_logger.propagate = False
 
     # Ensure log directory exists
     log_path = Path(log_dir)
