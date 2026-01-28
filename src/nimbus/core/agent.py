@@ -21,6 +21,7 @@ AgentOS architecture which provides process-based orchestration with VCPU execut
 __layer__ = 2  # Application Layer
 __role__ = "Process_Definition"  # Main application process
 
+import json
 import uuid
 from pathlib import Path
 from typing import (
@@ -392,12 +393,17 @@ class CodeAgent:
                     return None
                 v2_calls = []
                 for tc in self._response.tool_calls:
+                    # Convert arguments to JSON string if it's a dict
+                    # v1 LLM clients return Dict[str, Any], v2 protocol expects JSON string
+                    args = tc.arguments
+                    if isinstance(args, dict):
+                        args = json.dumps(args)
                     v2_calls.append({
                         "id": tc.id,
                         "type": "function",
                         "function": {
                             "name": tc.name,
-                            "arguments": tc.arguments,
+                            "arguments": args,
                         },
                     })
                 return v2_calls
