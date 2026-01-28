@@ -13,9 +13,9 @@ the first user-space process that bootstraps the entire agent system:
 CodeAgent is not part of the "kernel" itself but the primary application
 that uses kernel services to accomplish user goals.
 
-Simplified execution model: Uses task mode (SubagentDAG orchestration) exclusively.
-The previous dag/agentic modes have been removed in favor of the unified task mode
-which provides subagent-level DAG orchestration with internal AgenticRunner execution.
+Execution model: Uses v2 AgentOS exclusively for all task execution.
+The v1 SubagentDAG/SubagentRuntime has been removed in favor of the unified
+AgentOS architecture which provides process-based orchestration with VCPU execution.
 """
 
 __layer__ = 2  # Application Layer
@@ -47,6 +47,7 @@ from .tracing import get_tracer, Tracer
 if TYPE_CHECKING:
     from nimbus.tools import ToolRegistry
     from nimbus.tools.subagent import SubagentExecutor
+    from nimbus.v2.agentos import AgentOS
 
 SkillFunc = Callable[..., Coroutine[Any, Any, Any]]
 
@@ -185,6 +186,7 @@ class CodeAgent:
         planner_type: Optional[str] = None,
         runtime_config: Any = None,
         execution_mode: Optional[str] = None,
+        runtime_version: Optional[str] = None,  # Deprecated, always uses v2
     ):
         """Initialize the code agent.
 
@@ -206,6 +208,7 @@ class CodeAgent:
             planner_type: Deprecated, ignored. Kept for backward compatibility.
             runtime_config: Deprecated, ignored. Kept for backward compatibility.
             execution_mode: Deprecated, ignored. Task mode is now the only mode.
+            runtime_version: Deprecated, ignored. Always uses v2 AgentOS.
         """
         # Load YAML config for default values if requested
         if load_yaml_config:
@@ -270,6 +273,10 @@ class CodeAgent:
         self._permission_manager = create_permission_manager(CODER_PERMISSIONS)
         self._subagent_executor: Optional["SubagentExecutor"] = None
 
+        # Initialize v2 AgentOS runtime
+        self._v2_agentos: Optional["AgentOS"] = None
+        self._init_v2_runtime()
+
         self._register_default_skills()
 
     def _create_default_tools(self) -> "ToolRegistry":
@@ -308,6 +315,94 @@ class CodeAgent:
         # Batch tool
         registry.register_decorated(batch_tool)
         return registry
+
+    def _init_v2_runtime(self) -> None:
+        """Initialize V2 runtime (AgentOS) with native v2 tools.
+
+        Creates AgentOS with:
+        - LLM adapter wrapping the LLM client
+        - Native v2 tools (Read, Glob, Grep, Bash, Write, Edit)
+
+        This method is called during __init__.
+        """
+        from nimbus.v2.agentos import create_agent_os
+        from nimbus.v2.tools import register_default_tools
+
+        # Create LLM adapter for v2
+        v2_llm = self._create_v2_llm_adapter()
+
+        # Create AgentOS with native v2 tools
+        self._v2_agentos = create_agent_os(
+            llm_client=v2_llm,
+            system_rules=self.system_prompt,
+            workspace=self.workspace,
+            register_defaults=True,  # Register native v2 tools
+        )
+
+        if self.logger:
+            self.logger.info(
+                "v2_runtime_initialized",
+                tools=self._v2_agentos.list_tools(),
+            )
+
+    def _create_v2_llm_adapter(self) -> Any:
+        """Create LLM adapter for v2 AgentOS.
+
+        Wraps the existing LLM client to implement v2 LLMClient protocol.
+
+        Returns:
+            LLM client compatible with v2 VCPU.
+        """
+        # Check if client already has chat method (v2 compatible)
+        if hasattr(self.llm_client, 'chat'):
+            return self.llm_client
+
+        # Create adapter for clients with complete_with_tools method
+        class V2LLMAdapter:
+            """Adapter for v2 LLMClient protocol."""
+
+            def __init__(self, client: Any):
+                self.client = client
+
+            async def chat(
+                self,
+                messages: List[Dict[str, Any]],
+                tools: Optional[List[Dict[str, Any]]] = None,
+            ) -> Any:
+                """Send messages to LLM with tools."""
+                response = await self.client.complete_with_tools(
+                    messages=messages,
+                    tools=tools,
+                )
+                return V2LLMResponse(response)
+
+        class V2LLMResponse:
+            """Response wrapper for v2 protocol."""
+
+            def __init__(self, completion_response: Any):
+                self._response = completion_response
+
+            @property
+            def content(self) -> Optional[str]:
+                return self._response.content
+
+            @property
+            def tool_calls(self) -> Optional[List[Any]]:
+                if not self._response.tool_calls:
+                    return None
+                v2_calls = []
+                for tc in self._response.tool_calls:
+                    v2_calls.append({
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": tc.arguments,
+                        },
+                    })
+                return v2_calls
+
+        return V2LLMAdapter(self.llm_client)
 
     def _register_default_skills(self) -> None:
         """Register built-in skills."""
@@ -379,9 +474,9 @@ class CodeAgent:
             self.memory.unpin(filename)
 
     async def run(self, user_input: str) -> AgentResponse:
-        """Process user input and generate response using task mode.
+        """Process user input and generate response.
 
-        Uses SubagentDAG orchestration to decompose and execute the user's goal.
+        Uses V2 AgentOS runtime for task execution.
 
         Args:
             user_input: User's message or command.
@@ -391,7 +486,10 @@ class CodeAgent:
         """
         try:
             if self.logger:
-                self.logger.info("agent_run_start", user_input=user_input[:100])
+                self.logger.info(
+                    "agent_run_start",
+                    user_input=user_input[:100],
+                )
 
             # Add user input to memory
             if self._memory_type == "tiered":
@@ -402,14 +500,16 @@ class CodeAgent:
             # Get context for planning
             context = self.memory.get_context()
 
-            # Execute using task mode
-            response_text = ""
-            async for event in self._run_task_mode(user_input, context):
-                if event.get("type") == "response":
-                    response_text = event.get("content", "")
-                elif event.get("type") == "complete":
-                    if not response_text:
-                        response_text = event.get("content", "Task completed.")
+            # Execute using V2 runtime (AgentOS)
+            if self._v2_agentos is None:
+                raise RuntimeError("AgentOS not initialized")
+
+            result = await self._v2_agentos.run(f"Context:\n{context}\n\nGoal: {user_input}")
+            if result.status == "OK":
+                response_text = str(result.output) if result.output else "Task completed successfully."
+            else:
+                error_msg = str(result.fault) if result.fault else "Unknown error"
+                response_text = f"Task failed: {error_msg}"
 
             # Truncate overly long responses
             max_response_length = 50000  # ~12k tokens
@@ -448,44 +548,6 @@ class CodeAgent:
                 memory_stats=self.get_memory_stats(),
             )
 
-    async def _run_task_mode(
-        self,
-        user_input: str,
-        context: str,
-    ) -> AsyncIterator[Dict[str, Any]]:
-        """Execute using task mode (SubagentDAG orchestration).
-
-        Args:
-            user_input: User's message or command.
-            context: Conversation context.
-
-        Yields:
-            Status events from SubagentRuntime.
-        """
-        from .task import TaskPlanner, SubagentRuntime, SubagentRuntimeConfig
-
-        # Create TaskPlanner and plan the SubagentDAG
-        planner = TaskPlanner(self.llm_client)
-        dag = await planner.plan(goal=user_input, context=context)
-
-        # Create SubagentRuntime
-        runtime = SubagentRuntime(
-            llm_client=self.llm_client,
-            tool_registry=self.tool_registry,
-            workspace=self.workspace,
-            config=SubagentRuntimeConfig(max_concurrent=3),
-        )
-
-        # Execute with streaming
-        async for event in runtime.execute_stream(dag, parent_context=context):
-            yield event
-
-            # Convert task_complete to response event for run() compatibility
-            if event.get("type") == "task_complete":
-                final_summary = event.get("final_summary", "")
-                if final_summary:
-                    yield {"type": "response", "content": final_summary}
-
     def clear_memory(self) -> None:
         """Clear conversation history."""
         self.memory.clear_history()
@@ -501,7 +563,7 @@ class CodeAgent:
     ) -> AsyncIterator[Dict[str, Any]]:
         """Process user input with streaming status updates.
 
-        Uses SubagentDAG orchestration to decompose and execute the user's goal.
+        Uses V2 AgentOS runtime for task execution.
 
         Args:
             user_input: User's message or command.
@@ -513,23 +575,24 @@ class CodeAgent:
         Yields:
             Status dicts with type and content fields:
             - {"type": "status", "content": "..."}
-            - {"type": "task_dag", "dag": {...}}
             - {"type": "task_start", "dag_id": "...", "nodes": N}
-            - {"type": "subagent_start", "node_id": "...", "subagent_type": "...", "goal": "..."}
-            - {"type": "subagent_progress", "node_id": "...", "tool_call": {...}}
             - {"type": "subagent_complete", "node_id": "...", "status": "...", "summary": "..."}
             - {"type": "task_complete", "dag_id": "...", "status": "...", "stats": {...}}
             - {"type": "response", "content": "..."}
             - {"type": "error", "content": "..."}
             - {"type": "complete", "content": "..."}
         """
-        from .task import TaskPlanner, SubagentRuntime, SubagentRuntimeConfig
-
         try:
-            yield {"type": "status", "content": "Starting task mode..."}
+            yield {
+                "type": "status",
+                "content": "Starting v2 runtime...",
+            }
 
             if self.logger:
-                self.logger.info("agent_run_stream_start", user_input=user_input[:100])
+                self.logger.info(
+                    "agent_run_stream_start",
+                    user_input=user_input[:100],
+                )
 
             # Add user input to memory
             if self._memory_type == "tiered":
@@ -543,34 +606,48 @@ class CodeAgent:
             else:
                 context = self.memory.get_context()
 
-            yield {"type": "status", "content": "Planning subagent tasks..."}
+            # Execute using V2 runtime (AgentOS)
+            if self._v2_agentos is None:
+                raise RuntimeError("AgentOS not initialized")
 
-            # Create TaskPlanner and plan the SubagentDAG
-            planner = TaskPlanner(self.llm_client)
-            dag = await planner.plan(goal=user_input, context=context)
+            yield {"type": "status", "content": "Spawning v2 process..."}
 
-            # Emit DAG planning event
-            yield {"type": "task_dag", "dag": dag.to_dict()}
+            full_goal = f"Context:\n{context}\n\nGoal: {user_input}"
+            pid = self._v2_agentos.spawn(full_goal)
 
-            yield {"type": "status", "content": f"Executing {len(dag.nodes)} subagent task(s)..."}
+            yield {
+                "type": "task_start",
+                "dag_id": pid,
+                "nodes": 1,
+                "runtime": "v2",
+            }
 
-            # Create SubagentRuntime
-            runtime = SubagentRuntime(
-                llm_client=self.llm_client,
-                tool_registry=self.tool_registry,
-                workspace=self.workspace,
-                config=SubagentRuntimeConfig(max_concurrent=3),
-            )
+            result = await self._v2_agentos.wait(pid)
 
-            # Execute with streaming
-            response_text = ""
-            async for event in runtime.execute_stream(dag, parent_context=context):
-                yield event
+            if result.status == "OK":
+                response_text = str(result.output) if result.output else "Task completed."
+                yield {
+                    "type": "subagent_complete",
+                    "node_id": pid,
+                    "status": "completed",
+                    "summary": response_text[:500] if response_text else "Task completed",
+                }
+            else:
+                error_msg = str(result.fault) if result.fault else "Unknown error"
+                response_text = f"Task failed: {error_msg}"
+                yield {
+                    "type": "subagent_complete",
+                    "node_id": pid,
+                    "status": "failed",
+                    "summary": error_msg,
+                }
 
-                if event.get("type") == "task_complete":
-                    # Extract final response from task_complete event
-                    final_summary = event.get("final_summary", "")
-                    response_text = final_summary if final_summary else "Task completed."
+            yield {
+                "type": "task_complete",
+                "dag_id": pid,
+                "status": "success" if result.status == "OK" else "failed",
+                "final_summary": response_text,
+            }
 
             # Add response to memory
             if response_text:
@@ -658,9 +735,11 @@ class CodeAgent:
         Returns:
             Dictionary with memory stats.
         """
+        base_stats: Dict[str, Any] = {}
+
         if self._memory_type == "tiered":
             stats = self.memory.get_stats()
-            return {
+            base_stats.update({
                 "type": "tiered",
                 "pinned_tokens": stats.pinned_tokens,
                 "working_tokens": stats.working_tokens,
@@ -669,13 +748,15 @@ class CodeAgent:
                 "total_tokens": stats.total_tokens,
                 "compression_count": stats.compression_count,
                 "turn_count": stats.turn_count,
-            }
+            })
         else:
-            return {
+            base_stats.update({
                 "type": "simple",
                 "turn_count": self.memory.get_turn_count(),
                 "pinned_count": self.memory.get_pinned_count(),
-            }
+            })
+
+        return base_stats
 
     def get_trace_summary(self) -> Optional[Dict[str, Any]]:
         """Get execution trace summary.

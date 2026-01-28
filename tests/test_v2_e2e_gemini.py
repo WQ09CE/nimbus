@@ -114,7 +114,7 @@ class TestGeminiV2ClientUnit:
 
         client = GeminiV2Client(api_key="test-key")
         assert client._api_key == "test-key"
-        assert client.config.model == "gemini-2.0-flash-exp"
+        assert client.config.model == "gemini-2.0-flash"
 
     def test_init_with_env_var(self, monkeypatch):
         """Test client initialization with environment variable."""
@@ -190,9 +190,10 @@ class TestGeminiV2ClientUnit:
         # Second is assistant with function call
         assert contents[1]["role"] == "model"
         assert "functionCall" in contents[1]["parts"][0]
-        # Third is tool result (converted to user message)
+        # Third is tool result (converted to user message with functionResponse)
         assert contents[2]["role"] == "user"
-        assert "Tool Result" in contents[2]["parts"][0]["text"]
+        assert "functionResponse" in contents[2]["parts"][0]
+        assert contents[2]["parts"][0]["functionResponse"]["name"] == "Read"
 
     def test_convert_tools_to_gemini(self, sample_tools):
         """Test tool format conversion."""

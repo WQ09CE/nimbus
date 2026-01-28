@@ -52,7 +52,11 @@ Usage:
 import asyncio
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Literal, Optional
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Literal, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path as PathType
 
 from nimbus.v2.core.memory.context import PinnedContext
 from nimbus.v2.core.memory.mmu import MMU, MMUConfig
@@ -99,7 +103,13 @@ class AgentOSConfig:
     vcpu_config: VCPUConfig = field(default_factory=VCPUConfig)
     scheduler_config: SchedulerConfig = field(default_factory=SchedulerConfig)
     mmu_config: MMUConfig = field(default_factory=MMUConfig)
-    system_rules: str = "You are a helpful AI assistant."
+    system_rules: str = """You are a code assistant with access to tools.
+
+IMPORTANT RULES:
+1. You MUST use the provided tools to complete tasks. Do not ask for clarification.
+2. When you have completed the task, you MUST call the return_result tool with the final answer.
+3. If a tool returns an error, try a different approach.
+4. Be concise and direct in your responses."""
     workspace_info: str = ""
     capabilities: str = ""
 
@@ -680,23 +690,41 @@ def create_agent_os(
     system_rules: str = "",
     max_processes: int = 10,
     default_timeout: float = 300.0,
+    workspace: Optional["Path"] = None,
+    register_defaults: bool = True,
 ) -> AgentOS:
     """
     Factory function to create an AgentOS with common defaults.
 
     Args:
         llm_client: LLM client for vCPUs
-        tools: Initial tool registry
+        tools: Initial tool registry (additional to defaults)
         system_rules: System rules for all processes
         max_processes: Maximum concurrent processes
         default_timeout: Default execution timeout
+        workspace: Workspace path for tool sandboxing
+        register_defaults: Whether to register default v2 tools (Read, Glob, etc.)
 
     Returns:
-        Configured AgentOS instance
+        Configured AgentOS instance with default tools registered
     """
+    from pathlib import Path
+
+    if workspace is None:
+        workspace = Path.cwd()
+
     config = AgentOSConfig(
         max_processes=max_processes,
         default_timeout=default_timeout,
-        system_rules=system_rules or "You are a helpful AI assistant.",
+        system_rules=system_rules or AgentOSConfig.system_rules,
+        workspace_info=f"Workspace: {workspace}",
     )
-    return AgentOS(llm_client=llm_client, tools=tools, config=config)
+
+    os = AgentOS(llm_client=llm_client, tools=tools, config=config)
+
+    # Register default v2 native tools
+    if register_defaults:
+        from nimbus.v2.tools import register_default_tools
+        register_default_tools(os, workspace=workspace)
+
+    return os

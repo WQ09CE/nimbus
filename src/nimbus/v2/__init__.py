@@ -87,6 +87,14 @@ from nimbus.v2.agentos import (
 # LLM Clients
 from nimbus.v2.llm import GeminiV2Client, GeminiV2Response
 
+# Native Tools
+from nimbus.v2.tools import (
+    register_default_tools,
+    get_all_tools,
+    get_tool,
+    iterate_tools,
+)
+
 __all__ = [
     # Version
     "__version__",
@@ -139,4 +147,9 @@ __all__ = [
     # LLM Clients
     "GeminiV2Client",
     "GeminiV2Response",
+    # Native Tools
+    "register_default_tools",
+    "get_all_tools",
+    "get_tool",
+    "iterate_tools",
 ]

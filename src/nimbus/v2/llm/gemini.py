@@ -17,7 +17,7 @@ Key Features:
 Usage:
     from nimbus.v2.llm import GeminiV2Client
 
-    client = GeminiV2Client(api_key="your-api-key", model="gemini-2.0-flash-exp")
+    client = GeminiV2Client(api_key="your-api-key", model="gemini-2.0-flash")
     response = await client.chat(messages, tools=tool_definitions)
 
     if response.tool_calls:
@@ -97,7 +97,7 @@ class GeminiV2Config:
     """Configuration for Gemini v2 client.
 
     Attributes:
-        model: Model name (default: gemini-2.0-flash-exp for latest flash).
+        model: Model name (default: gemini-2.0-flash for latest flash).
         api_key: API key for authentication.
         base_url: Base URL for Gemini API.
         temperature: Sampling temperature (0.0 - 2.0).
@@ -108,7 +108,7 @@ class GeminiV2Config:
         max_retries: Maximum retry attempts on failure.
         retry_delay: Base delay between retries in seconds.
     """
-    model: str = "gemini-2.0-flash-exp"
+    model: str = "gemini-2.0-flash"
     api_key: Optional[str] = None
     base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     temperature: float = 0.7
@@ -178,7 +178,7 @@ class GeminiV2Client:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gemini-2.0-flash-exp",
+        model: str = "gemini-2.0-flash",
         config: Optional[GeminiV2Config] = None,
         **kwargs: Any,
     ):
@@ -186,7 +186,7 @@ class GeminiV2Client:
 
         Args:
             api_key: API key for authentication. Falls back to GEMINI_API_KEY env var.
-            model: Model name (default: gemini-2.0-flash-exp).
+            model: Model name (default: gemini-2.0-flash).
             config: Optional full configuration object.
             **kwargs: Additional config options.
         """
@@ -277,13 +277,18 @@ class GeminiV2Client:
             # Convert role names
             gemini_role = "model" if role == "assistant" else "user"
 
-            # Handle tool results - convert to user messages for Gemini
+            # Handle tool results - use Gemini's functionResponse format
             if role == "tool":
-                tool_call_id = msg.get("tool_call_id", "unknown")
                 tool_name = msg.get("name", "tool")
+                # Gemini expects functionResponse in user role
                 contents.append({
                     "role": "user",
-                    "parts": [{"text": f"[Tool Result: {tool_name} (id: {tool_call_id})]\n{content}"}]
+                    "parts": [{
+                        "functionResponse": {
+                            "name": tool_name,
+                            "response": {"result": content}
+                        }
+                    }]
                 })
                 continue
 
