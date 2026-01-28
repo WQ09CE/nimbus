@@ -1,0 +1,250 @@
+"""
+Nimbus v2 Memory Context - PinnedContext and StackFrame
+
+This module defines the core memory structures:
+- PinnedContext: Immutable system anchors that never get compressed
+- StackFrame: Call stack frames for subprocess management
+- Message: Standard message format for LLM interactions
+
+Design Principles:
+- Pinned context is ALWAYS at the top of the context window
+- Stack frames grow downward (newest frame at the bottom)
+- Each frame has its own message history (isolation)
+"""
+
+import uuid
+import time
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Literal, Optional
+
+
+# =============================================================================
+# Message Format
+# =============================================================================
+
+MessageRole = Literal["system", "user", "assistant", "tool"]
+
+
+@dataclass
+class Message:
+    """
+    Standard message format for LLM interactions.
+
+    This is compatible with OpenAI/Anthropic message formats.
+
+    Attributes:
+        role: Message role (system/user/assistant/tool)
+        content: Message content (text or structured)
+        name: Optional name (for tool messages)
+        tool_call_id: Optional tool call ID (for tool results)
+        meta: Additional metadata
+    """
+    role: MessageRole
+    content: Any  # str or list of content blocks
+    name: Optional[str] = None
+    tool_call_id: Optional[str] = None
+    meta: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict format for LLM API."""
+        d = {"role": self.role, "content": self.content}
+        if self.name:
+            d["name"] = self.name
+        if self.tool_call_id:
+            d["tool_call_id"] = self.tool_call_id
+        return d
+
+    def token_estimate(self) -> int:
+        """Rough token estimate (4 chars ≈ 1 token)."""
+        if isinstance(self.content, str):
+            return len(self.content) // 4
+        elif isinstance(self.content, list):
+            total = 0
+            for block in self.content:
+                if isinstance(block, dict) and "text" in block:
+                    total += len(block["text"]) // 4
+            return total
+        return 0
+
+
+# =============================================================================
+# Pinned Context
+# =============================================================================
+
+@dataclass
+class PinnedContext:
+    """
+    Immutable system anchors that NEVER get compressed or removed.
+
+    The PinnedContext sits at the very top of the context window.
+    It contains critical information that the Agent must always see:
+    - System rules (e.g., "don't hallucinate", "use tools correctly")
+    - Workspace information (cwd, project structure)
+    - Capability descriptions (what tools are available)
+
+    Design Principle: "No matter how deep the call stack, the Agent
+    never forgets the system rules."
+
+    Attributes:
+        system_rules: Core behavioral rules (highest priority)
+        workspace_info: Current workspace context
+        capabilities: Available tools and their descriptions
+        custom_anchors: User-defined pinned content
+        version: Schema version
+    """
+    system_rules: str = ""
+    workspace_info: str = ""
+    capabilities: str = ""
+    custom_anchors: List[str] = field(default_factory=list)
+    version: str = "1.0"
+
+    def to_system_message(self) -> Message:
+        """Convert to a system message for LLM."""
+        parts = []
+
+        if self.system_rules:
+            parts.append(f"# System Rules\n{self.system_rules}")
+
+        if self.workspace_info:
+            parts.append(f"# Workspace\n{self.workspace_info}")
+
+        if self.capabilities:
+            parts.append(f"# Capabilities\n{self.capabilities}")
+
+        for anchor in self.custom_anchors:
+            parts.append(anchor)
+
+        content = "\n\n".join(parts)
+        return Message(role="system", content=content, meta={"pinned": True})
+
+    def token_estimate(self) -> int:
+        """Rough token estimate."""
+        total = len(self.system_rules) + len(self.workspace_info) + len(self.capabilities)
+        for anchor in self.custom_anchors:
+            total += len(anchor)
+        return total // 4
+
+    def add_anchor(self, content: str) -> None:
+        """Add a custom anchor."""
+        self.custom_anchors.append(content)
+
+    def update_workspace(self, info: str) -> None:
+        """Update workspace information."""
+        self.workspace_info = info
+
+    def update_capabilities(self, caps: str) -> None:
+        """Update capabilities description."""
+        self.capabilities = caps
+
+
+# =============================================================================
+# Stack Frame
+# =============================================================================
+
+FrameState = Literal["ACTIVE", "SUSPENDED", "COMPLETED", "FAILED"]
+
+
+@dataclass
+class StackFrame:
+    """
+    Call stack frame for subprocess management.
+
+    Each SUB_CALL creates a new StackFrame. The frame contains:
+    - Its own message history (isolation from parent)
+    - The goal it's trying to achieve
+    - Metadata about the call
+
+    When RETURN is called, the frame is popped and its result
+    is passed back to the parent frame.
+
+    Attributes:
+        frame_id: Unique frame identifier
+        goal: What this frame is trying to achieve
+        messages: Conversation history within this frame
+        state: Frame state (ACTIVE/SUSPENDED/COMPLETED/FAILED)
+        parent_frame_id: ID of parent frame (None for root)
+        result: Result when frame completes
+        created_at: Creation timestamp
+        meta: Additional metadata
+    """
+    frame_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+    goal: str = ""
+    messages: List[Message] = field(default_factory=list)
+    state: FrameState = "ACTIVE"
+    parent_frame_id: Optional[str] = None
+    result: Any = None
+    created_at: float = field(default_factory=time.time)
+    meta: Dict[str, Any] = field(default_factory=dict)
+
+    def add_message(self, message: Message) -> None:
+        """Add a message to this frame's history."""
+        self.messages.append(message)
+
+    def add_user_message(self, content: str) -> None:
+        """Add a user message."""
+        self.messages.append(Message(role="user", content=content))
+
+    def add_assistant_message(self, content: str) -> None:
+        """Add an assistant message."""
+        self.messages.append(Message(role="assistant", content=content))
+
+    def add_tool_result(self, tool_call_id: str, name: str, content: str) -> None:
+        """Add a tool result message."""
+        self.messages.append(Message(
+            role="tool",
+            content=content,
+            name=name,
+            tool_call_id=tool_call_id
+        ))
+
+    def token_estimate(self) -> int:
+        """Estimate total tokens in this frame."""
+        total = len(self.goal) // 4
+        for msg in self.messages:
+            total += msg.token_estimate()
+        return total
+
+    def complete(self, result: Any) -> None:
+        """Mark frame as completed with result."""
+        self.state = "COMPLETED"
+        self.result = result
+
+    def fail(self, error: str) -> None:
+        """Mark frame as failed."""
+        self.state = "FAILED"
+        self.result = error
+
+    def to_context_messages(self) -> List[Message]:
+        """Get messages for context assembly."""
+        # Start with the goal as a user message if this is a sub-frame
+        result = []
+        if self.goal and self.parent_frame_id is not None:
+            result.append(Message(
+                role="user",
+                content=f"[Subtask] {self.goal}",
+                meta={"frame_id": self.frame_id, "is_goal": True}
+            ))
+        result.extend(self.messages)
+        return result
+
+
+# =============================================================================
+# Factory Functions
+# =============================================================================
+
+def create_root_frame(goal: str = "") -> StackFrame:
+    """Create the root frame (no parent)."""
+    return StackFrame(
+        goal=goal,
+        parent_frame_id=None,
+        meta={"is_root": True}
+    )
+
+
+def create_sub_frame(parent_frame_id: str, goal: str) -> StackFrame:
+    """Create a sub-frame with parent reference."""
+    return StackFrame(
+        goal=goal,
+        parent_frame_id=parent_frame_id,
+        meta={"is_root": False}
+    )
