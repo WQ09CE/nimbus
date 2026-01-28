@@ -1,5 +1,5 @@
 """
-Nimbus v2 Core - Protocol and Runtime definitions.
+Nimbus v2 Core - Protocol, Runtime, and Scheduler definitions.
 """
 
 from nimbus.v2.core.protocol import (
@@ -16,7 +16,20 @@ from nimbus.v2.core.protocol import (
     ArtifactRef,
 )
 
+from nimbus.v2.core.scheduler import (
+    Task,
+    TaskSpec,
+    TaskState,
+    DAG,
+    Scheduler,
+    SchedulerConfig,
+    EventStream,
+    create_dag,
+    create_linear_dag,
+)
+
 __all__ = [
+    # Protocol
     "ActionIR",
     "ActionKind",
     "ToolResult",
@@ -28,4 +41,14 @@ __all__ = [
     "EventType",
     "IPCMessage",
     "ArtifactRef",
+    # Scheduler
+    "Task",
+    "TaskSpec",
+    "TaskState",
+    "DAG",
+    "Scheduler",
+    "SchedulerConfig",
+    "EventStream",
+    "create_dag",
+    "create_linear_dag",
 ]
