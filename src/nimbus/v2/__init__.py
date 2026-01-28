@@ -84,6 +84,9 @@ from nimbus.v2.agentos import (
     create_agent_os,
 )
 
+# LLM Clients
+from nimbus.v2.llm import GeminiV2Client, GeminiV2Response
+
 __all__ = [
     # Version
     "__version__",
@@ -133,4 +136,7 @@ __all__ = [
     "ProcessState",
     "ToolRegistry",
     "create_agent_os",
+    # LLM Clients
+    "GeminiV2Client",
+    "GeminiV2Response",
 ]
