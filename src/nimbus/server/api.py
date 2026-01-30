@@ -270,15 +270,32 @@ async def chat(
             import logging
             import traceback
             error_logger = logging.getLogger(__name__)
-            error_logger.error(f"Error in stream_chat: {e}", exc_info=True)
+            error_logger.error(f"❌ Error in stream_chat: {e}", exc_info=True)
             # Emit error event
-            await sse_hub.publish(
-                session_id,
-                "error",
-                {"code": "server_error", "message": str(e), "traceback": traceback.format_exc()}
-            )
+            try:
+                await sse_hub.publish(
+                    session_id,
+                    "error",
+                    {"code": "server_error", "message": str(e), "traceback": traceback.format_exc()}
+                )
+            except Exception as pub_err:
+                error_logger.error(f"❌ Failed to publish error event: {pub_err}")
 
-    asyncio.create_task(run_chat())
+    # Create task and keep reference to prevent GC
+    task = asyncio.create_task(run_chat())
+    
+    # Log task creation
+    logger.info(f"✅ Created background task for session {session_id}: {task}")
+    
+    # Add task done callback to catch exceptions
+    def task_done_callback(t):
+        try:
+            if t.exception():
+                logger.error(f"❌ Background task failed: {t.exception()}", exc_info=t.exception())
+        except asyncio.CancelledError:
+            logger.warning(f"⚠️ Background task cancelled")
+    
+    task.add_done_callback(task_done_callback)
 
     # Return SSE stream (subscribe is an async generator)
     return StreamingResponse(
