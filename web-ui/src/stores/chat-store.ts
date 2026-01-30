@@ -32,6 +32,11 @@ interface ChatState {
   streamingContent: string;
   streamingToolCalls: ToolCall[];
   
+  // Real-time progress indicators
+  thinkingIteration: number | null;  // Current thinking iteration
+  currentActivity: string | null;     // Current activity description
+  lastHeartbeat: number | null;       // Timestamp of last heartbeat
+  
   // UI state
   isLoading: boolean;
   error: string | null;
@@ -49,6 +54,9 @@ const initialState = {
   isStreaming: false,
   streamingContent: "",
   streamingToolCalls: [],
+  thinkingIteration: null,
+  currentActivity: null,
+  lastHeartbeat: null,
   isLoading: false,
   error: null,
 };
@@ -99,6 +107,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       isStreaming: true,
       streamingContent: "",
       streamingToolCalls: [],
+      thinkingIteration: null,
+      currentActivity: "连接中...",
+      lastHeartbeat: Date.now(),
       error: null,
     });
 
@@ -113,33 +124,100 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const { type, data } = event;
 
         switch (type) {
+          case "connected":
+            set({ 
+              currentActivity: "已连接",
+              lastHeartbeat: Date.now() 
+            });
+            break;
+
+          case "message_start":
+            set({ 
+              currentActivity: "开始生成回复...",
+              lastHeartbeat: Date.now() 
+            });
+            break;
+
+          case "task_start":
+            set({ 
+              currentActivity: "开始执行任务...",
+              lastHeartbeat: Date.now() 
+            });
+            break;
+
+          case "heartbeat":
+            // Update thinking iteration if present
+            if (data && typeof data === "object") {
+              const hbData = data as any;
+              if ("iteration" in hbData) {
+                set({ 
+                  thinkingIteration: hbData.iteration,
+                  currentActivity: `正在思考 (第 ${hbData.iteration + 1} 轮)...`,
+                  lastHeartbeat: Date.now() 
+                });
+              } else if ("kind" in hbData && hbData.kind === "THOUGHT") {
+                set({ 
+                  currentActivity: "正在思考...",
+                  lastHeartbeat: Date.now() 
+                });
+              } else if ("reason" in hbData) {
+                // Thought completed
+                set({ 
+                  currentActivity: "思考完成，生成回复...",
+                  lastHeartbeat: Date.now() 
+                });
+              }
+            }
+            break;
+
           case "message":
             if (typeof data === "string") {
               assistantContent += data;
-              set({ streamingContent: assistantContent });
+              set({ 
+                streamingContent: assistantContent,
+                currentActivity: "生成回复中...",
+                lastHeartbeat: Date.now()
+              });
             } else if (typeof data === "object" && data && "content" in data) {
               const content = (data as { content?: unknown }).content;
               if (typeof content === "string") {
                 assistantContent += content;
-                set({ streamingContent: assistantContent });
+                set({ 
+                  streamingContent: assistantContent,
+                  currentActivity: "生成回复中...",
+                  lastHeartbeat: Date.now()
+                });
               }
             }
             break;
 
           case "tool_call":
             if (data && typeof data === "object") {
-              toolCalls.push(data as ToolCall);
-              set({ streamingToolCalls: [...toolCalls] });
+              const tool = data as ToolCall;
+              toolCalls.push(tool);
+              set({ 
+                streamingToolCalls: [...toolCalls],
+                currentActivity: `执行工具: ${tool.name}`,
+                lastHeartbeat: Date.now()
+              });
             }
             break;
 
           case "tool_result":
             if (data && typeof data === "object") {
               toolResults.push(data as ToolResult);
+              set({ 
+                currentActivity: "工具执行完成",
+                lastHeartbeat: Date.now()
+              });
             }
             break;
 
           case "dag_complete":
+            set({ 
+              currentActivity: "完成",
+              lastHeartbeat: Date.now()
+            });
             // Stream completed successfully, exit loop
             shouldContinue = false;
             break;
@@ -169,6 +247,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         isStreaming: false,
         streamingContent: "",
         streamingToolCalls: [],
+        thinkingIteration: null,
+        currentActivity: null,
+        lastHeartbeat: null,
       });
     } catch (err) {
       set({
@@ -176,6 +257,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         isStreaming: false,
         streamingContent: "",
         streamingToolCalls: [],
+        thinkingIteration: null,
+        currentActivity: null,
+        lastHeartbeat: null,
       });
     }
   },
