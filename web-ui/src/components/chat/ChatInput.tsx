@@ -11,6 +11,7 @@ interface ChatInputProps {
 export function ChatInput({ onSend, disabled, placeholder }: ChatInputProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const wasDisabledRef = useRef(false);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -20,12 +21,16 @@ export function ChatInput({ onSend, disabled, placeholder }: ChatInputProps) {
     }
   }, [input]);
 
-  // Auto-focus when not disabled
+  // Auto-focus only when transitioning from disabled to enabled
   useEffect(() => {
-    if (!disabled && textareaRef.current) {
-      textareaRef.current.focus();
+    if (wasDisabledRef.current && !disabled && textareaRef.current) {
+      // Only focus if input is empty (just sent a message)
+      if (!input) {
+        textareaRef.current.focus();
+      }
     }
-  }, [disabled]);
+    wasDisabledRef.current = disabled;
+  }, [disabled, input]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
