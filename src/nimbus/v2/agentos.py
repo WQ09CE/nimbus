@@ -139,9 +139,13 @@ CRITICAL RULES:
 
 AVOID INFINITE LOOPS:
 - Edit/Read/Grep/Glob are DETERMINISTIC. Do NOT call them repeatedly with the same arguments.
-- If a tool fails, try a DIFFERENT approach. Do NOT retry with identical arguments.
+- If a tool fails or returns empty results, try a DIFFERENT approach or broaden your search. Do NOT retry with identical arguments.
 - Trust tool results. If Edit says "success", the file IS modified. Do NOT re-read to verify.
 - After successful Edit: call return_result IMMEDIATELY, not another Edit.
+
+GLOB/SEARCH TIPS:
+- If Glob returns no files, try a recursive pattern (e.g., "**/*.py") or search the parent directory.
+- Verify the current working directory if paths are relative.
 
 EXAMPLE:
 - Task: "Fix bug in foo.py"
@@ -849,6 +853,16 @@ class AgentOS:
     # =========================================================================
     # Event & State Access
     # =========================================================================
+
+    def add_event_listener(self, listener: Callable[[Event], Any]) -> None:
+        """Add a listener for real-time events."""
+        if hasattr(self._events, "add_listener"):
+            self._events.add_listener(listener)
+
+    def remove_event_listener(self, listener: Callable[[Event], Any]) -> None:
+        """Remove an event listener."""
+        if hasattr(self._events, "remove_listener"):
+            self._events.remove_listener(listener)
 
     def get_events(self) -> List[Event]:
         """Get all collected events."""

@@ -193,7 +193,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           case "tool_call":
             if (data && typeof data === "object") {
-              const tool = data as ToolCall;
+              const d = data as any;
+              // Map server format (action_id, tool, args) to frontend format (id, name, arguments)
+              const tool: ToolCall = {
+                id: d.action_id || d.id,
+                name: d.tool || d.name,
+                arguments: d.args || d.arguments || {},
+              };
               toolCalls.push(tool);
               set({ 
                 streamingToolCalls: [...toolCalls],
@@ -205,7 +211,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           case "tool_result":
             if (data && typeof data === "object") {
-              toolResults.push(data as ToolResult);
+              const d = data as any;
+              const result: ToolResult = {
+                id: d.action_id || d.id,
+                name: d.tool || d.name,
+                result: d.output !== undefined ? d.output : d.result,
+                error: d.status === "ERROR" ? (d.fault ? d.fault.message : "Error") : undefined,
+                duration: d.duration_ms,
+              };
+              toolResults.push(result);
               set({ 
                 currentActivity: "工具执行完成",
                 lastHeartbeat: Date.now()

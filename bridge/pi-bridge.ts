@@ -80,11 +80,24 @@ interface RpcMessage {
 	isError?: boolean;
 }
 
+interface RpcTool {
+	type?: string;
+	name?: string;
+	description?: string;
+	parameters?: Record<string, unknown>;
+	function?: {
+		name: string;
+		description?: string;
+		parameters?: Record<string, unknown>;
+	};
+}
+
 interface AiStreamParams {
 	provider?: string;
 	modelId?: string;
 	messages: RpcMessage[];
 	systemPrompt?: string;
+	tools?: RpcTool[];
 	options?: {
 		maxTokens?: number;
 		apiKey?: string;
@@ -320,7 +333,7 @@ class PiBridge {
 	}
 
 	private async aiStream(params: AiStreamParams): Promise<{ success: boolean }> {
-		const { provider, modelId, messages, systemPrompt, options } = params;
+		const { provider, modelId, messages, systemPrompt, tools, options } = params;
 
 		// 获取模型
 		let model = this.currentModel;
@@ -334,6 +347,12 @@ class PiBridge {
 
 		// 转换消息格式
 		const context = this.convertToContext(messages, systemPrompt);
+
+		// 转换 tools 格式 (OpenAI -> pi-ai)
+		if (tools && tools.length > 0) {
+			context.tools = this.convertTools(tools) as any;
+			this.log(`Tools provided: ${context.tools.map((t) => t.name).join(", ")}`);
+		}
 
 		// 获取 API key (支持 OAuth)
 		const apiKey = await this.getApiKeyForProvider(model.provider, options?.apiKey);
@@ -359,6 +378,25 @@ class PiBridge {
 		}
 
 		return { success: true };
+	}
+
+	private convertTools(rpcTools: RpcTool[]): Array<{ name: string; description: string; parameters: Record<string, unknown> }> {
+		return rpcTools.map((tool) => {
+			// Handle OpenAI format: { type: "function", function: { name, description, parameters } }
+			if (tool.type === "function" && tool.function) {
+				return {
+					name: tool.function.name,
+					description: tool.function.description || "",
+					parameters: tool.function.parameters || { type: "object", properties: {} },
+				};
+			}
+			// Handle simple format: { name, description, parameters }
+			return {
+				name: tool.name || "unknown",
+				description: tool.description || "",
+				parameters: tool.parameters || { type: "object", properties: {} },
+			};
+		});
 	}
 
 	private handleStreamEvent(event: AssistantMessageEvent) {
@@ -419,7 +457,7 @@ class PiBridge {
 		content: RpcContentBlock[];
 		usage: { inputTokens: number; outputTokens: number };
 	}> {
-		const { provider, modelId, messages, systemPrompt, options } = params;
+		const { provider, modelId, messages, systemPrompt, tools, options } = params;
 
 		let model = this.currentModel;
 		if (provider && modelId && this.isKnownProvider(provider)) {
@@ -431,7 +469,17 @@ class PiBridge {
 		}
 
 		const context = this.convertToContext(messages, systemPrompt);
+		
+		// 转换 tools 格式 (OpenAI -> pi-ai)
+		if (tools && tools.length > 0) {
+			context.tools = this.convertTools(tools) as any;
+			this.log(`[aiComplete] Tools converted: ${context.tools.map((t) => t.name).join(", ")}`);
+		} else {
+			this.log(`[aiComplete] No tools provided! tools=${JSON.stringify(tools)}`);
+		}
+		
 		const apiKey = await this.getApiKeyForProvider(model.provider, options?.apiKey);
+		this.log(`[aiComplete] Calling completeSimple with ${context.messages.length} messages, tools: ${context.tools?.length ?? 0}`);
 
 		const result = await completeSimple(model, context, {
 			apiKey,
@@ -517,14 +565,27 @@ class PiBridge {
 				};
 				messages.push(userMsg);
 			} else if (msg.role === "assistant") {
-				// Assistant 消息需要完整的结构，这里简化处理
-				const content = typeof msg.content === "string" ? msg.content : this.extractText(msg.content);
-				const userMsg: UserMessage = {
-					role: "user",
-					content: `[Previous assistant response]\n${content}`,
+				// Correctly handle AssistantMessage with tool_use blocks
+				// Use type assertion to handle required fields that we don't have from history
+				const assistantMsg = {
+					role: "assistant" as const,
+					content: this.convertAssistantContent(msg.content),
+					// Required fields with defaults for history messages
+					api: "anthropic-messages" as const,
+					provider: "anthropic" as const,
+					model: "unknown",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop" as const,
 					timestamp: Date.now(),
-				};
-				messages.push(userMsg);
+				} satisfies AssistantMessage;
+				messages.push(assistantMsg);
 			} else if (msg.role === "toolResult") {
 				const toolResultMsg: ToolResultMessage = {
 					role: "toolResult",
@@ -579,6 +640,81 @@ class PiBridge {
 			.filter((c) => c.type === "text")
 			.map((c) => c.text || "")
 			.join("\n");
+	}
+
+	/**
+	 * Convert RPC content to AssistantMessage content format
+	 *
+	 * Maps Anthropic-style content blocks to pi-ai AssistantMessage content:
+	 * - text -> { type: "text", text: string }
+	 * - tool_use -> { type: "toolCall", id: string, name: string, arguments: Record<string, unknown> }
+	 * - thinking -> { type: "thinking", thinking: string }
+	 */
+	private convertAssistantContent(
+		content: string | RpcContentBlock[],
+	): Array<
+		| { type: "text"; text: string }
+		| { type: "thinking"; thinking: string }
+		| { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> }
+	> {
+		if (typeof content === "string") {
+			return [{ type: "text", text: content }];
+		}
+
+		const result: Array<
+			| { type: "text"; text: string }
+			| { type: "thinking"; thinking: string }
+			| { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> }
+		> = [];
+
+		for (const c of content) {
+			if (c.type === "text") {
+				result.push({ type: "text", text: c.text || "" });
+			} else if (c.type === "thinking") {
+				result.push({ type: "thinking", thinking: c.text || "" });
+			} else if (c.type === "toolCall") {
+				// Already in pi-ai format
+				let args: Record<string, unknown> = {};
+				if (typeof c.arguments === "string") {
+					try {
+						args = JSON.parse(c.arguments);
+					} catch {
+						args = {};
+					}
+				} else if (c.arguments) {
+					args = c.arguments;
+				}
+				result.push({
+					type: "toolCall",
+					id: c.id || "",
+					name: c.name || "",
+					arguments: args,
+				});
+			} else if ((c as any).type === "tool_use") {
+				// Anthropic format: tool_use -> toolCall
+				// Python sends: { type: "tool_use", id: "...", name: "...", input: {...} }
+				const toolUse = c as any;
+				let args: Record<string, unknown> = {};
+				const input = toolUse.input || toolUse.arguments;
+				if (typeof input === "string") {
+					try {
+						args = JSON.parse(input);
+					} catch {
+						args = {};
+					}
+				} else if (input) {
+					args = input;
+				}
+				result.push({
+					type: "toolCall",
+					id: toolUse.id || "",
+					name: toolUse.name || "",
+					arguments: args,
+				});
+			}
+		}
+
+		return result;
 	}
 
 	// ========================================================================

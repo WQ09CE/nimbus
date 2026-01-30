@@ -478,10 +478,15 @@ class AnthropicV2Client:
             anthropic_tools = self._convert_tools_to_anthropic(tools)
             if anthropic_tools:
                 body["tools"] = anthropic_tools
+                logger.info(f"🔧 Tools provided: {len(anthropic_tools)} tools - {[t['name'] for t in anthropic_tools]}")
+            else:
+                logger.warning(f"⚠️ Tools list was provided but conversion resulted in empty list!")
+        else:
+            logger.warning(f"⚠️ No tools provided to LLM chat() call!")
 
         # Make request
         url = self._build_url("messages")
-        logger.debug(f"Anthropic v2 request: model={self.config.model}, messages={len(messages)}")
+        logger.debug(f"Anthropic v2 request: model={self.config.model}, messages={len(messages)}, tools={len(body.get('tools', []))}")
 
         resp = await self._request_with_retry(url, body)
         data = await resp.json()

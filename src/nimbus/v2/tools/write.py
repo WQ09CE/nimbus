@@ -12,6 +12,7 @@ from nimbus.tools.sandbox import Sandbox, SandboxError
 async def write_file(
     file_path: str,
     content: str,
+    mode: str = "write",
     workspace: Path | None = None,
     **kwargs: Any,
 ) -> str:
@@ -23,6 +24,7 @@ async def write_file(
     Args:
         file_path: Absolute path to the file to write.
         content: Content to write to the file.
+        mode: 'write' (overwrite) or 'append' (add to end). Defaults to 'write'.
         workspace: Optional workspace directory for sandbox validation.
 
     Returns:
@@ -40,6 +42,9 @@ async def write_file(
 
     if content is None:
         content = ""
+
+    if mode not in ("write", "append"):
+        raise ValueError(f"Invalid mode '{mode}'. Must be 'write' or 'append'.")
 
     # Determine workspace
     path_obj = Path(file_path)
@@ -68,18 +73,20 @@ async def write_file(
     # Write content
     try:
         content_bytes = content.encode("utf-8")
-        with open(resolved_path, "wb") as f:
+        file_mode = "ab" if mode == "append" else "wb"
+        with open(resolved_path, file_mode) as f:
             f.write(content_bytes)
     except OSError as e:
         raise OSError(f"Cannot write to file '{file_path}': {e}")
 
-    return f"File created successfully at: {resolved_path}"
+    action = "appended to" if mode == "append" else "created"
+    return f"File {action} successfully at: {resolved_path}"
 
 
 # V2 Tool Definition
 WRITE_TOOL: Dict[str, Any] = {
     "name": "Write",
-    "description": "Write content to a file. Creates parent directories if needed. Overwrites existing files.",
+    "description": "Write or append content to a file. Creates parent directories if needed.",
     "function": write_file,
     "parameters": {
         "type": "object",
@@ -91,6 +98,12 @@ WRITE_TOOL: Dict[str, Any] = {
             "content": {
                 "type": "string",
                 "description": "Content to write to the file",
+            },
+            "mode": {
+                "type": "string",
+                "description": "Mode: 'write' (overwrite) or 'append'. Defaults to 'write'.",
+                "enum": ["write", "append"],
+                "default": "write",
             },
         },
         "required": ["file_path", "content"],

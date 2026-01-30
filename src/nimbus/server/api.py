@@ -107,6 +107,20 @@ async def get_config():
     )
 
 
+@router.get("/models")
+async def list_models(
+    session_manager=Depends(get_session_manager),
+):
+    """List available models via Pi Bridge."""
+    adapter = await session_manager._get_shared_llm_client()
+    try:
+        models = await adapter.get_models()
+        return {"models": models}
+    except Exception as e:
+        logger.error(f"Failed to list models: {e}")
+        return {"models": []}
+
+
 # =============================================================================
 # Session APIs
 # =============================================================================
@@ -122,6 +136,7 @@ async def create_session(
         workspace_path=data.workspace_path,
         memory_type=data.memory_type,
         planner_type=data.planner_type,
+        model_config=data.llm_config,
     )
 
     return SessionResponse(

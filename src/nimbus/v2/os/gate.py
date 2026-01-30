@@ -154,8 +154,14 @@ class KernelGate:
         self._emit_event("TOOL_STARTED", {
             "action_id": action.id,
             "tool": tool_name,
+            "args": action.args,
             "args_keys": list(action.args.keys())
         })
+        
+        from nimbus.core.logging import get_logger
+        logger = get_logger("kernel.gate")
+        logger.info(f"Executing tool '{tool_name}'...")
+        
         start_time = time.time_ns()
 
         # 3. Execution (with Timeout)
@@ -216,6 +222,16 @@ class KernelGate:
 
         # 4. Result Packaging
         duration_ms = (time.time_ns() - start_time) // 1_000_000
+        
+        status_emoji = "✅" if status == "OK" else "❌"
+        if status == "OK":
+            output_preview = str(output)
+            if len(output_preview) > 200:
+                output_preview = output_preview[:200] + "..."
+            logger.info(f"{status_emoji} Tool '{tool_name}' finished in {duration_ms}ms | Output: {output_preview}")
+        else:
+            logger.error(f"{status_emoji} Tool '{tool_name}' failed in {duration_ms}ms | Status: {status} | Error: {fault}")
+
         result = ToolResult(
             status=status,
             output=output,
@@ -225,12 +241,23 @@ class KernelGate:
         )
 
         # 5. Emit Finish Event
+        # Serialize fault for web-ui consumption
+        fault_data = None
+        if fault is not None:
+            fault_data = {
+                "domain": fault.domain,
+                "code": fault.code,
+                "message": fault.message,
+                "retryable": fault.retryable,
+            }
+        
         self._emit_event("TOOL_FINISHED", {
             "action_id": action.id,
             "tool": tool_name,
             "status": status,
+            "output": output,
             "duration_ms": duration_ms,
-            "has_fault": fault is not None
+            "fault": fault_data,  # Include full fault object for web-ui
         })
 
         return result
@@ -340,13 +367,29 @@ class SimplePermissionManager:
 
 
 class SimpleEventStream:
-    """Simple event stream that collects events in a list."""
+    """Simple event stream that collects events in a list and supports listeners."""
 
     def __init__(self):
         self.events: List[Event] = []
+        self._listeners: List[Callable[[Event], Any]] = []
 
     def emit(self, event: Event) -> None:
         self.events.append(event)
+        for listener in self._listeners:
+            try:
+                listener(event)
+            except Exception:
+                # Ignore listener errors
+                pass
+
+    def add_listener(self, listener: Callable[[Event], Any]) -> None:
+        """Add an event listener."""
+        self._listeners.append(listener)
+
+    def remove_listener(self, listener: Callable[[Event], Any]) -> None:
+        """Remove an event listener."""
+        if listener in self._listeners:
+            self._listeners.remove(listener)
 
     def clear(self) -> None:
         self.events.clear()

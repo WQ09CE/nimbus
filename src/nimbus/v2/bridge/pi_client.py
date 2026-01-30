@@ -58,8 +58,10 @@ class JsonRpcResponse:
 
 @dataclass
 class Message:
-    role: str  # "user" | "assistant" | "system"
+    role: str  # "user" | "assistant" | "system" | "toolResult"
     content: str | list[dict]
+    tool_call_id: str | None = None  # For toolResult messages
+    tool_name: str | None = None  # For toolResult messages
 
 
 @dataclass
@@ -100,18 +102,31 @@ class PiAI:
         messages: list[Message],
         *,
         max_tokens: int = 8192,
+        tools: list[dict] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """流式调用 LLM"""
+        # Convert messages to RPC format
+        rpc_messages = []
+        for m in messages:
+            msg_dict = {"role": m.role, "content": m.content}
+            # Include tool result fields if present
+            if m.tool_call_id:
+                msg_dict["toolCallId"] = m.tool_call_id
+            if m.tool_name:
+                msg_dict["toolName"] = m.tool_name
+            rpc_messages.append(msg_dict)
+        
         # 发送 stream 请求
-        self._client._send_request(
-            "ai.stream",
-            {
-                "provider": self.provider,
-                "modelId": self.model_id,
-                "messages": [{"role": m.role, "content": m.content} for m in messages],
-                "options": {"maxTokens": max_tokens},
-            },
-        )
+        payload = {
+            "provider": self.provider,
+            "modelId": self.model_id,
+            "messages": rpc_messages,
+            "options": {"maxTokens": max_tokens},
+        }
+        if tools:
+            payload["tools"] = tools
+
+        self._client._send_request("ai.stream", payload)
         
         # 读取 streaming 事件
         async for data in self._client._read_messages():
@@ -139,17 +154,30 @@ class PiAI:
         messages: list[Message],
         *,
         max_tokens: int = 8192,
+        tools: list[dict] | None = None,
     ) -> CompletionResult:
         """非流式调用 LLM"""
-        result = await self._client._call(
-            "ai.complete",
-            {
-                "provider": self.provider,
-                "modelId": self.model_id,
-                "messages": [{"role": m.role, "content": m.content} for m in messages],
-                "options": {"maxTokens": max_tokens},
-            },
-        )
+        # Convert messages to RPC format
+        rpc_messages = []
+        for m in messages:
+            msg_dict = {"role": m.role, "content": m.content}
+            # Include tool result fields if present
+            if m.tool_call_id:
+                msg_dict["toolCallId"] = m.tool_call_id
+            if m.tool_name:
+                msg_dict["toolName"] = m.tool_name
+            rpc_messages.append(msg_dict)
+        
+        payload = {
+            "provider": self.provider,
+            "modelId": self.model_id,
+            "messages": rpc_messages,
+            "options": {"maxTokens": max_tokens},
+        }
+        if tools:
+            payload["tools"] = tools
+
+        result = await self._client._call("ai.complete", payload)
         return CompletionResult(
             content=result.get("content", []),
             usage=result.get("usage", {}),

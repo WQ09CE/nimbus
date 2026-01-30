@@ -5,7 +5,7 @@ The core logic is reused from v1 tools to ensure consistency.
 """
 
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 # Reuse v1 implementation logic
 from nimbus.tools.read import (
@@ -22,6 +22,7 @@ async def read_file(
     file_path: str,
     offset: int = 0,
     limit: int = DEFAULT_LIMIT,
+    start_line: Optional[int] = None,
     workspace: Path | None = None,
     **kwargs: Any,
 ) -> str:
@@ -31,6 +32,7 @@ async def read_file(
         file_path: Absolute or relative path to the file to read.
         offset: Starting line number (0-based). Defaults to 0.
         limit: Maximum number of lines to read. Defaults to 2000.
+        start_line: Alternative to offset (1-based). If provided, overrides offset.
         workspace: Optional workspace directory for sandbox validation.
 
     Returns:
@@ -45,6 +47,12 @@ async def read_file(
     # Validate parameters
     if not file_path:
         raise ValueError("file_path cannot be empty")
+
+    # Handle start_line alias (1-based -> 0-based offset)
+    if start_line is not None:
+        if start_line < 1:
+            raise ValueError(f"start_line must be positive, got {start_line}")
+        offset = start_line - 1
 
     if offset < 0:
         raise ValueError(f"offset must be non-negative, got {offset}")
@@ -134,6 +142,10 @@ READ_TOOL: Dict[str, Any] = {
                 "type": "integer",
                 "description": "Starting line number (0-based). Defaults to 0.",
                 "default": 0,
+            },
+            "start_line": {
+                "type": "integer",
+                "description": "Starting line number (1-based). Alternative to offset.",
             },
             "limit": {
                 "type": "integer",

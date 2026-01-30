@@ -60,6 +60,7 @@ TOOL_NAME_CANONICAL: Dict[str, str] = {
     "glob": "Glob",
     "grep": "Grep",
     "bash": "Bash",
+    "kill": "Kill",
     "write": "Write",
     "edit": "Edit",
     "return_result": "return_result",
@@ -68,6 +69,7 @@ TOOL_NAME_CANONICAL: Dict[str, str] = {
     "Glob": "Glob",
     "Grep": "Grep",
     "Bash": "Bash",
+    "Kill": "Kill",
     "Write": "Write",
     "Edit": "Edit",
 }
@@ -231,6 +233,8 @@ class VCPU:
         # Doom loop detection (learned from opencode)
         # Tracks recent tool calls as (tool_name, args_json) tuples
         self._recent_tool_calls: List[tuple] = []
+        self._doom_loop_count = 0
+        self._consecutive_errors = 0
 
     # =========================================================================
     # Main Execution Loop
@@ -273,13 +277,46 @@ class VCPU:
                 step_result = await self.step()
 
                 if step_result.fault:
-                    # Propagate non-retryable faults
+                    self._consecutive_errors += 1
+                    
+                    # Track doom loops specifically
+                    if step_result.fault.code == "DOOM_LOOP":
+                        self._doom_loop_count += 1
+                    
+                    # Graceful termination conditions (checked BEFORE retryable check):
+                    # - Too many consecutive errors (any type)
+                    # - Any doom loop (even first one triggers graceful report)
+                    # - Too many total doom loops
+                    should_graceful_terminate = (
+                        self._consecutive_errors >= 5 or 
+                        self._doom_loop_count >= 1 or  # First doom loop triggers graceful termination
+                        step_result.fault.code == "DOOM_LOOP"
+                    )
+                    
+                    if should_graceful_terminate:
+                        # Let LLM generate a natural response about the failure
+                        graceful_response = await self._generate_llm_failure_response(
+                            goal=goal,
+                            fault=step_result.fault,
+                            iterations=self._iteration,
+                        )
+                        return ToolResult(
+                            status="OK",  # Report as OK with explanation, not ERROR
+                            output=graceful_response,
+                            is_final=True
+                        )
+                    
+                    # Propagate non-retryable faults (but not DOOM_LOOP, handled above)
                     if not step_result.fault.retryable:
                         return ToolResult(status="ERROR", fault=step_result.fault)
+                    
                     # For retryable faults, add error to memory and continue
                     self.mmu.add_assistant_message(
                         f"[Error] {step_result.fault.message}. Retrying..."
                     )
+                else:
+                    # Reset consecutive error counter on success
+                    self._consecutive_errors = 0
 
                 if step_result.is_final:
                     return step_result.final_result or ToolResult(
@@ -330,12 +367,30 @@ class VCPU:
 
         self._emit_event("STEP_STARTED", {"iteration": self._iteration})
 
+        from nimbus.core.logging import get_logger
+        logger = get_logger("kernel.vcpu")
+
         try:
             # 1. THINK: Get LLM response
+            logger.info(f"Thinking... (Iteration {self._iteration})")
             think_start = time.time_ns()
             messages = self.mmu.assemble_context()
-            response = await self.alu.chat(messages, tools=self.tools if self.tools else None)
-            step_result.timing_ms["think"] = (time.time_ns() - think_start) // 1_000_000
+            
+            # Log tool availability
+            tools_to_pass = self.tools if self.tools else None
+            if tools_to_pass:
+                tool_names = [t.get('function', {}).get('name', '?') for t in tools_to_pass]
+                logger.info(f"🔧 Passing {len(tools_to_pass)} tools to LLM: {tool_names}")
+            else:
+                logger.warning(f"⚠️ No tools available in VCPU.tools! LLM will not be able to call tools.")
+            
+            response = await self.alu.chat(messages, tools=tools_to_pass)
+            think_duration = (time.time_ns() - think_start) // 1_000_000
+            step_result.timing_ms["think"] = think_duration
+            
+            tool_calls_count = len(response.tool_calls) if response.tool_calls else 0
+            content_preview = (response.content[:100] + "...") if response.content and len(response.content) > 100 else response.content
+            logger.info(f"Thought complete ({think_duration}ms) | Tool Calls: {tool_calls_count} | Content: {content_preview or '(no content)'}")
 
             # 2. DECODE: Parse into ActionIR
             decode_start = time.time_ns()
@@ -389,11 +444,25 @@ class VCPU:
                     "kind": action.kind,
                     "name": action.name
                 })
+                
+                # Log action plan
+                if action.kind == "TOOL_CALL":
+                    # Create a summarized args string for logging
+                    args_summary = json.dumps(action.args)
+                    if len(args_summary) > 200:
+                        args_summary = args_summary[:197] + "..."
+                    logger.info(f"Plan: Call tool '{action.name}' with args: {args_summary}")
+                elif action.kind == "THOUGHT":
+                    pass # Already logged thought above/below
+                else:
+                    logger.info(f"Plan: Action {action.kind} ({action.name})")
 
             # 3. EXECUTE: Handle each action
             exec_start = time.time_ns()
             for action in actions:
+                logger.debug(f"Executing action: {action.kind} - {action.name}")
                 result = await self._execute_action(action)
+                logger.debug(f"Action result: status={result.status}, fault={result.fault}")
                 step_result.results.append(result)
 
                 # Check for final result
@@ -460,7 +529,21 @@ class VCPU:
                 )
             )
 
-        return await handler(action)
+        try:
+            return await handler(action)
+        except Exception as e:
+            from nimbus.core.logging import get_logger
+            logger = get_logger("kernel.vcpu")
+            logger.error(f"Exception in handler for {action.kind}/{action.name}: {e}", exc_info=True)
+            return ToolResult(
+                status="ERROR",
+                fault=Fault(
+                    domain="KERNEL",
+                    code="HANDLER_ERROR",
+                    message=f"Handler error: {e}",
+                    retryable=False
+                )
+            )
 
     async def _handle_tool_call(self, action: ActionIR) -> ToolResult:
         """
@@ -495,10 +578,13 @@ class VCPU:
                 name=canonical_name,
                 id=action.id,
                 args=action.args,
-                content=action.content,
+                meta=action.meta,
             )
         elif not canonical_name and action.name not in TOOL_NAME_CANONICAL.values():
             # Unknown tool - return error
+            from nimbus.core.logging import get_logger
+            logger = get_logger("kernel.vcpu")
+            logger.error(f"Unknown tool: '{action.name}'. Available: {TOOL_NAME_CANONICAL.values()}")
             return ToolResult(
                 status="ERROR",
                 output=f"Unknown tool: '{action.name}'. Available tools: {', '.join(sorted(set(TOOL_NAME_CANONICAL.values())))}",
@@ -525,32 +611,36 @@ class VCPU:
         # Check if all recent calls are identical (doom loop detected)
         if len(self._recent_tool_calls) == DOOM_LOOP_THRESHOLD:
             if all(call == current_call for call in self._recent_tool_calls):
-                # Doom loop detected! Force termination
+                # Doom loop detected! 
                 self._emit_event("DOOM_LOOP_DETECTED", {
                     "tool": action.name,
                     "args": action.args,
                     "consecutive_count": DOOM_LOOP_THRESHOLD
                 })
 
+                # Clear the recent calls to allow recovery
+                self._recent_tool_calls.clear()
+
                 # Provide tool-specific guidance for recovery
                 guidance = self._get_doom_loop_guidance(action.name)
 
-                # Return with a clear error and mark as final
+                # IMPROVED: Return a recoverable error that instructs LLM to adapt
+                # Instead of is_final=True (which terminates immediately), we give
+                # LLM one more chance to recover by using return_result properly
                 return ToolResult(
                     status="ERROR",
                     output=(
-                        f"[DOOM LOOP DETECTED] You called {action.name} {DOOM_LOOP_THRESHOLD} times "
-                        f"with identical arguments. This indicates an infinite loop.\n\n"
-                        f"STOP: Do not retry the same operation.\n\n"
-                        f"{guidance}\n\n"
-                        f"If the task cannot be completed, call return_result with an explanation "
-                        f"of what went wrong and what you tried."
+                        f"[Operation Failed] The {action.name} operation failed after multiple attempts.\n\n"
+                        f"What happened: The same operation was tried {DOOM_LOOP_THRESHOLD} times without success.\n\n"
+                        f"Recovery guidance:\n{guidance}\n\n"
+                        f"IMPORTANT: Please call return_result now to report what you were trying to do "
+                        f"and what obstacle you encountered. Do NOT retry the same operation."
                     ),
-                    is_final=True,
+                    is_final=False,  # Give LLM a chance to gracefully report
                     fault=Fault(
                         domain="RUNTIME",
                         code="DOOM_LOOP",
-                        message=f"Infinite loop detected: {action.name} called {DOOM_LOOP_THRESHOLD} times with identical args",
+                        message=f"Operation failed: {action.name} unsuccessful after {DOOM_LOOP_THRESHOLD} attempts",
                         retryable=False
                     )
                 )
@@ -677,6 +767,19 @@ class VCPU:
 
         # Track consecutive thoughts
         self._consecutive_thoughts += 1
+        
+        from nimbus.core.logging import get_logger
+        logger = get_logger("kernel.vcpu")
+        logger.info(f"Thought processed. Count: {self._consecutive_thoughts}/{self.config.max_consecutive_thoughts}")
+
+        # Check if this thought looks like a final answer (heuristic)
+        # If it doesn't suggest using tools, and it's long enough, it might be an answer
+        # This is a bit aggressive but helps with LLMs that refuse to call return_result
+        is_likely_answer = (
+            len(thought_text) > 10 and 
+            "tool" not in thought_text.lower() and 
+            "call" not in thought_text.lower()
+        )
 
         # Auto-return if too many consecutive thoughts without tool calls
         # This is a safety net for LLMs that don't follow instructions
@@ -687,7 +790,10 @@ class VCPU:
                 "result": thought_text[:200]
             })
             self._consecutive_thoughts = 0
-
+            
+            # If we are auto-returning, we should reset the thought counter
+            # so we don't get into a loop of auto-returns if the user continues chatting
+            
             # Treat the last thought as final result
             return ToolResult(
                 status="OK",
@@ -759,6 +865,129 @@ class VCPU:
         self._is_done = False
         self._final_result = None
         self._recent_tool_calls = []  # Reset doom loop tracker
+        self._doom_loop_count = 0  # Track how many doom loops occurred
+        self._consecutive_errors = 0  # Track consecutive errors
+
+    async def _generate_llm_failure_response(
+        self,
+        goal: str,
+        fault: Fault,
+        iterations: int,
+    ) -> str:
+        """Let LLM generate a natural response about the failure."""
+        try:
+            # Build context about what happened
+            recent_errors = []
+            for msg in self.mmu.assemble_context()[-6:]:  # Last few messages
+                content = msg.get("content", "")
+                if isinstance(content, str) and ("error" in content.lower() or "failed" in content.lower()):
+                    recent_errors.append(content[:200])
+            
+            error_context = "\n".join(recent_errors[-3:]) if recent_errors else fault.message
+            
+            # Create a focused prompt for the LLM
+            prompt = f"""You tried to help the user with this task but encountered repeated failures.
+
+User's request: {goal}
+
+What went wrong: {fault.message}
+
+Error details: {error_context}
+
+Generate a brief, friendly response (2-3 sentences) that:
+1. Acknowledges what you tried to do
+2. Explains why it didn't work (in simple terms)
+3. Optionally suggests what the user could try or ask for instead
+
+Be conversational and helpful, not robotic. Don't use bullet points or formatting."""
+
+            # Call LLM without tools to get a simple text response
+            response = await self.alu.chat(
+                [{"role": "user", "content": prompt}],
+                tools=None  # No tools, just generate text
+            )
+            
+            if response.content:
+                return response.content.strip()
+            else:
+                # Fallback to template if LLM returns empty
+                return self._generate_graceful_failure_report(goal, fault, iterations)
+                
+        except Exception as e:
+            # If LLM call fails, use template fallback
+            from nimbus.core.logging import get_logger
+            logger = get_logger("kernel.vcpu")
+            logger.warning(f"Failed to generate LLM failure response: {e}")
+            return self._generate_graceful_failure_report(goal, fault, iterations)
+
+    def _generate_graceful_failure_report(
+        self, 
+        goal: str, 
+        fault: Fault,
+        iterations: int,
+    ) -> str:
+        """Generate a natural, conversational failure report."""
+        
+        # Extract key info from fault context
+        context = fault.context or {}
+        tool_name = context.get("tool", "")
+        
+        # Check for common error patterns and generate natural responses
+        error_msg = fault.message.lower()
+        
+        # File not found
+        if "not found" in error_msg or "no such file" in error_msg:
+            # Try to extract filename from the error
+            import re
+            file_match = re.search(r'[\'"]?([^\'"]+\.\w+)[\'"]?', fault.message)
+            filename = file_match.group(1) if file_match else "the file"
+            return (
+                f"I couldn't find `{filename}`. "
+                f"The file might not exist, or the path could be incorrect. "
+                f"Would you like me to search for similar files?"
+            )
+        
+        # Permission denied
+        if "permission" in error_msg or "access denied" in error_msg:
+            return (
+                f"I don't have permission to access that resource. "
+                f"You may need to check the file permissions or run with elevated privileges."
+            )
+        
+        # Timeout
+        if fault.code == "TIMEOUT":
+            return (
+                f"The operation took too long and timed out. "
+                f"This might be because the resource is slow or unavailable. "
+                f"Would you like me to try a different approach?"
+            )
+        
+        # Doom loop (repeated failures)
+        if fault.code == "DOOM_LOOP":
+            # Try to give context-specific advice
+            if "Read" in str(context.get("tool", "")):
+                return (
+                    f"I tried to read the file multiple times but it doesn't seem to exist. "
+                    f"Would you like me to list the files in that directory to help find the right one?"
+                )
+            elif "Edit" in str(context.get("tool", "")):
+                return (
+                    f"I couldn't make the edit - the text I was looking for might have changed. "
+                    f"Would you like me to show you the current file content?"
+                )
+            else:
+                return (
+                    f"I tried this operation several times without success. "
+                    f"The approach I was using doesn't seem to be working. "
+                    f"Could you provide more details or suggest an alternative approach?"
+                )
+        
+        # Generic fallback - still conversational
+        return (
+            f"I ran into some trouble completing this task. "
+            f"Error: {fault.message}. "
+            f"Let me know if you'd like me to try a different approach."
+        )
 
     def _get_doom_loop_guidance(self, tool_name: str) -> str:
         """Get tool-specific guidance for recovering from a doom loop.

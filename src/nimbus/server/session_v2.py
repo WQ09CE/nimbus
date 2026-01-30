@@ -41,6 +41,7 @@ class SessionManagerV2:
         self._max_sessions = max_sessions
         self._sessions: Dict[str, AgentOS] = {}  # session_id -> AgentOS
         self._lock = asyncio.Lock()
+        self._shared_llm_client = None
 
     async def create_session(
         self,
@@ -49,6 +50,7 @@ class SessionManagerV2:
         memory_type: str = "tiered",
         planner_type: str = "dag",
         session_id: Optional[str] = None,
+        model_config: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Create a new session."""
         if session_id is None:
@@ -60,6 +62,7 @@ class SessionManagerV2:
             workspace_path=workspace_path,
             memory_type=memory_type,
             planner_type=planner_type,
+            model_config=model_config,
         )
 
         logger.info(f"✨ Created session {session_id} (v2)")
@@ -105,9 +108,25 @@ class SessionManagerV2:
         if not session:
             raise ValueError(f"Session not found: {session_id}")
 
+        # Check for model config in session or use default
+        model_config = session.get("model_config")
+        
         # Create default LLM client if not provided
         if llm_client is None:
-            llm_client = self._create_default_llm_client()
+            # We need to get a new client if we have specific model config
+            # otherwise we can use the shared one (if it matches default)
+            if model_config:
+                from nimbus.v2.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+                config = PiLLMConfig(
+                    provider=model_config.get("provider", "anthropic"),
+                    model_id=model_config.get("model_id", "claude-sonnet-4-20250514")
+                )
+                adapter = PiLLMAdapter(config)
+                await adapter.__aenter__()
+                llm_client = adapter # This client will need to be closed manually or attached to session
+                # TODO: Manage lifecycle of per-session LLM clients
+            else:
+                llm_client = await self._get_shared_llm_client()
 
         # Create AgentOS with default tools
         logger.info(f"🔧 Creating AgentOS for session {session_id}")
@@ -124,8 +143,22 @@ class SessionManagerV2:
 
         return agent_os
 
+    async def _get_shared_llm_client(self):
+        """Get or create shared PiLLMAdapter."""
+        if self._shared_llm_client is None:
+            from nimbus.v2.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+            
+            # Create and start shared client
+            # Using defaults which point to anthropic/claude-sonnet
+            adapter = PiLLMAdapter()
+            await adapter.__aenter__()
+            self._shared_llm_client = adapter
+            logger.info("🤖 Shared PiLLMAdapter initialized")
+            
+        return self._shared_llm_client
+
     def _create_default_llm_client(self):
-        """Create default LLM client (v2-compatible)."""
+        """DEPRECATED: Create default LLM client (v2-compatible)."""
         # Use v1 LLM client wrapped in adapter for v2 compatibility
         from nimbus.llm import create_llm_client
         from .llm_adapter import V1ToV2LLMAdapter
@@ -146,13 +179,14 @@ class SessionManagerV2:
         
         Yields SSE events in the format expected by the API.
         """
+        # Wait a bit to ensure SSE connection is established (fix race condition)
+        await asyncio.sleep(0.5)
+
         logger.info(f"[stream_chat] Starting for session {session_id}")
         
         # Get or create AgentOS
-        logger.info(f"[stream_chat] Getting/creating agent...")
         agent_os = await self.get_or_create_agent(session_id)
-        logger.info(f"[stream_chat] AgentOS ready: {type(agent_os)}")
-
+        
         # Emit connected event
         await self._sse_hub.publish(
             session_id,
@@ -168,17 +202,43 @@ class SessionManagerV2:
         )
 
         try:
+            # Setup real-time event streaming
+            queue = asyncio.Queue()
+            
+            def event_listener(event):
+                queue.put_nowait(event)
+            
+            # Add listener if supported
+            if hasattr(agent_os, "add_event_listener"):
+                agent_os.add_event_listener(event_listener)
+            
+            # Start consumer task
+            async def event_consumer():
+                while True:
+                    event = await queue.get()
+                    if event is None:
+                        break
+                    await self._emit_v2_event(session_id, event)
+            
+            consumer_task = asyncio.create_task(event_consumer())
+
             # Use chat method for multi-turn conversation
             logger.info(f"[stream_chat] Calling agent_os.chat...")
-            result = await agent_os.chat(message, session_id=session_id)
-            logger.info(f"[stream_chat] Got result: {result.status}")
-
-            # Get events from AgentOS
-            events = agent_os.get_events()
-            
-            # Stream events
-            for event in events:
-                await self._emit_v2_event(session_id, event)
+            try:
+                result = await agent_os.chat(message, session_id=session_id)
+                if result.status == "ERROR":
+                    logger.error(f"[stream_chat] Result Error: {result.fault}")
+                else:
+                    logger.info(f"[stream_chat] Completed with status: {result.status}")
+            except Exception as chat_err:
+                logger.error(f"[stream_chat] agent_os.chat FAILED: {chat_err}")
+                raise
+            finally:
+                # Cleanup listener and consumer
+                if hasattr(agent_os, "remove_event_listener"):
+                    agent_os.remove_event_listener(event_listener)
+                queue.put_nowait(None)
+                await consumer_task
 
             # Emit the final message content
             if result.output:
@@ -193,6 +253,8 @@ class SessionManagerV2:
                         {"content": chunk},
                     )
                     await asyncio.sleep(0.01)  # Small delay for smooth streaming
+            else:
+                logger.warning(f"[stream_chat] NO OUTPUT in result for session {session_id}")
 
             # Clear events for next turn
             agent_os.clear_events()
@@ -218,13 +280,16 @@ class SessionManagerV2:
         
         # Map v2 event types to SSE event types
         type_mapping = {
+            "tool_started": "tool_call",
+            "tool_finished": "tool_result",
+            "proc_spawned": "task_start",
+            "proc_finished": "task_done",
+            # Legacy/Alternative mappings
             "tool_call": "tool_call",
             "tool_result": "tool_result",
             "task_start": "task_start",
             "task_done": "task_done",
             "task_failed": "task_failed",
-            "proc_spawned": "task_start",
-            "proc_finished": "task_done",
         }
 
         sse_type = type_mapping.get(event_type, "heartbeat")
@@ -245,6 +310,11 @@ class SessionManagerV2:
         """Close all active sessions."""
         async with self._lock:
             self._sessions.clear()
+            
+        if self._shared_llm_client:
+            logger.info("🔌 Closing shared PiLLMAdapter")
+            await self._shared_llm_client.__aexit__(None, None, None)
+            self._shared_llm_client = None
 
     def get_active_count(self) -> int:
         """Get number of active agent instances."""

@@ -18,7 +18,7 @@ Usage:
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Tuple
 
-from .bash import BASH_TOOL, bash_command
+from .bash import BASH_TOOL, bash_command, KILL_TOOL, kill_process
 from .edit import EDIT_TOOL, edit_file
 from .glob import GLOB_TOOL, glob_files
 from .grep import GREP_TOOL, grep_content
@@ -58,6 +58,7 @@ ALL_TOOLS: List[Dict[str, Any]] = [
     GLOB_TOOL,
     GREP_TOOL,
     BASH_TOOL,
+    KILL_TOOL,
     WRITE_TOOL,
     EDIT_TOOL,
     RETURN_RESULT_TOOL,
@@ -69,6 +70,7 @@ TOOL_FUNCTIONS: Dict[str, Callable] = {
     "Glob": glob_files,
     "Grep": grep_content,
     "Bash": bash_command,
+    "Kill": kill_process,
     "Write": write_file,
     "Edit": edit_file,
     "return_result": return_result,

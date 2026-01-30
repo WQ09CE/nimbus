@@ -53,6 +53,7 @@ class SessionCreate(BaseModel):
     workspace_path: Optional[str] = None
     memory_type: str = "tiered"  # simple | tiered
     planner_type: str = "dag"    # simple | dag
+    llm_config: Optional[Dict[str, str]] = None  # {provider, model_id}
 
 
 class SessionResponse(BaseModel):
