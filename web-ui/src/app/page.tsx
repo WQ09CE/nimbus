@@ -102,34 +102,36 @@ export default function Home() {
             <ChatMessage key={msg.id} message={msg} />
           ))}
 
-          {/* Real-time activity indicator */}
-          {isStreaming && !streamingContent && currentActivity && (
-            <div className="flex items-center gap-3 text-gray-400 text-sm py-4 px-4 bg-gray-900/50 rounded-lg border border-gray-800">
-              <span className="relative flex h-3 w-3">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
-              </span>
-              <span>{currentActivity}</span>
-              {thinkingIteration !== null && thinkingIteration > 0 && (
-                <span className="text-xs text-gray-600">
-                  (迭代 {thinkingIteration + 1})
-                </span>
-              )}
-            </div>
-          )}
-
           {/* Streaming message */}
-          {isStreaming && streamingContent && (
-            <ChatMessage
-              message={{
-                id: "streaming",
-                role: "assistant",
-                content: streamingContent,
-                toolCalls: streamingToolCalls.length > 0 ? streamingToolCalls : undefined,
-                timestamp: Date.now(),
-              }}
-              isStreaming
-            />
+          {isStreaming && (
+            <>
+              {/* Real-time activity indicator (shown above message) */}
+              {currentActivity && (
+                <div className="flex items-center gap-3 text-gray-400 text-xs py-2 px-3 mb-2 bg-gray-900/30 rounded border border-gray-800/50">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                  </span>
+                  <span>{currentActivity}</span>
+                  {thinkingIteration !== null && thinkingIteration > 0 && (
+                    <span className="text-gray-600">
+                      (第 {thinkingIteration + 1} 轮)
+                    </span>
+                  )}
+                </div>
+              )}
+              
+              <ChatMessage
+                message={{
+                  id: "streaming",
+                  role: "assistant",
+                  content: streamingContent,
+                  toolCalls: streamingToolCalls.length > 0 ? streamingToolCalls : undefined,
+                  timestamp: Date.now(),
+                }}
+                isStreaming
+              />
+            </>
           )}
         </div>
 
