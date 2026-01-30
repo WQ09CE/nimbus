@@ -20,6 +20,13 @@ export function ChatInput({ onSend, disabled, placeholder }: ChatInputProps) {
     }
   }, [input]);
 
+  // Auto-focus when not disabled
+  useEffect(() => {
+    if (!disabled && textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  }, [disabled]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || disabled) return;
