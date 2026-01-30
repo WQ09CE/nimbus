@@ -1,5 +1,21 @@
 # Pi Integration Strategy
 
+> **状态**: 已实施方案 A（pi-ai HTTP 服务）
+
+## 快速开始
+
+```bash
+# 1. 启动 pi-ai HTTP 服务
+./scripts/start-pi-ai.sh &
+
+# 2. 启动 nimbus server
+uv run nimbus serve
+
+# 3. 测试
+curl http://localhost:3031/health
+curl http://localhost:4096/health
+```
+
 ## 现状分析
 
 ### 当前架构

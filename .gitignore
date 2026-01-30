@@ -52,6 +52,11 @@ Thumbs.db
 .checkpoints/
 .wukong/
 
+# Node.js (for pi-ai-server)
+node_modules/
+package.json
+package-lock.json
+
 # Sandbox test workspace
 tests/sandbox/workspace/
 

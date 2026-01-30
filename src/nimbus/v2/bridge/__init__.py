@@ -1,38 +1,66 @@
 """
-Pi Bridge - 让 Nimbus 复用 pi-ai 和 pi-tui
+Pi Bridge - 让 Nimbus 复用 pi-ai
 
-Usage:
-    from nimbus.v2.bridge import PiClient, Message
+推荐使用 HTTP 客户端（新方式）：
+    from nimbus.v2.bridge import PiAiHttpClient
+    
+    client = PiAiHttpClient()
+    await client.start()
+    result = await client.complete(messages, model="anthropic/claude-sonnet-4-20250514")
 
-    async with PiClient() as pi:
-        # 设置模型
-        pi.ai.set_model("anthropic", "claude-sonnet-4-20250514")
-        
-        # 流式调用
-        async for event in pi.ai.stream([Message("user", "Hello")]):
-            if event.type == "text":
-                print(event.text, end="")
-        
-        # TUI 交互
-        await pi.tui.render_markdown("# Done!")
+旧方式（subprocess JSON-RPC，已废弃）：
+    from nimbus.v2.bridge import PiClient
 """
 
-from .pi_client import (
-    PiClient,
-    PiAI,
-    PiTUI,
+# 新的 HTTP 客户端（推荐）
+from .pi_ai_http import (
+    PiAiHttpClient,
     Message,
-    StreamEvent,
+    ToolCall,
     CompletionResult,
-    create_pi_client,
+    StreamEvent,
+    get_client,
+    complete,
+    stream,
 )
 
+# 旧的 subprocess 客户端（向后兼容，但已废弃）
+try:
+    from .pi_client import (
+        PiClient,
+        PiAI,
+        PiTUI,
+        Message as PiMessage,
+        StreamEvent as PiStreamEvent,
+        CompletionResult as PiCompletionResult,
+        create_pi_client,
+    )
+except ImportError:
+    # 如果旧客户端被删除，提供空实现
+    PiClient = None
+    PiAI = None
+    PiTUI = None
+    PiMessage = None
+    PiStreamEvent = None
+    PiCompletionResult = None
+    create_pi_client = None
+
 __all__ = [
+    # 新的 HTTP 客户端
+    "PiAiHttpClient",
+    "Message",
+    "ToolCall",
+    "CompletionResult",
+    "StreamEvent",
+    "get_client",
+    "complete",
+    "stream",
+    # 旧的（向后兼容）
     "PiClient",
     "PiAI",
     "PiTUI",
-    "Message",
-    "StreamEvent",
-    "CompletionResult",
+    "PiMessage",
+    "PiStreamEvent",
+    "PiCompletionResult",
     "create_pi_client",
 ]
