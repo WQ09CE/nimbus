@@ -28,14 +28,49 @@ Key Responsibilities:
 """
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 from nimbus.v2.core.memory.mmu import MMU
 from nimbus.v2.core.protocol import ActionIR, Event, Fault, ToolResult
 from nimbus.v2.core.runtime.decoder import InstructionDecoder
 from nimbus.v2.os.gate import KernelGate
+
+# =============================================================================
+# Tool Call Optimization Constants (Learned from opencode)
+# =============================================================================
+
+# Tools that modify state and should trigger "call return_result" hint
+# After successful execution of these tools, we inject a hint to remind
+# the LLM to call return_result if the task is complete.
+TERMINAL_TOOLS = {"Edit", "Write", "Bash"}
+
+# Doom loop detection threshold (from opencode's processor.ts)
+# If the same tool is called with identical arguments this many times
+# consecutively, we detect it as an infinite loop and force termination.
+DOOM_LOOP_THRESHOLD = 3
+
+# Tool name case mapping for auto-repair (from opencode's llm.ts)
+# LLMs sometimes call tools with wrong casing (e.g., "read" instead of "Read")
+# This mapping allows automatic correction.
+TOOL_NAME_CANONICAL: Dict[str, str] = {
+    "read": "Read",
+    "glob": "Glob",
+    "grep": "Grep",
+    "bash": "Bash",
+    "write": "Write",
+    "edit": "Edit",
+    "return_result": "return_result",
+    # Add canonical forms as well (no-op repair)
+    "Read": "Read",
+    "Glob": "Glob",
+    "Grep": "Grep",
+    "Bash": "Bash",
+    "Write": "Write",
+    "Edit": "Edit",
+}
 
 # =============================================================================
 # LLM Client Protocol
@@ -99,7 +134,7 @@ class VCPUConfig:
     """
     max_iterations: int = 50
     default_timeout: float = 60.0
-    max_consecutive_thoughts: int = 5
+    max_consecutive_thoughts: int = 1  # Auto-return on first text-only response
     max_sub_call_depth: int = 10
     emit_step_events: bool = True
 
@@ -192,6 +227,10 @@ class VCPU:
         self._is_running = False
         self._is_done = False
         self._final_result: Optional[ToolResult] = None
+
+        # Doom loop detection (learned from opencode)
+        # Tracks recent tool calls as (tool_name, args_json) tuples
+        self._recent_tool_calls: List[tuple] = []
 
     # =========================================================================
     # Main Execution Loop
@@ -312,6 +351,37 @@ class VCPU:
             step_result.actions = actions
             step_result.timing_ms["decode"] = (time.time_ns() - decode_start) // 1_000_000
 
+            # IMPORTANT: Add assistant message with tool_calls to memory BEFORE executing tools
+            # This is required by OpenAI/OpenRouter API format:
+            # 1. user message
+            # 2. assistant message (with tool_calls)  <-- We add this here
+            # 3. tool message (with tool_call_id)     <-- Added by _handle_tool_call
+            #
+            # Without this, the API will reject the request because tool results
+            # reference tool_call_ids that don't exist in the conversation.
+            if response.tool_calls:
+                # Convert tool_calls to OpenAI format for storage
+                tool_calls_for_storage = []
+                for tc in response.tool_calls:
+                    # Handle both object-style and dict-style tool calls
+                    if hasattr(tc, 'id'):
+                        tool_calls_for_storage.append({
+                            "id": tc.id,
+                            "type": getattr(tc, 'type', 'function'),
+                            "function": {
+                                "name": tc.function.name if hasattr(tc, 'function') else tc.get('function', {}).get('name', ''),
+                                "arguments": tc.function.arguments if hasattr(tc, 'function') else tc.get('function', {}).get('arguments', '{}')
+                            }
+                        })
+                    else:
+                        # Already a dict
+                        tool_calls_for_storage.append(tc)
+
+                self.mmu.add_assistant_with_tool_calls(
+                    content=response.content,
+                    tool_calls=tool_calls_for_storage
+                )
+
             # Emit action events
             for action in actions:
                 self._emit_event("ACTION_EMITTED", {
@@ -398,13 +468,109 @@ class VCPU:
 
         Executes the tool through the kernel gate with permission checking
         and timeout enforcement.
+
+        Features:
+        - Tool name auto-repair (learned from opencode): Fixes common LLM
+          casing errors like "read" -> "Read".
+        - File edit history tracking (improved from opencode): Detects when
+          LLM tries to re-apply the same edit that already succeeded.
+        - Doom loop detection (learned from opencode): Detects when the same
+          tool is called with identical arguments multiple times consecutively.
+        - Terminal tool hints: Reminds LLM to call return_result after
+          state-modifying operations (Edit, Write, Bash).
         """
+        # Auto-repair tool name if needed (learned from opencode's llm.ts)
+        original_name = action.name
+        canonical_name = TOOL_NAME_CANONICAL.get(action.name.lower())
+
+        if canonical_name and canonical_name != action.name:
+            # Log the repair
+            self._emit_event("TOOL_NAME_REPAIRED", {
+                "original": action.name,
+                "repaired": canonical_name
+            })
+            # Create a new action with the corrected name
+            action = ActionIR(
+                kind=action.kind,
+                name=canonical_name,
+                id=action.id,
+                args=action.args,
+                content=action.content,
+            )
+        elif not canonical_name and action.name not in TOOL_NAME_CANONICAL.values():
+            # Unknown tool - return error
+            return ToolResult(
+                status="ERROR",
+                output=f"Unknown tool: '{action.name}'. Available tools: {', '.join(sorted(set(TOOL_NAME_CANONICAL.values())))}",
+                is_final=False,
+                fault=Fault(
+                    domain="RUNTIME",
+                    code="UNKNOWN_TOOL",
+                    message=f"Tool '{action.name}' not found",
+                    retryable=False
+                )
+            )
+
+        # Check for doom loop BEFORE executing (learned from opencode)
+        args_json = json.dumps(action.args, sort_keys=True)
+        current_call = (action.name, args_json)
+
+        # Track this call
+        self._recent_tool_calls.append(current_call)
+
+        # Keep only the last DOOM_LOOP_THRESHOLD calls
+        if len(self._recent_tool_calls) > DOOM_LOOP_THRESHOLD:
+            self._recent_tool_calls = self._recent_tool_calls[-DOOM_LOOP_THRESHOLD:]
+
+        # Check if all recent calls are identical (doom loop detected)
+        if len(self._recent_tool_calls) == DOOM_LOOP_THRESHOLD:
+            if all(call == current_call for call in self._recent_tool_calls):
+                # Doom loop detected! Force termination
+                self._emit_event("DOOM_LOOP_DETECTED", {
+                    "tool": action.name,
+                    "args": action.args,
+                    "consecutive_count": DOOM_LOOP_THRESHOLD
+                })
+
+                # Provide tool-specific guidance for recovery
+                guidance = self._get_doom_loop_guidance(action.name)
+
+                # Return with a clear error and mark as final
+                return ToolResult(
+                    status="ERROR",
+                    output=(
+                        f"[DOOM LOOP DETECTED] You called {action.name} {DOOM_LOOP_THRESHOLD} times "
+                        f"with identical arguments. This indicates an infinite loop.\n\n"
+                        f"STOP: Do not retry the same operation.\n\n"
+                        f"{guidance}\n\n"
+                        f"If the task cannot be completed, call return_result with an explanation "
+                        f"of what went wrong and what you tried."
+                    ),
+                    is_final=True,
+                    fault=Fault(
+                        domain="RUNTIME",
+                        code="DOOM_LOOP",
+                        message=f"Infinite loop detected: {action.name} called {DOOM_LOOP_THRESHOLD} times with identical args",
+                        retryable=False
+                    )
+                )
+
+        # Execute the tool
         result = await self.gate.syscall_tool(action, timeout_sec=self.config.default_timeout)
 
         # Update memory with tool result
         output_str = str(result.output) if result.output is not None else ""
         if result.fault:
             output_str = f"[Error] {result.fault.message}"
+
+        # Inject hint for terminal tools on success - append to tool result
+        # This reminds LLM to call return_result after state-modifying operations
+        if action.name in TERMINAL_TOOLS and result.status == "OK":
+            output_str += (
+                "\n\n[IMPORTANT] Operation completed successfully. "
+                "If your task is complete, call return_result immediately with a summary. "
+                "Do NOT call more tools to verify - trust the success message above."
+            )
 
         self.mmu.add_tool_result(
             tool_call_id=action.id,
@@ -414,6 +580,13 @@ class VCPU:
 
         # Reset consecutive thoughts counter on tool call
         self._consecutive_thoughts = 0
+
+        # Clear doom loop tracker on successful different tool call
+        # (only keep tracking if we just detected a potential loop start)
+        if result.status == "OK" and len(self._recent_tool_calls) > 1:
+            # If this call is different from the previous one, reset tracker
+            if len(self._recent_tool_calls) >= 2 and self._recent_tool_calls[-1] != self._recent_tool_calls[-2]:
+                self._recent_tool_calls = [current_call]
 
         return result
 
@@ -492,6 +665,10 @@ class VCPU:
         Handle THOUGHT action by recording to memory.
 
         Thoughts are internal reasoning that don't produce side effects.
+
+        Auto-return: If consecutive thoughts reach the limit, treat the last
+        thought as a final result. This handles cases where the LLM responds
+        with text instead of calling return_result.
         """
         thought_text = action.args.get("text", "")
 
@@ -501,14 +678,22 @@ class VCPU:
         # Track consecutive thoughts
         self._consecutive_thoughts += 1
 
-        # Warn if too many consecutive thoughts
+        # Auto-return if too many consecutive thoughts without tool calls
+        # This is a safety net for LLMs that don't follow instructions
         if self._consecutive_thoughts >= self.config.max_consecutive_thoughts:
-            # Add a nudge to take action
-            self.mmu.add_user_message(
-                "[System] You've been thinking for a while. "
-                "Please take an action or return a result."
-            )
+            self._emit_event("AUTO_RETURN", {
+                "reason": "max_consecutive_thoughts",
+                "thought_count": self._consecutive_thoughts,
+                "result": thought_text[:200]
+            })
             self._consecutive_thoughts = 0
+
+            # Treat the last thought as final result
+            return ToolResult(
+                status="OK",
+                output=thought_text,
+                is_final=True
+            )
 
         return ToolResult(status="OK", output="Thought recorded")
 
@@ -573,6 +758,70 @@ class VCPU:
         self._is_running = False
         self._is_done = False
         self._final_result = None
+        self._recent_tool_calls = []  # Reset doom loop tracker
+
+    def _get_doom_loop_guidance(self, tool_name: str) -> str:
+        """Get tool-specific guidance for recovering from a doom loop.
+
+        This provides actionable advice based on the tool that triggered
+        the infinite loop, helping the LLM understand how to proceed.
+        """
+        guidance_map = {
+            "Edit": (
+                "EDIT TOOL GUIDANCE:\n"
+                "1. Use the Read tool FIRST to see the current file content\n"
+                "2. Common failure reasons:\n"
+                "   - The old_string does not match the file content exactly\n"
+                "   - The file was already modified by a previous successful edit\n"
+                "   - Whitespace or indentation mismatch\n"
+                "   - The text appears multiple times (need more context)\n"
+                "3. Recovery steps:\n"
+                "   - Read the file to get the current state\n"
+                "   - If the change you wanted is already there, move on\n"
+                "   - If you need a different edit, use text from the fresh Read\n"
+                "4. If your task is complete, call return_result immediately"
+            ),
+            "Write": (
+                "WRITE TOOL GUIDANCE:\n"
+                "- If Write is failing repeatedly, the file path may be invalid\n"
+                "- Check if the directory exists using Glob or Bash\n"
+                "- Ensure you have permission to write to this location\n"
+                "- Consider using a different approach if Write keeps failing"
+            ),
+            "Bash": (
+                "BASH TOOL GUIDANCE:\n"
+                "- The same command is failing repeatedly\n"
+                "- Check if the command syntax is correct\n"
+                "- Verify required dependencies are installed\n"
+                "- Try a different approach to achieve the same goal"
+            ),
+            "Read": (
+                "READ TOOL GUIDANCE:\n"
+                "- The file may not exist at the specified path\n"
+                "- Use Glob to search for the correct file path\n"
+                "- Check if the path is relative vs absolute"
+            ),
+            "Glob": (
+                "GLOB TOOL GUIDANCE:\n"
+                "- The pattern may not match any files\n"
+                "- Try a broader pattern (e.g., **/*.py instead of specific path)\n"
+                "- Verify the search directory is correct"
+            ),
+            "Grep": (
+                "GREP TOOL GUIDANCE:\n"
+                "- The search pattern may not exist in any files\n"
+                "- Try a simpler or broader search pattern\n"
+                "- Check if the path/directory is correct"
+            ),
+        }
+
+        return guidance_map.get(tool_name, (
+            f"GENERAL GUIDANCE:\n"
+            f"- The {tool_name} tool is failing with the same arguments\n"
+            f"- Review the error message from previous attempts\n"
+            f"- Try a different approach or different arguments\n"
+            f"- If stuck, call return_result to report the issue"
+        ))
 
     def _emit_event(self, event_type: str, data: Dict[str, Any]) -> None:
         """Emit an event if event emission is enabled."""

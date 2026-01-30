@@ -50,6 +50,7 @@ Usage:
 """
 
 import asyncio
+import sys
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -76,6 +77,13 @@ from nimbus.v2.os.gate import (
     SimpleIPCBus,
     SimplePermissionManager,
 )
+# Session and Compaction
+from nimbus.v2.core.session import SessionManager, InMemorySessionManager
+from nimbus.v2.core.compaction import (
+    CompactionConfig,
+    CompactionEngine,
+    DefaultCompactionLLM,
+)
 
 # =============================================================================
 # AgentOS Configuration
@@ -93,9 +101,12 @@ class AgentOSConfig:
         vcpu_config: Configuration for VCPUs
         scheduler_config: Configuration for the scheduler
         mmu_config: Configuration for MMUs
+        compaction_config: Configuration for context compaction
         system_rules: System rules for pinned context
         workspace_info: Workspace information for pinned context
         capabilities: Capabilities description for pinned context
+        session_dir: Directory for session persistence (None = ephemeral)
+        enable_session: Whether to enable session persistence
     """
 
     max_processes: int = 10
@@ -105,13 +116,35 @@ class AgentOSConfig:
     mmu_config: MMUConfig = field(default_factory=MMUConfig)
     system_rules: str = """You are a code assistant with access to tools.
 
-IMPORTANT RULES:
-1. You MUST use the provided tools to complete tasks. Do not ask for clarification.
-2. When you have completed the task, you MUST call the return_result tool with the final answer.
-3. If a tool returns an error, try a different approach.
-4. Be concise and direct in your responses."""
+CRITICAL RULES:
+1. Use function calling API to invoke tools. NEVER simulate tool calls in text.
+2. When you need to read/search/run commands, call the appropriate tool function.
+3. AFTER Edit/Write SUCCESS: Call return_result IMMEDIATELY with a summary. Do NOT read the file again to verify, do NOT call more tools.
+4. The workflow is: Read → Edit/Write (if needed) → return_result (ALWAYS end with this).
+5. Do NOT keep calling tools indefinitely. Once task is done, call return_result.
+
+AVOID INFINITE LOOPS:
+- Edit/Read/Grep/Glob are DETERMINISTIC. Do NOT call them repeatedly with the same arguments.
+- If a tool fails, try a DIFFERENT approach. Do NOT retry with identical arguments.
+- Trust tool results. If Edit says "success", the file IS modified. Do NOT re-read to verify.
+- After successful Edit: call return_result IMMEDIATELY, not another Edit.
+
+EXAMPLE:
+- Task: "Fix bug in foo.py"
+- Step 1: Read foo.py
+- Step 2: Edit foo.py (once)
+- Step 3: return_result("Fixed by changing X to Y")  <-- REQUIRED immediately after Edit!
+
+WRONG PATTERN (causes infinite loop):
+- Read → Edit → Read → Edit → Read...  <-- NEVER do this!
+- Edit → Edit → Edit...  <-- NEVER retry identical Edit!"""
     workspace_info: str = ""
     capabilities: str = ""
+    # Session persistence
+    session_dir: Optional[Path] = None  # None = ephemeral mode
+    enable_session: bool = True
+    # Compaction
+    compaction_config: CompactionConfig = field(default_factory=CompactionConfig)
 
 
 # =============================================================================
@@ -310,6 +343,23 @@ class AgentOS:
         self._events = SimpleEventStream()
         self._ipc = SimpleIPCBus()
 
+        # Chat session tracking
+        self._current_session_id: Optional[str] = None
+        
+        # Session management (NEW)
+        if self.config.enable_session and self.config.session_dir:
+            self._session_mgr: Optional[SessionManager] = SessionManager(
+                session_dir=self.config.session_dir
+            )
+        else:
+            self._session_mgr = None
+        
+        # Compaction engine (NEW)
+        self._compaction_engine = CompactionEngine(
+            config=self.config.compaction_config,
+            llm=DefaultCompactionLLM(llm_client),
+        )
+
     # =========================================================================
     # Main API
     # =========================================================================
@@ -332,6 +382,249 @@ class AgentOS:
 
         # Wait for completion
         return await self.wait(pid)
+
+    async def chat(self, message: str, session_id: str | None = None) -> ToolResult:
+        """
+        Multi-turn chat with persistent context.
+
+        This maintains conversation history across multiple calls.
+        Use this for interactive chat sessions.
+
+        Args:
+            message: User message
+            session_id: Optional session ID to resume. If None, creates new session.
+
+        Returns:
+            ToolResult with the response
+        """
+        # Get or create session process
+        if session_id and session_id in self._processes:
+            process = self._processes[session_id]
+        else:
+            # Create new session process
+            # Use user-provided session_id if given, otherwise generate one
+            if not session_id:
+                session_id = f"chat-{uuid.uuid4().hex[:8]}"
+            mmu = self._create_mmu(session_id)
+            gate = self._create_gate(session_id, "chat")
+            decoder = InstructionDecoder()
+
+            vcpu = VCPU(
+                alu=self._llm,
+                decoder=decoder,
+                gate=gate,
+                mmu=mmu,
+                config=self.config.vcpu_config,
+                tools=self._tools.get_tool_definitions(),
+            )
+
+            process = Process(
+                pid=session_id,
+                goal="Interactive chat session",
+                role="chat",
+                state="RUNNING",
+                vcpu=vcpu,
+                mmu=mmu,
+                gate=gate,
+            )
+            self._processes[session_id] = process
+            self._emit_event("PROC_SPAWNED", session_id, {"goal": "chat", "role": "chat"})
+
+        # Reset VCPU state for new turn (but keep MMU history)
+        process.vcpu._reset()
+        
+        # Session persistence: 追加用户消息
+        if self._session_mgr:
+            from nimbus.v2.core.memory.context import Message
+            self._session_mgr.append_message(Message(role="user", content=message))
+
+        # Execute one turn
+        # Note: vcpu.execute will add the user message to MMU, so we don't add it here
+        try:
+            result = await process.vcpu.execute(message)
+
+            # Session persistence: 追加助手响应
+            if self._session_mgr and result.output:
+                from nimbus.v2.core.memory.context import Message
+                self._session_mgr.append_message(
+                    Message(role="assistant", content=str(result.output))
+                )
+            
+            # Check if compaction needed
+            await self._check_compaction(process)
+
+            # Create a new result with session_id in output if needed
+            # We use a simple convention: if the result needs session tracking,
+            # we store session_id separately
+            self._current_session_id = session_id
+
+            return result
+
+        except Exception as e:
+            import traceback
+            import logging
+            logger = logging.getLogger(__name__)
+            error_detail = traceback.format_exc()
+            logger.error(f"❌ [AgentOS.chat] Exception in vcpu.execute: {e}")
+            logger.error(f"Traceback:\n{error_detail}")
+            return ToolResult(
+                status="ERROR",
+                fault=Fault(
+                    domain="KERNEL",
+                    code="SYSTEM_ERROR",
+                    message=str(e),
+                    retryable=False,
+                    context={"traceback": error_detail},
+                ),
+            )
+
+    def get_session(self, session_id: str) -> "Process | None":
+        """Get a chat session process by ID."""
+        return self._processes.get(session_id)
+
+    def end_session(self, session_id: str) -> None:
+        """End a chat session and cleanup resources."""
+        if session_id in self._processes:
+            process = self._processes.pop(session_id)
+            process.state = "COMPLETED"
+            self._emit_event("PROC_FINISHED", session_id, {"reason": "session_ended"})
+    
+    # =========================================================================
+    # Session Management (NEW)
+    # =========================================================================
+    
+    def new_session(self, parent_session: Optional[str] = None) -> str:
+        """
+        创建新会话。
+        
+        Args:
+            parent_session: 可选的父会话路径
+        
+        Returns:
+            新会话 ID
+        """
+        if self._session_mgr:
+            return self._session_mgr.new_session(parent_session)
+        return f"ephemeral-{uuid.uuid4().hex[:8]}"
+    
+    def load_session(self, session_file: Path) -> bool:
+        """
+        加载已有会话。
+        
+        Args:
+            session_file: 会话文件路径
+        
+        Returns:
+            是否成功加载
+        """
+        if not self._session_mgr:
+            return False
+        return self._session_mgr.load_session(session_file)
+    
+    def get_session_stats(self) -> Optional[Dict[str, Any]]:
+        """获取当前会话统计"""
+        if self._session_mgr:
+            return self._session_mgr.get_stats()
+        return None
+    
+    def list_recent_sessions(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """列出最近的会话"""
+        if self._session_mgr:
+            return self._session_mgr.list_recent_sessions(limit)
+        return []
+    
+    # =========================================================================
+    # Compaction (NEW)
+    # =========================================================================
+    
+    async def compact(
+        self,
+        session_id: Optional[str] = None,
+        custom_instructions: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        手动触发 compaction。
+        
+        Args:
+            session_id: 要压缩的会话 ID（默认当前会话）
+            custom_instructions: 自定义压缩指令
+        
+        Returns:
+            压缩结果或 None
+        """
+        target_session = session_id or self._current_session_id
+        if not target_session:
+            return None
+        
+        process = self._processes.get(target_session)
+        if not process or not process.mmu:
+            return None
+        
+        # 获取所有消息
+        from nimbus.v2.core.memory.context import Message
+        all_messages = []
+        for frame in process.mmu._stack:
+            for msg in frame.messages:
+                all_messages.append(msg)
+        
+        # 执行压缩
+        new_messages, result = await self._compaction_engine.compact(
+            all_messages, custom_instructions
+        )
+        
+        if result.messages_removed > 0:
+            # 更新 MMU（简化处理：清除并重新添加）
+            process.mmu.clear()
+            for msg in new_messages:
+                process.mmu.add_message(msg)
+            
+            # 持久化压缩记录
+            if self._session_mgr:
+                self._session_mgr.append_compaction(
+                    summary=result.summary,
+                    first_kept_entry_id=result.first_kept_entry_id or "",
+                    tokens_before=result.tokens_before,
+                    details=result.details,
+                )
+            
+            self._emit_event("COMPACTION", target_session, {
+                "tokens_before": result.tokens_before,
+                "tokens_after": result.tokens_after,
+                "messages_removed": result.messages_removed,
+            })
+        
+        return {
+            "summary": result.summary,
+            "tokens_before": result.tokens_before,
+            "tokens_after": result.tokens_after,
+            "messages_removed": result.messages_removed,
+            "compression_ratio": result.compression_ratio,
+        }
+    
+    async def _check_compaction(self, process: Process) -> None:
+        """
+        检查是否需要自动 compaction。
+        """
+        if not process.mmu:
+            return
+        
+        # 获取当前 token 使用量
+        current_tokens = process.mmu.estimate_tokens()
+        max_tokens = self.config.mmu_config.max_context_tokens
+        
+        # 检查是否达到阈值
+        if self._compaction_engine.should_compact(
+            [msg for frame in process.mmu._stack for msg in frame.messages],
+            max_tokens,
+        ):
+            self._emit_event("AUTO_COMPACTION_START", process.pid, {
+                "tokens": current_tokens,
+                "max_tokens": max_tokens,
+            })
+            
+            await self.compact(session_id=process.pid)
+            
+            self._emit_event("AUTO_COMPACTION_END", process.pid, {})
 
     async def run_dag(self, dag: DAG) -> ToolResult:
         """

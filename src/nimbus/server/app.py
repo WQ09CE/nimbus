@@ -50,7 +50,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await sse_hub.start()
 
     permission_manager = PermissionManager()
-    session_manager = SessionManager(storage, sse_hub, permission_manager)
+    
+    # Use v2 session manager (AgentOS-based)
+    from .session_v2 import SessionManagerV2
+    session_manager = SessionManagerV2(storage, sse_hub, permission_manager)
 
     # Initialize message cache for conversation history
     message_cache = MessageCache(
@@ -98,6 +101,10 @@ def create_app() -> FastAPI:
         allow_origins=[
             "http://localhost:3000",
             "http://127.0.0.1:3000",
+            "http://localhost:3030",
+            "http://127.0.0.1:3030",
+            "http://erqing.wang:3000",
+            "http://192.168.2.240:3000",
         ],
         allow_credentials=True,
         allow_methods=["*"],

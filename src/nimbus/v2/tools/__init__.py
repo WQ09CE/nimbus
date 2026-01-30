@@ -16,15 +16,38 @@ Usage:
 """
 
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Tuple
+
+from .bash import BASH_TOOL, bash_command
+from .edit import EDIT_TOOL, edit_file
+from .glob import GLOB_TOOL, glob_files
+from .grep import GREP_TOOL, grep_content
 
 # Import tool definitions and functions
 from .read import READ_TOOL, read_file
-from .glob import GLOB_TOOL, glob_files
-from .grep import GREP_TOOL, grep_content
-from .bash import BASH_TOOL, bash_command
 from .write import WRITE_TOOL, write_file
-from .edit import EDIT_TOOL, edit_file
+
+# Return result tool definition (control flow tool)
+RETURN_RESULT_TOOL: Dict[str, Any] = {
+    "name": "return_result",
+    "description": "Return the final result when you have completed the task. MUST be called to finish.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "result": {
+                "type": "string",
+                "description": "The final result to return to the user"
+            }
+        },
+        "required": ["result"]
+    }
+}
+
+
+async def return_result(result: str, **kwargs: Any) -> str:
+    """Return the final result. This is a control flow tool handled by the decoder."""
+    return result
+
 
 if TYPE_CHECKING:
     from nimbus.v2.agentos import AgentOS
@@ -37,6 +60,7 @@ ALL_TOOLS: List[Dict[str, Any]] = [
     BASH_TOOL,
     WRITE_TOOL,
     EDIT_TOOL,
+    RETURN_RESULT_TOOL,
 ]
 
 # Mapping of tool names to their functions
@@ -47,6 +71,7 @@ TOOL_FUNCTIONS: Dict[str, Callable] = {
     "Bash": bash_command,
     "Write": write_file,
     "Edit": edit_file,
+    "return_result": return_result,
 }
 
 
@@ -200,6 +225,7 @@ __all__ = [
     "bash_command",
     "write_file",
     "edit_file",
+    "return_result",
     # Tool definitions
     "READ_TOOL",
     "GLOB_TOOL",
@@ -207,6 +233,7 @@ __all__ = [
     "BASH_TOOL",
     "WRITE_TOOL",
     "EDIT_TOOL",
+    "RETURN_RESULT_TOOL",
     "ALL_TOOLS",
     "TOOL_FUNCTIONS",
     # Helper functions

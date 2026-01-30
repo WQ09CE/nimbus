@@ -34,10 +34,8 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-# Configure logging
+# Configure logging - use module logger without forcing DEBUG to stdout
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.DEBUG)
-logger.setLevel(logging.DEBUG)
 
 # =============================================================================
 # Request Models

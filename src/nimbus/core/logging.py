@@ -108,7 +108,7 @@ def setup_logging(
     log_file: Optional[str] = None,
     rotation: str = DEFAULT_ROTATION,
     retention: str = DEFAULT_RETENTION,
-    console: bool = True,
+    console: Optional[bool] = None,
     colorize: bool = True,
     json_file: bool = False,
     enqueue: bool = True,
@@ -131,8 +131,15 @@ def setup_logging(
     Returns:
         Path to the log file.
     """
+    import os
+    
     # Remove default handler
     logger.remove()
+    
+    # Check environment variable for console logging
+    if console is None:
+        env_console = os.environ.get("NIMBUS_LOG_CONSOLE", "true").lower()
+        console = env_console not in ("false", "0", "no", "off")
 
     # Intercept standard logging module (for kernel layer: vcpu, scheduler)
     if intercept_stdlib:

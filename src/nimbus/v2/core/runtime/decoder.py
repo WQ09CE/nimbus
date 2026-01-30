@@ -119,8 +119,9 @@ class InstructionDecoder:
                     domain="LLM",
                     code="ILL_INSTRUCTION",
                     message=f"Detected text-based tool simulation (pattern: '{pattern}'). "
-                            "You must use the Tool Call API, not text simulation.",
-                    retryable=False,
+                            "You MUST use the function calling API, not text simulation. "
+                            "Call the actual tool functions instead of writing them as text.",
+                    retryable=True,  # Allow retry so LLM can correct itself
                     context={"raw_content": content[:500], "pattern": pattern}
                 )
 
@@ -137,15 +138,18 @@ class InstructionDecoder:
         Raises:
             Fault: If arguments are invalid JSON
         """
-        # Extract name and arguments
+        # Extract name, arguments, and tool_call_id
         # Support both OpenAI-style and generic dict-style tool calls
+        tool_call_id = None
         if hasattr(tool_call, 'function'):
             name = tool_call.function.name
             args_str = tool_call.function.arguments
+            tool_call_id = getattr(tool_call, 'id', None)
         elif isinstance(tool_call, dict):
             func = tool_call.get('function', {})
             name = func.get('name', '')
             args_str = func.get('arguments', '{}')
+            tool_call_id = tool_call.get('id')
         else:
             raise Fault(
                 domain="LLM",
@@ -175,6 +179,7 @@ class InstructionDecoder:
             return ActionIR(
                 kind=kind,
                 name=args.get("goal", args.get("name", name)),
+                id=tool_call_id,  # Preserve original tool_call_id for API compatibility
                 args=args,
                 meta={"original_tool": name}
             )
@@ -183,6 +188,7 @@ class InstructionDecoder:
         return ActionIR(
             kind="TOOL_CALL",
             name=name,
+            id=tool_call_id,  # Preserve original tool_call_id for API compatibility
             args=args
         )
 

@@ -6,6 +6,7 @@ The MMU is responsible for:
 2. Maintaining the call stack (SUB_CALL / RETURN)
 3. Assembling context from Pinned + Stack
 4. Token budget management and compression
+5. **Context Stack 提炼** - pop_frame 时智能提取有价值内容
 
 Memory Layout:
 ┌─────────────────────────────────┐
@@ -32,10 +33,16 @@ Design Principles:
 - Each frame is isolated (has its own message history)
 - Context is assembled bottom-up (current frame first)
 - Token budget is enforced during assembly
+- **NEW**: pop_frame 时自动提炼有价值内容，丢弃失败的探索
+
+Context Stack 提炼策略:
+1. 失败的 tool calls 被标记并过滤
+2. 探索性调用（找错方向）被识别并过滤
+3. 只有有价值的结论被合并到父 frame
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple
 
 from nimbus.v2.core.memory.context import (
     PinnedContext,
@@ -44,6 +51,22 @@ from nimbus.v2.core.memory.context import (
     create_root_frame,
     create_sub_frame,
 )
+
+
+# =============================================================================
+# Tool Call Value Markers
+# =============================================================================
+
+ToolCallValue = Literal["valuable", "failed", "exploratory", "intermediate"]
+
+
+@dataclass
+class ToolCallMarker:
+    """Tool call 的价值标记"""
+    tool_call_id: str
+    tool_name: str
+    value: ToolCallValue
+    reason: Optional[str] = None
 
 
 @dataclass
@@ -57,12 +80,16 @@ class MMUConfig:
         frame_budget: Token budget per frame
         compress_threshold: Trigger compression at this percentage
         keep_recent_messages: Number of recent messages to keep when compressing
+        auto_extract_on_pop: 是否在 pop_frame 时自动提炼有价值内容
+        auto_detect_failures: 是否自动检测失败的 tool calls
     """
     max_context_tokens: int = 16000
     pinned_budget: int = 2000
     frame_budget: int = 8000
     compress_threshold: float = 0.9  # Compress at 90% capacity
     keep_recent_messages: int = 10
+    auto_extract_on_pop: bool = True  # Context Stack 提炼
+    auto_detect_failures: bool = True  # 自动检测失败
 
 
 class MMU:
@@ -71,6 +98,11 @@ class MMU:
 
     Manages the context window for a single process.
     Handles the call stack for SUB_CALL/RETURN operations.
+    
+    **Context Stack 提炼功能**:
+    - 自动检测失败的 tool calls
+    - pop_frame 时提炼有价值内容
+    - 过滤无价值的探索性调用
 
     Example:
         mmu = MMU(config=MMUConfig())
@@ -80,13 +112,15 @@ class MMU:
         mmu.add_user_message("Hello")
         mmu.add_assistant_message("Hi there!")
 
-        # Subprocess call
+        # Subprocess call with Context Stack 提炼
         mmu.push_frame("explore codebase")
         mmu.add_user_message("Find the auth module")
-        # ... subprocess work ...
-        result = mmu.pop_frame("Found it at src/auth/")
+        # ... subprocess work (some tools fail, some succeed) ...
+        
+        # pop_frame 自动提炼有价值内容
+        result = mmu.pop_frame()  # 自动提取结论，丢弃失败的探索
 
-        # Assemble context for LLM
+        # Assemble context for LLM (已过滤无价值内容)
         messages = mmu.assemble_context()
     """
 
@@ -109,6 +143,12 @@ class MMU:
 
         # Initialize with root frame
         self._stack.append(create_root_frame())
+        
+        # Context Stack 提炼：Tool call 价值标记
+        self._tool_markers: Dict[str, ToolCallMarker] = {}
+        
+        # 每个 frame 的无价值 tool call IDs
+        self._frame_discardable: Dict[str, Set[str]] = {}
 
     # =========================================================================
     # Pinned Context Management
@@ -183,33 +223,128 @@ class MMU:
 
         return new_frame.frame_id
 
-    def pop_frame(self, result: Any = None) -> Optional[Any]:
+    def pop_frame(
+        self,
+        result: Any = None,
+        extract_valuable: bool = True,
+    ) -> Optional[Any]:
         """
-        Pop the current frame (RETURN).
+        Pop the current frame (RETURN) with Context Stack 提炼.
 
         Args:
-            result: Result to pass back to parent frame
+            result: Result to pass back to parent frame (if None, auto-extract)
+            extract_valuable: 是否自动提取有价值内容（默认 True）
 
         Returns:
-            The result, or None if at root frame
+            The extracted/provided result, or None if at root frame
+            
+        Context Stack 提炼逻辑:
+        1. 如果 result 为 None 且 extract_valuable=True，自动提取有价值内容
+        2. 过滤被标记为 failed/exploratory 的 tool calls
+        3. 只有结论和成功的操作被保留
         """
         if self.is_root_frame:
             # Can't pop root frame
             return None
 
-        # Complete current frame
         frame = self._stack.pop()
+        frame_id = frame.frame_id
+        
+        # 如果没有提供 result，尝试自动提取
+        if result is None and extract_valuable and self.config.auto_extract_on_pop:
+            result = self._extract_valuable_content(frame)
+        
         frame.complete(result)
 
         # Resume parent frame
         self.current_frame.state = "ACTIVE"
 
-        # Add result to parent frame as tool result
-        self.current_frame.add_assistant_message(
-            f"[Subtask completed] {frame.goal}\nResult: {result}"
-        )
+        # 只添加精炼后的结果到父 frame
+        summary = self._format_frame_result(frame, result)
+        self.current_frame.add_assistant_message(summary)
+        
+        # 清理该 frame 的标记
+        if frame_id in self._frame_discardable:
+            del self._frame_discardable[frame_id]
+        
+        # 清理相关的 tool markers
+        markers_to_remove = [
+            tc_id for tc_id, marker in self._tool_markers.items()
+            if marker.tool_call_id in self._get_frame_tool_call_ids(frame)
+        ]
+        for tc_id in markers_to_remove:
+            del self._tool_markers[tc_id]
 
         return result
+    
+    def _extract_valuable_content(self, frame: StackFrame) -> str:
+        """
+        从 frame 中提取有价值的内容。
+        
+        策略:
+        1. 过滤失败的 tool calls
+        2. 提取成功操作的结果
+        3. 提取助手的结论性陈述
+        """
+        valuable_parts = []
+        frame_id = frame.frame_id
+        discardable = self._frame_discardable.get(frame_id, set())
+        
+        # 收集有价值的 tool results
+        successful_tools = []
+        for msg in frame.messages:
+            if msg.role == "tool":
+                tool_call_id = msg.tool_call_id
+                # 检查是否被标记为无价值
+                if tool_call_id and tool_call_id not in discardable:
+                    content = msg.content if isinstance(msg.content, str) else ""
+                    # 检查是否是错误
+                    if not content.startswith("[Error]"):
+                        successful_tools.append({
+                            "name": msg.name,
+                            "result": content[:200] if len(content) > 200 else content
+                        })
+        
+        # 收集助手的结论
+        last_assistant_content = None
+        for msg in reversed(frame.messages):
+            if msg.role == "assistant" and not msg.tool_calls:
+                content = msg.content if isinstance(msg.content, str) else ""
+                if content:
+                    last_assistant_content = content
+                    break
+        
+        # 构建结果
+        if successful_tools:
+            tool_summary = "; ".join(
+                f"{t['name']}: {t['result'][:50]}..." 
+                for t in successful_tools[:3]  # 最多 3 个
+            )
+            valuable_parts.append(f"Successful operations: {tool_summary}")
+        
+        if last_assistant_content:
+            valuable_parts.append(f"Conclusion: {last_assistant_content[:300]}")
+        
+        if not valuable_parts:
+            return f"Completed task: {frame.goal}"
+        
+        return " | ".join(valuable_parts)
+    
+    def _format_frame_result(self, frame: StackFrame, result: Any) -> str:
+        """格式化 frame 结果为消息"""
+        return f"[Subtask completed] {frame.goal}\nResult: {result}"
+    
+    def _get_frame_tool_call_ids(self, frame: StackFrame) -> Set[str]:
+        """获取 frame 中所有的 tool call IDs"""
+        ids = set()
+        for msg in frame.messages:
+            if msg.tool_call_id:
+                ids.add(msg.tool_call_id)
+            if msg.tool_calls:
+                for tc in msg.tool_calls:
+                    if isinstance(tc, dict) and "id" in tc:
+                        ids.add(tc["id"])
+        return ids
 
     def get_frame(self, frame_id: str) -> Optional[StackFrame]:
         """Get a frame by ID."""
@@ -234,26 +369,173 @@ class MMU:
         """Add an assistant message to the current frame."""
         self.current_frame.add_assistant_message(content)
 
+    def add_assistant_with_tool_calls(
+        self, content: Optional[str], tool_calls: List[Dict[str, Any]]
+    ) -> None:
+        """Add an assistant message with tool calls to the current frame."""
+        self.current_frame.add_assistant_with_tool_calls(content, tool_calls)
+
     def add_tool_result(self, tool_call_id: str, name: str, content: str) -> None:
         """Add a tool result to the current frame."""
         self.current_frame.add_tool_result(tool_call_id, name, content)
+        
+        # 自动检测失败
+        if self.config.auto_detect_failures:
+            self._auto_detect_tool_failure(tool_call_id, name, content)
+    
+    # =========================================================================
+    # Context Stack 提炼 - Tool Call 标记
+    # =========================================================================
+    
+    def mark_tool_call(
+        self,
+        tool_call_id: str,
+        value: ToolCallValue,
+        reason: Optional[str] = None,
+        tool_name: str = "",
+    ) -> None:
+        """
+        标记 tool call 的价值。
+        
+        Args:
+            tool_call_id: Tool call ID
+            value: 价值标记 ("valuable", "failed", "exploratory", "intermediate")
+            reason: 标记原因
+            tool_name: 工具名称
+        """
+        marker = ToolCallMarker(
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            value=value,
+            reason=reason,
+        )
+        self._tool_markers[tool_call_id] = marker
+        
+        # 如果标记为无价值，添加到当前 frame 的 discardable 集合
+        if value in ("failed", "exploratory", "intermediate"):
+            frame_id = self.current_frame.frame_id
+            if frame_id not in self._frame_discardable:
+                self._frame_discardable[frame_id] = set()
+            self._frame_discardable[frame_id].add(tool_call_id)
+        else:
+            # 如果标记为 valuable，从 discardable 移除
+            frame_id = self.current_frame.frame_id
+            if frame_id in self._frame_discardable:
+                self._frame_discardable[frame_id].discard(tool_call_id)
+    
+    def mark_recent_tool_calls(
+        self,
+        value: ToolCallValue,
+        count: int = 1,
+        tool_names: Optional[List[str]] = None,
+        reason: Optional[str] = None,
+    ) -> int:
+        """
+        批量标记最近的 tool calls。
+        
+        Args:
+            value: 价值标记
+            count: 标记数量
+            tool_names: 只标记这些工具（可选）
+            reason: 标记原因
+        
+        Returns:
+            实际标记的数量
+        """
+        marked = 0
+        tool_results = []
+        
+        # 收集当前 frame 的 tool results
+        for msg in reversed(self.current_frame.messages):
+            if msg.role == "tool" and msg.tool_call_id:
+                if tool_names is None or msg.name in tool_names:
+                    tool_results.append((msg.tool_call_id, msg.name or ""))
+                    if len(tool_results) >= count:
+                        break
+        
+        # 标记
+        for tool_call_id, tool_name in tool_results:
+            self.mark_tool_call(tool_call_id, value, reason, tool_name)
+            marked += 1
+        
+        return marked
+    
+    def get_tool_markers(self) -> Dict[str, ToolCallMarker]:
+        """获取所有 tool call 标记"""
+        return self._tool_markers.copy()
+    
+    def get_discardable_count(self) -> int:
+        """获取当前 frame 中被标记为无价值的 tool call 数量"""
+        frame_id = self.current_frame.frame_id
+        return len(self._frame_discardable.get(frame_id, set()))
+    
+    def _auto_detect_tool_failure(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        content: str,
+    ) -> bool:
+        """
+        自动检测 tool call 是否失败。
+        
+        Returns:
+            是否检测到失败
+        """
+        # 检测明确的错误
+        if content.startswith("[Error]"):
+            self.mark_tool_call(tool_call_id, "failed", "error_prefix", tool_name)
+            return True
+        
+        # 检测常见失败模式
+        content_lower = content.lower()
+        failure_indicators = [
+            "not found",
+            "no such file",
+            "permission denied",
+            "failed to",
+            "error:",
+            "does not exist",
+            "cannot find",
+            "no matches",
+        ]
+        
+        for indicator in failure_indicators:
+            if indicator in content_lower:
+                # 对于某些情况，可能是正常的（如 grep 没找到）
+                # 只有在内容很短时才判定为失败
+                if len(content) < 200:
+                    self.mark_tool_call(tool_call_id, "failed", f"detected_{indicator}", tool_name)
+                    return True
+        
+        return False
+    
+    def clear_markers(self) -> None:
+        """清除所有标记"""
+        self._tool_markers.clear()
+        self._frame_discardable.clear()
 
     # =========================================================================
     # Context Assembly
     # =========================================================================
 
-    def assemble_context(self, max_tokens: Optional[int] = None) -> List[Dict[str, Any]]:
+    def assemble_context(
+        self,
+        max_tokens: Optional[int] = None,
+        filter_discardable: bool = True,
+    ) -> List[Dict[str, Any]]:
         """
         Assemble the full context for LLM.
 
         This method combines:
         1. Pinned context (system message)
         2. Stack frames (from root to current)
+        3. **Context Stack 提炼**: 过滤无价值的 tool calls
 
         The result is a list of messages ready for LLM API.
 
         Args:
             max_tokens: Optional token limit (uses config default if not specified)
+            filter_discardable: 是否过滤被标记为无价值的 tool calls
 
         Returns:
             List of message dicts for LLM API
@@ -281,6 +563,10 @@ class MMU:
             frame_messages = frame.to_context_messages()
             all_frame_messages.extend(frame_messages)
 
+        # 3. Context Stack 提炼：过滤无价值的 tool calls
+        if filter_discardable:
+            all_frame_messages = self._filter_discardable_messages(all_frame_messages)
+
         # Estimate tokens
         frame_tokens = sum(msg.token_estimate() for msg in all_frame_messages)
 
@@ -294,6 +580,53 @@ class MMU:
             messages.extend(self._compress_frames(remaining_budget))
 
         return messages
+    
+    def _filter_discardable_messages(
+        self,
+        messages: List[Message],
+    ) -> List[Message]:
+        """
+        过滤被标记为无价值的消息。
+        
+        策略:
+        1. 移除被标记的 tool result 消息
+        2. 从 assistant 消息中移除对应的 tool_calls
+        """
+        # 收集所有需要移除的 tool call IDs
+        discardable_ids: Set[str] = set()
+        for frame_discardable in self._frame_discardable.values():
+            discardable_ids.update(frame_discardable)
+        
+        if not discardable_ids:
+            return messages
+        
+        filtered: List[Message] = []
+        
+        for msg in messages:
+            if msg.role == "tool":
+                # 跳过被标记的 tool results
+                if msg.tool_call_id and msg.tool_call_id in discardable_ids:
+                    continue
+                filtered.append(msg)
+            elif msg.role == "assistant" and msg.tool_calls:
+                # 过滤 assistant 消息中的 tool_calls
+                filtered_calls = [
+                    tc for tc in msg.tool_calls
+                    if tc.get("id") not in discardable_ids
+                ]
+                
+                # 如果还有 tool_calls 或有 content，保留消息
+                if filtered_calls or msg.content:
+                    filtered.append(Message(
+                        role=msg.role,
+                        content=msg.content,
+                        tool_calls=filtered_calls if filtered_calls else None,
+                        meta=msg.meta,
+                    ))
+            else:
+                filtered.append(msg)
+        
+        return filtered
 
     def _compress_frames(self, budget: int) -> List[Dict[str, Any]]:
         """

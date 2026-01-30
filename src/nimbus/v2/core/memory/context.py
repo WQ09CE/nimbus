@@ -37,21 +37,28 @@ class Message:
         content: Message content (text or structured)
         name: Optional name (for tool messages)
         tool_call_id: Optional tool call ID (for tool results)
+        tool_calls: Optional list of tool calls (for assistant messages)
         meta: Additional metadata
     """
     role: MessageRole
     content: Any  # str or list of content blocks
     name: Optional[str] = None
     tool_call_id: Optional[str] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None  # For assistant messages with tool calls
     meta: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict format for LLM API."""
-        d = {"role": self.role, "content": self.content}
+        d: Dict[str, Any] = {"role": self.role}
+        # Content can be None if tool_calls is present
+        if self.content is not None:
+            d["content"] = self.content
         if self.name:
             d["name"] = self.name
         if self.tool_call_id:
             d["tool_call_id"] = self.tool_call_id
+        if self.tool_calls:
+            d["tool_calls"] = self.tool_calls
         return d
 
     def token_estimate(self) -> int:
@@ -187,6 +194,25 @@ class StackFrame:
     def add_assistant_message(self, content: str) -> None:
         """Add an assistant message."""
         self.messages.append(Message(role="assistant", content=content))
+
+    def add_assistant_with_tool_calls(
+        self, content: Optional[str], tool_calls: List[Dict[str, Any]]
+    ) -> None:
+        """Add an assistant message with tool calls.
+
+        This is used when the LLM responds with tool calls. The message format
+        is compatible with OpenAI/OpenRouter API which requires the assistant
+        message with tool_calls to be present before the tool result messages.
+
+        Args:
+            content: Optional text content from the assistant
+            tool_calls: List of tool call objects in OpenAI format
+        """
+        self.messages.append(Message(
+            role="assistant",
+            content=content,
+            tool_calls=tool_calls
+        ))
 
     def add_tool_result(self, tool_call_id: str, name: str, content: str) -> None:
         """Add a tool result message."""

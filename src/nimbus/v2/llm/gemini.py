@@ -108,7 +108,7 @@ class GeminiV2Config:
         max_retries: Maximum retry attempts on failure.
         retry_delay: Base delay between retries in seconds.
     """
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-3-flash-preview"
     api_key: Optional[str] = None
     base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     temperature: float = 0.7
@@ -178,7 +178,7 @@ class GeminiV2Client:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gemini-2.0-flash",
+        model: str = "gemini-3-flash-preview",
         config: Optional[GeminiV2Config] = None,
         **kwargs: Any,
     ):
@@ -381,7 +381,19 @@ class GeminiV2Client:
         url: str,
         body: Dict[str, Any],
     ) -> aiohttp.ClientResponse:
-        """Make request with retry logic."""
+        """Make request with retry logic.
+
+        Features (learned from opencode):
+        - Exponential backoff with configurable parameters
+        - HTTP header parsing (retry-after-ms, retry-after)
+        - Maximum delay caps to prevent excessive waits
+        """
+        from nimbus.v2.llm.retry import (
+            calculate_delay_seconds,
+            extract_headers_from_response,
+            is_retryable_status,
+        )
+
         session = await self._get_session()
         headers = {"Content-Type": "application/json"}
 
@@ -401,15 +413,21 @@ class GeminiV2Client:
                 except json.JSONDecodeError:
                     error_message = error_text
 
-                # Retryable errors: 429 (rate limit), 500, 502, 503, 504
-                if resp.status in (429, 500, 502, 503, 504):
+                # Check if error is retryable
+                if is_retryable_status(resp.status):
                     last_error = GeminiV2Error(
                         f"Gemini API error (attempt {attempt + 1}): {error_message}",
                         status_code=resp.status,
                     )
                     if attempt < self.config.max_retries - 1:
-                        delay = self.config.retry_delay * (2 ** attempt)
-                        logger.warning(f"Retrying in {delay}s: {error_message}")
+                        # Extract headers for intelligent delay calculation
+                        response_headers = extract_headers_from_response(resp)
+                        delay = calculate_delay_seconds(
+                            attempt + 1,
+                            response_headers,
+                            initial_delay_ms=self.config.retry_delay * 1000,
+                        )
+                        logger.warning(f"Retrying in {delay:.1f}s: {error_message}")
                         await asyncio.sleep(delay)
                         continue
 
@@ -422,8 +440,11 @@ class GeminiV2Client:
             except aiohttp.ClientError as e:
                 last_error = GeminiV2Error(f"Request failed: {str(e)}")
                 if attempt < self.config.max_retries - 1:
-                    delay = self.config.retry_delay * (2 ** attempt)
-                    logger.warning(f"Retrying in {delay}s due to: {e}")
+                    delay = calculate_delay_seconds(
+                        attempt + 1,
+                        initial_delay_ms=self.config.retry_delay * 1000,
+                    )
+                    logger.warning(f"Retrying in {delay:.1f}s due to: {e}")
                     await asyncio.sleep(delay)
                     continue
 
@@ -478,6 +499,8 @@ class GeminiV2Client:
             gemini_tools = self._convert_tools_to_gemini(tools)
             if gemini_tools:
                 body["tools"] = gemini_tools
+                # Use AUTO mode - let model decide when to use functions
+                # ANY mode forces function calls even when model wants to return text
                 body["toolConfig"] = {
                     "functionCallingConfig": {
                         "mode": "AUTO"

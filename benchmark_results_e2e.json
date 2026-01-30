@@ -1,0 +1,204 @@
+{
+  "timestamp": "2026-01-26T13:01:53.126826",
+  "llm_provider": "default",
+  "llm_model": "gemini",
+  "capabilities": {
+    "task_decomposition": {
+      "score": 1.0,
+      "tests": [
+        {
+          "test_id": "td_01",
+          "capability": "task_decomposition",
+          "description": "Multi-step task planning",
+          "passed": true,
+          "score": 1.0,
+          "latency_ms": 3610.682964324951,
+          "details": {
+            "response_length": 454,
+            "status": "success",
+            "turns": 0
+          },
+          "error": null
+        }
+      ],
+      "test_count": 1,
+      "passed_count": 1,
+      "avg_latency_ms": 3610.7
+    },
+    "code_search": {
+      "score": 1.0,
+      "tests": [
+        {
+          "test_id": "cs_01",
+          "capability": "code_search",
+          "description": "Find CodeAgent class definition",
+          "passed": true,
+          "score": 1.0,
+          "latency_ms": 9778.35988998413,
+          "details": {
+            "response_length": 332,
+            "mentions_agent": true,
+            "mentions_file": true,
+            "status": "success"
+          },
+          "error": null
+        }
+      ],
+      "test_count": 1,
+      "passed_count": 1,
+      "avg_latency_ms": 9778.4
+    },
+    "context_understanding": {
+      "score": 1.0,
+      "tests": [
+        {
+          "test_id": "cu_01",
+          "capability": "context_understanding",
+          "description": "Pronoun resolution in multi-turn",
+          "passed": true,
+          "score": 1.0,
+          "latency_ms": 1430.8271408081055,
+          "details": {
+            "response_length": 67,
+            "mentions_nimbus": true,
+            "mentions_project": true,
+            "status": "success"
+          },
+          "error": null
+        }
+      ],
+      "test_count": 1,
+      "passed_count": 1,
+      "avg_latency_ms": 1430.8
+    },
+    "code_modification": {
+      "score": 1.0,
+      "tests": [
+        {
+          "test_id": "cm_01",
+          "capability": "code_modification",
+          "description": "Read and understand code file",
+          "passed": true,
+          "score": 1.0,
+          "latency_ms": 1556.809902191162,
+          "details": {
+            "response_length": 121,
+            "mentions_existing_func": true,
+            "has_def": false,
+            "has_function": true,
+            "status": "success"
+          },
+          "error": null
+        }
+      ],
+      "test_count": 1,
+      "passed_count": 1,
+      "avg_latency_ms": 1556.8
+    },
+    "bash_execution": {
+      "score": 0.967,
+      "tests": [
+        {
+          "test_id": "be_01",
+          "capability": "bash_execution",
+          "description": "Execute ls command",
+          "passed": true,
+          "score": 0.9333333333333333,
+          "latency_ms": 4410.080909729004,
+          "details": {
+            "response_length": 1106,
+            "has_output": true,
+            "status": "success",
+            "found_files": [
+              "pyproject.toml",
+              "src",
+              "tests",
+              "README",
+              ".md"
+            ]
+          },
+          "error": null
+        },
+        {
+          "test_id": "be_02",
+          "capability": "bash_execution",
+          "description": "Execute echo command",
+          "passed": true,
+          "score": 1.0,
+          "latency_ms": 1421.2772846221924,
+          "details": {
+            "response_length": 112,
+            "echo_output_found": true,
+            "status": "success"
+          },
+          "error": null
+        }
+      ],
+      "test_count": 2,
+      "passed_count": 2,
+      "avg_latency_ms": 2915.7
+    },
+    "code_summarization": {
+      "score": 0.65,
+      "tests": [
+        {
+          "test_id": "sum_01",
+          "capability": "code_summarization",
+          "description": "Summarize agent.py",
+          "passed": true,
+          "score": 0.6499999999999999,
+          "latency_ms": 3908.726692199707,
+          "details": {
+            "response_length": 538,
+            "found_concepts": [
+              "agent",
+              "memory",
+              "task",
+              "codeagent"
+            ],
+            "concept_count": 4,
+            "status": "success"
+          },
+          "error": null
+        }
+      ],
+      "test_count": 1,
+      "passed_count": 1,
+      "avg_latency_ms": 3908.7
+    },
+    "repo_understanding": {
+      "score": 1.0,
+      "tests": [
+        {
+          "test_id": "ru_01",
+          "capability": "repo_understanding",
+          "description": "Identify main modules",
+          "passed": true,
+          "score": 1.0,
+          "latency_ms": 1781.2700271606445,
+          "details": {
+            "response_length": 259,
+            "found_modules": [
+              "core",
+              "llm",
+              "server",
+              "tools",
+              "skills"
+            ],
+            "module_count": 5,
+            "status": "success"
+          },
+          "error": null
+        }
+      ],
+      "test_count": 1,
+      "passed_count": 1,
+      "avg_latency_ms": 1781.3
+    }
+  },
+  "overall_score": 0.945,
+  "total_tests": 8,
+  "passed_tests": 8,
+  "total_latency_ms": 27898.034811019897,
+  "errors": []
+}

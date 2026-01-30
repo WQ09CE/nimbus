@@ -238,6 +238,350 @@ def _strip_indent(text: str) -> str:
     return '\n'.join(line.lstrip() for line in text.split('\n'))
 
 
+# =============================================================================
+# Enhanced Matching Functions (Learned from opencode's edit.ts)
+# =============================================================================
+
+def _levenshtein_distance(a: str, b: str) -> int:
+    """Calculate Levenshtein distance between two strings.
+
+    This is used for fuzzy matching in block anchor replacer.
+
+    Args:
+        a: First string
+        b: Second string
+
+    Returns:
+        Edit distance (number of operations to transform a into b)
+    """
+    if not a or not b:
+        return max(len(a), len(b))
+
+    # Create matrix
+    m, n = len(a), len(b)
+    matrix = [[0] * (n + 1) for _ in range(m + 1)]
+
+    # Initialize first row and column
+    for i in range(m + 1):
+        matrix[i][0] = i
+    for j in range(n + 1):
+        matrix[0][j] = j
+
+    # Fill the matrix
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            matrix[i][j] = min(
+                matrix[i - 1][j] + 1,      # deletion
+                matrix[i][j - 1] + 1,      # insertion
+                matrix[i - 1][j - 1] + cost  # substitution
+            )
+
+    return matrix[m][n]
+
+
+def _levenshtein_similarity(a: str, b: str) -> float:
+    """Calculate similarity ratio using Levenshtein distance.
+
+    Returns:
+        Similarity between 0.0 and 1.0 (1.0 = identical)
+    """
+    if not a and not b:
+        return 1.0
+    max_len = max(len(a), len(b))
+    if max_len == 0:
+        return 1.0
+    distance = _levenshtein_distance(a, b)
+    return 1.0 - (distance / max_len)
+
+
+# Block anchor matching thresholds (from opencode)
+SINGLE_CANDIDATE_SIMILARITY_THRESHOLD = 0.0  # Accept any match for single candidate
+MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD = 0.3  # Require some similarity for multiple
+
+
+def _block_anchor_match(
+    content: str, search: str
+) -> Optional[tuple[int, int, str]]:
+    """Block anchor matching using first and last line as anchors.
+
+    This is Stage 3 from opencode's 9-stage matching pipeline.
+    Uses first and last line as anchors, then validates middle lines
+    with Levenshtein similarity.
+
+    Args:
+        content: File content to search in
+        search: Search string
+
+    Returns:
+        Tuple of (start_idx, end_idx, matched_text) or None
+    """
+    content_lines = content.split('\n')
+    search_lines = search.split('\n')
+
+    # Need at least 3 lines for anchor matching
+    if len(search_lines) < 3:
+        return None
+
+    # Remove trailing empty line if present
+    if search_lines and search_lines[-1] == '':
+        search_lines = search_lines[:-1]
+
+    if len(search_lines) < 2:
+        return None
+
+    first_line_search = search_lines[0].strip()
+    last_line_search = search_lines[-1].strip()
+
+    # Find all candidates where both anchors match
+    candidates = []
+    for i, line in enumerate(content_lines):
+        if line.strip() != first_line_search:
+            continue
+
+        # Look for matching last line
+        for j in range(i + 2, len(content_lines)):
+            if content_lines[j].strip() == last_line_search:
+                candidates.append((i, j))
+                break  # Only first occurrence
+
+    if not candidates:
+        return None
+
+    # Single candidate - accept with relaxed threshold
+    if len(candidates) == 1:
+        start_line, end_line = candidates[0]
+        # Calculate similarity of middle lines
+        similarity = _calculate_block_similarity(
+            content_lines, search_lines, start_line, end_line
+        )
+
+        if similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD:
+            return _extract_block(content, content_lines, start_line, end_line)
+        return None
+
+    # Multiple candidates - find best match
+    best_match = None
+    max_similarity = -1.0
+
+    for start_line, end_line in candidates:
+        similarity = _calculate_block_similarity(
+            content_lines, search_lines, start_line, end_line
+        )
+        if similarity > max_similarity:
+            max_similarity = similarity
+            best_match = (start_line, end_line)
+
+    if max_similarity >= MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD and best_match:
+        return _extract_block(content, content_lines, best_match[0], best_match[1])
+
+    return None
+
+
+def _calculate_block_similarity(
+    content_lines: List[str],
+    search_lines: List[str],
+    start_line: int,
+    end_line: int,
+) -> float:
+    """Calculate similarity of middle lines in a block match."""
+    actual_block_size = end_line - start_line + 1
+    search_block_size = len(search_lines)
+
+    lines_to_check = min(search_block_size - 2, actual_block_size - 2)
+    if lines_to_check <= 0:
+        return 1.0  # No middle lines to check
+
+    total_similarity = 0.0
+    for j in range(1, min(search_block_size - 1, actual_block_size - 1)):
+        content_line = content_lines[start_line + j].strip()
+        search_line = search_lines[j].strip()
+        total_similarity += _levenshtein_similarity(content_line, search_line)
+
+    return total_similarity / lines_to_check
+
+
+def _extract_block(
+    content: str,
+    content_lines: List[str],
+    start_line: int,
+    end_line: int,
+) -> tuple[int, int, str]:
+    """Extract a block of text and its position."""
+    # Calculate start index
+    start_idx = sum(len(content_lines[k]) + 1 for k in range(start_line))
+
+    # Calculate end index
+    end_idx = start_idx
+    for k in range(start_line, end_line + 1):
+        end_idx += len(content_lines[k])
+        if k < end_line:
+            end_idx += 1  # newline
+
+    matched_text = content[start_idx:end_idx]
+    return (start_idx, end_idx, matched_text)
+
+
+def _whitespace_normalized_match(
+    content: str, search: str
+) -> Optional[tuple[int, int, str]]:
+    """Match with whitespace normalization.
+
+    Stage 4 from opencode: Normalizes consecutive whitespace to single space.
+
+    Args:
+        content: File content
+        search: Search string
+
+    Returns:
+        Match result or None
+    """
+    def normalize_ws(text: str) -> str:
+        return re.sub(r'\s+', ' ', text).strip()
+
+    normalized_search = normalize_ws(search)
+    if not normalized_search:
+        return None
+
+    # Try line-by-line matching
+    lines = content.split('\n')
+    for i, line in enumerate(lines):
+        if normalize_ws(line) == normalized_search:
+            # Found single line match
+            start_idx = sum(len(lines[k]) + 1 for k in range(i))
+            return (start_idx, start_idx + len(line), line)
+
+    # Try multi-line matching
+    search_lines = search.split('\n')
+    if len(search_lines) > 1:
+        for i in range(len(lines) - len(search_lines) + 1):
+            block = '\n'.join(lines[i:i + len(search_lines)])
+            if normalize_ws(block) == normalized_search:
+                start_idx = sum(len(lines[k]) + 1 for k in range(i))
+                return (start_idx, start_idx + len(block), block)
+
+    return None
+
+
+def _escape_normalized_match(
+    content: str, search: str
+) -> Optional[tuple[int, int, str]]:
+    """Match with escape sequence normalization.
+
+    Stage 6 from opencode: Unescapes common escape sequences before matching.
+
+    Args:
+        content: File content
+        search: Search string
+
+    Returns:
+        Match result or None
+    """
+    def unescape(text: str) -> str:
+        replacements = [
+            ('\\n', '\n'),
+            ('\\t', '\t'),
+            ('\\r', '\r'),
+            ("\\'", "'"),
+            ('\\"', '"'),
+            ('\\`', '`'),
+            ('\\\\', '\\'),
+            ('\\$', '$'),
+        ]
+        result = text
+        for escaped, unescaped in replacements:
+            result = result.replace(escaped, unescaped)
+        return result
+
+    unescaped_search = unescape(search)
+
+    # Try exact match with unescaped search
+    if unescaped_search in content:
+        start_idx = content.index(unescaped_search)
+        return (start_idx, start_idx + len(unescaped_search), unescaped_search)
+
+    # Try matching escaped content against unescaped search
+    unescaped_content = unescape(content)
+    if unescaped_search in unescaped_content:
+        # Find position in original content
+        start_idx = unescaped_content.index(unescaped_search)
+        # This is approximate - escape sequences may shift positions
+        # For safety, do exact substring search nearby
+        search_start = max(0, start_idx - 10)
+        search_end = min(len(content), start_idx + len(unescaped_search) + 10)
+        if unescaped_search in content[search_start:search_end]:
+            actual_start = content.index(unescaped_search, search_start)
+            return (actual_start, actual_start + len(unescaped_search), unescaped_search)
+
+    return None
+
+
+def _context_aware_match(
+    content: str, search: str
+) -> Optional[tuple[int, int, str]]:
+    """Context-aware matching using first/last line anchors with 50% heuristic.
+
+    Stage 8 from opencode: Uses first and last lines as anchors, validates
+    that at least 50% of middle lines match when trimmed.
+
+    Args:
+        content: File content
+        search: Search string
+
+    Returns:
+        Match result or None
+    """
+    content_lines = content.split('\n')
+    search_lines = search.split('\n')
+
+    if len(search_lines) < 2:
+        return None
+
+    # Remove trailing empty line
+    if search_lines and search_lines[-1] == '':
+        search_lines = search_lines[:-1]
+
+    if len(search_lines) < 2:
+        return None
+
+    first_line_search = search_lines[0].strip()
+    last_line_search = search_lines[-1].strip()
+
+    # Find blocks with matching anchors
+    for i in range(len(content_lines)):
+        if content_lines[i].strip() != first_line_search:
+            continue
+
+        for j in range(i + 1, len(content_lines)):
+            if content_lines[j].strip() != last_line_search:
+                continue
+
+            block_lines = content_lines[i:j + 1]
+
+            # Check if block size matches
+            if len(block_lines) == len(search_lines):
+                # Validate middle lines with 50% threshold
+                matching_lines = 0
+                total_non_empty = 0
+
+                for k in range(1, len(block_lines) - 1):
+                    block_line = block_lines[k].strip()
+                    search_line = search_lines[k].strip()
+
+                    if block_line or search_line:
+                        total_non_empty += 1
+                        if block_line == search_line:
+                            matching_lines += 1
+
+                # Accept if >= 50% match or no middle lines
+                if total_non_empty == 0 or matching_lines / total_non_empty >= 0.5:
+                    return _extract_block(content, content_lines, i, j)
+
+            break  # Only check first matching last line
+
+    return None
+
+
 def _fuzzy_find_in_content(
     content: str, search: str, threshold: float = 0.85
 ) -> Optional[tuple[int, int, float]]:
@@ -322,11 +666,18 @@ def _fuzzy_find_in_content(
 def _find_match_with_fallback(
     content: str, search: str, file_path: str
 ) -> Optional[MatchResult]:
-    """Find search string in content using three-tier matching.
+    """Find search string in content using 9-stage matching pipeline.
 
-    Tier 1: Exact match (fastest)
-    Tier 2: Indent-agnostic match (strip each line, compare)
-    Tier 3: Fuzzy match (85%+ similarity)
+    Matching stages (learned from opencode's edit.ts):
+    1. Exact match (fastest)
+    2. Line-trimmed match (strip each line, compare)
+    3. Block anchor match (first/last line anchors + Levenshtein)
+    4. Whitespace normalized match
+    5. Indentation flexible match (same as tier 2 but with indent removal)
+    6. Escape normalized match
+    7. Hallucination truncation (remove trailing lines)
+    8. Context-aware match (50% middle line similarity)
+    9. Fuzzy match (85%+ SequenceMatcher similarity)
 
     Args:
         content: The file content to search in.
@@ -336,13 +687,12 @@ def _find_match_with_fallback(
     Returns:
         MatchResult with (start, end, match_type, matched_text) or None.
     """
-    # Tier 1: Exact match
+    # Stage 1: Exact match (SimpleReplacer)
     if search in content:
         start = content.index(search)
         return MatchResult(start, start + len(search), "exact", search)
 
-    # Tier 2: Indent-agnostic match
-    # Strip leading whitespace from each line and compare
+    # Stage 2: Line-trimmed match (LineTrimmedReplacer)
     search_stripped = _strip_indent(search)
     content_lines = content.split('\n')
     search_lines = search.split('\n')
@@ -351,22 +701,64 @@ def _find_match_with_fallback(
         candidate_lines = content_lines[i:i + len(search_lines)]
         candidate_stripped = _strip_indent('\n'.join(candidate_lines))
         if candidate_stripped == search_stripped:
-            # Found! Calculate actual position
             start = sum(len(line) + 1 for line in content_lines[:i])
             if i == 0:
                 start = 0
             original_text = '\n'.join(candidate_lines)
             logger.info(
-                f"Edit: Indent-agnostic match found in {file_path} at line {i + 1}"
+                f"Edit: Line-trimmed match found in {file_path} at line {i + 1}"
             )
             return MatchResult(
-                start, start + len(original_text), "indent_agnostic", original_text
+                start, start + len(original_text), "line_trimmed", original_text
             )
 
-    # Tier 2.5: Hallucination truncation - LLM often adds extra lines at the end
-    # Try removing last line(s) which are common hallucination zones
+    # Stage 3: Block anchor match (BlockAnchorReplacer)
+    block_result = _block_anchor_match(content, search)
+    if block_result:
+        start, end, matched_text = block_result
+        logger.info(f"Edit: Block anchor match found in {file_path}")
+        return MatchResult(start, end, "block_anchor", matched_text)
+
+    # Stage 4: Whitespace normalized match (WhitespaceNormalizedReplacer)
+    ws_result = _whitespace_normalized_match(content, search)
+    if ws_result:
+        start, end, matched_text = ws_result
+        logger.info(f"Edit: Whitespace-normalized match found in {file_path}")
+        return MatchResult(start, end, "whitespace_normalized", matched_text)
+
+    # Stage 5: Indentation flexible match (IndentationFlexibleReplacer)
+    # This is similar to stage 2 but removes base indentation first
+    def remove_base_indent(text: str) -> str:
+        lines = text.split('\n')
+        non_empty = [line for line in lines if line.strip()]
+        if not non_empty:
+            return text
+        min_indent = min(len(line) - len(line.lstrip()) for line in non_empty)
+        return '\n'.join(
+            line if not line.strip() else line[min_indent:]
+            for line in lines
+        )
+
+    normalized_search = remove_base_indent(search)
+    for i in range(len(content_lines) - len(search_lines) + 1):
+        candidate = '\n'.join(content_lines[i:i + len(search_lines)])
+        if remove_base_indent(candidate) == normalized_search:
+            start = sum(len(line) + 1 for line in content_lines[:i])
+            if i == 0:
+                start = 0
+            logger.info(f"Edit: Indentation-flexible match found in {file_path}")
+            return MatchResult(start, start + len(candidate), "indent_flexible", candidate)
+
+    # Stage 6: Escape normalized match (EscapeNormalizedReplacer)
+    escape_result = _escape_normalized_match(content, search)
+    if escape_result:
+        start, end, matched_text = escape_result
+        logger.info(f"Edit: Escape-normalized match found in {file_path}")
+        return MatchResult(start, end, "escape_normalized", matched_text)
+
+    # Stage 7: Hallucination truncation (TrimmedBoundaryReplacer)
     if len(search_lines) >= 3:
-        for trim_count in [1, 2]:  # Try removing 1 or 2 lines
+        for trim_count in [1, 2]:
             trimmed_search = '\n'.join(search_lines[:-trim_count])
             if trimmed_search.strip():
                 trimmed_stripped = _strip_indent(trimmed_search)
@@ -388,7 +780,14 @@ def _find_match_with_fallback(
                             start, start + len(original_text), "truncated", original_text
                         )
 
-    # Tier 3: Fuzzy match (85%+ similarity)
+    # Stage 8: Context-aware match (ContextAwareReplacer)
+    context_result = _context_aware_match(content, search)
+    if context_result:
+        start, end, matched_text = context_result
+        logger.info(f"Edit: Context-aware match found in {file_path}")
+        return MatchResult(start, end, "context_aware", matched_text)
+
+    # Stage 9: Fuzzy match (85%+ similarity)
     fuzzy_result = _fuzzy_find_in_content(content, search, threshold=0.85)
     if fuzzy_result:
         start, end, ratio = fuzzy_result

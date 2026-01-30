@@ -63,6 +63,8 @@ async def _run_server(
     db_path: str,
     reload: bool,
     workers: int,
+    quiet: bool = False,
+    log_level: str = "info",
 ) -> None:
     """Run the server asynchronously."""
     import uvicorn
@@ -75,6 +77,10 @@ async def _run_server(
     os.environ["NIMBUS_DB"] = db_path
     os.environ["NIMBUS_HOST"] = host
     os.environ["NIMBUS_PORT"] = str(port)
+    
+    # If quiet mode, disable console logging in Nimbus
+    if quiet:
+        os.environ["NIMBUS_LOG_CONSOLE"] = "false"
 
     # Configure uvicorn
     config = uvicorn.Config(
@@ -84,8 +90,8 @@ async def _run_server(
         port=port,
         reload=reload,
         workers=workers if not reload else 1,
-        log_level="info",
-        access_log=True,
+        log_level="warning" if quiet else log_level,
+        access_log=not quiet,
     )
 
     server = uvicorn.Server(config)
@@ -130,6 +136,18 @@ def serve(
         "-w",
         help="Number of worker processes (ignored if --reload is set)",
     ),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Suppress console logging (logs still written to file)",
+    ),
+    log_level: str = typer.Option(
+        "info",
+        "--log-level",
+        "-l",
+        help="Log level: debug, info, warning, error",
+    ),
 ) -> None:
     """Start the Nimbus HTTP server.
 
@@ -159,16 +177,18 @@ def serve(
         actual_host = host if host is not None else _get_default_host()
         actual_db = db if db is not None else _get_default_db()
 
-        console.print(f"[bold green]Starting Nimbus Server[/bold green]")
-        console.print(f"  Host: {actual_host}")
-        console.print(f"  Port: {actual_port}")
-        console.print(f"  Database: {actual_db}")
-        console.print(f"  Reload: {reload}")
-        console.print(f"  Workers: {workers}")
-        console.print()
-        console.print(f"[dim]API docs: http://{actual_host}:{actual_port}/docs[/dim]")
-        console.print(f"[dim]Health check: http://{actual_host}:{actual_port}/api/v1/health[/dim]")
-        console.print()
+        if not quiet:
+            console.print(f"[bold green]Starting Nimbus Server[/bold green]")
+            console.print(f"  Host: {actual_host}")
+            console.print(f"  Port: {actual_port}")
+            console.print(f"  Database: {actual_db}")
+            console.print(f"  Reload: {reload}")
+            console.print(f"  Workers: {workers}")
+            console.print(f"  Log Level: {log_level}")
+            console.print()
+            console.print(f"[dim]API docs: http://{actual_host}:{actual_port}/docs[/dim]")
+            console.print(f"[dim]Health check: http://{actual_host}:{actual_port}/api/v1/health[/dim]")
+            console.print()
 
         try:
             asyncio.run(_run_server(
@@ -177,6 +197,8 @@ def serve(
                 db_path=actual_db,
                 reload=reload,
                 workers=workers,
+                quiet=quiet,
+                log_level=log_level,
             ))
         except KeyboardInterrupt:
             console.print("\n[yellow]Server stopped.[/yellow]")

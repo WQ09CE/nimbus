@@ -9,12 +9,16 @@ This module provides REST API endpoints for:
 - Health and configuration
 """
 
+import asyncio
+import logging
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+
+logger = logging.getLogger(__name__)
 
 from .models import (
     # Session
@@ -254,98 +258,31 @@ async def chat(
         content=data.content,
     )
 
-    async def event_stream():
-        """Generate SSE events by running the agent."""
-        # SSE format helper
-        def format_sse(event_type: str, event_data: dict) -> str:
-            return f"event: {event_type}\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n"
-
-        # Send connected event
-        yield format_sse("connected", {"session_id": session_id})
-
+    # Start background task to run chat
+    async def run_chat():
+        """Background task that runs the chat and emits events via SSE hub."""
+        logger.info(f"🚀 run_chat started for session {session_id}, message: {data.content[:50]}...")
         try:
-            # Get or create agent (with default Ollama LLM client)
-            agent = await session_manager.get_or_create_agent(session_id)
-
-            # Send message_start event
-            yield format_sse("message_start", {"message_id": message_id})
-
-            # Run agent with streaming
-            response_text = ""
-            dag_id = None
-
-            async for status in agent.run_stream(data.content):
-                status_type = status.get("type", "unknown")
-
-                if status_type == "planning":
-                    yield format_sse("planning", {"status": status.get("content", "creating_plan")})
-
-                elif status_type == "dag_created":
-                    dag_id = status.get("dag_id", f"dag_{uuid.uuid4().hex[:8]}")
-                    yield format_sse("dag_created", {
-                        "dag_id": dag_id,
-                        "goal": status.get("goal", data.content),
-                        "total_tasks": status.get("total_tasks", 0),
-                    })
-
-                elif status_type == "task_start":
-                    yield format_sse("task_start", {
-                        "task_id": status.get("task_id", ""),
-                        "skill": status.get("skill", ""),
-                        "params": status.get("params", {}),
-                    })
-
-                elif status_type == "task_done":
-                    yield format_sse("task_done", {
-                        "task_id": status.get("task_id", ""),
-                        "result": str(status.get("result", ""))[:500],
-                        "duration_ms": status.get("duration_ms", 0),
-                    })
-
-                elif status_type == "task_failed":
-                    yield format_sse("task_failed", {
-                        "task_id": status.get("task_id", ""),
-                        "error": status.get("error", "Unknown error"),
-                    })
-
-                elif status_type == "direct":
-                    response_text = status.get("content", "")
-                    yield format_sse("message", {"content": response_text, "artifacts": []})
-
-                elif status_type == "complete":
-                    response_text = status.get("content", "")
-                    artifacts = status.get("artifacts", [])
-
-                    if dag_id:
-                        yield format_sse("dag_complete", {
-                            "dag_id": dag_id,
-                            "stats": status.get("stats", {}),
-                        })
-
-                    yield format_sse("message", {"content": response_text, "artifacts": artifacts})
-
-                elif status_type == "error":
-                    yield format_sse("error", {
-                        "code": "execution_error",
-                        "message": status.get("content", "Unknown error"),
-                    })
-
-            # Save assistant message
-            if response_text:
-                resp_message_id = f"msg_{uuid.uuid4().hex[:12]}"
-                await storage.add_message(
-                    message_id=resp_message_id,
-                    session_id=session_id,
-                    role="assistant",
-                    content=response_text,
-                    dag_id=dag_id,
-                )
-
+            logger.info(f"📞 Calling stream_chat...")
+            await session_manager.stream_chat(session_id, data.content)
+            logger.info(f"✅ stream_chat completed")
         except Exception as e:
-            yield format_sse("error", {"code": "server_error", "message": str(e)})
+            import logging
+            import traceback
+            error_logger = logging.getLogger(__name__)
+            error_logger.error(f"Error in stream_chat: {e}", exc_info=True)
+            # Emit error event
+            await sse_hub.publish(
+                session_id,
+                "error",
+                {"code": "server_error", "message": str(e), "traceback": traceback.format_exc()}
+            )
 
+    asyncio.create_task(run_chat())
+
+    # Return SSE stream (subscribe is an async generator)
     return StreamingResponse(
-        event_stream(),
+        sse_hub.subscribe(session_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
