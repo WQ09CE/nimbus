@@ -594,6 +594,15 @@ class MMU:
         # Estimate tokens
         frame_tokens = sum(msg.token_estimate() for msg in all_frame_messages)
 
+        # Debug: log token usage
+        from nimbus.core.logging import get_logger
+        logger = get_logger("memory.mmu")
+        logger.debug(
+            f"📊 Token budget: max={max_tokens}, pinned={token_count}, "
+            f"remaining={remaining_budget}, frame_messages={len(all_frame_messages)}, "
+            f"frame_tokens={frame_tokens}"
+        )
+
         # If within budget, include all
         if frame_tokens <= remaining_budget:
             for msg in all_frame_messages:
@@ -601,6 +610,12 @@ class MMU:
         else:
             # Need to compress - keep recent messages from current frame
             # and summaries from parent frames
+            from nimbus.core.logging import get_logger
+            logger = get_logger("memory.mmu")
+            logger.warning(
+                f"🗜️ Context auto-compress triggered: {frame_tokens} tokens > {remaining_budget} budget. "
+                f"Keeping {self.config.keep_recent_messages} recent messages."
+            )
             messages.extend(self._compress_frames(remaining_budget))
 
         return messages
