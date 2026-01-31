@@ -18,9 +18,7 @@ from nimbus.core.protocol import (
 from nimbus.core.runtime.decoder import InstructionDecoder
 from nimbus.os.gate import (
     KernelGate,
-    SimplePermissionManager,
     SimpleEventStream,
-    SimpleIPCBus,
 )
 
 
@@ -223,10 +221,8 @@ class TestKernelGate:
     def gate(self):
         return KernelGate(
             pid="test-001",
-            permission_mgr=SimplePermissionManager(["echo", "slow"]),
-            event_stream=SimpleEventStream(),
             tool_executor=SimpleToolExecutor(),
-            ipc_bus=SimpleIPCBus(),
+            event_stream=SimpleEventStream(),
             default_timeout=1.0,
         )
 
@@ -240,14 +236,7 @@ class TestKernelGate:
         assert result.fault is None
         assert "total" in result.timing_ms
 
-    @pytest.mark.asyncio
-    async def test_permission_denied(self, gate):
-        action = ActionIR(kind="TOOL_CALL", name="forbidden_tool", args={})
-        result = await gate.syscall_tool(action)
-
-        assert result.status == "ERROR"
-        assert result.fault is not None
-        assert result.fault.code == "PERMISSION_DENIED"
+    # Note: test_permission_denied was removed as permission checking was removed from Gate
 
     @pytest.mark.asyncio
     async def test_timeout(self, gate):
@@ -260,9 +249,7 @@ class TestKernelGate:
 
     @pytest.mark.asyncio
     async def test_tool_failure(self, gate):
-        # Add 'fail' to allowed tools
-        gate.perm.tools["allow"].append("fail")
-
+        # Call a tool that raises an exception
         action = ActionIR(kind="TOOL_CALL", name="fail", args={})
         result = await gate.syscall_tool(action)
 
@@ -282,18 +269,8 @@ class TestKernelGate:
         assert "TOOL_STARTED" in event_types
         assert "TOOL_FINISHED" in event_types
 
-    def test_post_ipc(self, gate):
-        gate.post_ipc(channel="task_result", key="t1.output", value_ref="artifact://abc123")
-
-        msg = gate.ipc.get("task_result", "t1.output")
-        assert msg is not None
-        assert msg.value_ref == "artifact://abc123"
-
-    def test_request_replan(self, gate):
-        gate.request_replan({"reason": "tool_failed", "hint": "try another approach"})
-
-        events = gate.events.events
-        assert any(e.type == "REPLAN_REQUESTED" for e in events)
+    # Note: test_post_ipc and test_request_replan were removed as IPC/Replan
+    # functionality was removed from Gate (YAGNI)
 
 
 # =============================================================================
@@ -309,10 +286,8 @@ class TestIntegration:
         decoder = InstructionDecoder()
         gate = KernelGate(
             pid="integration-001",
-            permission_mgr=SimplePermissionManager(["*"]),
-            event_stream=SimpleEventStream(),
             tool_executor=SimpleToolExecutor(),
-            ipc_bus=SimpleIPCBus(),
+            event_stream=SimpleEventStream(),
         )
 
         # Decode tool call

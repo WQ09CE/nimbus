@@ -54,18 +54,20 @@ from nimbus.core.memory.context import (
 
 
 # =============================================================================
-# Tool Call Value Markers
+# Tool Call Value Markers (Simplified: keep/discard binary decision)
 # =============================================================================
 
-ToolCallValue = Literal["valuable", "failed", "exploratory", "intermediate"]
+# Simplified from 4-level (valuable/failed/exploratory/intermediate) to 2-level
+# per expert committee recommendation - only 'failed' was actually auto-used
+ToolCallValue = Literal["keep", "discard"]
 
 
 @dataclass
 class ToolCallMarker:
-    """Tool call 的价值标记"""
+    """Tool call 的价值标记（简化版：二元决策）"""
     tool_call_id: str
     tool_name: str
-    value: ToolCallValue
+    value: ToolCallValue  # "keep" or "discard"
     reason: Optional[str] = None
 
 
@@ -268,7 +270,7 @@ class MMU:
             
         Context Stack 提炼逻辑:
         1. 如果 result 为 None 且 extract_valuable=True，自动提取有价值内容
-        2. 过滤被标记为 failed/exploratory 的 tool calls
+        2. 过滤被标记为 discard 的 tool calls
         3. 只有结论和成功的操作被保留
         """
         if self.is_root_frame:
@@ -397,6 +399,10 @@ class MMU:
         """Add an assistant message to the current frame."""
         self.current_frame.add_assistant_message(content)
 
+    def add_system_message(self, content: str) -> None:
+        """Add a system message to the current frame (for hints/instructions)."""
+        self.current_frame.add_message(Message(role="system", content=content))
+
     def add_assistant_with_tool_calls(
         self, content: Optional[str], tool_calls: List[Dict[str, Any]]
     ) -> None:
@@ -423,11 +429,11 @@ class MMU:
         tool_name: str = "",
     ) -> None:
         """
-        标记 tool call 的价值。
+        标记 tool call 的价值（简化版：二元决策）。
         
         Args:
             tool_call_id: Tool call ID
-            value: 价值标记 ("valuable", "failed", "exploratory", "intermediate")
+            value: 价值标记 ("keep" or "discard")
             reason: 标记原因
             tool_name: 工具名称
         """
@@ -439,15 +445,14 @@ class MMU:
         )
         self._tool_markers[tool_call_id] = marker
         
-        # 如果标记为无价值，添加到当前 frame 的 discardable 集合
-        if value in ("failed", "exploratory", "intermediate"):
-            frame_id = self.current_frame.frame_id
+        frame_id = self.current_frame.frame_id
+        if value == "discard":
+            # 添加到当前 frame 的 discardable 集合
             if frame_id not in self._frame_discardable:
                 self._frame_discardable[frame_id] = set()
             self._frame_discardable[frame_id].add(tool_call_id)
         else:
-            # 如果标记为 valuable，从 discardable 移除
-            frame_id = self.current_frame.frame_id
+            # 如果标记为 keep，从 discardable 移除
             if frame_id in self._frame_discardable:
                 self._frame_discardable[frame_id].discard(tool_call_id)
     
@@ -462,7 +467,7 @@ class MMU:
         批量标记最近的 tool calls。
         
         Args:
-            value: 价值标记
+            value: 价值标记 ("keep" or "discard")
             count: 标记数量
             tool_names: 只标记这些工具（可选）
             reason: 标记原因
@@ -504,37 +509,40 @@ class MMU:
         content: str,
     ) -> bool:
         """
-        自动检测 tool call 是否失败。
+        自动检测 tool call 是否失败（结构化检测，减少误判）。
+        
+        设计原则（per expert review）：
+        - 只检测明确的错误，避免关键词误判
+        - "not found" 等可能是正常结果（如 grep 空结果）
+        - 基于错误前缀和工具特定规则
         
         Returns:
             是否检测到失败
         """
-        # 检测明确的错误
-        if content.startswith("[Error]"):
-            self.mark_tool_call(tool_call_id, "failed", "error_prefix", tool_name)
+        # 1. 明确的错误前缀（最可靠）
+        if content.startswith("[Error]") or content.startswith("Error:"):
+            self.mark_tool_call(tool_call_id, "discard", "error_prefix", tool_name)
             return True
         
-        # 检测常见失败模式
-        content_lower = content.lower()
-        failure_indicators = [
-            "not found",
-            "no such file",
-            "permission denied",
-            "failed to",
-            "error:",
-            "does not exist",
-            "cannot find",
-            "no matches",
-        ]
+        # 2. 工具特定的失败检测
+        if tool_name == "Read":
+            # Read 工具：文件不存在是明确失败
+            if "ENOENT" in content or "No such file" in content:
+                self.mark_tool_call(tool_call_id, "discard", "file_not_found", tool_name)
+                return True
         
-        for indicator in failure_indicators:
-            if indicator in content_lower:
-                # 对于某些情况，可能是正常的（如 grep 没找到）
-                # 只有在内容很短时才判定为失败
-                if len(content) < 200:
-                    self.mark_tool_call(tool_call_id, "failed", f"detected_{indicator}", tool_name)
-                    return True
+        if tool_name == "Bash":
+            # Bash 工具：检查是否有异常标记
+            if "Exception" in content or "Traceback" in content:
+                self.mark_tool_call(tool_call_id, "discard", "exception", tool_name)
+                return True
         
+        # 3. 通用异常检测（保守）
+        if "Exception:" in content or "Traceback (most recent call last)" in content:
+            self.mark_tool_call(tool_call_id, "discard", "exception", tool_name)
+            return True
+        
+        # 不再使用模糊的关键词检测，避免误判
         return False
     
     def clear_markers(self) -> None:

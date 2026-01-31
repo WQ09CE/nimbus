@@ -1,266 +1,203 @@
 # Nimbus Agent Framework
 
-> 🚀 Production-ready AI Agent framework with vCPU-based process model and multi-provider LLM support.
+> Production-ready AI Agent framework with OS-like architecture.
 
-## ✨ Features
+## Overview
 
-- **v2 AgentOS Architecture** - vCPU + Process model for robust agent execution
-- **pi-ai Integration** - Unified LLM API via HTTP service (supports 10+ providers)
-- **Web UI** - Modern React chat interface with SSE streaming
-- **DAG-based Task Planning** - Parallel execution of independent tasks
-- **Tiered Memory Management** - Pinned, Working, Episodic, Semantic layers
-- **Doom Loop Detection** - Graceful termination when agent gets stuck
-- **OpenCode TUI Compatible** - Drop-in replacement for OpenCode backend
+**Nimbus** is a modular AI Agent framework (v0.2.0 Alpha) featuring a von Neumann-inspired architecture. It treats Agent execution like an operating system: vCPU executes Think-Act-Observe cycles, MMU manages context memory, and Gate provides permission-isolated tool access.
 
-## 🏗️ Architecture
+**Core Capabilities:**
+- 🖥️ OS-like architecture (vCPU / MMU / Gate / Process)
+- 🧠 Context Stack with automatic refinement
+- 📊 DAG-based parallel task scheduling
+- 🔒 Permission-isolated subagent system
+- 🔌 Multi-protocol support (REST / OpenCode / AI SDK v6)
+
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Interfaces                               │
-│  ┌──────────┐  ┌──────────────┐  ┌──────────────┐               │
-│  │  Web UI  │  │  HTTP API    │  │    CLI       │               │
-│  │ :3000    │  │  :4096       │  │  nimbus      │               │
-│  └────┬─────┘  └──────┬───────┘  └──────────────┘               │
-│       │               │                                          │
-├───────┴───────────────┴─────────────────────────────────────────┤
-│                       v2 AgentOS                                 │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │                      vCPU                                │    │
-│  │  ┌──────────┐  ┌──────────────┐  ┌─────────────────┐   │    │
-│  │  │  Fetch   │  │    Decode    │  │     Execute     │   │    │
-│  │  │  (LLM)   │  │  (Actions)   │  │    (Tools)      │   │    │
-│  │  └──────────┘  └──────────────┘  └─────────────────┘   │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                           │                                      │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │                     Process                              │    │
-│  │  ┌──────────┐  ┌──────────────┐  ┌─────────────────┐   │    │
-│  │  │ Messages │  │    Context   │  │     Gates       │   │    │
-│  │  │  (PCB)   │  │   (Memory)   │  │   (Syscalls)    │   │    │
-│  │  └──────────┘  └──────────────┘  └─────────────────┘   │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                                                                  │
-├──────────────────────────────────────────────────────────────────┤
-│                        LLM Layer                                 │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │                   pi-ai HTTP Server                      │    │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐  │    │
-│  │  │Anthropic │  │  OpenAI  │  │  Google  │  │ Others │  │    │
-│  │  └──────────┘  └──────────┘  └──────────┘  └────────┘  │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                           :3031                                  │
-└──────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                      AgentOS                                │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │   vCPU      │  │    MMU      │  │       Gate          │  │
+│  │ Think-Act-  │  │ Context     │  │ Permission-isolated │  │
+│  │ Observe     │◄─┤ Stack       │  │ Tool Dispatch       │  │
+│  │ Loop        │  │ Management  │  │                     │  │
+│  └──────┬──────┘  └─────────────┘  └──────────┬──────────┘  │
+│         │                                      │            │
+│         ▼                                      ▼            │
+│  ┌─────────────┐                      ┌─────────────────┐   │
+│  │  Scheduler  │                      │     Tools       │   │
+│  │ DAG-based   │                      │ Read/Write/Edit │   │
+│  │ Parallel    │                      │ Glob/Grep/Bash  │   │
+│  └─────────────┘                      └─────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     HTTP Server                             │
+│  /api/v1/*  │  /session/*  │  /v1/chat/completions         │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## 🚀 Quick Start
+### Key Components
 
-### One-Command Start
+| Component | File | Lines | Purpose |
+|-----------|------|-------|---------|
+| **AgentOS** | `agentos.py` | 1220 | Main orchestrator, process management |
+| **vCPU** | `core/runtime/vcpu.py` | 1540 | Think-Act-Observe execution loop |
+| **MMU** | `core/memory/mmu.py` | 910 | Context stack, memory management |
+| **Gate** | `os/gate.py` | 409 | Permission-isolated tool dispatch |
+| **Scheduler** | `core/scheduler.py` | 963 | DAG task scheduling, parallel execution |
+| **Decoder** | `core/runtime/decoder.py` | 202 | LLM response → ActionIR parsing |
+| **PiAdapter** | `adapters/pi_adapter.py` | 320 | pi-ai LLM integration |
+
+## Project Structure
+
+```
+src/nimbus/
+├── agentos.py              # AgentOS main entry
+├── adapters/               # LLM adapters
+│   └── pi_adapter.py       # pi-ai integration
+├── bridge/                 # External service bridges
+│   └── pi_ai_http.py       # pi-ai HTTP client
+├── core/
+│   ├── runtime/
+│   │   ├── vcpu.py         # vCPU execution engine
+│   │   └── decoder.py      # Instruction decoder
+│   ├── memory/
+│   │   ├── mmu.py          # Memory management unit
+│   │   └── context.py      # Context types
+│   ├── scheduler.py        # DAG scheduler
+│   ├── session.py          # Session management
+│   └── types.py            # Core data types
+├── os/
+│   └── gate.py             # System call interface
+├── server/                 # HTTP API server
+│   ├── app.py              # FastAPI app
+│   ├── api.py              # REST endpoints
+│   └── compat/opencode.py  # OpenCode compatibility
+├── tools/                  # Built-in tools
+│   ├── read.py, edit.py, grep.py, sandbox.py
+│   └── ...
+└── cli/                    # Command-line interface
+    └── main.py
+```
+
+## Quick Start
+
+### Installation
 
 ```bash
-# 一键启动所有服务
+# Basic installation
+pip install -e .
+
+# Full installation (with all dependencies)
+pip install -e ".[all]"
+```
+
+### Running the Server
+
+```bash
+# Start server (default port 4096)
 ./nimbus start
 
-# 查看状态
-./nimbus status
-
-# 一键停止
-./nimbus stop
+# Or with custom port
+nimbus serve --port 8080
 ```
 
-### Manual Start (Alternative)
+### Running Tests
 
 ```bash
-# 1. Install
-pip install -e ".[all]"
-npm install @mariozechner/pi-ai
+# All tests (454 test cases)
+pytest tests/ -v
 
-# 2. Start services individually
-./scripts/start-pi-ai.sh --daemon  # LLM backend
-uv run nimbus serve                 # API server
-cd web-ui && npm run dev           # Web UI
+# Quick tests (skip slow/integration)
+pytest tests/ -v -m "not slow"
 ```
 
-### Verify
+## Key Concepts
 
-```bash
-curl http://localhost:3031/health  # pi-ai server
-curl http://localhost:4096/health  # nimbus server
-open http://localhost:3000         # Web UI
+### vCPU Execution Loop
+
+```
+┌─────────────────────────────────────────┐
+│              vCPU Cycle                 │
+│                                         │
+│   ┌─────────┐                           │
+│   │  THINK  │ ── LLM generates plan     │
+│   └────┬────┘                           │
+│        ▼                                │
+│   ┌─────────┐                           │
+│   │   ACT   │ ── Execute tool calls     │
+│   └────┬────┘                           │
+│        ▼                                │
+│   ┌─────────┐                           │
+│   │ OBSERVE │ ── Collect results        │
+│   └────┬────┘                           │
+│        │                                │
+│        ▼                                │
+│   Continue or Return                    │
+└─────────────────────────────────────────┘
 ```
 
-### CLI Commands
+### Context Stack (MMU)
 
-```bash
-./nimbus start       # Start all services
-./nimbus stop        # Stop all services
-./nimbus restart     # Restart all
-./nimbus status      # Show status
-./nimbus logs        # View logs
-./nimbus logs pi-ai  # View specific log
-```
-
-Or use `make`:
-
-```bash
-make start    # Start all
-make stop     # Stop all
-make dev      # Dev mode (foreground)
-make status   # Show status
-```
-
-## 📦 Components
-
-### v2 AgentOS (`src/nimbus/v2/`)
-
-The new architecture uses an OS-like process model:
-
-| Component | Description |
-|-----------|-------------|
-| **vCPU** | Fetch-Decode-Execute cycle for LLM interactions |
-| **Process** | Encapsulates agent state (messages, context, gates) |
-| **Gates** | Permission system for tool execution |
-| **MMU** | Memory management with tiered storage |
+The MMU manages a hierarchical context stack with automatic refinement:
 
 ```python
-from nimbus.v2.agentos import create_agent_os
+# Push a new frame for exploration
+mmu.push_frame("explore codebase")
 
-# Create AgentOS instance
-agent_os = create_agent_os(
-    llm_client=llm,
-    tools={"Read": read_tool, "Write": write_tool},
-    max_processes=5,
-)
+# Tool calls happen...
+# Some succeed, some fail
 
-# Run a task
-result = await agent_os.run("Find all Python files")
+# Pop frame - automatically filters failed explorations
+result = mmu.pop_frame()  # Only valuable conclusions retained
 ```
 
-### pi-ai HTTP Server (`bridge/pi-ai-server.ts`)
+**Memory Tiers:**
 
-Unified LLM API supporting multiple providers:
+| Tier | Purpose | Behavior |
+|------|---------|----------|
+| **Pinned** | System prompt, workspace info | Never compressed |
+| **Stack** | Conversation history | Auto-compressed on overflow |
+| **Frame** | Current task context | Refined on pop |
 
-| Provider | Models |
-|----------|--------|
-| Anthropic | claude-sonnet-4, claude-3.5-sonnet |
-| OpenAI | gpt-4o, gpt-4-turbo |
-| Google | gemini-2.0-flash, gemini-pro |
-| Mistral | mistral-large |
-| Groq | llama-3.1-70b |
-| Bedrock | claude-3-sonnet |
-| GitHub Copilot | gpt-4o (via OAuth) |
+### Process Roles (Permission Isolation)
 
-```bash
-# Endpoints
-POST /v1/chat/completions  # OpenAI-compatible
-POST /v1/stream            # SSE streaming
-GET  /v1/models            # List available models
-GET  /health               # Health check
+| Role | Allowed Tools | Use Case |
+|------|---------------|----------|
+| `eye` | Read, Glob, Grep | Code exploration |
+| `body` | Read, Write, Edit, Bash | Implementation |
+| `mind` | Read, Write, Glob, Grep | Architecture design |
+| `tongue` | Read, Glob, Bash | Testing |
+| `nose` | Read, Glob, Grep | Code review |
+
+### Doom Loop Detection
+
+Prevents infinite loops by detecting repeated tool calls:
+
+```python
+DOOM_LOOP_THRESHOLD = 3  # Same params 3x = abort
 ```
 
-### Web UI (`web-ui/`)
-
-Modern React chat interface:
-
-- SSE streaming responses
-- Tool call visualization
-- Markdown rendering
-- Dark mode support
-
-```bash
-cd web-ui
-npm install
-npm run dev  # http://localhost:3000
-```
-
-## 🛠️ Tools
-
-Built-in tools for code exploration and editing:
-
-| Tool | Description |
-|------|-------------|
-| `Read` | Read file contents |
-| `Write` | Write/create files |
-| `Edit` | Surgical text replacement |
-| `Glob` | Find files by pattern |
-| `Grep` | Search file contents |
-| `Bash` | Execute shell commands |
-| `Kill` | Terminate running processes |
-
-## 📡 API Endpoints
-
-### Nimbus API (`:4096`)
+## API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Health check |
-| `/session` | POST | Create session |
-| `/session/{id}/message` | POST | Send message (SSE) |
-| `/api/v1/sessions` | POST | Create session (v1) |
-| `/api/v1/sessions/{id}/chat` | POST | Chat (SSE) |
+| `/api/v1/health` | GET | Health check |
+| `/api/v1/sessions` | POST | Create session |
+| `/api/v1/sessions/{id}/chat` | POST | Chat (SSE stream) |
+| `/session` | POST | Create session (OpenCode) |
+| `/session/{id}/message` | POST | Send message (OpenCode) |
+| `/v1/chat/completions` | POST | Chat completions (AI SDK v6) |
 
-### SSE Event Types
+## Configuration
 
-```
-event.start      # Conversation started
-content.delta    # Text chunk
-tool.start       # Tool call initiated
-tool.done        # Tool call completed
-event.done       # Conversation complete
-event.error      # Error occurred
-```
+### LLM Configuration
 
-## 🧪 Testing
-
-```bash
-# Unit tests
-pytest tests/ -v
-
-# E2E tests (requires running servers)
-python tests/e2e_tool_call.py
-
-# Test pi-ai HTTP client
-pytest tests/test_pi_ai_http.py -v
-```
-
-## 📁 Project Structure
-
-```
-nimbus/
-├── src/nimbus/
-│   ├── v2/                    # v2 AgentOS architecture
-│   │   ├── agentos.py         # Main entry point
-│   │   ├── core/
-│   │   │   └── runtime/
-│   │   │       └── vcpu.py    # vCPU implementation
-│   │   ├── adapters/
-│   │   │   └── pi_adapter.py  # LLM adapter
-│   │   └── tools/             # Built-in tools
-│   ├── server/                # HTTP server
-│   └── core/                  # Legacy v1 (deprecated)
-├── bridge/
-│   └── pi-ai-server.ts        # pi-ai HTTP wrapper
-├── web-ui/                    # React frontend
-├── scripts/
-│   └── start-pi-ai.sh         # Launcher script
-└── docs/                      # Documentation
-```
-
-## 🔧 Configuration
-
-### Environment Variables
-
-```bash
-# LLM Provider
-ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...
-GOOGLE_API_KEY=...
-
-# Ports
-NIMBUS_PORT=4096
-PI_AI_PORT=3031
-```
-
-### LLM Configuration (`llm.yaml`)
+Create `llm.yaml` in project root:
 
 ```yaml
 default_provider: anthropic
@@ -275,6 +212,62 @@ providers:
     model: gpt-4o
 ```
 
-## 📜 License
+### Environment Variables
+
+```bash
+export ANTHROPIC_API_KEY="sk-..."
+export NIMBUS_LOG_LEVEL=DEBUG  # Enable debug logging
+```
+
+## Development
+
+### Code Style
+
+- **Formatter**: ruff (line-length=100)
+- **Type Checker**: mypy (strict mode)
+- **Python**: 3.10+ required
+
+```bash
+# Format code
+ruff format src/ tests/
+
+# Check types
+mypy src/nimbus/
+```
+
+### Adding a New Tool
+
+```python
+# src/nimbus/tools/my_tool.py
+from nimbus.tools import tool
+
+@tool(
+    name="MyTool",
+    description="Does something useful",
+    parameters={
+        "param1": {"type": "string", "description": "First param"},
+    }
+)
+async def my_tool(param1: str, workspace: Path) -> str:
+    return f"Result: {param1}"
+```
+
+## Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| "Unknown tool" | Check tool registration in AgentOS |
+| Context overflow | MMU auto-compresses, check logs |
+| Timeout errors | Adjust `RuntimeConfig.default_timeout` |
+| Doom loop abort | Review tool call patterns |
+
+### Debug Logging
+
+```bash
+export NIMBUS_LOG_LEVEL=DEBUG
+./nimbus start
+```
+
+## License
 
 MIT

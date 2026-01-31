@@ -36,6 +36,10 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Tup
 from nimbus.core.memory.mmu import MMU
 from nimbus.core.protocol import ActionIR, Event, Fault, ToolResult
 from nimbus.core.runtime.decoder import InstructionDecoder
+from nimbus.core.runtime.doom_loop import DoomLoopDetector, DoomLoopResult
+from nimbus.core.runtime.error_handler import ErrorHandlerRegistry, RecoveryAction
+from nimbus.core.runtime.execution_state import ExecutionState
+from nimbus.core.runtime.failure_reporter import FailureReporter, FailureContext
 from nimbus.os.gate import KernelGate
 
 # =============================================================================
@@ -43,9 +47,10 @@ from nimbus.os.gate import KernelGate
 # =============================================================================
 
 # Tools that modify state and should trigger "call return_result" hint
-# After successful execution of these tools, we inject a hint to remind
-# the LLM to call return_result if the task is complete.
-TERMINAL_TOOLS = {"Edit", "Write", "Bash"}
+# State-modifying tools that change files/system state.
+# After successful Edit/Write, we inject a hint to remind the LLM to call return_result.
+# Note: Bash is excluded from hints because it's often used for read operations.
+STATE_MODIFYING_TOOLS = {"Edit", "Write"}
 
 # Doom loop detection threshold (from opencode's processor.ts)
 # If the same tool is called with identical arguments this many times
@@ -230,25 +235,22 @@ class VCPU:
         self.config = config or VCPUConfig()
         self.tools = tools or []
 
-        # Execution state
-        self._iteration = 0
-        self._consecutive_thoughts = 0
-        self._is_running = False
-        self._is_done = False
-        self._final_result: Optional[ToolResult] = None
+        # Centralized execution state (refactored from 15+ instance variables)
+        self._state = ExecutionState.from_config(
+            max_iterations=self.config.max_iterations,
+            max_compactions=self.config.max_compactions,
+            max_tool_failures=6,
+        )
         
-        # Compaction state (NEW)
-        self._compaction_count = 0
+        # Compaction callback (external)
         self._compaction_callback: Optional[Callable[[], Awaitable[bool]]] = None
 
-        # Doom loop detection (learned from opencode)
-        # Tracks recent tool calls as (tool_name, args_json) tuples
-        self._recent_tool_calls: List[tuple] = []
-        self._doom_loop_count = 0
-        self._consecutive_errors = 0
+        # Extracted components (single responsibility)
+        self._doom_detector = DoomLoopDetector(threshold=DOOM_LOOP_THRESHOLD)
+        self._error_registry = ErrorHandlerRegistry()
+        self._failure_reporter = FailureReporter(alu)
         
-        # Empty response detection
-        self._consecutive_empty_responses = 0
+        # Legacy compatibility properties (will be removed in future)
         self._max_consecutive_empty = 5  # Stop after 5 consecutive empty responses
 
     # =========================================================================
@@ -326,10 +328,6 @@ class VCPU:
 
                 if step_result.fault:
                     self._consecutive_errors += 1
-                    
-                    # Track doom loops specifically
-                    if step_result.fault.code == "DOOM_LOOP":
-                        self._doom_loop_count += 1
                     
                     # Graceful termination conditions (checked BEFORE retryable check):
                     # - Too many consecutive errors (any type)
@@ -666,15 +664,17 @@ class VCPU:
         self, action: ActionIR, result: ToolResult
     ) -> Optional[ToolResult]:
         """
-        Error Handler: 尝试恢复工具调用错误。
+        Smart Error Handler: 使用注册的 error handlers 尝试恢复工具调用错误。
         
         类似操作系统的错误处理机制：
         - Tool 层只抛出错误（如 ENOENT）
-        - Error Handler 层决定恢复策略
+        - Error Handler Registry 根据错误类型决定恢复策略
         
-        当前支持的恢复策略：
-        1. 路径解析：File not found → 尝试 TypeScript 模块解析规则
-        2. 提示注入：多次失败后提示 LLM 使用 Glob 搜索
+        恢复策略类型（由 ErrorHandlerRegistry 管理）：
+        1. inject_hint: 注入提示消息给 LLM
+        2. auto_tool: 自动执行恢复工具（如 ls 列目录）
+        3. modify_args: 修改参数后重试
+        4. skip: 不干预，让 LLM 自己处理
         
         Args:
             action: 失败的 ActionIR
@@ -684,7 +684,6 @@ class VCPU:
             恢复后的 ToolResult，如果无法恢复则返回 None
         """
         from nimbus.core.logging import get_logger
-        import os
         
         logger = get_logger("kernel.vcpu.error_handler")
         fault = result.fault
@@ -692,94 +691,227 @@ class VCPU:
         if not fault:
             return None
         
-        # =========================================================================
-        # 策略 1: TypeScript/Node.js 模块路径解析
-        # =========================================================================
-        if (
-            action.name == "Read" 
-            and fault.code == "TOOL_FAILURE" 
-            and "not found" in fault.message.lower()
-        ):
-            file_path = action.args.get("file_path", "")
-            
-            # TypeScript/Node.js 模块解析规则
-            alternatives = [
-                f"{file_path}/index.ts",
-                f"{file_path}/index.tsx",
-                f"{file_path}/index.js",
-                f"{file_path}/index.jsx",
-            ]
-            
-            # 如果路径以 .ts 结尾但不存在，尝试目录形式
-            if file_path.endswith(".ts"):
-                base = file_path[:-3]
-                alternatives.extend([
-                    f"{base}/index.ts",
-                    f"{base}/index.tsx",
-                ])
-            
-            for alt_path in alternatives:
-                if os.path.exists(alt_path):
-                    logger.info(f"🔧 Path resolved: {file_path} → {alt_path}")
-                    
-                    # 创建新的 action 并重新执行
-                    new_action = ActionIR(
-                        kind=action.kind,
-                        name=action.name,
-                        id=action.id,
-                        args={**action.args, "file_path": alt_path},
-                        meta={**(action.meta or {}), "resolved_from": file_path},
-                    )
-                    
-                    # 重新执行工具调用
-                    new_result = await self._handle_tool_call(new_action)
-                    
-                    if new_result.status == "OK":
-                        # 在输出中添加提示
-                        new_result.output = (
-                            f"[Path resolved: {file_path} → {alt_path}]\n"
-                            f"{new_result.output or ''}"
-                        )
-                        return new_result
-            
-            # 路径解析失败，记录并注入提示
-            self._path_not_found_count = getattr(self, '_path_not_found_count', 0) + 1
-            
-            if self._path_not_found_count >= 2:
-                # 多次失败后，注入提示让 LLM 使用 Glob
-                filename = os.path.basename(file_path)
-                hint = (
-                    f"💡 File '{file_path}' not found after path resolution. "
-                    f"Try: Glob(pattern='**/{filename}*') or Glob(pattern='**/api*') to find the correct path."
-                )
-                self.mmu.add_system_message(hint)
-                logger.info(f"Injected Glob hint after {self._path_not_found_count} path failures")
+        # 使用 ErrorHandlerRegistry 处理错误
+        recovery = await self._error_registry.handle_error(
+            fault_message=fault.message,
+            tool_name=action.name,
+            args=action.args,
+            workspace=None,  # TODO: 获取 workspace 路径
+        )
         
-        # =========================================================================
-        # 策略 2: 目录误读取 - 提供帮助信息
-        # =========================================================================
-        if (
-            action.name == "Read" 
-            and fault.code == "TOOL_FAILURE" 
-            and "directory" in fault.message.lower()
-        ):
-            dir_path = action.args.get("file_path", "")
-            logger.info(f"🔧 Read attempted on directory: {dir_path}")
+        if recovery is None:
+            return None
+        
+        # 执行恢复动作
+        return await self._execute_recovery(action, result, recovery, logger)
+    
+    async def _execute_recovery(
+        self, 
+        original_action: ActionIR,
+        original_result: ToolResult,
+        recovery: RecoveryAction,
+        logger
+    ) -> Optional[ToolResult]:
+        """
+        执行错误恢复动作。
+        
+        Args:
+            original_action: 原始失败的 action
+            original_result: 原始失败的结果
+            recovery: 恢复动作
+            logger: 日志器
             
-            # 返回一个有帮助的错误消息，而不是让 LLM 重试
+        Returns:
+            恢复后的 ToolResult，或 None（让原始错误传播）
+        """
+        if recovery.action_type == "skip":
+            # 不干预
+            return None
+        
+        if recovery.action_type == "inject_hint":
+            # 注入提示消息
+            if recovery.hint:
+                self.mmu.add_system_message(recovery.hint)
+                logger.info(f"🔧 Injected hint for {original_action.name}: {recovery.hint[:80]}...")
+            return None  # 让原始错误传播，但 LLM 会看到提示
+        
+        if recovery.action_type == "auto_tool":
+            # 自动执行恢复工具
+            if recovery.auto_tool and recovery.auto_args:
+                logger.info(f"🔧 Auto-executing recovery tool: {recovery.auto_tool}")
+                
+                # 创建恢复 action
+                recovery_action = ActionIR(
+                    kind="TOOL_CALL",
+                    name=recovery.auto_tool,
+                    id=f"recovery_{original_action.id}",
+                    args=recovery.auto_args,
+                    meta={"recovery_for": original_action.name},
+                )
+                
+                # 执行恢复工具
+                recovery_result = await self.gate.syscall_tool(
+                    recovery_action,
+                    timeout_sec=self.config.default_timeout
+                )
+                
+                # 组合提示和结果作为系统消息
+                combined_message = ""
+                if recovery.hint:
+                    combined_message += recovery.hint + "\n\n"
+                if recovery_result.output:
+                    combined_message += str(recovery_result.output)
+                
+                if combined_message:
+                    self.mmu.add_system_message(combined_message)
+                    logger.info(f"🔧 Recovery result injected: {combined_message[:100]}...")
+            
+            return None  # 让原始错误传播，但 LLM 会看到恢复结果
+        
+        if recovery.action_type == "modify_args":
+            # 修改参数后重试
+            if recovery.modified_args:
+                logger.info(f"🔧 Retrying {original_action.name} with modified args")
+                
+                # 创建修改后的 action
+                new_action = ActionIR(
+                    kind=original_action.kind,
+                    name=original_action.name,
+                    id=original_action.id,
+                    args={**original_action.args, **recovery.modified_args},
+                    meta={**(original_action.meta or {}), "modified_by_recovery": True},
+                )
+                
+                # 重新执行
+                new_result = await self.gate.syscall_tool(
+                    new_action,
+                    timeout_sec=self.config.default_timeout
+                )
+                
+                if new_result.status == "OK":
+                    # 成功！清除失败计数
+                    self._error_registry.clear_failure(original_action.name, original_action.args)
+                    
+                    # 添加说明
+                    if new_result.output:
+                        new_result.output = (
+                            f"[Recovered with modified args]\n{new_result.output}"
+                        )
+                    return new_result
+            
+            return None  # 修改后仍然失败
+        
+        return None
+    
+    async def _handle_empty_result(self, action: ActionIR, result: ToolResult) -> Optional[ToolResult]:
+        """
+        处理"成功但无结果"的情况（如 Glob/Grep 无匹配）。
+        
+        这些情况 status=OK，但 LLM 可能会陷入重复尝试。
+        我们使用 ErrorHandlerRegistry 来提供智能恢复提示。
+        
+        如果同一工具失败次数过多，直接返回错误终止。
+        
+        Args:
+            action: 执行的 action
+            result: 工具执行结果
+            
+        Returns:
+            如果需要覆盖原结果，返回新的 ToolResult；否则返回 None
+        """
+        from nimbus.core.logging import get_logger
+        from nimbus.core.runtime.error_handler import ToolErrorCode
+        
+        logger = get_logger("kernel.vcpu.error_handler")
+        
+        # 检查是否是"无结果"的情况
+        output = str(result.output) if result.output else ""
+        
+        is_no_match = (
+            action.name in ("Glob", "Grep") and
+            ("no match" in output.lower() or "matched nothing" in output.lower())
+        )
+        
+        if not is_no_match:
+            # 有结果，清除失败计数
+            self._error_registry.clear_failure(action.name, action.args)
+            self._tool_failure_counts[action.name] = 0  # Reset tool-level count
+            return None
+        
+        # 记录工具级别的失败（不管参数如何）
+        self._tool_failure_counts[action.name] = self._tool_failure_counts.get(action.name, 0) + 1
+        tool_failures = self._tool_failure_counts[action.name]
+        
+        logger.debug(f"🔧 {action.name} no-match count: {tool_failures}/{self._max_tool_failures}")
+        
+        # 如果同一工具失败过多次，强制终止
+        if tool_failures >= self._max_tool_failures:
+            logger.warning(f"🛑 {action.name} failed {tool_failures} times, forcing termination")
+            
+            # 返回一个错误，强制 LLM 改变策略
             return ToolResult(
-                status="OK",  # 返回 OK 避免重试
+                status="ERROR",
                 output=(
-                    f"[Note: '{dir_path}' is a directory, not a file]\n\n"
-                    f"To explore this directory, try:\n"
-                    f"  • Glob(pattern='{dir_path}/**/*.{{ts,tsx,py}}') - find source files\n"
-                    f"  • Bash(command='ls -la {dir_path}') - list directory contents\n"
-                    f"  • Read(file_path='{dir_path}/package.json') - read specific file"
+                    f"[HARD STOP] {action.name} has returned no matches {tool_failures} times.\n\n"
+                    f"The files you're searching for DO NOT EXIST in this workspace.\n"
+                    f"Stop searching and work with what's available.\n\n"
+                    f"REQUIRED ACTION: Call return_result now to report:\n"
+                    f"1. What you were trying to find\n"
+                    f"2. What you actually found/accomplished\n"
+                    f"3. Any obstacles encountered\n\n"
+                    f"DO NOT call {action.name} again."
                 ),
+                is_final=False,
+                fault=Fault(
+                    domain="RUNTIME",
+                    code="EXCESSIVE_FAILURES",
+                    message=f"{action.name} returned no matches {tool_failures} consecutive times",
+                    retryable=False
+                )
             )
         
-        # 无法恢复，返回 None 让原始错误传播
-        return None
+        # 使用 error handler 处理
+        recovery = await self._error_registry.handle_error(
+            fault_message="No matches found",
+            tool_name=action.name,
+            args=action.args,
+            workspace=None,
+        )
+        
+        if recovery and recovery.action_type == "auto_tool":
+            # 自动执行恢复工具
+            if recovery.auto_tool and recovery.auto_args:
+                logger.info(f"🔧 Auto-executing recovery for no-match: {recovery.auto_tool}")
+                
+                recovery_action = ActionIR(
+                    kind="TOOL_CALL",
+                    name=recovery.auto_tool,
+                    id=f"recovery_{action.id}",
+                    args=recovery.auto_args,
+                    meta={"recovery_for": action.name},
+                )
+                
+                recovery_result = await self.gate.syscall_tool(
+                    recovery_action,
+                    timeout_sec=self.config.default_timeout
+                )
+                
+                # 组合提示和结果
+                combined = ""
+                if recovery.hint:
+                    combined += recovery.hint + "\n\n"
+                if recovery_result.output:
+                    combined += str(recovery_result.output)
+                
+                if combined:
+                    self.mmu.add_system_message(combined)
+                    logger.info(f"🔧 Recovery hint injected for {action.name}")
+        
+        elif recovery and recovery.action_type == "inject_hint" and recovery.hint:
+            self.mmu.add_system_message(recovery.hint)
+            logger.info(f"🔧 Hint injected for no-match: {recovery.hint[:80]}...")
+        
+        return None  # 继续使用原始结果
 
     async def _handle_tool_call(self, action: ActionIR) -> ToolResult:
         """
@@ -820,53 +952,33 @@ class VCPU:
         # Note: Custom tools (not in TOOL_NAME_CANONICAL) are allowed to pass through.
         # The gate will handle unknown tool errors if the tool doesn't exist.
 
-        # Check for doom loop BEFORE executing (learned from opencode)
-        args_json = json.dumps(action.args, sort_keys=True)
-        current_call = (action.name, args_json)
+        # Check for doom loop BEFORE executing (using DoomLoopDetector)
+        doom_result = self._doom_detector.check(action.name, action.args)
+        
+        if doom_result.is_loop:
+            # Doom loop detected!
+            self._emit_event("DOOM_LOOP_DETECTED", {
+                "tool": action.name,
+                "args": action.args,
+                "consecutive_count": doom_result.consecutive_count
+            })
 
-        # Track this call
-        self._recent_tool_calls.append(current_call)
-
-        # Keep only the last DOOM_LOOP_THRESHOLD calls
-        if len(self._recent_tool_calls) > DOOM_LOOP_THRESHOLD:
-            self._recent_tool_calls = self._recent_tool_calls[-DOOM_LOOP_THRESHOLD:]
-
-        # Check if all recent calls are identical (doom loop detected)
-        if len(self._recent_tool_calls) == DOOM_LOOP_THRESHOLD:
-            if all(call == current_call for call in self._recent_tool_calls):
-                # Doom loop detected! 
-                self._emit_event("DOOM_LOOP_DETECTED", {
-                    "tool": action.name,
-                    "args": action.args,
-                    "consecutive_count": DOOM_LOOP_THRESHOLD
-                })
-
-                # Clear the recent calls to allow recovery
-                self._recent_tool_calls.clear()
-
-                # Provide tool-specific guidance for recovery
-                guidance = self._get_doom_loop_guidance(action.name)
-
-                # IMPROVED: Return a recoverable error that instructs LLM to adapt
-                # Instead of is_final=True (which terminates immediately), we give
-                # LLM one more chance to recover by using return_result properly
-                return ToolResult(
-                    status="ERROR",
-                    output=(
-                        f"[Operation Failed] The {action.name} operation failed after multiple attempts.\n\n"
-                        f"What happened: The same operation was tried {DOOM_LOOP_THRESHOLD} times without success.\n\n"
-                        f"Recovery guidance:\n{guidance}\n\n"
-                        f"IMPORTANT: Please call return_result now to report what you were trying to do "
-                        f"and what obstacle you encountered. Do NOT retry the same operation."
-                    ),
-                    is_final=False,  # Give LLM a chance to gracefully report
-                    fault=Fault(
-                        domain="RUNTIME",
-                        code="DOOM_LOOP",
-                        message=f"Operation failed: {action.name} unsuccessful after {DOOM_LOOP_THRESHOLD} attempts",
-                        retryable=False
-                    )
+            # Return a recoverable error using FailureReporter
+            return ToolResult(
+                status="ERROR",
+                output=self._failure_reporter.format_doom_loop_error(
+                    tool_name=action.name,
+                    threshold=doom_result.consecutive_count,
+                    guidance=doom_result.guidance or "",
+                ),
+                is_final=False,  # Give LLM a chance to gracefully report
+                fault=Fault(
+                    domain="RUNTIME",
+                    code="DOOM_LOOP",
+                    message=f"Operation failed: {action.name} unsuccessful after {doom_result.consecutive_count} attempts",
+                    retryable=False
                 )
+            )
 
         # Execute the tool
         result = await self.gate.syscall_tool(action, timeout_sec=self.config.default_timeout)
@@ -876,17 +988,25 @@ class VCPU:
             recovered = await self._handle_tool_error(action, result)
             if recovered is not None:
                 result = recovered  # Use recovered result instead
+        else:
+            # Handle "successful but empty" results (e.g., Glob/Grep with no matches)
+            # These are OK status but still need recovery hints
+            empty_override = await self._handle_empty_result(action, result)
+            if empty_override is not None:
+                result = empty_override  # Use error result to force behavior change
 
         # Update memory with tool result
         output_str = str(result.output) if result.output is not None else ""
         if result.fault:
             output_str = f"[Error] {result.fault.message}"
 
-        # Inject hint for terminal tools on success - append to tool result
-        # This reminds LLM to call return_result after state-modifying operations
-        if action.name in TERMINAL_TOOLS and result.status == "OK":
+        # Inject hint for state-modifying tools on success - append to tool result
+        # This reminds LLM to call return_result after Edit/Write (actual state changes)
+        # Note: Bash is excluded because it's often used for read operations (ls, grep, etc.)
+        # and we don't want to mislead the LLM when Bash output reveals infrastructure issues
+        if action.name in ("Edit", "Write") and result.status == "OK":
             output_str += (
-                "\n\n[IMPORTANT] Operation completed successfully. "
+                "\n\n[IMPORTANT] File modified successfully. "
                 "If your task is complete, call return_result immediately with a summary. "
                 "Do NOT call more tools to verify - trust the success message above."
             )
@@ -898,14 +1018,9 @@ class VCPU:
         )
 
         # Reset consecutive thoughts counter on tool call
-        self._consecutive_thoughts = 0
+        self._state.on_action()
 
-        # Clear doom loop tracker on successful different tool call
-        # (only keep tracking if we just detected a potential loop start)
-        if result.status == "OK" and len(self._recent_tool_calls) > 1:
-            # If this call is different from the previous one, reset tracker
-            if len(self._recent_tool_calls) >= 2 and self._recent_tool_calls[-1] != self._recent_tool_calls[-2]:
-                self._recent_tool_calls = [current_call]
+        # DoomLoopDetector handles its own state management internally
 
         return result
 
@@ -1034,32 +1149,36 @@ class VCPU:
 
     async def _handle_post_ipc(self, action: ActionIR) -> ToolResult:
         """
-        Handle POST_IPC action by publishing to the IPC bus.
+        Handle POST_IPC action (placeholder).
 
-        Publishes a reference to the IPC bus for cross-process communication.
+        Note: IPC functionality was removed as YAGNI. This handler exists
+        for compatibility but does nothing. Re-implement if actually needed.
         """
         channel = action.args.get("channel", "default")
         key = action.args.get("key", action.id)
-        value_ref = action.args.get("value_ref", "")
-        meta = action.args.get("meta", {})
+        
+        # Log but don't execute (IPC was removed)
+        from nimbus.core.logging import get_logger
+        logger = get_logger("kernel.vcpu")
+        logger.debug(f"POST_IPC called (no-op): {channel}:{key}")
 
-        self.gate.post_ipc(channel, key, value_ref, meta)
-
-        return ToolResult(status="OK", output=f"Published to {channel}:{key}")
+        return ToolResult(status="OK", output=f"IPC not implemented: {channel}:{key}")
 
     async def _handle_request_replan(self, action: ActionIR) -> ToolResult:
         """
-        Handle REQUEST_REPLAN action by signaling the scheduler.
+        Handle REQUEST_REPLAN action (placeholder).
 
-        Requests the kernel scheduler to replan the current DAG.
+        Note: Replan functionality was removed as YAGNI. This handler exists
+        for compatibility but does nothing. Re-implement if actually needed.
         """
         reason = action.args.get("reason", {})
-        if isinstance(reason, str):
-            reason = {"message": reason}
+        
+        # Log but don't execute (replan was removed)
+        from nimbus.core.logging import get_logger
+        logger = get_logger("kernel.vcpu")
+        logger.debug(f"REQUEST_REPLAN called (no-op): {reason}")
 
-        self.gate.request_replan(reason)
-
-        return ToolResult(status="OK", output="Replan requested")
+        return ToolResult(status="OK", output="Replan not implemented")
 
     async def _handle_cancel(self, action: ActionIR) -> ToolResult:
         """
@@ -1204,17 +1323,12 @@ class VCPU:
 
     def _reset(self) -> None:
         """Reset execution state for a new run."""
-        self._iteration = 0
-        self._consecutive_thoughts = 0
-        self._is_running = False
-        self._is_done = False
-        self._final_result = None
-        self._recent_tool_calls = []  # Reset doom loop tracker
-        self._doom_loop_count = 0  # Track how many doom loops occurred
-        self._consecutive_errors = 0  # Track consecutive errors
-        self._compaction_count = 0  # Reset compaction counter
-        self._consecutive_empty_responses = 0  # Reset empty response counter
-        self._path_not_found_count = 0  # Reset path resolution counter
+        # Reset centralized state
+        self._state.reset()
+        
+        # Reset extracted components
+        self._doom_detector.reset()
+        self._error_registry.reset()
 
     async def _prepare_goal_for_pinning(self, goal: str) -> str:
         """
@@ -1257,7 +1371,7 @@ One sentence summary:"""
             
             # Use LLM to summarize
             messages = [{"role": "user", "content": prompt}]
-            response = await self._llm.complete(messages, tools=[])
+            response = await self._alu.complete(messages, tools=[])
             
             if response.content:
                 summary = response.content.strip()
@@ -1395,69 +1509,6 @@ Be conversational and helpful, not robotic. Don't use bullet points or formattin
             f"Let me know if you'd like me to try a different approach."
         )
 
-    def _get_doom_loop_guidance(self, tool_name: str) -> str:
-        """Get tool-specific guidance for recovering from a doom loop.
-
-        This provides actionable advice based on the tool that triggered
-        the infinite loop, helping the LLM understand how to proceed.
-        """
-        guidance_map = {
-            "Edit": (
-                "EDIT TOOL GUIDANCE:\n"
-                "1. Use the Read tool FIRST to see the current file content\n"
-                "2. Common failure reasons:\n"
-                "   - The old_string does not match the file content exactly\n"
-                "   - The file was already modified by a previous successful edit\n"
-                "   - Whitespace or indentation mismatch\n"
-                "   - The text appears multiple times (need more context)\n"
-                "3. Recovery steps:\n"
-                "   - Read the file to get the current state\n"
-                "   - If the change you wanted is already there, move on\n"
-                "   - If you need a different edit, use text from the fresh Read\n"
-                "4. If your task is complete, call return_result immediately"
-            ),
-            "Write": (
-                "WRITE TOOL GUIDANCE:\n"
-                "- If Write is failing repeatedly, the file path may be invalid\n"
-                "- Check if the directory exists using Glob or Bash\n"
-                "- Ensure you have permission to write to this location\n"
-                "- Consider using a different approach if Write keeps failing"
-            ),
-            "Bash": (
-                "BASH TOOL GUIDANCE:\n"
-                "- The same command is failing repeatedly\n"
-                "- Check if the command syntax is correct\n"
-                "- Verify required dependencies are installed\n"
-                "- Try a different approach to achieve the same goal"
-            ),
-            "Read": (
-                "READ TOOL GUIDANCE:\n"
-                "- The file may not exist at the specified path\n"
-                "- Use Glob to search for the correct file path\n"
-                "- Check if the path is relative vs absolute"
-            ),
-            "Glob": (
-                "GLOB TOOL GUIDANCE:\n"
-                "- The pattern may not match any files\n"
-                "- Try a broader pattern (e.g., **/*.py instead of specific path)\n"
-                "- Verify the search directory is correct"
-            ),
-            "Grep": (
-                "GREP TOOL GUIDANCE:\n"
-                "- The search pattern may not exist in any files\n"
-                "- Try a simpler or broader search pattern\n"
-                "- Check if the path/directory is correct"
-            ),
-        }
-
-        return guidance_map.get(tool_name, (
-            f"GENERAL GUIDANCE:\n"
-            f"- The {tool_name} tool is failing with the same arguments\n"
-            f"- Review the error message from previous attempts\n"
-            f"- Try a different approach or different arguments\n"
-            f"- If stuck, call return_result to report the issue"
-        ))
-
     def _emit_event(self, event_type: str, data: Dict[str, Any]) -> None:
         """Emit an event if event emission is enabled."""
         if not self.config.emit_step_events:
@@ -1471,34 +1522,117 @@ Be conversational and helpful, not robotic. Don't use bullet points or formattin
             ))
 
     # =========================================================================
-    # State Accessors
+    # State Accessors (delegating to ExecutionState)
     # =========================================================================
 
     @property
     def iteration(self) -> int:
         """Get current iteration count."""
-        return self._iteration
+        return self._state.iteration
 
     @property
     def is_running(self) -> bool:
         """Check if vCPU is currently running."""
-        return self._is_running
+        return self._state.is_running
 
     @property
     def is_done(self) -> bool:
         """Check if execution is complete."""
-        return self._is_done
+        return self._state.is_done
 
     def get_state(self) -> Dict[str, Any]:
         """Get vCPU state for debugging/checkpointing."""
         return {
-            "iteration": self._iteration,
-            "consecutive_thoughts": self._consecutive_thoughts,
-            "is_running": self._is_running,
-            "is_done": self._is_done,
+            **self._state.to_dict(),
             "stack_depth": self.mmu.stack_depth,
             "mmu_state": self.mmu.get_state(),
+            "doom_loop_count": self._doom_detector.loop_count,
         }
+    
+    # =========================================================================
+    # Legacy Compatibility Properties (accessing _state internally)
+    # These will be removed in a future version.
+    # =========================================================================
+    
+    @property
+    def _iteration(self) -> int:
+        return self._state.iteration
+    
+    @_iteration.setter
+    def _iteration(self, value: int) -> None:
+        self._state.iteration = value
+    
+    @property
+    def _consecutive_thoughts(self) -> int:
+        return self._state.consecutive_thoughts
+    
+    @_consecutive_thoughts.setter
+    def _consecutive_thoughts(self, value: int) -> None:
+        self._state.consecutive_thoughts = value
+    
+    @property
+    def _is_running(self) -> bool:
+        return self._state.is_running
+    
+    @_is_running.setter
+    def _is_running(self, value: bool) -> None:
+        self._state.is_running = value
+    
+    @property
+    def _is_done(self) -> bool:
+        return self._state.is_done
+    
+    @_is_done.setter
+    def _is_done(self, value: bool) -> None:
+        self._state.is_done = value
+    
+    @property
+    def _final_result(self) -> Optional[ToolResult]:
+        return self._state.final_result
+    
+    @_final_result.setter
+    def _final_result(self, value: Optional[ToolResult]) -> None:
+        self._state.final_result = value
+    
+    @property
+    def _compaction_count(self) -> int:
+        return self._state.compaction_count
+    
+    @_compaction_count.setter
+    def _compaction_count(self, value: int) -> None:
+        self._state.compaction_count = value
+    
+    @property
+    def _consecutive_errors(self) -> int:
+        return self._state.consecutive_errors
+    
+    @_consecutive_errors.setter
+    def _consecutive_errors(self, value: int) -> None:
+        self._state.consecutive_errors = value
+    
+    @property
+    def _consecutive_empty_responses(self) -> int:
+        return self._state.consecutive_empty_responses
+    
+    @_consecutive_empty_responses.setter
+    def _consecutive_empty_responses(self, value: int) -> None:
+        self._state.consecutive_empty_responses = value
+    
+    @property
+    def _tool_failure_counts(self) -> Dict[str, int]:
+        return self._state.tool_failure_counts
+    
+    @_tool_failure_counts.setter
+    def _tool_failure_counts(self, value: Dict[str, int]) -> None:
+        self._state.tool_failure_counts = value
+    
+    @property
+    def _doom_loop_count(self) -> int:
+        return self._doom_detector.loop_count
+    
+    @property
+    def _recent_tool_calls(self) -> List[Tuple[str, str]]:
+        return self._doom_detector.recent_calls
 
     def _dump_context_to_file(self, messages: List[Dict[str, Any]], iteration: int) -> None:
         """

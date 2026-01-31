@@ -62,14 +62,30 @@ class Message:
         return d
 
     def token_estimate(self) -> int:
-        """Rough token estimate (4 chars ≈ 1 token)."""
+        """
+        Token estimate with language awareness.
+        
+        Ratios (per expert review):
+        - English: ~4 chars/token
+        - Chinese: ~1.5-2 chars/token (more conservative: 1.5)
+        - Code: ~3 chars/token (keywords, symbols)
+        """
+        def estimate_text(text: str) -> int:
+            if not text:
+                return 0
+            # Count Chinese characters
+            chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+            other_chars = len(text) - chinese_chars
+            # Chinese: 1.5 chars/token, Other: 4 chars/token
+            return int(chinese_chars / 1.5) + (other_chars // 4)
+        
         if isinstance(self.content, str):
-            return len(self.content) // 4
+            return estimate_text(self.content)
         elif isinstance(self.content, list):
             total = 0
             for block in self.content:
                 if isinstance(block, dict) and "text" in block:
-                    total += len(block["text"]) // 4
+                    total += estimate_text(block["text"])
             return total
         return 0
 
@@ -125,11 +141,20 @@ class PinnedContext:
         return Message(role="system", content=content, meta={"pinned": True})
 
     def token_estimate(self) -> int:
-        """Rough token estimate."""
-        total = len(self.system_rules) + len(self.workspace_info) + len(self.capabilities)
+        """Token estimate with language awareness."""
+        def estimate_text(text: str) -> int:
+            if not text:
+                return 0
+            chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+            other_chars = len(text) - chinese_chars
+            return int(chinese_chars / 1.5) + (other_chars // 4)
+        
+        total = estimate_text(self.system_rules)
+        total += estimate_text(self.workspace_info)
+        total += estimate_text(self.capabilities)
         for anchor in self.custom_anchors:
-            total += len(anchor)
-        return total // 4
+            total += estimate_text(anchor)
+        return total
 
     def add_anchor(self, content: str) -> None:
         """Add a custom anchor."""

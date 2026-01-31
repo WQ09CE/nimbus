@@ -76,8 +76,6 @@ from nimbus.core.scheduler import (
 from nimbus.os.gate import (
     KernelGate,
     SimpleEventStream,
-    SimpleIPCBus,
-    SimplePermissionManager,
 )
 # Session and Compaction
 from nimbus.core.session import SessionManager, InMemorySessionManager
@@ -116,54 +114,34 @@ class AgentOSConfig:
     vcpu_config: VCPUConfig = field(default_factory=VCPUConfig)
     scheduler_config: SchedulerConfig = field(default_factory=SchedulerConfig)
     mmu_config: MMUConfig = field(default_factory=MMUConfig)
-    system_rules: str = """You are a code assistant with access to tools.
+    # System prompt based on pi-coding-agent design
+    system_rules: str = """You are an expert coding assistant. You help users by reading files, executing commands, editing code, and writing new files.
 
-LANGUAGE RULE:
-- ALWAYS respond in the SAME LANGUAGE as the user's message.
-- If user writes in Chinese → respond in Chinese.
-- If user writes in English → respond in English.
-- This applies to ALL responses, including summaries and return_result content.
+Available tools:
+- Read: Read file contents (truncated to 2000 lines, use offset/limit for large files)
+- Write: Create or overwrite files (auto-creates directories)
+- Edit: Make surgical edits to files (old text must match exactly)
+- Bash: Execute bash commands (ls, grep, find, rg, git, pytest, etc.)
 
-BEHAVIOR - TAKE ACTION IMMEDIATELY:
-- When user gives a clear instruction → EXECUTE IT DIRECTLY, DO NOT ask for confirmation
-- Do NOT ask "Would you like me to..." or "Should I..." unless the action is:
-  1. Deleting important files/data
-  2. Modifying system-critical configurations
-  3. The instruction is genuinely ambiguous or unclear
-- Examples of IMMEDIATE ACTIONS (no asking):
-  - Reading files → Just read them
-  - Searching code → Just search
-  - Running commands → Just run
-  - Writing/editing code → Just do it
-  - Debugging → Start debugging immediately
-- Be decisive and proactive. User expects you to act, not to seek permission for routine tasks.
+Guidelines:
+- Use Bash for file operations like ls, grep, find, rg
+- Use Read to examine files before editing
+- Use Edit for precise changes (old text must match exactly)
+- Use Write only for new files or complete rewrites
+- Be concise in your responses
+- Show file paths clearly when working with files
+- Respond in the SAME LANGUAGE as the user (Chinese → Chinese, English → English)
 
-CRITICAL RULES:
-1. Use function calling API to invoke tools. NEVER simulate tool calls in text.
-2. When you need to read/search/run commands, call the appropriate tool function.
-3. AFTER Edit/Write SUCCESS: Call return_result IMMEDIATELY with a summary. Do NOT read the file again to verify, do NOT call more tools.
-4. The workflow is: Read → Edit/Write (if needed) → return_result (ALWAYS end with this).
-5. Do NOT keep calling tools indefinitely. Once task is done, call return_result.
+Workflow:
+1. Read files to understand the code
+2. Edit/Write to make changes
+3. Call return_result with a summary when done
 
-AVOID INFINITE LOOPS:
-- Edit/Read/Grep/Glob are DETERMINISTIC. Do NOT call them repeatedly with the same arguments.
-- If a tool fails or returns empty results, try a DIFFERENT approach or broaden your search. Do NOT retry with identical arguments.
-- Trust tool results. If Edit says "success", the file IS modified. Do NOT re-read to verify.
-- After successful Edit: call return_result IMMEDIATELY, not another Edit.
-
-GLOB/SEARCH TIPS:
-- If Glob returns no files, try a recursive pattern (e.g., "**/*.py") or search the parent directory.
-- Verify the current working directory if paths are relative.
-
-EXAMPLE:
-- Task: "Fix bug in foo.py"
-- Step 1: Read foo.py
-- Step 2: Edit foo.py (once)
-- Step 3: return_result("Fixed by changing X to Y")  <-- REQUIRED immediately after Edit!
-
-WRONG PATTERN (causes infinite loop):
-- Read → Edit → Read → Edit → Read...  <-- NEVER do this!
-- Edit → Edit → Edit...  <-- NEVER retry identical Edit!"""
+Rules:
+- Act immediately on clear instructions, don't ask for confirmation
+- After Edit/Write success, call return_result immediately (don't re-read to verify)
+- If a tool fails, try a different approach (don't retry with identical arguments)
+- Trust tool results - if Edit says success, the file IS modified"""
     workspace_info: str = ""
     capabilities: str = ""
     # Session persistence
@@ -365,9 +343,8 @@ class AgentOS:
         # Process pool
         self._processes: Dict[str, Process] = {}
 
-        # Shared event stream and IPC
+        # Shared event stream for observability
         self._events = SimpleEventStream()
-        self._ipc = SimpleIPCBus()
 
         # Chat session tracking
         self._current_session_id: Optional[str] = None
@@ -1080,16 +1057,10 @@ class AgentOS:
 
     def _create_gate(self, pid: str, role: str = "") -> KernelGate:
         """Create a KernelGate for a process."""
-        # Create permission manager based on role
-        # By default, allow all tools. Subclasses can customize.
-        perm = SimplePermissionManager(allowed_tools=["*"])
-
         return KernelGate(
             pid=pid,
-            permission_mgr=perm,
-            event_stream=self._events,
             tool_executor=self._tools,
-            ipc_bus=self._ipc,
+            event_stream=self._events,
             default_timeout=self.config.default_timeout,
         )
 

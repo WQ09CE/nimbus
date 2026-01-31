@@ -23,12 +23,26 @@ Usage:
 import asyncio
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+def _format_timestamp() -> str:
+    """Generate ISO timestamp for logs."""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
+def _truncate(s: str, max_len: int = 200) -> str:
+    """Truncate string for logging."""
+    if len(s) <= max_len:
+        return s
+    return s[:max_len] + "..."
 
 # 默认配置
 DEFAULT_BASE_URL = "http://localhost:3031"
@@ -77,16 +91,22 @@ class StreamEvent:
 class PiAiHttpClient:
     """Pi-AI HTTP 客户端"""
     
+    # Class-level request counter for logging
+    _request_counter: int = 0
+    
     def __init__(
         self,
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = DEFAULT_TIMEOUT,
         default_model: str = DEFAULT_MODEL,
+        session_id: Optional[str] = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.default_model = default_model
         self._client: Optional[httpx.AsyncClient] = None
+        # Session ID for logging - generate one if not provided
+        self.session_id = session_id or f"sess_{uuid.uuid4().hex[:8]}"
     
     async def __aenter__(self) -> "PiAiHttpClient":
         await self.start()
@@ -99,12 +119,21 @@ class PiAiHttpClient:
         """启动客户端"""
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=self.timeout)
+            from loguru import logger
+            ts = _format_timestamp()
+            logger.info(
+                f"[{ts}] [{self.session_id}] Pi-AI client started | "
+                f"url={self.base_url}, model={self.default_model}"
+            )
     
     async def stop(self):
         """停止客户端"""
         if self._client:
             await self._client.aclose()
             self._client = None
+            from loguru import logger
+            ts = _format_timestamp()
+            logger.info(f"[{ts}] [{self.session_id}] Pi-AI client stopped")
     
     async def health_check(self) -> bool:
         """健康检查"""
@@ -164,7 +193,22 @@ class PiAiHttpClient:
         if self._client is None:
             await self.start()
         
+        # Increment request counter
+        PiAiHttpClient._request_counter += 1
+        req_id = PiAiHttpClient._request_counter
+        
         req = self._build_request(messages, model, tools, stream=False)
+        
+        # Log request info
+        from loguru import logger
+        ts = _format_timestamp()
+        msg_count = len(messages)
+        tool_count = len(tools) if tools else 0
+        last_role = messages[-1].role if messages else "none"
+        logger.debug(
+            f"[{ts}] [{self.session_id}] req#{req_id} → pi-ai | "
+            f"messages={msg_count}, tools={tool_count}, last_role={last_role}"
+        )
         
         resp = await self._client.post(
             f"{self.base_url}/v1/chat/completions",
@@ -173,11 +217,28 @@ class PiAiHttpClient:
         resp.raise_for_status()
         data = resp.json()
         
-        # Debug log: show raw response
-        from loguru import logger
+        # Parse response
         choice = data.get("choices", [{}])[0]
         message = choice.get("message", {})
-        logger.debug(f"[pi-ai-http] Raw response: content={repr(message.get('content', '')[:200] if message.get('content') else None)}, tool_calls={len(message.get('tool_calls', []))}")
+        finish_reason = choice.get("finish_reason", "stop")
+        
+        # Enhanced logging
+        ts = _format_timestamp()
+        content_preview = message.get("content", "")
+        if content_preview:
+            content_preview = _truncate(content_preview, 100)
+        tool_calls_raw = message.get("tool_calls", [])
+        tool_names = [tc.get("function", {}).get("name", "?") for tc in tool_calls_raw]
+        
+        # Detect if this is a return_result call
+        is_final = "return_result" in tool_names
+        
+        logger.info(
+            f"[{ts}] [{self.session_id}] req#{req_id} ← pi-ai | "
+            f"finish={finish_reason}, tools={tool_names or 'none'}, "
+            f"content={repr(content_preview) if content_preview else 'none'}"
+            f"{' [FINAL]' if is_final else ''}"
+        )
         
         # 解析响应
         
@@ -218,7 +279,21 @@ class PiAiHttpClient:
         if self._client is None:
             await self.start()
         
+        # Increment request counter
+        PiAiHttpClient._request_counter += 1
+        req_id = PiAiHttpClient._request_counter
+        
         req = self._build_request(messages, model, tools, stream=True)
+        
+        # Log request info
+        from loguru import logger
+        ts = _format_timestamp()
+        msg_count = len(messages)
+        tool_count = len(tools) if tools else 0
+        logger.debug(
+            f"[{ts}] [{self.session_id}] req#{req_id} → pi-ai [STREAM] | "
+            f"messages={msg_count}, tools={tool_count}"
+        )
         
         async with self._client.stream(
             "POST",

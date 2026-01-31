@@ -129,13 +129,13 @@ class TestContextStackExtraction:
         mmu.add_tool_result("tc-1", "Read", "File content...")
         mmu.add_tool_result("tc-2", "Read", "[Error] File not found")
         
-        # 手动标记
-        mmu.mark_tool_call("tc-2", "failed", reason="file_not_found")
+        # 手动标记（简化版：使用 discard）
+        mmu.mark_tool_call("tc-2", "discard", reason="file_not_found")
         
         # 检查标记
         markers = mmu.get_tool_markers()
         assert "tc-2" in markers
-        assert markers["tc-2"].value == "failed"
+        assert markers["tc-2"].value == "discard"
     
     def test_auto_detect_failures(self):
         """测试自动检测失败"""
@@ -158,8 +158,8 @@ class TestContextStackExtraction:
         mmu.add_assistant_with_tool_calls(None, [{"id": "tc-2", "function": {"name": "Read"}}])
         mmu.add_tool_result("tc-2", "Read", "Found it!")
         
-        # 标记 tc-1 为探索性调用
-        mmu.mark_tool_call("tc-1", "exploratory", reason="wrong_direction")
+        # 标记 tc-1 为 discard（不需要保留的调用）
+        mmu.mark_tool_call("tc-1", "discard", reason="wrong_direction")
         
         # 组装上下文（应该过滤 tc-1）
         context = mmu.assemble_context(filter_discardable=True)
@@ -204,8 +204,8 @@ class TestContextStackExtraction:
         for i in range(5):
             mmu.add_tool_result(f"tc-{i}", "Read", f"Result {i}")
         
-        # 批量标记最近 3 个为 exploratory
-        marked = mmu.mark_recent_tool_calls("exploratory", count=3)
+        # 批量标记最近 3 个为 discard
+        marked = mmu.mark_recent_tool_calls("discard", count=3)
         
         assert marked == 3
         assert mmu.get_discardable_count() == 3
@@ -284,7 +284,9 @@ class TestCompaction:
         assert new_messages[0].role == "system"  # Summary message
     
     def test_context_stack_aware_compaction(self):
-        """测试 Context Stack 感知的压缩"""
+        """测试 Context Stack 感知的压缩（兼容性测试）"""
+        # 注意：ContextStackAwareCompaction 已被标记为 deprecated
+        # 新代码应使用 MMU 的标记功能
         csc = ContextStackAwareCompaction()
         
         # 创建一些消息，包括失败的 tool calls
@@ -296,9 +298,9 @@ class TestCompaction:
             Message(role="tool", content="Found it!", tool_call_id="tc-2"),
         ]
         
-        # 自动检测失败
+        # 自动检测失败（现在使用结构化检测）
         count = csc.auto_detect_failed_tools(messages)
-        assert count == 1
+        assert count == 1  # [Error] 前缀被检测
         
         # 过滤消息
         filtered = csc.filter_messages(messages)

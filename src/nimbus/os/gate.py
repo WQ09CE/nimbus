@@ -1,16 +1,18 @@
 """
 Nimbus v2 Kernel Gate - The Customs
 
-This module is the unified entry point for all side-effects.
-All tool executions, IPC messages, and subprocess spawns must go through the Gate.
+This module is the unified entry point for all tool executions.
+All tool calls must go through the Gate for timeout enforcement and observability.
 
 Key Responsibilities:
-- Permission checking (via CapabilityToken)
-- Timeout enforcement
-- Event emission (observability)
-- Result packaging (ToolResult)
+- Timeout enforcement (asyncio.wait_for)
+- Error packaging (Exception → Fault → ToolResult)
+- Event emission (TOOL_STARTED/TOOL_FINISHED for observability)
 
 Design Principle: "One Gate, All Effects"
+
+Note: Permission checking and IPC were removed as YAGNI (You Aren't Gonna Need It).
+They can be added back when actually needed (~15 lines each).
 """
 
 import asyncio
@@ -22,26 +24,12 @@ from nimbus.core.protocol import (
     ToolResult,
     Fault,
     Event,
-    IPCMessage,
     ArtifactRef,
 )
 
 
-class PermissionManager(Protocol):
-    """Protocol for permission management."""
-
-    @property
-    def tools(self) -> Dict[str, Any]:
-        """Tool permission configuration."""
-        ...
-
-    def check_tool(self, tool_name: str) -> bool:
-        """Check if tool is allowed."""
-        ...
-
-
 class EventStream(Protocol):
-    """Protocol for event emission."""
+    """Protocol for event emission (used by web-ui SSE)."""
 
     def emit(self, event: Event) -> None:
         """Emit an event to the stream."""
@@ -56,28 +44,18 @@ class ToolExecutor(Protocol):
         ...
 
 
-class IPCBus(Protocol):
-    """Protocol for IPC message bus."""
-
-    def publish(self, message: IPCMessage) -> None:
-        """Publish a message to the bus."""
-        ...
-
-
 class KernelGate:
     """
-    System Call Gate.
+    System Call Gate - Simplified.
 
-    Enforces permissions, handles timeouts, and ensures observability.
-    All side-effects must pass through this gate.
+    Handles timeout enforcement, error packaging, and event emission.
+    All tool executions must pass through this gate.
 
     Example:
         gate = KernelGate(
             pid="proc-001",
-            permission_mgr=perm_mgr,
-            event_stream=events,
             tool_executor=executor,
-            ipc_bus=ipc
+            event_stream=events,  # optional
         )
 
         result = await gate.syscall_tool(action, timeout_sec=30.0)
@@ -86,10 +64,8 @@ class KernelGate:
     def __init__(
         self,
         pid: str,
-        permission_mgr: Optional[PermissionManager] = None,
+        tool_executor: ToolExecutor,
         event_stream: Optional[EventStream] = None,
-        tool_executor: Optional[ToolExecutor] = None,
-        ipc_bus: Optional[IPCBus] = None,
         default_timeout: float = 60.0,
     ):
         """
@@ -97,17 +73,13 @@ class KernelGate:
 
         Args:
             pid: Process ID for event emission
-            permission_mgr: Permission manager for access control
-            event_stream: Event stream for observability
             tool_executor: Tool executor for running tools
-            ipc_bus: IPC bus for inter-process communication
+            event_stream: Event stream for observability (optional)
             default_timeout: Default execution timeout in seconds
         """
         self.pid = pid
-        self.perm = permission_mgr
-        self.events = event_stream
         self.executor = tool_executor
-        self.ipc = ipc_bus
+        self.events = event_stream
         self.default_timeout = default_timeout
 
     async def syscall_tool(
@@ -116,14 +88,13 @@ class KernelGate:
         timeout_sec: Optional[float] = None,
     ) -> ToolResult:
         """
-        Execute a TOOL_CALL action with safety checks.
+        Execute a TOOL_CALL action with timeout and error handling.
 
         This is the main entry point for tool execution. It:
-        1. Checks permissions
-        2. Emits start event
-        3. Executes with timeout
-        4. Packages result
-        5. Emits finish event
+        1. Emits TOOL_STARTED event
+        2. Executes with timeout (asyncio.wait_for)
+        3. Packages result/error into ToolResult
+        4. Emits TOOL_FINISHED event
 
         Args:
             action: The TOOL_CALL ActionIR to execute
@@ -135,22 +106,7 @@ class KernelGate:
         tool_name = action.name
         timeout = timeout_sec or self.default_timeout
 
-        # 1. Permission Check
-        if not self._check_tool_permission(tool_name):
-            fault = Fault(
-                domain="PERMISSION",
-                code="PERMISSION_DENIED",
-                message=f"Tool '{tool_name}' not allowed for process '{self.pid}'",
-                retryable=False,
-                context={"tool": tool_name, "pid": self.pid}
-            )
-            self._emit_event("FAULT_RAISED", {
-                "action_id": action.id,
-                "fault": str(fault)
-            })
-            return ToolResult(status="ERROR", fault=fault)
-
-        # 2. Emit Start Event
+        # 1. Emit Start Event
         self._emit_event("TOOL_STARTED", {
             "action_id": action.id,
             "tool": tool_name,
@@ -164,7 +120,7 @@ class KernelGate:
         
         start_time = time.time_ns()
 
-        # 3. Execution (with Timeout)
+        # 2. Execution with Timeout
         output = None
         fault = None
         status: str = "OK"
@@ -179,7 +135,6 @@ class KernelGate:
                     retryable=False
                 )
 
-            # Wrap execution in timeout
             output = await asyncio.wait_for(
                 self.executor.execute(tool_name, action.args),
                 timeout=timeout
@@ -220,7 +175,7 @@ class KernelGate:
                 context={"tool": tool_name, "exception_type": type(e).__name__}
             )
 
-        # 4. Result Packaging
+        # 3. Result Packaging
         duration_ms = (time.time_ns() - start_time) // 1_000_000
         
         status_emoji = "✅" if status == "OK" else "❌"
@@ -240,8 +195,7 @@ class KernelGate:
             timing_ms={"total": duration_ms}
         )
 
-        # 5. Emit Finish Event
-        # Serialize fault for web-ui consumption
+        # 4. Emit Finish Event
         fault_data = None
         if fault is not None:
             fault_data = {
@@ -257,91 +211,17 @@ class KernelGate:
             "status": status,
             "output": output,
             "duration_ms": duration_ms,
-            "fault": fault_data,  # Include full fault object for web-ui
+            "fault": fault_data,
         })
 
         return result
-
-    def post_ipc(
-        self,
-        channel: str,
-        key: str,
-        value_ref: str,
-        meta: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """
-        Publish data reference to IPC bus.
-
-        Args:
-            channel: Message channel (e.g., "task_result")
-            key: Unique key within channel (e.g., "t1.output")
-            value_ref: Reference to actual data (artifact ID / store key)
-            meta: Additional metadata
-        """
-        msg = IPCMessage(
-            channel=channel,
-            key=key,
-            value_ref=value_ref,
-            meta=meta or {}
-        )
-
-        if self.ipc:
-            self.ipc.publish(msg)
-
-        self._emit_event("ACTION_EMITTED", {
-            "type": "IPC",
-            "channel": channel,
-            "key": key
-        })
-
-    def request_replan(self, reason: Dict[str, Any]) -> None:
-        """
-        Signal the kernel scheduler to replan.
-
-        Args:
-            reason: Reason for replan request
-        """
-        self._emit_event("REPLAN_REQUESTED", {
-            "pid": self.pid,
-            "reason": reason
-        })
-
-    def _check_tool_permission(self, tool_name: str) -> bool:
-        """
-        Check if a tool is allowed for this process.
-
-        Args:
-            tool_name: Name of the tool to check
-
-        Returns:
-            True if allowed, False otherwise
-        """
-        if self.perm is None:
-            # No permission manager = allow all
-            return True
-
-        # Check via permission manager protocol
-        if hasattr(self.perm, 'check_tool'):
-            return self.perm.check_tool(tool_name)
-
-        # Fallback: simple whitelist check
-        tools_config = getattr(self.perm, 'tools', {})
-        allowed = tools_config.get("allow", [])
-        denied = tools_config.get("deny", [])
-
-        # Deny takes precedence
-        if tool_name in denied:
-            return False
-
-        # Allow wildcard or explicit allow
-        return "*" in allowed or tool_name in allowed
 
     def _emit_event(self, event_type: str, data: Dict[str, Any]) -> None:
         """
         Emit an event to the event stream.
 
         Args:
-            event_type: Type of event (see EventType)
+            event_type: Type of event (TOOL_STARTED, TOOL_FINISHED, etc.)
             data: Event data
         """
         if self.events:
@@ -353,21 +233,11 @@ class KernelGate:
 
 
 # =============================================================================
-# Simple implementations for testing
+# Simple implementation for testing
 # =============================================================================
 
-class SimplePermissionManager:
-    """Simple permission manager for testing."""
-
-    def __init__(self, allowed_tools: List[str]):
-        self.tools = {"allow": allowed_tools, "deny": []}
-
-    def check_tool(self, tool_name: str) -> bool:
-        return "*" in self.tools["allow"] or tool_name in self.tools["allow"]
-
-
 class SimpleEventStream:
-    """Simple event stream that collects events in a list and supports listeners."""
+    """Simple event stream that collects events and supports listeners."""
 
     def __init__(self):
         self.events: List[Event] = []
@@ -379,8 +249,7 @@ class SimpleEventStream:
             try:
                 listener(event)
             except Exception:
-                # Ignore listener errors
-                pass
+                pass  # Ignore listener errors
 
     def add_listener(self, listener: Callable[[Event], Any]) -> None:
         """Add an event listener."""
@@ -392,18 +261,5 @@ class SimpleEventStream:
             self._listeners.remove(listener)
 
     def clear(self) -> None:
+        """Clear all collected events."""
         self.events.clear()
-
-
-class SimpleIPCBus:
-    """Simple IPC bus that stores messages in a dict."""
-
-    def __init__(self):
-        self.messages: Dict[str, IPCMessage] = {}
-
-    def publish(self, message: IPCMessage) -> None:
-        key = f"{message.channel}:{message.key}"
-        self.messages[key] = message
-
-    def get(self, channel: str, key: str) -> Optional[IPCMessage]:
-        return self.messages.get(f"{channel}:{key}")

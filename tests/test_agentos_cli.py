@@ -10,7 +10,7 @@ Usage:
     python tests/test_agentos_cli.py
 
     # 运行基础测试
-    python tests/test_agentos_cli.py --test read_file glob_files
+    python tests/test_agentos_cli.py --test read_file bash_command
 
     # 运行情境模拟测试
     python tests/test_agentos_cli.py --scenario
@@ -750,23 +750,9 @@ CRITICAL RULES:
             validators=[lambda r: r["status"] == "OK"],
         )
 
-    async def test_glob_files(self) -> TestResult:
-        """Test globbing files."""
-        return await self.run_test(
-            name="glob_files",
-            description="Test finding Python files",
-            messages=["Find all Python files in src/nimbus/v2/tools/ directory. Just list the file names."],
-            validators=[lambda r: r["status"] == "OK"],
-        )
-
-    async def test_grep_content(self) -> TestResult:
-        """Test grepping content."""
-        return await self.run_test(
-            name="grep_content",
-            description="Test searching for content",
-            messages=["Search for 'class VCPU' in the src/nimbus/v2 directory. Tell me which file contains it."],
-            validators=[lambda r: r["status"] == "OK"],
-        )
+    # Note: glob_files and grep_content tests removed - use Bash instead
+    # Example: bash "find . -name '*.py'" for glob
+    # Example: bash "grep -r 'pattern' ." for grep
 
     async def test_code_understanding(self) -> TestResult:
         """Test code understanding."""
@@ -1020,8 +1006,7 @@ CRITICAL RULES:
         return {
             "simple_chat": self.test_simple_chat,
             "read_file": self.test_read_file,
-            "glob_files": self.test_glob_files,
-            "grep_content": self.test_grep_content,
+            # glob_files and grep_content removed - use Bash tool instead
             "code_understanding": self.test_code_understanding,
             "multi_turn_chat": self.test_multi_turn_chat,
             "bash_command": self.test_bash_command,

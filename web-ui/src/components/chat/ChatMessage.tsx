@@ -23,7 +23,7 @@ interface MergedTool {
 
 export function ChatMessage({ message, isStreaming }: ChatMessageProps) {
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
-  const [showAllTools, setShowAllTools] = useState(true);
+  const [showAllTools, setShowAllTools] = useState(false);
   const previousContentLength = useRef(0);
   const previousToolsLength = useRef(0);
 
@@ -156,7 +156,7 @@ export function ChatMessage({ message, isStreaming }: ChatMessageProps) {
                 <div className="divide-y divide-gray-800/50 border-t border-gray-800/50">
                   {tools.map((tool, i) => {
                     const toolId = tool.id || i;
-                    const isExpanded = expandedTools[toolId] ?? true; // Default expanded
+                    const isExpanded = expandedTools[toolId] ?? false; // Default collapsed
 
                     return (
                       <div key={toolId} className="px-4 py-3 hover:bg-white/[0.02]">

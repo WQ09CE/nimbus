@@ -497,22 +497,23 @@ class SimpleCompactionEngine(CompactionEngine):
 
 
 # =============================================================================
-# Context Stack Aware Compaction
+# Context Stack Aware Compaction (Deprecated - use MMU directly)
 # =============================================================================
 
 class ContextStackAwareCompaction:
     """
     Context Stack 感知的压缩。
     
-    这是 Nimbus 的差异化功能：
-    - 识别 tool call 的价值（成功/失败）
-    - 自动丢弃失败的探索性调用
-    - 保留有价值的结论
+    ⚠️ DEPRECATED: 此类的功能已合并到 MMU 中。
+    保留此类仅为向后兼容，新代码应直接使用 MMU 的标记功能。
+    
+    职责边界（per expert review）：
+    - MMU: 内存布局 + 消息管理 + tool call 标记
+    - CompactionEngine: LLM 摘要 + 压缩执行
     """
     
     def __init__(self, config: Optional[CompactionConfig] = None):
         self.config = config or CompactionConfig()
-        # 标记为无价值的 tool call IDs
         self._discardable_tool_calls: set = set()
     
     def mark_tool_call(
@@ -521,64 +522,34 @@ class ContextStackAwareCompaction:
         valuable: bool,
         reason: Optional[str] = None,
     ) -> None:
-        """
-        标记 tool call 的价值。
-        
-        Args:
-            tool_call_id: Tool call ID
-            valuable: 是否有价值
-            reason: 标记原因
-        """
+        """标记 tool call。valuable=False 表示 discard。"""
         if not valuable:
             self._discardable_tool_calls.add(tool_call_id)
-        elif tool_call_id in self._discardable_tool_calls:
-            self._discardable_tool_calls.remove(tool_call_id)
+        else:
+            self._discardable_tool_calls.discard(tool_call_id)
     
     def filter_messages(self, messages: List[Message]) -> List[Message]:
-        """
-        过滤无价值的消息。
-        
-        在发送给 LLM 之前调用，移除标记为无价值的 tool calls。
-        
-        Args:
-            messages: 原始消息列表
-        
-        Returns:
-            过滤后的消息列表
-        """
+        """过滤被标记为 discard 的消息。"""
         if not self._discardable_tool_calls:
             return messages
         
         filtered = []
-        skip_tool_results = set()
+        skip_ids = self._discardable_tool_calls
         
         for msg in messages:
-            # 检查 assistant 消息中的 tool_calls
             if msg.role == "assistant" and msg.tool_calls:
-                filtered_calls = [
-                    tc for tc in msg.tool_calls
-                    if tc.get("id") not in self._discardable_tool_calls
-                ]
-                
-                # 记录被跳过的 tool call IDs
-                for tc in msg.tool_calls:
-                    if tc.get("id") in self._discardable_tool_calls:
-                        skip_tool_results.add(tc.get("id"))
-                
+                filtered_calls = [tc for tc in msg.tool_calls if tc.get("id") not in skip_ids]
                 if filtered_calls or msg.content:
                     filtered.append(Message(
-                        role=msg.role,
-                        content=msg.content,
+                        role=msg.role, content=msg.content,
                         tool_calls=filtered_calls if filtered_calls else None,
                         meta=msg.meta,
                     ))
-            # 检查 tool result 消息
             elif msg.role == "tool":
-                if msg.tool_call_id not in skip_tool_results:
+                if msg.tool_call_id not in skip_ids:
                     filtered.append(msg)
             else:
                 filtered.append(msg)
-        
         return filtered
     
     def clear_markers(self) -> None:
@@ -587,46 +558,18 @@ class ContextStackAwareCompaction:
     
     def auto_detect_failed_tools(self, messages: List[Message]) -> int:
         """
-        自动检测失败的 tool calls 并标记。
-        
-        检测规则：
-        1. Tool result 包含 "[Error]" 前缀
-        2. Tool result 很短且包含失败指示词
-        
-        Args:
-            messages: 消息列表
-        
-        Returns:
-            标记的数量
+        自动检测失败的 tool calls（结构化检测，避免误判）。
         """
         marked_count = 0
-        
         for msg in messages:
-            if msg.role != "tool":
+            if msg.role != "tool" or not msg.tool_call_id:
                 continue
-            
             content = msg.content if isinstance(msg.content, str) else ""
-            tool_call_id = msg.tool_call_id
-            
-            if not tool_call_id:
-                continue
-            
-            # 检测失败
-            is_failed = False
-            
-            if content.startswith("[Error]"):
-                is_failed = True
-            elif any(indicator in content.lower() for indicator in [
-                "not found",
-                "no such file",
-                "permission denied",
-                "failed to",
-                "error:",
-            ]):
-                is_failed = True
-            
-            if is_failed:
-                self.mark_tool_call(tool_call_id, valuable=False, reason="auto_detected_failure")
+            # 只检测明确的错误（per expert review）
+            if content.startswith("[Error]") or content.startswith("Error:"):
+                self.mark_tool_call(msg.tool_call_id, valuable=False, reason="error_prefix")
                 marked_count += 1
-        
+            elif "Exception:" in content or "Traceback" in content:
+                self.mark_tool_call(msg.tool_call_id, valuable=False, reason="exception")
+                marked_count += 1
         return marked_count

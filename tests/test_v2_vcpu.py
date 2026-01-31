@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from nimbus.core.protocol import ActionIR, ToolResult, Fault
 from nimbus.core.runtime.decoder import InstructionDecoder
 from nimbus.core.runtime.vcpu import VCPU, VCPUConfig, StepResult
-from nimbus.os.gate import KernelGate, SimpleEventStream, SimplePermissionManager
+from nimbus.os.gate import KernelGate, SimpleEventStream
 from nimbus.core.memory.mmu import MMU, MMUConfig
 from nimbus.core.memory.context import PinnedContext
 
@@ -128,12 +128,10 @@ def tool_executor():
 @pytest.fixture
 def gate(event_stream, tool_executor):
     """Create a kernel gate with mock components."""
-    perm = SimplePermissionManager(["*"])  # Allow all tools
     return KernelGate(
         pid="test-proc-001",
-        permission_mgr=perm,
-        event_stream=event_stream,
         tool_executor=tool_executor,
+        event_stream=event_stream,
         default_timeout=30.0
     )
 
@@ -542,60 +540,8 @@ class TestVCPUSubCall:
 class TestVCPUErrors:
     """Test vCPU error handling."""
 
-    @pytest.mark.asyncio
-    async def test_tool_permission_denied(self, decoder, mmu, vcpu_config, event_stream):
-        """Test handling of permission denied errors."""
-        # Create gate with restricted permissions
-        perm = SimplePermissionManager(["Read"])  # Only allow Read
-        executor = MockToolExecutor()
-        gate = KernelGate(
-            pid="test-proc",
-            permission_mgr=perm,
-            event_stream=event_stream,
-            tool_executor=executor
-        )
-
-        llm = MockLLMClient(responses=[
-            # Try to use a forbidden tool
-            MockLLMResponse(
-                tool_calls=[
-                    MockToolCall(
-                        function=MockFunction(
-                            name="Bash",  # Not allowed
-                            arguments='{"command": "ls"}'
-                        )
-                    )
-                ]
-            ),
-            # Then return
-            MockLLMResponse(
-                tool_calls=[
-                    MockToolCall(
-                        function=MockFunction(
-                            name="return_result",
-                            arguments='{"result": "Done"}'
-                        )
-                    )
-                ]
-            )
-        ])
-
-        vcpu = VCPU(
-            alu=llm,
-            decoder=decoder,
-            gate=gate,
-            mmu=mmu,
-            config=vcpu_config
-        )
-
-        result = await vcpu.execute("Try to run bash")
-
-        # Permission denied is non-retryable, so execution stops
-        assert result.status == "ERROR"
-        assert result.fault is not None
-        assert result.fault.code == "PERMISSION_DENIED"
-        # Executor should not have been called for Bash
-        assert len(executor.calls) == 0
+    # Note: test_tool_permission_denied was removed as permission checking was removed from Gate.
+    # Permission checking can be re-added as a separate middleware if needed.
 
     @pytest.mark.asyncio
     async def test_hallucination_detection(self, decoder, gate, mmu, vcpu_config):

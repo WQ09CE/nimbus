@@ -287,10 +287,10 @@ class TestAgentOSIntegration:
 
     @pytest.mark.asyncio
     @pytest.mark.slow
-    async def test_glob_files(self, agent_os):
-        """Test finding files using Glob tool."""
+    async def test_find_files_via_bash(self, agent_os):
+        """Test finding files using Bash tool (find command)."""
         result = await agent_os.run(
-            "Find all Python files in the tests/ directory. "
+            "Use bash to find all Python files in the tests/ directory. "
             "Just tell me approximately how many there are."
         )
         
