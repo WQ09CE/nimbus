@@ -345,6 +345,98 @@ class TestVCPULimits:
         # The output should be the last thought
         assert "Thinking 2" in result.output
 
+    @pytest.mark.asyncio
+    async def test_compaction_on_iteration_limit(self, decoder, gate, mmu):
+        """Test that compaction is triggered when iteration limit is reached."""
+        # Create many responses with DIFFERENT tool calls to avoid doom loop detection
+        responses = []
+        for i in range(15):
+            if i < 12:
+                # Keep doing tool calls with different file paths
+                responses.append(MockLLMResponse(
+                    content=f"Step {i}: Let me read file {i}",
+                    tool_calls=[MockToolCall(
+                        function=MockFunction(name="Read", arguments=f'{{"file_path": "/file_{i}.txt"}}')
+                    )]
+                ))
+            else:
+                # Eventually return result
+                responses.append(MockLLMResponse(
+                    content="Done!",
+                    tool_calls=[MockToolCall(
+                        function=MockFunction(name="return_result", arguments='{"result": "All done after compaction!"}')
+                    )]
+                ))
+        
+        llm = MockLLMClient(responses=responses)
+        
+        # Set low max_iterations to trigger compaction quickly
+        config = VCPUConfig(
+            max_iterations=5,
+            max_consecutive_thoughts=100,
+            compact_on_limit=True,
+            max_compactions=3,
+        )
+        
+        vcpu = VCPU(
+            alu=llm,
+            decoder=decoder,
+            gate=gate,
+            mmu=mmu,
+            config=config
+        )
+        
+        result = await vcpu.execute("Read many files")
+        
+        # Should succeed (not BUDGET_EXCEEDED) because compaction allowed continuation
+        assert result.status == "OK"
+        assert "All done" in result.output
+        
+        # Should have triggered at least one compaction (iteration reset from 5 back to 0)
+        # We ran 12+ iterations with max_iterations=5, so at least 2 compactions
+        assert vcpu._compaction_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_max_compactions_limit(self, decoder, gate, mmu):
+        """Test that max_compactions limit is enforced."""
+        # Create endless responses with DIFFERENT paths to avoid doom loop
+        responses = [
+            MockLLMResponse(
+                content=f"Step {i}",
+                tool_calls=[MockToolCall(
+                    function=MockFunction(name="Read", arguments=f'{{"file_path": "/file_{i}.txt"}}')
+                )]
+            )
+            for i in range(100)
+        ]
+        
+        llm = MockLLMClient(responses=responses)
+        
+        # Set very low limits to quickly hit max_compactions
+        config = VCPUConfig(
+            max_iterations=3,
+            max_consecutive_thoughts=100,
+            compact_on_limit=True,
+            max_compactions=2,  # Only allow 2 compactions
+        )
+        
+        vcpu = VCPU(
+            alu=llm,
+            decoder=decoder,
+            gate=gate,
+            mmu=mmu,
+            config=config
+        )
+        
+        result = await vcpu.execute("Endless task")
+        
+        # Should fail with BUDGET_EXCEEDED after max_compactions reached
+        assert result.status == "ERROR"
+        assert result.fault is not None
+        assert result.fault.code == "BUDGET_EXCEEDED"
+        # Verify compaction count reached max
+        assert vcpu._compaction_count == 2
+
 
 # =============================================================================
 # SUB_CALL and RETURN Tests

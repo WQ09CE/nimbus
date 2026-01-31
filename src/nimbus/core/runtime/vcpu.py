@@ -291,7 +291,8 @@ class VCPU:
                         compacted = await self._do_compaction()
                         if compacted:
                             # Reset iteration counter and continue
-                            logger.info(
+                            from nimbus.core.logging import get_logger
+                            get_logger("kernel.vcpu").info(
                                 f"🗜️ Compaction #{self._compaction_count} complete, "
                                 f"resetting iteration counter (was {self._iteration})"
                             )
@@ -928,7 +929,8 @@ class VCPU:
             return success
             
         except Exception as e:
-            logger.error(f"Compaction failed: {e}")
+            from nimbus.core.logging import get_logger
+            get_logger("kernel.vcpu").error(f"Compaction failed: {e}")
             self._emit_event("COMPACTION_END", {
                 "success": False,
                 "error": str(e),
@@ -940,18 +942,25 @@ class VCPU:
         Use MMU's built-in compression as fallback.
         
         This generates a simple summary of older messages and replaces them.
+        If there aren't enough messages to compress, we still return True
+        to allow the iteration counter to reset (the goal is to prevent
+        infinite loops, not necessarily to reduce memory).
         """
+        from nimbus.core.logging import get_logger
+        logger = get_logger("kernel.vcpu")
+        
         try:
             # Get all messages from current frame
             if not self.mmu._stack:
-                return False
+                return True  # No stack, but allow reset
             
             frame = self.mmu._stack[-1]
             messages = frame.messages
             
             if len(messages) < self.mmu.config.keep_recent_messages * 2:
-                # Not enough messages to compress
-                return False
+                # Not enough messages to compress, but still allow iteration reset
+                logger.info(f"MMU: Only {len(messages)} messages, skipping compression but allowing reset")
+                return True
             
             # Keep recent messages, summarize older ones
             keep_count = self.mmu.config.keep_recent_messages
