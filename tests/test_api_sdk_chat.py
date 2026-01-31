@@ -10,7 +10,7 @@ import httpx
 from typing import List, Dict, Any
 
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = "http://localhost:4096"
 SESSION_ID = "test_session_diag_001"
 
 
