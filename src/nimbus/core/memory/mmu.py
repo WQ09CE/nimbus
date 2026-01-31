@@ -82,6 +82,8 @@ class MMUConfig:
         keep_recent_messages: Number of recent messages to keep when compressing
         auto_extract_on_pop: 是否在 pop_frame 时自动提炼有价值内容
         auto_detect_failures: 是否自动检测失败的 tool calls
+        auto_compact: 是否自动压缩上下文（建议关闭，保护 LLM 上下文完整性）
+        remove_failed_tool_calls: 是否移除失败的 tool calls（释放 token 空间）
     """
     max_context_tokens: int = 16000
     pinned_budget: int = 2000
@@ -90,6 +92,8 @@ class MMUConfig:
     keep_recent_messages: int = 10
     auto_extract_on_pop: bool = True  # Context Stack 提炼
     auto_detect_failures: bool = True  # 自动检测失败
+    auto_compact: bool = False  # 关闭自动压缩，保护 LLM 上下文
+    remove_failed_tool_calls: bool = True  # 移除失败的 tool calls
 
 
 class MMU:
@@ -587,8 +591,9 @@ class MMU:
             frame_messages = frame.to_context_messages()
             all_frame_messages.extend(frame_messages)
 
-        # 3. Context Stack 提炼：过滤无价值的 tool calls
-        if filter_discardable:
+        # 3. Context Stack 提炼：过滤失败的 tool calls（释放 token 空间）
+        # 只有 remove_failed_tool_calls=True 且调用者没有禁用时才过滤
+        if self.config.remove_failed_tool_calls and filter_discardable:
             all_frame_messages = self._filter_discardable_messages(all_frame_messages)
 
         # Estimate tokens
@@ -608,15 +613,26 @@ class MMU:
             for msg in all_frame_messages:
                 messages.append(msg.to_dict())
         else:
-            # Need to compress - keep recent messages from current frame
-            # and summaries from parent frames
+            # Over budget - check if auto_compact is enabled
             from nimbus.core.logging import get_logger
             logger = get_logger("memory.mmu")
-            logger.warning(
-                f"🗜️ Context auto-compress triggered: {frame_tokens} tokens > {remaining_budget} budget. "
-                f"Keeping {self.config.keep_recent_messages} recent messages."
-            )
-            messages.extend(self._compress_frames(remaining_budget))
+            
+            if self.config.auto_compact:
+                # Auto-compact enabled: compress to fit
+                logger.warning(
+                    f"🗜️ Context auto-compress triggered: {frame_tokens} tokens > {remaining_budget} budget. "
+                    f"Keeping {self.config.keep_recent_messages} recent messages."
+                )
+                messages.extend(self._compress_frames(remaining_budget))
+            else:
+                # Auto-compact disabled: keep all messages, let LLM work with full context
+                # This may exceed budget but preserves context integrity
+                logger.warning(
+                    f"⚠️ Context exceeds budget: {frame_tokens} tokens > {remaining_budget} budget. "
+                    f"Auto-compact disabled, keeping full context for LLM."
+                )
+                for msg in all_frame_messages:
+                    messages.append(msg.to_dict())
 
         return messages
     
