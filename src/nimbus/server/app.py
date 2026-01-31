@@ -144,6 +144,10 @@ def create_app() -> FastAPI:
     from .api_logs import router as logs_router
     app.include_router(logs_router, tags=["Logs"])
 
+    # Register debug routes (for inspecting agent state)
+    from .api_debug import router as debug_router
+    app.include_router(debug_router, tags=["Debug"])
+
     return app
 
 

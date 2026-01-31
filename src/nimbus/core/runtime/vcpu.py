@@ -426,6 +426,11 @@ class VCPU:
             think_start = time.time_ns()
             messages = self.mmu.assemble_context()
             
+            # Debug: Dump full context to file if NIMBUS_DUMP_CONTEXT is set
+            import os
+            if os.environ.get("NIMBUS_DUMP_CONTEXT"):
+                self._dump_context_to_file(messages, self._iteration)
+            
             # Enhanced logging: Show context summary
             msg_count = len(messages)
             last_msgs = messages[-3:] if len(messages) >= 3 else messages
@@ -1494,3 +1499,42 @@ Be conversational and helpful, not robotic. Don't use bullet points or formattin
             "stack_depth": self.mmu.stack_depth,
             "mmu_state": self.mmu.get_state(),
         }
+
+    def _dump_context_to_file(self, messages: List[Dict[str, Any]], iteration: int) -> None:
+        """
+        Dump full context to a JSON file for debugging.
+        
+        Enabled by setting NIMBUS_DUMP_CONTEXT environment variable.
+        Files are written to .logs/context/ directory.
+        """
+        import json
+        import os
+        from datetime import datetime
+        from pathlib import Path
+        
+        dump_dir = Path(".logs/context")
+        dump_dir.mkdir(parents=True, exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = dump_dir / f"context_{timestamp}_iter{iteration:03d}.json"
+        
+        # Prepare dump data
+        dump_data = {
+            "timestamp": datetime.now().isoformat(),
+            "iteration": iteration,
+            "message_count": len(messages),
+            "messages": messages,
+            "state": {
+                "consecutive_thoughts": self._consecutive_thoughts,
+                "is_running": self._is_running,
+                "is_done": self._is_done,
+                "stack_depth": self.mmu.stack_depth,
+            },
+        }
+        
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(dump_data, f, ensure_ascii=False, indent=2)
+        
+        from nimbus.core.logging import get_logger
+        logger = get_logger("kernel.vcpu")
+        logger.info(f"📝 Context dumped to {filename}")
