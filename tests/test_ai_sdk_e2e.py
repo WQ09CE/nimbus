@@ -8,7 +8,7 @@ import httpx
 import json
 import sys
 
-NIMBUS_API = "http://localhost:8000"
+NIMBUS_API = "http://localhost:4096"
 
 async def parse_sse_stream(response: httpx.Response):
     """Parse SSE stream and yield events."""

@@ -12,14 +12,14 @@ class TestHelperFunctions:
 
     def test_format_line_number(self):
         """Test line number formatting."""
-        assert _format_line_number(1, "hello") == "    1→hello"
-        assert _format_line_number(10, "world") == "   10→world"
-        assert _format_line_number(100, "test") == "  100→test"
+        assert _format_line_number(1, "hello") == "    1 | hello"
+        assert _format_line_number(10, "world") == "   10 | world"
+        assert _format_line_number(100, "test") == "  100 | test"
 
     def test_format_line_number_custom_width(self):
         """Test line number formatting with custom width."""
-        assert _format_line_number(1, "hello", max_num_width=3) == "  1→hello"
-        assert _format_line_number(99, "hello", max_num_width=3) == " 99→hello"
+        assert _format_line_number(1, "hello", max_num_width=3) == "  1 | hello"
+        assert _format_line_number(99, "hello", max_num_width=3) == " 99 | hello"
 
     def test_is_binary_file_text(self, tmp_path):
         """Test binary detection for text file."""
@@ -51,9 +51,9 @@ class TestReadFile:
 
         result = await read_file(str(test_file), workspace=tmp_path)
 
-        assert "1→line 1" in result
-        assert "2→line 2" in result
-        assert "3→line 3" in result
+        assert "1 | line 1" in result
+        assert "2 | line 2" in result
+        assert "3 | line 3" in result
 
     @pytest.mark.asyncio
     async def test_read_with_offset(self, tmp_path):
@@ -63,11 +63,11 @@ class TestReadFile:
 
         result = await read_file(str(test_file), offset=2, workspace=tmp_path)
 
-        assert "1→line 1" not in result
-        assert "2→line 2" not in result
-        assert "3→line 3" in result
-        assert "4→line 4" in result
-        assert "5→line 5" in result
+        assert "1 | line 1" not in result
+        assert "2 | line 2" not in result
+        assert "3 | line 3" in result
+        assert "4 | line 4" in result
+        assert "5 | line 5" in result
 
     @pytest.mark.asyncio
     async def test_read_with_limit(self, tmp_path):
@@ -77,9 +77,9 @@ class TestReadFile:
 
         result = await read_file(str(test_file), limit=2, workspace=tmp_path)
 
-        assert "1→line 1" in result
-        assert "2→line 2" in result
-        assert "3→line 3" not in result
+        assert "1 | line 1" in result
+        assert "2 | line 2" in result
+        assert "3 | line 3" not in result
         assert "Showing lines 1-2 of 5" in result
 
     @pytest.mark.asyncio
@@ -90,11 +90,11 @@ class TestReadFile:
 
         result = await read_file(str(test_file), offset=3, limit=3, workspace=tmp_path)
 
-        assert "3→line 3" not in result
-        assert "4→line 4" in result
-        assert "5→line 5" in result
-        assert "6→line 6" in result
-        assert "7→line 7" not in result
+        assert "3 | line 3" not in result
+        assert "4 | line 4" in result
+        assert "5 | line 5" in result
+        assert "6 | line 6" in result
+        assert "7 | line 7" not in result
 
     @pytest.mark.asyncio
     async def test_read_empty_file(self, tmp_path):
@@ -203,7 +203,7 @@ class TestReadFile:
 
         # Line should be truncated at 2000 chars
         assert "[truncated]" in result
-        assert len(result.split("→")[1].split("\n")[0]) < 2100
+        assert len(result.split(" | ")[1].split("\n")[0]) < 2100
 
     @pytest.mark.asyncio
     async def test_read_relative_path(self, tmp_path):
@@ -236,5 +236,5 @@ class TestReadFile:
 
         result = await read_file(str(test_file), workspace=tmp_path)
 
-        assert "1→line 1" in result
-        assert "2→line 2" in result
+        assert "1 | line 1" in result
+        assert "2 | line 2" in result

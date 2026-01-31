@@ -657,24 +657,26 @@ class TestToolRegistry:
     """Tests for tool registration."""
 
     def test_register_all_tools(self):
-        """Test that all tools can be registered."""
-        from nimbus.tools import ToolRegistry
+        """Test that all tools can be registered via get_all_tools."""
+        from nimbus.tools import get_all_tools, TOOL_FUNCTIONS
 
-        registry = ToolRegistry()
-        registry.register_decorated(read_file)
-        registry.register_decorated(write_file)
-        registry.register_decorated(edit_file)
-        registry.register_decorated(bash_command)
-        registry.register_decorated(glob_files)
-        registry.register_decorated(grep_content)
-
-        assert len(registry) == 6
-        assert "Read" in registry
-        assert "Write" in registry
-        assert "Edit" in registry
-        assert "Bash" in registry
-        assert "Glob" in registry
-        assert "Grep" in registry
+        tools = get_all_tools()
+        
+        # Should have at least 6 tools
+        assert len(tools) >= 6
+        
+        # Verify expected tools are present
+        tool_names = [t["name"] for t in tools]
+        assert "Read" in tool_names
+        assert "Write" in tool_names
+        assert "Edit" in tool_names
+        assert "Bash" in tool_names
+        assert "Glob" in tool_names
+        assert "Grep" in tool_names
+        
+        # Verify each tool has a corresponding function
+        for name in tool_names:
+            assert name in TOOL_FUNCTIONS or name == "return_result"
 
     def test_tool_definitions_format(self):
         """Test that tool definitions are valid."""
