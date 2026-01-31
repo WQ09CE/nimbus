@@ -684,10 +684,16 @@ class MMU:
 
         This is a placeholder - in production, you might use
         an LLM to create a proper summary.
+        
+        IMPORTANT: Preserves user's language context to ensure LLM responds
+        in the same language after compaction.
         """
         if not messages:
             return "(no earlier messages)"
 
+        # Detect user's language from their messages
+        user_language = self._detect_user_language(messages)
+        
         parts = []
         for msg in messages:
             role = msg.role
@@ -697,7 +703,53 @@ class MMU:
                 content = content[:100] + "..."
             parts.append(f"- [{role}] {content}")
 
-        return "\n".join(parts[:5])  # Keep at most 5 summary items
+        summary = "\n".join(parts[:5])  # Keep at most 5 summary items
+        
+        # Add language context hint
+        if user_language == "zh":
+            return f"[用户使用中文交流，请用中文回复]\n{summary}"
+        elif user_language == "ja":
+            return f"[ユーザーは日本語で交流しています。日本語で返信してください]\n{summary}"
+        elif user_language == "ko":
+            return f"[사용자가 한국어로 대화하고 있습니다. 한국어로 답변해주세요]\n{summary}"
+        else:
+            return summary
+    
+    def _detect_user_language(self, messages: List[Message]) -> str:
+        """
+        Detect the primary language used by the user.
+        
+        Returns: 'zh' for Chinese, 'ja' for Japanese, 'ko' for Korean, 'en' for others
+        """
+        import re
+        
+        user_text = ""
+        for msg in messages:
+            if msg.role == "user":
+                content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                user_text += content
+        
+        if not user_text:
+            return "en"
+        
+        # Count character types
+        chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', user_text))
+        japanese_chars = len(re.findall(r'[\u3040-\u309f\u30a0-\u30ff]', user_text))  # Hiragana + Katakana
+        korean_chars = len(re.findall(r'[\uac00-\ud7af]', user_text))
+        total_chars = len(user_text)
+        
+        if total_chars == 0:
+            return "en"
+        
+        # If more than 10% of characters are CJK, detect as that language
+        if chinese_chars / total_chars > 0.1:
+            return "zh"
+        if japanese_chars / total_chars > 0.05:
+            return "ja"
+        if korean_chars / total_chars > 0.1:
+            return "ko"
+        
+        return "en"
 
     # =========================================================================
     # Token Management

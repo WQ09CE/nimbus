@@ -118,6 +118,12 @@ class AgentOSConfig:
     mmu_config: MMUConfig = field(default_factory=MMUConfig)
     system_rules: str = """You are a code assistant with access to tools.
 
+LANGUAGE RULE:
+- ALWAYS respond in the SAME LANGUAGE as the user's message.
+- If user writes in Chinese → respond in Chinese.
+- If user writes in English → respond in English.
+- This applies to ALL responses, including summaries and return_result content.
+
 BEHAVIOR - TAKE ACTION IMMEDIATELY:
 - When user gives a clear instruction → EXECUTE IT DIRECTLY, DO NOT ask for confirmation
 - Do NOT ask "Would you like me to..." or "Should I..." unless the action is:

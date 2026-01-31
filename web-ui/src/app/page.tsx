@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useChatStore } from "@/stores";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
+import { useAutoScroll, useScrollDetection } from "@/hooks/useAutoScroll";
 
 export default function Home() {
   const {
@@ -20,13 +21,47 @@ export default function Home() {
     clearError,
   } = useChatStore();
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const [mounted, setMounted] = useState(false);
+  const [userScrolledUp, setUserScrolledUp] = useState(false);
+  const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
 
-  // Auto-scroll to bottom
+  // Auto-scroll hook
+  const { elementRef: messagesEndRef, scrollToBottom } = useAutoScroll({
+    enabled: autoScrollEnabled,
+    throttleMs: 100, // Smooth throttling during streaming
+  });
+
+  // Scroll detection hook
+  const { containerRef: messagesContainerRef, handleScroll, isAtBottom, scrollToBottom: scrollContainerToBottom } = useScrollDetection({
+    threshold: 50,
+    onScrollUp: () => {
+      setUserScrolledUp(true);
+      setAutoScrollEnabled(false);
+    },
+    onReachBottom: () => {
+      setUserScrolledUp(false);
+      setAutoScrollEnabled(true);
+    },
+  });
+
+  // Auto-scroll when new messages arrive or streaming content updates
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingContent]);
+    if (autoScrollEnabled) {
+      scrollToBottom();
+    }
+  }, [messages, streamingContent, streamingToolCalls, currentActivity, autoScrollEnabled, scrollToBottom]);
+
+  // Enhanced scroll during streaming with intelligent detection
+  useEffect(() => {
+    if (isStreaming && autoScrollEnabled) {
+      // More frequent updates during streaming for smoother experience
+      const timeoutId = setTimeout(() => {
+        scrollToBottom();
+      }, 50);
+
+      return () => clearTimeout(timeoutId);
+    }
+  }, [streamingContent, streamingToolCalls, isStreaming, autoScrollEnabled, scrollToBottom]);
 
   // Initialize session on mount
   useEffect(() => {
@@ -69,7 +104,11 @@ export default function Home() {
       </header>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-6 py-4">
+      <div
+        ref={messagesContainerRef}
+        className="flex-1 overflow-y-auto px-6 py-4"
+        onScroll={handleScroll}
+      >
         {/* Error */}
         {error && (
           <div className="mb-4 p-3 bg-red-900/20 border border-red-800 rounded text-red-400 text-sm">
@@ -136,6 +175,27 @@ export default function Home() {
         </div>
 
         <div ref={messagesEndRef} />
+
+        {/* Scroll to bottom button - only show when user scrolled up and there's activity */}
+        {userScrolledUp && (isStreaming || messages.length > 3) && (
+          <div className="fixed bottom-24 right-6 z-10">
+            <button
+              onClick={() => {
+                setAutoScrollEnabled(true);
+                setUserScrolledUp(false);
+                scrollContainerToBottom();
+                setTimeout(() => scrollToBottom(true), 100);
+              }}
+              className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-2 rounded-full shadow-lg transition-all duration-200 flex items-center gap-2 border border-blue-500/50"
+            >
+              <span>⬇</span>
+              <span>滚动到底部</span>
+              {isStreaming && (
+                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+              )}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Input */}

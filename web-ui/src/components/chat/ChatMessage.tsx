@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import type { Message } from "@/stores/chat-store";
 import type { ToolResult } from "@/lib/api";
 import { MarkdownRenderer, DataDisplay } from "./MarkdownRenderer";
+import { useAutoScroll } from "@/hooks/useAutoScroll";
 
   interface ChatMessageProps {
   message: Message;
@@ -23,8 +24,39 @@ interface MergedTool {
 export function ChatMessage({ message, isStreaming }: ChatMessageProps) {
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
   const [showAllTools, setShowAllTools] = useState(true);
+  const previousContentLength = useRef(0);
+  const previousToolsLength = useRef(0);
 
   const isUser = message.role === "user";
+
+  // Auto-scroll hook for this message
+  const { elementRef: messageRef, scrollToBottom: scrollToMessage } = useAutoScroll({
+    enabled: isStreaming && !isUser,
+    smooth: true,
+    throttleMs: 200, // Less aggressive than page-level scrolling
+  });
+
+  // Scroll when content grows during streaming
+  useEffect(() => {
+    if (isStreaming && !isUser && message.content) {
+      const currentLength = message.content.length;
+      if (currentLength > previousContentLength.current + 50) { // Only scroll on significant content changes
+        previousContentLength.current = currentLength;
+        scrollToMessage();
+      }
+    }
+  }, [message.content, isStreaming, isUser, scrollToMessage]);
+
+  // Scroll when new tools are added during streaming
+  useEffect(() => {
+    if (isStreaming && !isUser && message.toolCalls) {
+      const currentToolsLength = message.toolCalls.length;
+      if (currentToolsLength > previousToolsLength.current) {
+        previousToolsLength.current = currentToolsLength;
+        setTimeout(() => scrollToMessage(), 150); // Slight delay for UI to update
+      }
+    }
+  }, [message.toolCalls, isStreaming, isUser, scrollToMessage]);
 
   // Merge tool calls and results
   const tools = useMemo(() => {
@@ -63,7 +95,7 @@ export function ChatMessage({ message, isStreaming }: ChatMessageProps) {
   };
 
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"} group`}>
+    <div ref={messageRef} className={`flex ${isUser ? "justify-end" : "justify-start"} group`}>
       <div className={`max-w-4xl ${isUser ? "w-auto" : "w-full"}`}>
         {/* Role label */}
         <div className="text-xs text-gray-500 mb-1 font-mono flex items-center gap-2">
