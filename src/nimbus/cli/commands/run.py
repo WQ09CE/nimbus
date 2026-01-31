@@ -129,36 +129,43 @@ async def _run_task(
     try:
         # Import here to avoid circular imports
         from nimbus.agentos import AgentOS, AgentOSConfig
-        from nimbus.bridge.pi_ai_http import PiLLMAdapter
+        from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+        from nimbus.core.runtime.vcpu import VCPUConfig
         
-        # Create LLM adapter
-        # Try pi-ai first, fall back to direct API
-        try:
-            llm = PiLLMAdapter(
-                base_url="http://localhost:3031",
-                model=model,
-            )
-        except Exception:
-            # Fall back to LiteLLM or other adapter
-            from nimbus.adapters.litellm_adapter import LiteLLMAdapter
-            llm = LiteLLMAdapter(model=model)
-        
-        # Create AgentOS config
-        config = AgentOSConfig(
-            workspace=str(workspace),
-            max_iterations=max_iterations,
+        # Create LLM adapter using pi-ai HTTP service
+        pi_config = PiLLMConfig(
+            base_url="http://localhost:3031",
+            model=model,
         )
+        llm = PiLLMAdapter(pi_config)
         
-        # Create and run agent
-        agent = AgentOS(config=config, llm=llm)
-        result = await agent.run(instruction)
+        # Start the adapter
+        await llm.start()
         
-        return {
-            "status": result.status,
-            "output": result.output,
-            "error": str(result.fault) if result.fault else None,
-            "iterations": getattr(agent, '_iterations', 0),
-        }
+        try:
+            # Create AgentOS config with max_iterations
+            vcpu_config = VCPUConfig(max_iterations=max_iterations)
+            config = AgentOSConfig(
+                vcpu_config=vcpu_config,
+                workspace_info=f"Workspace: {workspace}",
+            )
+            
+            # Create agent with default tools
+            from nimbus.tools import register_default_tools
+            agent = AgentOS(llm_client=llm, config=config)
+            register_default_tools(agent, workspace=workspace)
+            
+            # Run the task
+            result = await agent.run(instruction)
+            
+            return {
+                "status": result.status,
+                "output": result.output,
+                "error": str(result.fault) if result.fault else None,
+                "iterations": getattr(agent, '_iterations', 0),
+            }
+        finally:
+            await llm.stop()
         
     except Exception as e:
         import traceback
