@@ -35,6 +35,13 @@ class MockToolCall:
     """Mock tool call for testing."""
 
     function: Any
+    id: str = ""  # Tool call ID (auto-generated if not provided)
+    type: str = "function"
+
+    def __post_init__(self):
+        if not self.id:
+            import uuid
+            self.id = f"call_{uuid.uuid4().hex[:8]}"
 
     @dataclass
     class Function:

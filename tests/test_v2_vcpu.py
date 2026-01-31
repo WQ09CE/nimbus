@@ -299,7 +299,8 @@ class TestVCPULimits:
             for _ in range(100)
         ])
 
-        config = VCPUConfig(max_iterations=5)
+        # Set max_consecutive_thoughts high enough so max_iterations triggers first
+        config = VCPUConfig(max_iterations=5, max_consecutive_thoughts=100)
         vcpu = VCPU(
             alu=llm,
             decoder=decoder,
@@ -317,24 +318,16 @@ class TestVCPULimits:
 
     @pytest.mark.asyncio
     async def test_max_consecutive_thoughts(self, decoder, gate, mmu):
-        """Test that consecutive thoughts trigger nudge."""
+        """Test that consecutive thoughts trigger auto-return."""
+        # LLM returns text without tool calls
         thoughts = [
             MockLLMResponse(content=f"Thinking {i}...")
             for i in range(5)
         ]
-        thoughts.append(MockLLMResponse(
-            tool_calls=[
-                MockToolCall(
-                    function=MockFunction(
-                        name="return_result",
-                        arguments='{"result": "Finally done"}'
-                    )
-                )
-            ]
-        ))
 
         llm = MockLLMClient(responses=thoughts)
 
+        # Set max_consecutive_thoughts to 3
         config = VCPUConfig(max_consecutive_thoughts=3)
         vcpu = VCPU(
             alu=llm,
@@ -346,15 +339,11 @@ class TestVCPULimits:
 
         result = await vcpu.execute("Think a lot")
 
+        # Should auto-return after 3 consecutive thoughts
         assert result.status == "OK"
-        # Verify that a nudge was added to memory
-        messages = mmu.current_frame.messages
-        nudge_found = any(
-            "take an action" in msg.content.lower()
-            for msg in messages
-            if msg.role == "user" and isinstance(msg.content, str)
-        )
-        assert nudge_found
+        assert result.is_final is True
+        # The output should be the last thought
+        assert "Thinking 2" in result.output
 
 
 # =============================================================================

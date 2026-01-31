@@ -114,7 +114,7 @@ class TestGeminiV2ClientUnit:
 
         client = GeminiV2Client(api_key="test-key")
         assert client._api_key == "test-key"
-        assert client.config.model == "gemini-2.0-flash"
+        assert client.config.model == "gemini-3-flash-preview"
 
     def test_init_with_env_var(self, monkeypatch):
         """Test client initialization with environment variable."""

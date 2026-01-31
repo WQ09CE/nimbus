@@ -563,11 +563,12 @@ class VCPU:
           state-modifying operations (Edit, Write, Bash).
         """
         # Auto-repair tool name if needed (learned from opencode's llm.ts)
+        # Only repair built-in tools; custom tools pass through unchanged
         original_name = action.name
         canonical_name = TOOL_NAME_CANONICAL.get(action.name.lower())
 
         if canonical_name and canonical_name != action.name:
-            # Log the repair
+            # Log the repair for built-in tools
             self._emit_event("TOOL_NAME_REPAIRED", {
                 "original": action.name,
                 "repaired": canonical_name
@@ -580,22 +581,8 @@ class VCPU:
                 args=action.args,
                 meta=action.meta,
             )
-        elif not canonical_name and action.name not in TOOL_NAME_CANONICAL.values():
-            # Unknown tool - return error
-            from nimbus.core.logging import get_logger
-            logger = get_logger("kernel.vcpu")
-            logger.error(f"Unknown tool: '{action.name}'. Available: {TOOL_NAME_CANONICAL.values()}")
-            return ToolResult(
-                status="ERROR",
-                output=f"Unknown tool: '{action.name}'. Available tools: {', '.join(sorted(set(TOOL_NAME_CANONICAL.values())))}",
-                is_final=False,
-                fault=Fault(
-                    domain="RUNTIME",
-                    code="UNKNOWN_TOOL",
-                    message=f"Tool '{action.name}' not found",
-                    retryable=False
-                )
-            )
+        # Note: Custom tools (not in TOOL_NAME_CANONICAL) are allowed to pass through.
+        # The gate will handle unknown tool errors if the tool doesn't exist.
 
         # Check for doom loop BEFORE executing (learned from opencode)
         args_json = json.dumps(action.args, sort_keys=True)
