@@ -5,6 +5,7 @@ import { useChatStore } from "@/stores";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { DebugPanel } from "@/components/debug/DebugPanel";
+import { SessionPanel } from "@/components/session/SessionPanel";
 import { useAutoScroll, useScrollDetection } from "@/hooks/useAutoScroll";
 
 export default function Home() {
@@ -27,6 +28,7 @@ export default function Home() {
   const [mounted, setMounted] = useState(false);
   const [userScrolledUp, setUserScrolledUp] = useState(false);
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
+  const [showSessionPanel, setShowSessionPanel] = useState(false);
 
   // Auto-scroll hook
   const { elementRef: messagesEndRef, scrollToBottom } = useAutoScroll({
@@ -92,17 +94,37 @@ export default function Home() {
             <span className="text-xl">☁️</span>
             <h1 className="text-lg font-semibold text-blue-400">Nimbus</h1>
             {session && (
-              <span className="text-xs text-gray-600">
-                session: {session.id.slice(0, 8)}...
-              </span>
+              <button
+                onClick={() => setShowSessionPanel(true)}
+                className="flex items-center gap-2 text-xs bg-gray-800 hover:bg-gray-700 px-2 py-1 rounded transition-colors"
+              >
+                <span className="text-gray-400">📁</span>
+                <span className="text-gray-300">
+                  {session.name || session.id.slice(0, 8)}
+                </span>
+                {session.workspace_path && (
+                  <span className="text-gray-500 max-w-[200px] truncate">
+                    ({session.workspace_path.split('/').slice(-2).join('/')})
+                  </span>
+                )}
+                <span className="text-gray-600">▼</span>
+              </button>
             )}
           </div>
-          <button
-            onClick={createNewSession}
-            className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
-          >
-            New Session
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowSessionPanel(true)}
+              className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+            >
+              Sessions
+            </button>
+            <button
+              onClick={createNewSession}
+              className="text-xs bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-white transition-colors"
+            >
+              + New
+            </button>
+          </div>
         </div>
       </header>
 
@@ -213,6 +235,12 @@ export default function Home() {
 
       {/* Debug Panel */}
       <DebugPanel />
+
+      {/* Session Panel */}
+      <SessionPanel 
+        isOpen={showSessionPanel} 
+        onClose={() => setShowSessionPanel(false)} 
+      />
     </div>
   );
 }

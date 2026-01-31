@@ -77,6 +77,7 @@ interface ChatState {
 
   // Actions
   createNewSession: () => Promise<void>;
+  switchSession: (session: Session) => void;
   sendMessage: (content: string) => Promise<void>;
   interruptMessage: () => void;
   clearError: () => void;
@@ -112,6 +113,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
         isLoading: false,
       });
     }
+  },
+
+  switchSession: (session: Session) => {
+    // Switch to an existing session
+    // Clear current messages - they will be loaded from server/cache
+    set({
+      session,
+      messages: [],
+      isStreaming: false,
+      streamingContent: "",
+      streamingToolCalls: [],
+      thinkingIteration: null,
+      currentActivity: null,
+      error: null,
+    });
   },
 
   sendMessage: async (content: string) => {

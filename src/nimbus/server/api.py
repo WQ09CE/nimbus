@@ -146,6 +146,7 @@ async def create_session(
         status=SessionStatus(session["status"]),
         memory_type=session["memory_type"],
         planner_type=session["planner_type"],
+        workspace_path=session.get("workspace_path"),
         message_count=0,
     )
 
@@ -172,6 +173,7 @@ async def list_sessions(
             status=SessionStatus(s["status"]),
             memory_type=s["memory_type"],
             planner_type=s["planner_type"],
+            workspace_path=s.get("workspace_path"),
             last_message_at=s.get("last_message_at"),
             message_count=s.get("message_count", 0),
         )

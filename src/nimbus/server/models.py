@@ -64,6 +64,7 @@ class SessionResponse(BaseModel):
     status: SessionStatus
     memory_type: str
     planner_type: str
+    workspace_path: Optional[str] = None
     last_message_at: Optional[datetime] = None
     message_count: int = 0
 
