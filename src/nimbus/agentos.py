@@ -409,6 +409,97 @@ class AgentOS:
         # Wait for completion
         return await self.wait(pid)
 
+    async def run_stream(self, goal: str, role: str = ""):
+        """
+        Execute a goal and stream status updates.
+
+        Yields status dictionaries as the execution progresses.
+
+        Args:
+            goal: The goal to achieve
+            role: Optional process role
+
+        Yields:
+            dict: Status updates like:
+                {"type": "planning", "content": "..."}
+                {"type": "tool_call", "name": "...", "args": {...}}
+                {"type": "tool_result", "content": "..."}
+                {"type": "text", "content": "..."}
+                {"type": "done", "result": {...}}
+        """
+        # Spawn a process
+        pid = self.spawn(goal, role=role)
+        process = self._processes.get(pid)
+        if not process:
+            yield {"type": "error", "message": f"Process {pid} not found"}
+            return
+
+        vcpu = process.vcpu
+        mmu = process.mmu
+
+        # Add goal as user message (same as vcpu.execute does)
+        if vcpu.config.pin_goal:
+            pinned_goal = await vcpu._prepare_goal_for_pinning(goal)
+            mmu.pin_user_goal(pinned_goal)
+        mmu.add_user_message(goal)
+
+        # Yield planning event
+        yield {"type": "planning", "content": "Starting execution..."}
+
+        # Run until done
+        while True:
+            try:
+                result = await vcpu.step()
+            except Exception as e:
+                yield {"type": "error", "message": str(e)}
+                return
+
+            # Yield events based on actions
+            for i, action in enumerate(result.actions):
+                action_kind = getattr(action, "kind", None)
+                
+                if action_kind == "TOOL_CALL":
+                    yield {
+                        "type": "tool_call",
+                        "name": getattr(action, "tool_name", "unknown"),
+                        "args": getattr(action, "tool_args", {}),
+                        "call_id": getattr(action, "tool_call_id", None),
+                    }
+                    # Get corresponding result if available
+                    if i < len(result.results):
+                        tool_result = result.results[i]
+                        yield {
+                            "type": "tool_result",
+                            "tool_use_id": getattr(action, "tool_call_id", None),
+                            "content": getattr(tool_result, "output", str(tool_result)),
+                        }
+                elif action_kind == "THOUGHT":
+                    content = getattr(action, "content", None)
+                    if content:
+                        yield {"type": "text", "content": content}
+                elif action_kind == "RETURN":
+                    # Task complete
+                    yield {
+                        "type": "done",
+                        "result": {
+                            "status": "OK",
+                            "output": getattr(action, "return_value", None),
+                        },
+                    }
+                    return
+
+            # Check for final result
+            if result.is_final:
+                yield {
+                    "type": "done",
+                    "result": {
+                        "status": "FAULT" if result.fault else "OK",
+                        "output": result.final_result,
+                        "error": str(result.fault) if result.fault else None,
+                    },
+                }
+                return
+
     async def chat(self, message: str, session_id: str | None = None) -> ToolResult:
         """
         Multi-turn chat with persistent context.

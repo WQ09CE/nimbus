@@ -28,6 +28,12 @@ from nimbus.tools.glob import glob_files
 from nimbus.tools.grep import grep_content, FILE_TYPE_PATTERNS
 from nimbus.tools.bash import bash_command
 
+# Pi Tools (enhanced versions based on pi-coding-agent)
+from nimbus.tools.pi_read import pi_read_file
+from nimbus.tools.pi_write import pi_write_file
+from nimbus.tools.pi_edit import pi_edit_file
+from nimbus.tools.pi_bash import pi_bash_command
+
 if TYPE_CHECKING:
     from nimbus.agentos import AgentOS
 
@@ -192,6 +198,102 @@ async def return_result(result: str, **kwargs: Any) -> str:
     return result
 
 
+# =============================================================================
+# Pi Tools (Enhanced versions based on pi-coding-agent)
+# =============================================================================
+
+PI_READ_TOOL: Dict[str, Any] = {
+    "name": "PiRead",
+    "description": "Read file contents with smart truncation (2000 lines or 50KB limit). Supports images as base64. Use offset/limit for large files.",
+    "function": pi_read_file,
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "file_path": {
+                "type": "string",
+                "description": "Path to the file to read (relative or absolute)",
+            },
+            "offset": {
+                "type": "integer",
+                "description": "Line number to start from (1-indexed)",
+                "minimum": 1
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of lines to read",
+                "minimum": 1
+            },
+        },
+        "required": ["file_path"],
+    },
+}
+
+PI_WRITE_TOOL: Dict[str, Any] = {
+    "name": "PiWrite",
+    "description": "Write content to a file. Creates if doesn't exist, overwrites if does. Automatically creates parent directories.",
+    "function": pi_write_file,
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "file_path": {
+                "type": "string",
+                "description": "Path to the file to write (relative or absolute)",
+            },
+            "content": {
+                "type": "string",
+                "description": "Content to write to the file",
+            },
+        },
+        "required": ["file_path", "content"],
+    },
+}
+
+PI_EDIT_TOOL: Dict[str, Any] = {
+    "name": "PiEdit",
+    "description": "Edit a file with fuzzy matching fallback. Preserves BOM and line endings. Returns unified diff.",
+    "function": pi_edit_file,
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "file_path": {
+                "type": "string",
+                "description": "Path to the file to edit (relative or absolute)",
+            },
+            "old_text": {
+                "type": "string",
+                "description": "Text to find and replace (exact match first, fuzzy fallback)",
+            },
+            "new_text": {
+                "type": "string",
+                "description": "Text to replace with",
+            },
+        },
+        "required": ["file_path", "old_text", "new_text"],
+    },
+}
+
+PI_BASH_TOOL: Dict[str, Any] = {
+    "name": "PiBash",
+    "description": "Execute bash command with streaming output. Default 60s timeout. Output truncated to last 2000 lines or 50KB.",
+    "function": pi_bash_command,
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": "Bash command to execute",
+            },
+            "timeout": {
+                "type": "number",
+                "description": "Timeout in seconds (default: 60)",
+                "default": 60.0
+            },
+        },
+        "required": ["command"],
+    },
+}
+
+
 # All available tools
 ALL_TOOLS: List[Dict[str, Any]] = [
     READ_TOOL,
@@ -203,6 +305,15 @@ ALL_TOOLS: List[Dict[str, Any]] = [
     RETURN_RESULT_TOOL,
 ]
 
+# Pi Tools (can be used alternatively)
+PI_TOOLS: List[Dict[str, Any]] = [
+    PI_READ_TOOL,
+    PI_WRITE_TOOL,
+    PI_EDIT_TOOL,
+    PI_BASH_TOOL,
+    RETURN_RESULT_TOOL,
+]
+
 # Mapping of tool names to their functions
 TOOL_FUNCTIONS: Dict[str, Callable] = {
     "Read": read_file,
@@ -211,6 +322,15 @@ TOOL_FUNCTIONS: Dict[str, Callable] = {
     "Bash": bash_command,
     "Write": write_file,
     "Edit": edit_file,
+    "return_result": return_result,
+}
+
+# Pi Tools function mapping
+PI_TOOL_FUNCTIONS: Dict[str, Callable] = {
+    "PiRead": pi_read_file,
+    "PiWrite": pi_write_file,
+    "PiEdit": pi_edit_file,
+    "PiBash": pi_bash_command,
     "return_result": return_result,
 }
 
@@ -287,6 +407,60 @@ def register_default_tools(
     return registered
 
 
+def register_pi_tools(
+    os: "AgentOS",
+    workspace: Path | None = None,
+    tools: List[str] | None = None,
+) -> List[str]:
+    """Register Pi tools with AgentOS.
+    
+    Pi tools are enhanced versions based on pi-coding-agent:
+    - PiRead: Smart truncation, image support
+    - PiWrite: Auto directory creation
+    - PiEdit: Fuzzy matching, BOM/CRLF preservation, diff output
+    - PiBash: Streaming output, temp files for large outputs
+    
+    Args:
+        os: AgentOS instance to register tools with.
+        workspace: Workspace path for tool sandboxing.
+        tools: Optional list of tool names to register. If None, registers all.
+    
+    Returns:
+        List of registered tool names.
+    """
+    if workspace is None:
+        workspace = Path.cwd()
+
+    registered = []
+    tools_to_register = tools or list(PI_TOOL_FUNCTIONS.keys())
+
+    for name in tools_to_register:
+        # Find tool definition in PI_TOOLS
+        tool_def = None
+        for td in PI_TOOLS:
+            if td["name"] == name:
+                tool_def = td
+                break
+        
+        func = PI_TOOL_FUNCTIONS.get(name)
+
+        if tool_def is None or func is None:
+            continue
+
+        wrapped_func = create_workspace_wrapper(func, workspace)
+
+        os.register_tool(
+            name=name,
+            func=wrapped_func,
+            description=tool_def.get("description", ""),
+            parameters=tool_def.get("parameters"),
+        )
+
+        registered.append(name)
+
+    return registered
+
+
 def iterate_tools(
     workspace: Path | None = None,
 ) -> List[Tuple[str, Callable, str, Dict[str, Any]]]:
@@ -331,6 +505,11 @@ __all__ = [
     "bash_command",
     "return_result",
     "FILE_TYPE_PATTERNS",
+    # Pi Tool functions
+    "pi_read_file",
+    "pi_write_file",
+    "pi_edit_file",
+    "pi_bash_command",
     # Tool definitions
     "READ_TOOL",
     "GLOB_TOOL",
@@ -341,11 +520,19 @@ __all__ = [
     "RETURN_RESULT_TOOL",
     "ALL_TOOLS",
     "TOOL_FUNCTIONS",
+    # Pi Tool definitions
+    "PI_READ_TOOL",
+    "PI_WRITE_TOOL",
+    "PI_EDIT_TOOL",
+    "PI_BASH_TOOL",
+    "PI_TOOLS",
+    "PI_TOOL_FUNCTIONS",
     # Helper functions
     "get_all_tools",
     "get_tool",
     "get_tool_function",
     "create_workspace_wrapper",
     "register_default_tools",
+    "register_pi_tools",
     "iterate_tools",
 ]
