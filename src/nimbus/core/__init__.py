@@ -1,7 +1,11 @@
-"""Nimbus Core - 仅保留被使用的模块
+"""Nimbus Core - 核心模块
 
-大部分 v1 核心模块已移动到 nimbus.legacy.core
-这里保留 v2 和 storage 需要的共享模块。
+包含：
+- 日志、类型、配置
+- vCPU 运行时 (core.runtime)
+- 调度器 (core.scheduler)
+- 内存管理 (core.memory)
+- 上下文压缩 (core.compaction)
 """
 
 from .logging import (
@@ -36,8 +40,8 @@ from .config import (
     LLMConfig,
 )
 
-# Memory (被 storage 使用)
-from .memory import (
+# Memory legacy (被 storage 使用)
+from .memory_legacy import (
     Message,
     PinnedItem,
     MemoryConfig,
@@ -48,7 +52,7 @@ from .memory import (
 )
 
 __all__ = [
-    # Logging (被 v2 使用)
+    # Logging
     "logger",
     "LogLevel",
     "LogEvent",
@@ -58,7 +62,7 @@ __all__ = [
     "catch",
     "log_context",
     "agent_context",
-    # Types (可能被引用)
+    # Types
     "Task",
     "TaskType",
     "Plan",
@@ -74,7 +78,7 @@ __all__ = [
     # Config
     "AgentConfig",
     "LLMConfig",
-    # Memory (被 storage 使用)
+    # Memory
     "Message",
     "PinnedItem",
     "MemoryConfig",

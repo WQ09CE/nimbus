@@ -6,14 +6,14 @@ Run with: pytest tests/test_v2_memory.py -v
 
 import pytest
 
-from nimbus.v2.core.memory import (
+from nimbus.core.memory import (
     PinnedContext,
     StackFrame,
     Message,
     MMU,
     MMUConfig,
 )
-from nimbus.v2.core.memory.context import create_root_frame, create_sub_frame
+from nimbus.core.memory.context import create_root_frame, create_sub_frame
 
 
 # =============================================================================

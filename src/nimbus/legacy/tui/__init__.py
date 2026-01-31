@@ -10,7 +10,7 @@ Two TUI implementations available:
 Usage:
     # Textual TUI (recommended)
     from nimbus.tui import NimbusTUI
-    from nimbus.v2.agentos import create_agent_os
+    from nimbus.agentos import create_agent_os
 
     agent_os = create_agent_os(llm)
     app = NimbusTUI(agent_os=agent_os)

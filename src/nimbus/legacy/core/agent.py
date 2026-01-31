@@ -48,7 +48,7 @@ from .tracing import get_tracer, Tracer
 if TYPE_CHECKING:
     from nimbus.tools import ToolRegistry
     from nimbus.tools.subagent import SubagentExecutor
-    from nimbus.v2.agentos import AgentOS
+    from nimbus.agentos import AgentOS
 
 SkillFunc = Callable[..., Coroutine[Any, Any, Any]]
 
@@ -326,8 +326,8 @@ class CodeAgent:
 
         This method is called during __init__.
         """
-        from nimbus.v2.agentos import create_agent_os
-        from nimbus.v2.tools import register_default_tools
+        from nimbus.agentos import create_agent_os
+        from nimbus.tools import register_default_tools
 
         # Create LLM adapter for v2
         v2_llm = self._create_v2_llm_adapter()

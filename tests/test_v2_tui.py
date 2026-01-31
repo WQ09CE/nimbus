@@ -27,25 +27,25 @@ def test_imports():
 
     # 测试主模块
     try:
-        from nimbus.v2.tui import NimbusApp
-        print(f"  ✓ nimbus.v2.tui.NimbusApp")
+        from nimbus.tui import NimbusApp
+        print(f"  ✓ nimbus.tui.NimbusApp")
     except Exception as e:
         errors.append(f"NimbusApp: {e}")
-        print(f"  ✗ nimbus.v2.tui.NimbusApp: {e}")
+        print(f"  ✗ nimbus.tui.NimbusApp: {e}")
 
     # 测试 widgets
     try:
-        from nimbus.v2.tui.widgets import Chatbox, PromptInput
-        print(f"  ✓ nimbus.v2.tui.widgets.Chatbox")
-        print(f"  ✓ nimbus.v2.tui.widgets.PromptInput")
+        from nimbus.tui.widgets import Chatbox, PromptInput
+        print(f"  ✓ nimbus.tui.widgets.Chatbox")
+        print(f"  ✓ nimbus.tui.widgets.PromptInput")
     except Exception as e:
         errors.append(f"Widgets: {e}")
         print(f"  ✗ Widgets: {e}")
 
     # 测试 app 模块
     try:
-        from nimbus.v2.tui.app import NimbusApp, load_config
-        print(f"  ✓ nimbus.v2.tui.app 函数")
+        from nimbus.tui.app import NimbusApp, load_config
+        print(f"  ✓ nimbus.tui.app 函数")
     except Exception as e:
         errors.append(f"App functions: {e}")
         print(f"  ✗ App functions: {e}")
@@ -113,7 +113,7 @@ def test_chatbox_widget():
     print("测试 3: Chatbox 组件")
     print("=" * 60)
 
-    from nimbus.v2.tui.widgets.chatbox import Chatbox
+    from nimbus.tui.widgets.chatbox import Chatbox
 
     errors = []
 
@@ -163,7 +163,7 @@ def test_prompt_input_widget():
     print("测试 4: PromptInput 组件")
     print("=" * 60)
 
-    from nimbus.v2.tui.widgets.prompt_input import PromptInput
+    from nimbus.tui.widgets.prompt_input import PromptInput
 
     errors = []
 
@@ -218,7 +218,7 @@ def test_nimbus_app():
     print("测试 5: NimbusApp")
     print("=" * 60)
 
-    from nimbus.v2.tui.app import NimbusApp
+    from nimbus.tui.app import NimbusApp
 
     errors = []
 
@@ -263,7 +263,7 @@ def test_config_loading():
     print("测试 6: 配置加载")
     print("=" * 60)
 
-    from nimbus.v2.tui.app import load_config
+    from nimbus.tui.app import load_config
 
     try:
         config = load_config()
@@ -286,7 +286,7 @@ async def test_app_compose():
     print("测试 7: App Compose 结构")
     print("=" * 60)
 
-    from nimbus.v2.tui.app import NimbusApp
+    from nimbus.tui.app import NimbusApp
 
     try:
         app = NimbusApp()
@@ -315,7 +315,7 @@ async def test_app_startup():
     print("测试 8: App 启动测试")
     print("=" * 60)
 
-    from nimbus.v2.tui.app import NimbusApp
+    from nimbus.tui.app import NimbusApp
 
     try:
         app = NimbusApp()

@@ -10,10 +10,10 @@ import tempfile
 from pathlib import Path
 import pytest
 
-from nimbus.v2.core.session import SessionManager, InMemorySessionManager, SessionEntry
-from nimbus.v2.core.memory.context import Message
-from nimbus.v2.core.memory.mmu import MMU, MMUConfig, ToolCallMarker
-from nimbus.v2.core.compaction import (
+from nimbus.core.session import SessionManager, InMemorySessionManager, SessionEntry
+from nimbus.core.memory.context import Message
+from nimbus.core.memory.mmu import MMU, MMUConfig, ToolCallMarker
+from nimbus.core.compaction import (
     CompactionConfig,
     CompactionEngine,
     SimpleCompactionEngine,

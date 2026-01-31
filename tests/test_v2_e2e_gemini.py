@@ -110,7 +110,7 @@ class TestGeminiV2ClientUnit:
 
     def test_init_with_api_key(self):
         """Test client initialization with API key."""
-        from nimbus.v2.llm import GeminiV2Client
+        from nimbus.llm import GeminiV2Client
 
         client = GeminiV2Client(api_key="test-key")
         assert client._api_key == "test-key"
@@ -118,7 +118,7 @@ class TestGeminiV2ClientUnit:
 
     def test_init_with_env_var(self, monkeypatch):
         """Test client initialization with environment variable."""
-        from nimbus.v2.llm import GeminiV2Client
+        from nimbus.llm import GeminiV2Client
 
         monkeypatch.setenv("GEMINI_API_KEY", "env-test-key")
         client = GeminiV2Client()
@@ -126,7 +126,7 @@ class TestGeminiV2ClientUnit:
 
     def test_init_without_key_raises(self, monkeypatch):
         """Test that initialization without API key raises error."""
-        from nimbus.v2.llm import GeminiV2Client
+        from nimbus.llm import GeminiV2Client
 
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
         with pytest.raises(ValueError, match="API key is required"):
@@ -134,7 +134,7 @@ class TestGeminiV2ClientUnit:
 
     def test_convert_messages_to_gemini(self):
         """Test message format conversion."""
-        from nimbus.v2.llm import GeminiV2Client
+        from nimbus.llm import GeminiV2Client
 
         client = GeminiV2Client(api_key="test-key")
 
@@ -156,7 +156,7 @@ class TestGeminiV2ClientUnit:
 
     def test_convert_messages_with_tool_calls(self):
         """Test message conversion with tool calls."""
-        from nimbus.v2.llm import GeminiV2Client
+        from nimbus.llm import GeminiV2Client
 
         client = GeminiV2Client(api_key="test-key")
 
@@ -197,7 +197,7 @@ class TestGeminiV2ClientUnit:
 
     def test_convert_tools_to_gemini(self, sample_tools):
         """Test tool format conversion."""
-        from nimbus.v2.llm import GeminiV2Client
+        from nimbus.llm import GeminiV2Client
 
         client = GeminiV2Client(api_key="test-key")
 
@@ -217,7 +217,7 @@ class TestGeminiV2Response:
 
     def test_response_with_content(self):
         """Test response with text content."""
-        from nimbus.v2.llm.gemini import GeminiV2Response
+        from nimbus.llm.gemini import GeminiV2Response
 
         response = GeminiV2Response(_content="Hello, world!")
 
@@ -226,7 +226,7 @@ class TestGeminiV2Response:
 
     def test_response_with_tool_calls(self):
         """Test response with tool calls."""
-        from nimbus.v2.llm.gemini import GeminiV2Response, ToolCallInfo, FunctionInfo
+        from nimbus.llm.gemini import GeminiV2Response, ToolCallInfo, FunctionInfo
 
         tool_call = ToolCallInfo(
             id="call_123",
@@ -246,8 +246,8 @@ class TestDecoderIntegration:
 
     def test_decode_text_response(self):
         """Test decoding a text-only response."""
-        from nimbus.v2.core.runtime.decoder import InstructionDecoder
-        from nimbus.v2.llm.gemini import GeminiV2Response
+        from nimbus.core.runtime.decoder import InstructionDecoder
+        from nimbus.llm.gemini import GeminiV2Response
 
         decoder = InstructionDecoder()
         response = GeminiV2Response(_content="I think I should read the file.")
@@ -260,8 +260,8 @@ class TestDecoderIntegration:
 
     def test_decode_tool_call_response(self):
         """Test decoding a tool call response."""
-        from nimbus.v2.core.runtime.decoder import InstructionDecoder
-        from nimbus.v2.llm.gemini import GeminiV2Response, ToolCallInfo, FunctionInfo
+        from nimbus.core.runtime.decoder import InstructionDecoder
+        from nimbus.llm.gemini import GeminiV2Response, ToolCallInfo, FunctionInfo
 
         decoder = InstructionDecoder()
         tool_call = ToolCallInfo(
@@ -280,8 +280,8 @@ class TestDecoderIntegration:
 
     def test_decode_return_result(self):
         """Test decoding return_result as RETURN action."""
-        from nimbus.v2.core.runtime.decoder import InstructionDecoder
-        from nimbus.v2.llm.gemini import GeminiV2Response, ToolCallInfo, FunctionInfo
+        from nimbus.core.runtime.decoder import InstructionDecoder
+        from nimbus.llm.gemini import GeminiV2Response, ToolCallInfo, FunctionInfo
 
         decoder = InstructionDecoder()
         tool_call = ToolCallInfo(
@@ -310,7 +310,7 @@ class TestGeminiV2Integration:
     @pytest.mark.asyncio
     async def test_simple_chat(self, api_key_required):
         """Test simple chat without tools."""
-        from nimbus.v2.llm import GeminiV2Client
+        from nimbus.llm import GeminiV2Client
 
         async with GeminiV2Client() as client:
             messages = [
@@ -325,7 +325,7 @@ class TestGeminiV2Integration:
     @pytest.mark.asyncio
     async def test_chat_with_tools(self, api_key_required, sample_tools):
         """Test chat with tool calling."""
-        from nimbus.v2.llm import GeminiV2Client
+        from nimbus.llm import GeminiV2Client
 
         async with GeminiV2Client() as client:
             messages = [
@@ -342,7 +342,7 @@ class TestGeminiV2Integration:
     @pytest.mark.asyncio
     async def test_multi_turn_with_tool_results(self, api_key_required, sample_tools):
         """Test multi-turn conversation with tool results."""
-        from nimbus.v2.llm import GeminiV2Client
+        from nimbus.llm import GeminiV2Client
         import json
 
         async with GeminiV2Client() as client:
@@ -398,12 +398,12 @@ class TestVCPUIntegration:
     @pytest.mark.asyncio
     async def test_vcpu_with_mock_gemini(self):
         """Test full vCPU pipeline with mocked Gemini responses."""
-        from nimbus.v2.llm import GeminiV2Client
-        from nimbus.v2.llm.gemini import GeminiV2Response, ToolCallInfo, FunctionInfo
-        from nimbus.v2.core.runtime.vcpu import VCPU, VCPUConfig
-        from nimbus.v2.core.runtime.decoder import InstructionDecoder
-        from nimbus.v2.core.memory.mmu import MMU, MMUConfig
-        from nimbus.v2.os.gate import KernelGate, SimplePermissionManager, SimpleEventStream
+        from nimbus.llm import GeminiV2Client
+        from nimbus.llm.gemini import GeminiV2Response, ToolCallInfo, FunctionInfo
+        from nimbus.core.runtime.vcpu import VCPU, VCPUConfig
+        from nimbus.core.runtime.decoder import InstructionDecoder
+        from nimbus.core.memory.mmu import MMU, MMUConfig
+        from nimbus.os.gate import KernelGate, SimplePermissionManager, SimpleEventStream
 
         # Simple tool executor
         class SimpleToolExecutor:
@@ -515,11 +515,11 @@ class TestVCPUWithGemini:
     @pytest.mark.asyncio
     async def test_vcpu_simple_task(self, api_key_required):
         """Test vCPU executing a simple task that returns immediately."""
-        from nimbus.v2.llm import GeminiV2Client
-        from nimbus.v2.core.runtime.vcpu import VCPU, VCPUConfig
-        from nimbus.v2.core.runtime.decoder import InstructionDecoder
-        from nimbus.v2.core.memory.mmu import MMU, MMUConfig
-        from nimbus.v2.os.gate import KernelGate, SimplePermissionManager, SimpleEventStream
+        from nimbus.llm import GeminiV2Client
+        from nimbus.core.runtime.vcpu import VCPU, VCPUConfig
+        from nimbus.core.runtime.decoder import InstructionDecoder
+        from nimbus.core.memory.mmu import MMU, MMUConfig
+        from nimbus.os.gate import KernelGate, SimplePermissionManager, SimpleEventStream
 
         # Create components
         client = GeminiV2Client()
@@ -573,11 +573,11 @@ class TestVCPUWithGemini:
     @pytest.mark.asyncio
     async def test_vcpu_with_mock_tool(self, api_key_required):
         """Test vCPU with a mock tool execution."""
-        from nimbus.v2.llm import GeminiV2Client
-        from nimbus.v2.core.runtime.vcpu import VCPU, VCPUConfig
-        from nimbus.v2.core.runtime.decoder import InstructionDecoder
-        from nimbus.v2.core.memory.mmu import MMU, MMUConfig
-        from nimbus.v2.os.gate import KernelGate, SimplePermissionManager, SimpleEventStream
+        from nimbus.llm import GeminiV2Client
+        from nimbus.core.runtime.vcpu import VCPU, VCPUConfig
+        from nimbus.core.runtime.decoder import InstructionDecoder
+        from nimbus.core.memory.mmu import MMU, MMUConfig
+        from nimbus.os.gate import KernelGate, SimplePermissionManager, SimpleEventStream
 
         # Simple tool executor
         class SimpleToolExecutor:
@@ -673,7 +673,7 @@ if __name__ == "__main__":
             print("GEMINI_API_KEY not set")
             return
 
-        from nimbus.v2.llm import GeminiV2Client
+        from nimbus.llm import GeminiV2Client
 
         print("Testing GeminiV2Client...")
         async with GeminiV2Client() as client:

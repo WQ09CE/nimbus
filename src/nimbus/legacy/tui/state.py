@@ -13,8 +13,8 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional
 
 if TYPE_CHECKING:
-    from nimbus.v2.agentos import AgentOS
-    from nimbus.v2.core.protocol import Event
+    from nimbus.agentos import AgentOS
+    from nimbus.core.protocol import Event
 
 
 # =============================================================================

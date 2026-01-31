@@ -15,7 +15,7 @@ import asyncio
 import pytest
 from typing import Any, Dict, List
 
-from nimbus.v2.core.scheduler import (
+from nimbus.core.scheduler import (
     DAG,
     Task,
     TaskSpec,
@@ -29,7 +29,7 @@ from nimbus.v2.core.scheduler import (
     is_success_state,
     VALID_TRANSITIONS,
 )
-from nimbus.v2.core.protocol import Event, Fault, ToolResult
+from nimbus.core.protocol import Event, Fault, ToolResult
 
 
 # =============================================================================

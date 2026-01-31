@@ -53,8 +53,8 @@ def get_model_from_config(provider: str = "gemini") -> str | None:
 
 def create_agent_os_with_gemini(model: str | None = None, workspace: Path | None = None):
     """Create AgentOS with Gemini LLM and default tools."""
-    from nimbus.v2.agentos import create_agent_os
-    from nimbus.v2.llm import GeminiV2Client
+    from nimbus.agentos import create_agent_os
+    from nimbus.llm import GeminiV2Client
 
     # Get API key: env var > config file
     api_key = (

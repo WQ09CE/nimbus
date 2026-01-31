@@ -12,12 +12,12 @@ import pytest
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
 
-from nimbus.v2.core.protocol import ActionIR, ToolResult, Fault
-from nimbus.v2.core.runtime.decoder import InstructionDecoder
-from nimbus.v2.core.runtime.vcpu import VCPU, VCPUConfig, StepResult
-from nimbus.v2.os.gate import KernelGate, SimpleEventStream, SimplePermissionManager
-from nimbus.v2.core.memory.mmu import MMU, MMUConfig
-from nimbus.v2.core.memory.context import PinnedContext
+from nimbus.core.protocol import ActionIR, ToolResult, Fault
+from nimbus.core.runtime.decoder import InstructionDecoder
+from nimbus.core.runtime.vcpu import VCPU, VCPUConfig, StepResult
+from nimbus.os.gate import KernelGate, SimpleEventStream, SimplePermissionManager
+from nimbus.core.memory.mmu import MMU, MMUConfig
+from nimbus.core.memory.context import PinnedContext
 
 
 # =============================================================================

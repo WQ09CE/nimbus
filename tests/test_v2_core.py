@@ -8,15 +8,15 @@ import pytest
 import asyncio
 from typing import Any, Dict
 
-from nimbus.v2.core.protocol import (
+from nimbus.core.protocol import (
     ActionIR,
     ToolResult,
     Fault,
     Event,
     IPCMessage,
 )
-from nimbus.v2.core.runtime.decoder import InstructionDecoder
-from nimbus.v2.os.gate import (
+from nimbus.core.runtime.decoder import InstructionDecoder
+from nimbus.os.gate import (
     KernelGate,
     SimplePermissionManager,
     SimpleEventStream,

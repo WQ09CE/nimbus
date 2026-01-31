@@ -12,7 +12,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import aiosqlite
 
-from ..core.memory import MemoryConfig, Message, PinnedItem, TieredMemoryManager
+from ..core.memory_legacy import MemoryConfig, Message, PinnedItem, TieredMemoryManager
 from ..core.types import TaskDAG, TaskStatus
 
 

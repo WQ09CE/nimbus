@@ -33,7 +33,7 @@ from textual.widgets import Footer, Header, Input, Static, Label, Rule
 from textual.message import Message
 
 if TYPE_CHECKING:
-    from nimbus.v2.agentos import AgentOS
+    from nimbus.agentos import AgentOS
 
 
 # Suppress ALL logging during TUI (both standard logging and loguru)
@@ -564,8 +564,8 @@ async def main() -> None:
 
     if api_key:
         try:
-            from nimbus.v2.agentos import create_agent_os
-            from nimbus.v2.llm import GeminiV2Client
+            from nimbus.agentos import create_agent_os
+            from nimbus.llm import GeminiV2Client
 
             llm = GeminiV2Client(api_key=api_key, model=model)
             agent_os = create_agent_os(

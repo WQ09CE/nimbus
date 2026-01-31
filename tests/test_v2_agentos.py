@@ -16,14 +16,14 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from nimbus.v2.agentos import (
+from nimbus.agentos import (
     AgentOS,
     AgentOSConfig,
     ToolRegistry,
     create_agent_os,
 )
-from nimbus.v2.core.protocol import Fault
-from nimbus.v2.core.scheduler import Task, TaskSpec, create_dag, create_linear_dag
+from nimbus.core.protocol import Fault
+from nimbus.core.scheduler import Task, TaskSpec, create_dag, create_linear_dag
 
 # =============================================================================
 # Mock LLM Client

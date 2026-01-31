@@ -14,8 +14,8 @@ from rich.align import Align
 # Ensure nimbus source is in path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../src")))
 
-from nimbus.v2.core.scheduler import Scheduler, DAG, Task, TaskSpec, create_dag
-from nimbus.v2.core.protocol import ToolResult
+from nimbus.core.scheduler import Scheduler, DAG, Task, TaskSpec, create_dag
+from nimbus.core.protocol import ToolResult
 
 class NimbusProConsole:
     def __init__(self):

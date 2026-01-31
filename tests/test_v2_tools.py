@@ -9,7 +9,7 @@ import tempfile
 import os
 from pathlib import Path
 
-from nimbus.v2.tools import (
+from nimbus.tools import (
     read_file,
     glob_files,
     grep_content,

@@ -535,8 +535,8 @@ class AgentOSTestFramework:
                 return False
 
             try:
-                from nimbus.v2.agentos import create_agent_os
-                from nimbus.v2.llm import OpenRouterV2Client
+                from nimbus.agentos import create_agent_os
+                from nimbus.llm import OpenRouterV2Client
 
                 console.print(f"[dim]Using OpenRouter with model: {self.model}[/dim]")
                 self.llm = OpenRouterV2Client(api_key=api_key, model=self.model)
@@ -557,8 +557,8 @@ class AgentOSTestFramework:
                 return False
 
             try:
-                from nimbus.v2.agentos import create_agent_os
-                from nimbus.v2.llm import GeminiV2Client
+                from nimbus.agentos import create_agent_os
+                from nimbus.llm import GeminiV2Client
 
                 console.print(f"[dim]Using Gemini with model: {self.model}[/dim]")
                 self.llm = GeminiV2Client(api_key=api_key, model=self.model)
@@ -569,7 +569,7 @@ class AgentOSTestFramework:
                 return False
 
         try:
-            from nimbus.v2.agentos import create_agent_os
+            from nimbus.agentos import create_agent_os
 
             self.agent_os = create_agent_os(
                 llm_client=self.llm,

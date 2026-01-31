@@ -126,7 +126,7 @@ class TestCodeAgentWithGemini:
     @pytest.mark.asyncio
     async def test_codeagent_simple_task(self, api_key_required, tmp_path):
         """Test CodeAgent executing a simple task with Gemini."""
-        from nimbus.v2.llm import GeminiV2Client
+        from nimbus.llm import GeminiV2Client
         from nimbus.core.agent import CodeAgent
 
         # Create a test file

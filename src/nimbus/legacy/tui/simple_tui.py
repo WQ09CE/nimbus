@@ -32,7 +32,7 @@ from rich.prompt import Prompt
 from rich import box
 
 if TYPE_CHECKING:
-    from nimbus.v2.agentos import AgentOS
+    from nimbus.agentos import AgentOS
 
 
 @dataclass
@@ -352,8 +352,8 @@ async def main():
     console.print(f"[dim]Starting Nimbus V2 with Gemini ({model})...[/dim]")
 
     try:
-        from nimbus.v2.agentos import create_agent_os
-        from nimbus.v2.llm import GeminiV2Client
+        from nimbus.agentos import create_agent_os
+        from nimbus.llm import GeminiV2Client
 
         llm = GeminiV2Client(api_key=api_key, model=model)
         agent_os = create_agent_os(

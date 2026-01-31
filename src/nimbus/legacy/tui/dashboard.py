@@ -24,7 +24,7 @@ from nimbus.tui.widgets.status import HeaderBar, StatusBar
 from nimbus.tui.widgets.vcpu import VCPUWidget
 
 if TYPE_CHECKING:
-    from nimbus.v2.agentos import AgentOS
+    from nimbus.agentos import AgentOS
 
 
 class TUIDashboard:
@@ -38,7 +38,7 @@ class TUIDashboard:
     - Subscribe to AgentOS events
 
     Usage:
-        from nimbus.v2.agentos import create_agent_os
+        from nimbus.agentos import create_agent_os
 
         # Create AgentOS
         llm = create_llm_client()
@@ -304,8 +304,8 @@ async def _demo_main() -> None:
 
 async def _real_main() -> None:
     """Real main function with AgentOS connection."""
-    from nimbus.v2.agentos import create_agent_os
-    from nimbus.v2.llm.anthropic import AnthropicLLMClient
+    from nimbus.agentos import create_agent_os
+    from nimbus.llm.anthropic import AnthropicLLMClient
 
     print("Starting Nimbus V2 TUI Dashboard...")
 

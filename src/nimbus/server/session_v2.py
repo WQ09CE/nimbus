@@ -10,8 +10,8 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from nimbus.v2 import AgentOS, AgentOSConfig, create_agent_os
-from nimbus.v2.core.protocol import Event
+from nimbus import AgentOS, AgentOSConfig, create_agent_os
+from nimbus.core.protocol import Event
 from .sse import SSEHub
 from .permission import PermissionManager
 
@@ -116,7 +116,7 @@ class SessionManagerV2:
             # We need to get a new client if we have specific model config
             # otherwise we can use the shared one (if it matches default)
             if model_config:
-                from nimbus.v2.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+                from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
                 config = PiLLMConfig(
                     provider=model_config.get("provider", "anthropic"),
                     model_id=model_config.get("model_id", "claude-sonnet-4-20250514")
@@ -146,7 +146,7 @@ class SessionManagerV2:
     async def _get_shared_llm_client(self):
         """Get or create shared PiLLMAdapter."""
         if self._shared_llm_client is None:
-            from nimbus.v2.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+            from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
             
             # Create and start shared client
             # Using defaults which point to anthropic/claude-sonnet

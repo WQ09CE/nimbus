@@ -1,9 +1,9 @@
-"""AI SDK v6 UI Message Stream Protocol compatible API endpoint.
+"""
+AI SDK v6 UI Message Stream Protocol compatible API endpoint for Nimbus v2.
 
 This module provides:
 - /api/chat endpoint returning AI SDK v6 UI Message Stream Protocol format
 - Event streaming compatible with AI SDK useChat hook + DefaultChatTransport
-- Message history handling
 
 AI SDK v6 UI Message Stream Protocol:
 https://sdk.vercel.ai/docs/ai-sdk-ui/stream-protocol
@@ -14,14 +14,8 @@ Format: SSE with JSON payload
 Core event types:
 - start: Message start with messageId
 - text-start/text-delta/text-end: Text streaming
-- tool-input-start/tool-input-available/tool-output-available: Tool calls
 - error: Error with errorText
 - finish: Message finish
-
-Custom data events (MUST start with "data-"):
-- data-status: Status updates
-- data-dag-start/data-dag-progress/data-dag-end: Multi-agent DAG
-- data-agent-start/data-agent-end: Sub-agent execution
 """
 
 import json
@@ -30,11 +24,10 @@ import os
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-# Configure logging - use module logger without forcing DEBUG to stdout
 logger = logging.getLogger(__name__)
 
 # =============================================================================
@@ -44,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 class Message(BaseModel):
     """Chat message in AI SDK format (supports both v5 and v6)."""
+
     role: str  # "user" | "assistant" | "system"
     # v5 format: content as string
     content: Optional[str] = None
@@ -69,6 +63,7 @@ class Message(BaseModel):
 
 class AISdkChatRequest(BaseModel):
     """Request model for AI SDK chat endpoint."""
+
     messages: List[Message]
     sessionId: Optional[str] = None
     workspacePath: Optional[str] = None  # Workspace directory for agent tools
@@ -82,28 +77,10 @@ router = APIRouter(tags=["AI SDK"])
 
 
 # =============================================================================
-# Dependencies
-# =============================================================================
-
-async def get_storage(request: Request):
-    """Get storage from app state."""
-    return request.app.state.storage
-
-
-async def get_session_manager(request: Request):
-    """Get session manager from app state."""
-    return request.app.state.session_manager
-
-
-async def get_message_cache(request: Request):
-    """Get message cache from app state."""
-    return request.app.state.message_cache
-
-
-# =============================================================================
 # AI SDK v6 UI Message Stream Protocol Helpers
 # https://sdk.vercel.ai/docs/ai-sdk-ui/stream-protocol
 # =============================================================================
+
 
 def sse_event(data: dict | str) -> str:
     """Format as SSE event with JSON payload."""
@@ -120,6 +97,7 @@ def format_done() -> str:
 # =============================================================================
 # Core Event Formatters
 # =============================================================================
+
 
 def format_start(message_id: str) -> str:
     """Format message start event."""
@@ -152,42 +130,13 @@ def format_finish(finish_reason: str = "stop") -> str:
 
 
 # =============================================================================
-# Tool Event Formatters
-# =============================================================================
-
-def format_tool_input_start(tool_call_id: str, tool_name: str) -> str:
-    """Format tool input start event."""
-    return sse_event({
-        "type": "tool-input-start",
-        "toolCallId": tool_call_id,
-        "toolName": tool_name,
-    })
-
-
-def format_tool_input_available(tool_call_id: str, tool_name: str, input_data: Any) -> str:
-    """Format tool input available event."""
-    return sse_event({
-        "type": "tool-input-available",
-        "toolCallId": tool_call_id,
-        "toolName": tool_name,
-        "input": input_data,
-    })
-
-
-def format_tool_output_available(tool_call_id: str, output: Any) -> str:
-    """Format tool output available event."""
-    return sse_event({
-        "type": "tool-output-available",
-        "toolCallId": tool_call_id,
-        "output": output,
-    })
-
-
-# =============================================================================
 # Custom Data Event Formatters (MUST use "data-" prefix)
 # =============================================================================
 
-def format_data_event(subtype: str, data: Any, event_id: str = None, transient: bool = None) -> str:
+
+def format_data_event(
+    subtype: str, data: Any, event_id: str = None, transient: bool = None
+) -> str:
     """Format custom data event. Type will be prefixed with 'data-'."""
     payload = {
         "type": f"data-{subtype}",
@@ -208,116 +157,126 @@ def format_status(status: str, message: str = None) -> str:
     return format_data_event("status", data)
 
 
-def format_dag_start(dag_id: str, goal: str, total_tasks: int) -> str:
-    """Format DAG start event."""
-    return format_data_event("dag-start", {
-        "dagId": dag_id,
-        "goal": goal,
-        "totalTasks": total_tasks,
-    })
-
-
-def format_dag_progress(dag_id: str, completed: int, total: int) -> str:
-    """Format DAG progress event."""
-    return format_data_event("dag-progress", {
-        "dagId": dag_id,
-        "completed": completed,
-        "total": total,
-    })
-
-
-def format_dag_end(dag_id: str, status: str, summary: str = None) -> str:
-    """Format DAG end event."""
-    data = {"dagId": dag_id, "status": status}
-    if summary:
-        data["summary"] = summary
-    return format_data_event("dag-end", data)
-
-
-def format_agent_start(agent_id: str, agent_name: str, task_id: str, parent_task_id: str = None) -> str:
-    """Format agent start event."""
-    data = {
-        "agentId": agent_id,
-        "agentName": agent_name,
-        "taskId": task_id,
-    }
-    if parent_task_id:
-        data["parentTaskId"] = parent_task_id
-    return format_data_event("agent-start", data)
-
-
-def format_agent_end(agent_id: str, status: str, output: Any = None) -> str:
-    """Format agent end event."""
-    data = {"agentId": agent_id, "status": status}
-    if output is not None:
-        data["output"] = output
-    return format_data_event("agent-end", data)
-
-
 # =============================================================================
 # API Endpoint
 # =============================================================================
+
+
+def get_or_create_agent_os(request: Request, workspace_path: Optional[str] = None):
+    """
+    Get or create an AgentOS instance for the given workspace.
+
+    Each workspace gets its own AgentOS instance with tools configured
+    for that workspace directory.
+
+    Args:
+        request: FastAPI request object
+        workspace_path: Workspace directory path
+
+    Returns:
+        AgentOS instance for the workspace
+    """
+    from pathlib import Path
+
+    # Normalize workspace path
+    if workspace_path:
+        workspace = Path(os.path.expanduser(workspace_path)).resolve()
+        logger.info(f"🗂️  Requested workspace: {workspace_path} -> {workspace}")
+    else:
+        workspace = Path.cwd()
+        logger.info(f"🗂️  No workspace specified, using cwd: {workspace}")
+
+    workspace_key = str(workspace)
+
+    # Initialize workspace cache if not exists
+    if not hasattr(request.app.state, "workspace_agents"):
+        request.app.state.workspace_agents = {}
+
+    # Check if we already have an AgentOS for this workspace
+    if workspace_key in request.app.state.workspace_agents:
+        return request.app.state.workspace_agents[workspace_key]
+
+    # Get the default AgentOS config
+    default_agent_os = getattr(request.app.state, "agent_os", None)
+    if default_agent_os is None:
+        return None
+
+    # If workspace is same as default, use default
+    default_workspace = getattr(request.app.state, "default_workspace", None)
+    if default_workspace and str(workspace) == str(default_workspace):
+        return default_agent_os
+
+    # Create new AgentOS for this workspace
+    try:
+        from nimbus.agentos import create_agent_os
+
+        # Get the LLM client from default AgentOS
+        llm_client = default_agent_os._llm
+
+        agent_os = create_agent_os(
+            llm_client=llm_client,
+            system_rules=default_agent_os.config.system_rules,
+            workspace=workspace,
+            register_defaults=True,
+        )
+
+        # Cache it
+        request.app.state.workspace_agents[workspace_key] = agent_os
+        logger.info(f"Created new AgentOS for workspace: {workspace}")
+
+        return agent_os
+
+    except Exception as e:
+        logger.error(f"Failed to create AgentOS for workspace {workspace}: {e}")
+        return default_agent_os
+
 
 @router.post("/api/chat")
 async def chat(
     request_data: AISdkChatRequest,
     request: Request,
-    session_manager=Depends(get_session_manager),
-    storage=Depends(get_storage),
-    message_cache=Depends(get_message_cache),
 ) -> StreamingResponse:
     """
     Handle chat request and return Vercel AI SDK Data Protocol stream.
 
     This endpoint is compatible with the Vercel AI SDK useChat hook.
-    It converts Nimbus agent events to AI SDK Data Protocol format.
+    It converts Nimbus v2 AgentOS responses to AI SDK Data Protocol format.
 
     Args:
         request_data: Chat request with messages and optional sessionId.
         request: FastAPI request object.
-        session_manager: Session manager dependency.
-        storage: Storage dependency.
 
     Returns:
         StreamingResponse with AI SDK Data Protocol formatted events.
     """
     logger.info("📥 /api/chat request received")
-    logger.debug(f"   Messages count: {len(request_data.messages)}")
-    logger.debug(f"   SessionId: {request_data.sessionId}")
+    logger.info(f"   Messages count: {len(request_data.messages)}")
+    logger.info(f"   SessionId: {request_data.sessionId}")
+    logger.info(f"   WorkspacePath: {request_data.workspacePath}")
 
-    # Log each message
-    for i, msg in enumerate(request_data.messages):
-        content = msg.get_text_content()[:50] + "..." if len(msg.get_text_content()) > 50 else msg.get_text_content()
-        logger.debug(f"   Message[{i}]: role={msg.role}, content={content}")
+    # Get AgentOS for the specified workspace
+    agent_os = get_or_create_agent_os(request, request_data.workspacePath)
+    if agent_os is None:
+        # Return error stream
+        async def error_stream():
+            error_msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+            yield format_start(error_msg_id)
+            yield format_error("AgentOS not initialized")
+            yield format_finish("error")
+            yield format_done()
+
+        return StreamingResponse(
+            error_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     # Get or create session
     session_id = request_data.sessionId
-    # Use provided workspace or default to home directory (more permissive)
-    # Always expand ~ to full path
-    workspace_path = os.path.expanduser(request_data.workspacePath or "~")
-
-    if not session_id:
-        # Create a new session for this chat
-        session = await session_manager.create_session(
-            name="AI SDK Chat",
-            memory_type="tiered",
-            planner_type="dag",
-            workspace_path=workspace_path,
-        )
-        session_id = session["id"]
-    else:
-        # Verify session exists
-        session = await session_manager.get_session(session_id)
-        if not session:
-            # Create session with the provided ID (preserve frontend session ID)
-            session = await session_manager.create_session(
-                name="AI SDK Chat",
-                memory_type="tiered",
-                planner_type="dag",
-                workspace_path=workspace_path,
-                session_id=session_id,  # Use the frontend-provided session ID
-            )
-            # session_id remains unchanged
 
     # Extract the last user message
     user_message = ""
@@ -347,24 +306,6 @@ async def chat(
             },
         )
 
-    # Build conversation history from frontend messages
-    # The frontend (Vercel AI SDK) sends the complete conversation history
-    # in each request, so we use that directly instead of loading from cache
-    full_history = []
-    for msg in request_data.messages:
-        full_history.append({
-            "role": msg.role,
-            "content": msg.get_text_content(),
-        })
-    logger.debug(f"   Using {len(full_history)} messages from frontend")
-
-    # Save user message to storage for persistence (optional, for session recovery)
-    await message_cache.add_message(
-        session_id=session_id,
-        role="user",
-        content=user_message,
-    )
-
     async def event_stream():
         """Generate SSE events for AI SDK v6 useChat hook.
 
@@ -376,195 +317,52 @@ async def chat(
         message_id = f"msg_{uuid.uuid4().hex[:12]}"
         text_id = f"text_{uuid.uuid4().hex[:8]}"
 
-        # Track state
-        response_text = ""
-        event_count = 0
-        current_dag_id = None
-        text_started = False
-        current_tool_id = None
-        current_tool_name = None
-
         try:
             # Send message start
             yield format_start(message_id)
 
-            # Get or create agent
-            agent = await session_manager.get_or_create_agent(session_id)
-            logger.debug(f"   Agent ready for session: {session_id}")
+            # Send status
+            yield format_status("processing", "Thinking...")
 
-            # Run agent with streaming (pass conversation history)
-            async for status in agent.run_stream(user_message, history=full_history):
-                status_type = status.get("type", "unknown")
-                event_count += 1
-                logger.debug(f"   📨 Event[{event_count}]: {status_type}")
+            # Execute via AgentOS
+            result = await agent_os.chat(user_message, session_id=session_id)
 
-                # =============================================================
-                # DAG/Task Events (from SubagentRuntime)
-                # Core sends: task_start, task_complete
-                # =============================================================
-                if status_type == "task_start":
-                    # DAG execution start
-                    dag_id = status.get("dag_id", f"dag_{uuid.uuid4().hex[:8]}")
-                    goal = status.get("goal", "")
-                    total_tasks = status.get("nodes", 0)
-                    current_dag_id = dag_id
-                    yield format_dag_start(dag_id, goal, total_tasks)
+            # Start text block
+            yield format_text_start(text_id)
 
-                elif status_type == "task_complete":
-                    # DAG execution complete
-                    dag_id = status.get("dag_id", current_dag_id or "")
-                    dag_status = status.get("status", "completed")
-                    final_summary = status.get("final_summary", "")
-                    yield format_dag_end(dag_id, dag_status, final_summary[:200] if final_summary else None)
-                    current_dag_id = None
+            # Get the output text
+            if result.status == "OK":
+                output_text = (
+                    result.output if isinstance(result.output, str) else str(result.output)
+                )
+            else:
+                # Handle error
+                error_msg = result.fault.message if result.fault else "Unknown error"
+                output_text = f"Error: {error_msg}"
 
-                elif status_type == "task_dag":
-                    # DAG structure event (from CodeAgent.run_stream)
-                    dag_data = status.get("dag", {})
-                    yield format_data_event("dag-structure", dag_data)
-
-                # =============================================================
-                # Subagent Events (from SubagentRuntime)
-                # Core sends: subagent_start, subagent_progress, subagent_complete
-                # =============================================================
-                elif status_type == "subagent_start":
-                    node_id = status.get("node_id", "")
-                    subagent_type = status.get("subagent_type", "agent")
-                    goal = status.get("goal", "")
-                    yield format_agent_start(
-                        agent_id=node_id,
-                        agent_name=subagent_type.upper(),
-                        task_id=f"task_{node_id}",
-                    )
-
-                elif status_type == "subagent_progress":
-                    # Tool call or tool result from subagent
-                    node_id = status.get("node_id", "")
-                    event_type = status.get("event_type", "")
-
-                    if event_type == "tool_call":
-                        tool_name = status.get("tool_name", "unknown")
-                        arguments = status.get("arguments", {})
-                        call_id = status.get("call_id", f"tool_{uuid.uuid4().hex[:8]}")
-                        current_tool_id = call_id
-                        current_tool_name = tool_name
-
-                        # Send tool-input-start first
-                        yield format_tool_input_start(call_id, tool_name)
-                        # Then send tool-input-available with full args
-                        yield format_tool_input_available(call_id, tool_name, arguments)
-
-                    elif event_type == "tool_result":
-                        call_id = status.get("call_id", current_tool_id or "")
-                        result = status.get("result_preview", "")
-                        is_error = status.get("is_error", False)
-
-                        if is_error:
-                            yield format_tool_output_available(call_id, {"error": str(result)})
-                        else:
-                            # Truncate large results for display
-                            if isinstance(result, str) and len(result) > 2000:
-                                result = result[:2000] + "...(truncated)"
-                            yield format_tool_output_available(call_id, result)
-
-                        current_tool_id = None
-                        current_tool_name = None
-
-                elif status_type == "subagent_complete":
-                    node_id = status.get("node_id", "")
-                    subagent_status = status.get("status", "completed")
-                    summary = status.get("summary", "")
-                    error = status.get("error")
-                    output = {"summary": summary, "error": error} if error else summary
-                    yield format_agent_end(node_id, subagent_status, output)
-
-                # =============================================================
-                # Text Events - Standard AI SDK v6 format
-                # Core sends: response, complete
-                # =============================================================
-                elif status_type == "response":
-                    # Final response text
-                    content = status.get("content", "")
-                    if content:
-                        # Start text block if not started
-                        if not text_started:
-                            yield format_text_start(text_id)
-                            text_started = True
-                        # Send content in chunks (by line for better performance)
-                        lines = content.split('\n')
-                        for i, line in enumerate(lines):
-                            delta = line + '\n' if i < len(lines) - 1 else line
-                            if delta:
-                                yield format_text_delta(text_id, delta)
-                        response_text = content
-
-                elif status_type == "complete":
-                    # Completion event - use content if response wasn't already sent
-                    content = status.get("content", "")
-                    if content and not response_text:
-                        # Start text block if not started
-                        if not text_started:
-                            yield format_text_start(text_id)
-                            text_started = True
-                        # Send content in chunks (by line for better performance)
-                        lines = content.split('\n')
-                        for i, line in enumerate(lines):
-                            delta = line + '\n' if i < len(lines) - 1 else line
-                            if delta:
-                                yield format_text_delta(text_id, delta)
-                        response_text = content
-
-                elif status_type == "text_delta":
-                    # Streaming text delta (if core supports it in future)
-                    delta = status.get("delta", "")
+            # Stream the content in chunks (by line for better display)
+            if output_text:
+                lines = output_text.split("\n")
+                for i, line in enumerate(lines):
+                    delta = line + "\n" if i < len(lines) - 1 else line
                     if delta:
-                        # Start text block if not started
-                        if not text_started:
-                            yield format_text_start(text_id)
-                            text_started = True
                         yield format_text_delta(text_id, delta)
-                        response_text += delta
 
-                # =============================================================
-                # Status/Progress Events - Custom data events
-                # Core sends: status
-                # =============================================================
-                elif status_type == "status":
-                    message = status.get("content", "")
-                    yield format_status("processing", message)
-
-                elif status_type in ("planning", "executing", "thinking"):
-                    message = status.get("message", status_type)
-                    yield format_status(status_type, message)
-
-                elif status_type == "error":
-                    # Error event from core
-                    error_content = status.get("content", "Unknown error")
-                    yield format_error(error_content)
-
-            # End text block if started
-            if text_started:
-                yield format_text_end(text_id)
+            # End text block
+            yield format_text_end(text_id)
 
             # Send finish event and done marker
-            logger.info(f"✅ Stream complete, {event_count} events, response: {response_text[:50] if response_text else 'empty'}...")
+            logger.info(
+                f"✅ Stream complete, response: {output_text[:50] if output_text else 'empty'}..."
+            )
             yield format_finish("stop")
             yield format_done()
 
-            # Save assistant message to cache (also persists to storage)
-            if response_text:
-                await message_cache.add_message(
-                    session_id=session_id,
-                    role="assistant",
-                    content=response_text,
-                )
-
         except Exception as e:
             logger.error(f"❌ Stream error: {e}", exc_info=True)
-            # End text block if started
-            if text_started:
-                yield format_text_end(text_id)
-            yield format_error(str(e))
+            yield format_text_start(text_id)
+            yield format_text_delta(text_id, f"Error: {str(e)}")
+            yield format_text_end(text_id)
             yield format_finish("error")
             yield format_done()
 
@@ -580,11 +378,102 @@ async def chat(
 
 
 # =============================================================================
-# Path Completion API
+# Session Management Endpoints (for acp-web-client compatibility)
 # =============================================================================
+
+
+class CreateSessionRequest(BaseModel):
+    """Request for creating a session."""
+
+    name: Optional[str] = "New Chat"
+    workspacePath: Optional[str] = None
+
+
+class CreateSessionResponse(BaseModel):
+    """Response for session creation."""
+
+    id: str
+    name: str
+    createdAt: str
+
+
+@router.post("/api/v1/sessions")
+async def create_session(
+    request_data: CreateSessionRequest,
+    request: Request,
+) -> CreateSessionResponse:
+    """Create a new chat session."""
+    import datetime
+
+    session_id = f"session-{uuid.uuid4().hex[:12]}"
+
+    return CreateSessionResponse(
+        id=session_id,
+        name=request_data.name or "New Chat",
+        createdAt=datetime.datetime.now().isoformat(),
+    )
+
+
+@router.get("/api/v1/sessions")
+async def list_sessions(request: Request) -> Dict[str, Any]:
+    """List all sessions."""
+    agent_os = getattr(request.app.state, "agent_os", None)
+    if agent_os is None:
+        return {"sessions": []}
+
+    # Get sessions from AgentOS processes
+    sessions = []
+    for pid in agent_os.list_processes():
+        process = agent_os.get_process(pid)
+        if process and process.role == "chat":
+            sessions.append(
+                {
+                    "id": pid,
+                    "name": process.goal or "Chat Session",
+                    "state": process.state,
+                }
+            )
+
+    return {"sessions": sessions}
+
+
+@router.get("/api/v1/sessions/{session_id}")
+async def get_session(session_id: str, request: Request) -> Dict[str, Any]:
+    """Get a session by ID."""
+    agent_os = getattr(request.app.state, "agent_os", None)
+    if agent_os is None:
+        return {"error": "AgentOS not initialized"}
+
+    process = agent_os.get_process(session_id)
+    if not process:
+        return {"error": "Session not found"}
+
+    return {
+        "id": session_id,
+        "name": process.goal or "Chat Session",
+        "state": process.state,
+    }
+
+
+@router.delete("/api/v1/sessions/{session_id}")
+async def delete_session(session_id: str, request: Request) -> Dict[str, Any]:
+    """Delete a session."""
+    agent_os = getattr(request.app.state, "agent_os", None)
+    if agent_os is None:
+        return {"error": "AgentOS not initialized"}
+
+    agent_os.end_session(session_id)
+    return {"success": True}
+
+
+# =============================================================================
+# Path Completion API (for workspace selector)
+# =============================================================================
+
 
 class PathCompletionResponse(BaseModel):
     """Response model for path completion."""
+
     prefix: str
     completions: List[Dict[str, Any]]  # [{path, name, isDir}]
 
@@ -604,7 +493,6 @@ async def complete_path(
     Returns:
         List of matching paths with metadata.
     """
-    import os
     from pathlib import Path
 
     # Expand ~ to home directory
@@ -649,15 +537,17 @@ async def complete_path(
                 item_path = str(item)
                 home = os.path.expanduser("~")
                 if item_path.startswith(home):
-                    display_path = "~" + item_path[len(home):]
+                    display_path = "~" + item_path[len(home) :]
                 else:
                     display_path = item_path
 
-                completions.append({
-                    "path": display_path,
-                    "name": item.name,
-                    "isDir": item.is_dir(),
-                })
+                completions.append(
+                    {
+                        "path": display_path,
+                        "name": item.name,
+                        "isDir": item.is_dir(),
+                    }
+                )
 
                 if len(completions) >= limit:
                     break
@@ -676,3 +566,20 @@ async def complete_path(
         prefix=response_prefix,
         completions=completions,
     )
+
+
+# =============================================================================
+# Message History Endpoint
+# =============================================================================
+
+
+@router.get("/api/v1/sessions/{session_id}/messages")
+async def get_session_messages(
+    session_id: str,
+    request: Request,
+) -> Dict[str, Any]:
+    """Get message history for a session."""
+    # Currently v2 AgentOS doesn't persist message history to storage
+    # The messages are in MMU memory only
+    # For now, return empty list - can be enhanced later
+    return {"messages": []}

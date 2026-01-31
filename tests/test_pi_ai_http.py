@@ -11,7 +11,7 @@
 
 import pytest
 import asyncio
-from nimbus.v2.bridge.pi_ai_http import (
+from nimbus.bridge.pi_ai_http import (
     PiAiHttpClient,
     Message,
 )
