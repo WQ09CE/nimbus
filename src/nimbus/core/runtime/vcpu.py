@@ -143,6 +143,9 @@ class VCPUConfig:
     emit_step_events: bool = True
     compact_on_limit: bool = True  # NEW: Trigger compaction instead of stopping
     max_compactions: int = 10  # NEW: Max compactions (10 x 50 = 500 iterations max)
+    # Goal pinning
+    pin_goal: bool = True  # Pin user goal to survive compaction
+    goal_max_length: int = 500  # Summarize goal if longer than this
 
 
 # =============================================================================
@@ -269,9 +272,11 @@ class VCPU:
         self._is_running = True
 
         # Pin goal to ensure it survives compaction
-        self.mmu.pin_user_goal(goal)
+        if self.config.pin_goal:
+            pinned_goal = await self._prepare_goal_for_pinning(goal)
+            self.mmu.pin_user_goal(pinned_goal)
         
-        # Add goal as user message
+        # Add goal as user message (always use original)
         self.mmu.add_user_message(goal)
         self._emit_event("STEP_STARTED", {"goal": goal, "iteration": 0})
 
@@ -1179,6 +1184,64 @@ class VCPU:
         self._compaction_count = 0  # Reset compaction counter
         self._consecutive_empty_responses = 0  # Reset empty response counter
         self._path_not_found_count = 0  # Reset path resolution counter
+
+    async def _prepare_goal_for_pinning(self, goal: str) -> str:
+        """
+        Prepare goal for pinning.
+        
+        If goal is short enough, use as-is.
+        If too long, use LLM to summarize while preserving language.
+        
+        Args:
+            goal: The original user goal
+            
+        Returns:
+            Goal suitable for pinning (original or summarized)
+        """
+        if len(goal) <= self.config.goal_max_length:
+            return goal
+        
+        # Goal is too long, summarize with LLM
+        from nimbus.core.logging import get_logger
+        logger = get_logger("kernel.vcpu")
+        
+        try:
+            # Detect user's language for the prompt
+            has_chinese = any('\u4e00' <= c <= '\u9fff' for c in goal)
+            
+            if has_chinese:
+                prompt = f"""请用一句话总结用户的核心请求（保持中文，不超过100字）：
+
+用户原文：
+{goal[:1000]}...
+
+一句话总结："""
+            else:
+                prompt = f"""Summarize the user's core request in one sentence (max 100 chars):
+
+Original:
+{goal[:1000]}...
+
+One sentence summary:"""
+            
+            # Use LLM to summarize
+            messages = [{"role": "user", "content": prompt}]
+            response = await self._llm.complete(messages, tools=[])
+            
+            if response.content:
+                summary = response.content.strip()
+                # Ensure summary is actually shorter
+                if len(summary) < len(goal):
+                    logger.info(f"Goal summarized: {len(goal)} → {len(summary)} chars")
+                    return summary
+            
+            # Fallback: truncate
+            logger.warning("Goal summarization failed, using truncation")
+            return goal[:self.config.goal_max_length] + "..."
+            
+        except Exception as e:
+            logger.error(f"Goal summarization error: {e}")
+            return goal[:self.config.goal_max_length] + "..."
 
     async def _generate_llm_failure_response(
         self,
