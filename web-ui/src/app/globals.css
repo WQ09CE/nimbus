@@ -55,3 +55,81 @@ body {
   background: rgba(59, 130, 246, 0.3);
   color: white;
 }
+
+/* Markdown Styles */
+.markdown-content {
+  line-height: 1.6;
+}
+
+.markdown-content .markdown-h1 {
+  @apply text-xl font-bold text-blue-300 mb-4 mt-6 first:mt-0;
+}
+
+.markdown-content .markdown-h2 {
+  @apply text-lg font-bold text-blue-300 mb-3 mt-5 first:mt-0;
+}
+
+.markdown-content .markdown-h3 {
+  @apply text-base font-semibold text-blue-300 mb-2 mt-4 first:mt-0;
+}
+
+.markdown-content .markdown-p {
+  @apply mb-3 text-gray-200;
+}
+
+.markdown-content .markdown-link {
+  @apply text-blue-400 hover:text-blue-300 underline transition-colors;
+}
+
+.markdown-content .markdown-ul {
+  @apply mb-3 ml-4 space-y-1;
+}
+
+.markdown-content .markdown-ol {
+  @apply mb-3 ml-4 space-y-1;
+}
+
+.markdown-content .markdown-li {
+  @apply text-gray-200 relative;
+  list-style-type: disc;
+  margin-left: 1em;
+}
+
+.markdown-content .markdown-oli {
+  @apply text-gray-200 relative;
+  list-style-type: decimal;
+  margin-left: 1em;
+}
+
+.markdown-content .markdown-blockquote {
+  @apply border-l-4 border-gray-600 pl-4 py-2 mb-3 text-gray-300 italic bg-gray-800/20 rounded-r;
+}
+
+.markdown-content .markdown-hr {
+  @apply border-gray-600 my-6;
+}
+
+.markdown-content .code-block {
+  @apply bg-black/60 border border-gray-700 rounded-lg p-4 mb-3 overflow-x-auto text-sm relative;
+}
+
+.markdown-content .code-block::before {
+  content: attr(data-lang);
+  @apply absolute top-2 right-3 text-[10px] text-gray-500 uppercase font-mono;
+}
+
+.markdown-content .code-block code {
+  @apply text-gray-300 font-mono;
+}
+
+.markdown-content .inline-code {
+  @apply bg-gray-800/60 text-blue-300 px-1 py-0.5 rounded text-sm font-mono border border-gray-700;
+}
+
+.markdown-content strong {
+  @apply font-semibold text-white;
+}
+
+.markdown-content em {
+  @apply italic text-gray-100;
+}

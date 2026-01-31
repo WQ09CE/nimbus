@@ -173,9 +173,13 @@ class PiAiHttpClient:
         resp.raise_for_status()
         data = resp.json()
         
-        # 解析响应
+        # Debug log: show raw response
+        from loguru import logger
         choice = data.get("choices", [{}])[0]
         message = choice.get("message", {})
+        logger.debug(f"[pi-ai-http] Raw response: content={repr(message.get('content', '')[:200] if message.get('content') else None)}, tool_calls={len(message.get('tool_calls', []))}")
+        
+        # 解析响应
         
         # 提取文本内容
         content = message.get("content", "")

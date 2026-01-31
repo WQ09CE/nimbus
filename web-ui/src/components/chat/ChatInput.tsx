@@ -29,7 +29,7 @@ export function ChatInput({ onSend, disabled, placeholder }: ChatInputProps) {
         textareaRef.current.focus();
       }
     }
-    wasDisabledRef.current = disabled;
+    wasDisabledRef.current = disabled ?? false;
   }, [disabled, input]);
 
   const handleSubmit = (e: React.FormEvent) => {

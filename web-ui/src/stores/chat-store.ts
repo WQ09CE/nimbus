@@ -20,6 +20,36 @@ export interface Message {
   timestamp: number;
 }
 
+// SSE event data types (from server)
+interface HeartbeatData {
+  iteration?: number;
+  [key: string]: unknown;
+}
+
+interface ToolCallData {
+  action_id?: string;
+  id?: string;
+  tool?: string;
+  name?: string;
+  args?: Record<string, unknown>;
+  arguments?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+interface ToolResultData {
+  action_id?: string;
+  id?: string;
+  tool?: string;
+  name?: string;
+  output?: unknown;
+  result?: unknown;
+  error?: string;
+  duration_ms?: number;
+  status?: string;
+  fault?: { message: string; [key: string]: unknown };
+  [key: string]: unknown;
+}
+
 interface ChatState {
   // Session
   session: Session | null;
@@ -148,11 +178,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
           case "heartbeat":
             // Update thinking iteration if present
             if (data && typeof data === "object") {
-              const hbData = data as any;
-              if ("iteration" in hbData) {
+              const hbData = data as HeartbeatData;
+              if ("iteration" in hbData && typeof hbData.iteration === "number") {
+                const iter = hbData.iteration;
                 set({ 
-                  thinkingIteration: hbData.iteration,
-                  currentActivity: `正在思考 (第 ${hbData.iteration + 1} 轮)...`,
+                  thinkingIteration: iter,
+                  currentActivity: `正在思考 (第 ${iter + 1} 轮)...`,
                   lastHeartbeat: Date.now() 
                 });
               } else if ("kind" in hbData && hbData.kind === "THOUGHT") {
@@ -193,11 +224,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           case "tool_call":
             if (data && typeof data === "object") {
-              const d = data as any;
+              const d = data as ToolCallData;
               // Map server format (action_id, tool, args) to frontend format (id, name, arguments)
               const tool: ToolCall = {
-                id: d.action_id || d.id,
-                name: d.tool || d.name,
+                id: d.action_id || d.id || "",
+                name: d.tool || d.name || "unknown",
                 arguments: d.args || d.arguments || {},
               };
               toolCalls.push(tool);
@@ -211,10 +242,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           case "tool_result":
             if (data && typeof data === "object") {
-              const d = data as any;
+              const d = data as ToolResultData;
               const result: ToolResult = {
-                id: d.action_id || d.id,
-                name: d.tool || d.name,
+                id: d.action_id || d.id || "",
+                name: d.tool || d.name || "unknown",
                 result: d.output !== undefined ? d.output : d.result,
                 error: d.status === "ERROR" ? (d.fault ? d.fault.message : "Error") : undefined,
                 duration: d.duration_ms,

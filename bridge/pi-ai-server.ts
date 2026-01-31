@@ -296,6 +296,12 @@ async function handleComplete(req: ChatRequest, res: ServerResponse) {
       // Non-streaming response
       const result = await complete(model, context, { apiKey });
       
+      // Debug log: show what pi-ai returned
+      console.log("[pi-ai-server] Raw result from pi-ai:");
+      console.log("  stopReason:", result.stopReason);
+      console.log("  content types:", result.content.map(c => c.type));
+      console.log("  content preview:", JSON.stringify(result.content.slice(0, 2)).substring(0, 500));
+      
       // Convert to OpenAI format
       const response = {
         id: `chatcmpl-${Date.now()}`,

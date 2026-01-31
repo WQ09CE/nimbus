@@ -2,9 +2,10 @@
 
 import { useState, useMemo } from "react";
 import type { Message } from "@/stores/chat-store";
-import type { ToolCall, ToolResult } from "@/lib/api";
+import type { ToolResult } from "@/lib/api";
+import { MarkdownRenderer, DataDisplay } from "./MarkdownRenderer";
 
-interface ChatMessageProps {
+  interface ChatMessageProps {
   message: Message;
   isStreaming?: boolean;
 }
@@ -39,10 +40,10 @@ export function ChatMessage({ message, isStreaming }: ChatMessageProps) {
 
     // Also map by name/index as fallback for missing IDs
     // (Simple fallback strategy: assume order matches if no IDs)
-    
+
     calls.forEach((call, index) => {
       const result = call.id ? resultMap.get(call.id) : results[index];
-      
+
       merged.push({
         id: call.id,
         name: call.name,
@@ -88,23 +89,10 @@ export function ChatMessage({ message, isStreaming }: ChatMessageProps) {
               : "bg-gray-900/40 border-gray-800"
           } border rounded-lg overflow-hidden backdrop-blur-sm transition-all duration-200`}
         >
-          {/* Main Text */}
-          {(message.content || (isStreaming && !tools.length)) && (
-            <div className="px-5 py-4 text-sm leading-relaxed whitespace-pre-wrap text-gray-200 font-sans">
-              {message.content}
-              {isStreaming && !message.content && (
-                <span className="text-gray-500 italic animate-pulse">Thinking...</span>
-              )}
-              {isStreaming && message.content && (
-                <span className="inline-block w-1.5 h-4 ml-1 bg-blue-500 animate-pulse align-middle" />
-              )}
-            </div>
-          )}
-
-          {/* Tools Section */}
+          {/* Tools Section - 现在放在最上面 */}
           {tools.length > 0 && (
-            <div className="bg-black/20 border-t border-gray-800/50">
-              <div 
+            <div className="bg-black/20 border-b border-gray-800/50">
+              <div
                 className="px-4 py-2 flex items-center justify-between cursor-pointer hover:bg-white/5 transition-colors"
                 onClick={() => setShowAllTools(!showAllTools)}
               >
@@ -124,11 +112,11 @@ export function ChatMessage({ message, isStreaming }: ChatMessageProps) {
                   {tools.map((tool, i) => {
                     const toolId = tool.id || i;
                     const isExpanded = expandedTools[toolId] ?? true; // Default expanded
-                    
+
                     return (
                       <div key={toolId} className="px-4 py-3 hover:bg-white/[0.02]">
                         {/* Tool Header */}
-                        <div 
+                        <div
                           className="flex items-center justify-between cursor-pointer group/tool"
                           onClick={() => toggleTool(toolId)}
                         >
@@ -138,7 +126,7 @@ export function ChatMessage({ message, isStreaming }: ChatMessageProps) {
                               tool.status === "completed" ? "bg-green-900/30 text-green-500 border border-green-800/50" :
                               "bg-red-900/30 text-red-500 border border-red-800/50"
                             }`}>
-                              {tool.status === "running" ? "RUN" : 
+                              {tool.status === "running" ? "RUN" :
                                tool.status === "completed" ? "OK" : "ERR"}
                             </span>
                             <span className="text-sm font-mono text-purple-300 font-semibold">
@@ -159,26 +147,23 @@ export function ChatMessage({ message, isStreaming }: ChatMessageProps) {
                         {isExpanded && (
                           <div className="mt-3 ml-1 pl-3 border-l-2 border-gray-800 space-y-3">
                             {/* Args */}
-                            <div>
-                              <div className="text-[10px] uppercase text-gray-600 font-bold mb-1">Input</div>
-                              <pre className="text-xs bg-black/40 p-2 rounded border border-gray-800 text-gray-300 overflow-x-auto font-mono">
-                                {JSON.stringify(tool.args, null, 2)}
-                              </pre>
-                            </div>
+                            <DataDisplay
+                              data={tool.args}
+                              title="Input"
+                              className="bg-black/40 p-3 rounded border border-gray-800"
+                            />
 
                             {/* Result */}
                             {tool.status !== "running" && (
-                              <div>
-                                <div className="text-[10px] uppercase text-gray-600 font-bold mb-1">
-                                  {tool.status === "completed" ? "Output" : "Error"}
-                                </div>
-                                <pre className={`text-xs p-2 rounded border overflow-x-auto font-mono ${
-                                  tool.status === "completed"
-                                    ? "bg-black/40 border-gray-800 text-gray-400"
-                                    : "bg-red-900/10 border-red-900/50 text-red-400"
-                                }`}>
-                                  {tool.error || (typeof tool.result === "string" ? tool.result : JSON.stringify(tool.result, null, 2))}
-                                </pre>
+                              <div className={`p-3 rounded border ${
+                                tool.status === "completed"
+                                  ? "bg-black/40 border-gray-800"
+                                  : "bg-red-900/10 border-red-900/50"
+                              }`}>
+                                <DataDisplay
+                                  data={tool.error || tool.result}
+                                  title={tool.status === "completed" ? "Output" : "Error"}
+                                />
                               </div>
                             )}
                           </div>
@@ -186,6 +171,33 @@ export function ChatMessage({ message, isStreaming }: ChatMessageProps) {
                       </div>
                     );
                   })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Final Message Content - 现在放在最下面，增强 markdown 显示 */}
+          {(message.content || (isStreaming && !tools.length)) && (
+            <div className="px-5 py-4">
+              {isUser ? (
+                // 用户消息保持简单显示
+                <div className="text-sm leading-relaxed whitespace-pre-wrap text-gray-200 font-sans">
+                  {message.content}
+                </div>
+              ) : (
+                // 助手消息使用 markdown 渲染
+                <div className="text-sm leading-relaxed">
+                  {message.content ? (
+                    <MarkdownRenderer
+                      content={message.content}
+                      className="text-gray-200"
+                    />
+                  ) : isStreaming && !message.content ? (
+                    <span className="text-gray-500 italic animate-pulse">Thinking...</span>
+                  ) : null}
+                  {isStreaming && message.content && (
+                    <span className="inline-block w-1.5 h-4 ml-1 bg-blue-500 animate-pulse align-middle" />
+                  )}
                 </div>
               )}
             </div>
