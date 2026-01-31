@@ -1,8 +1,24 @@
 """Planning pipeline orchestration.
 
+Architecture Layer: 1 (Agent OS - Kernel)
+Von Neumann Role: Scheduler (Task Decomposition)
+
+In the Agent OS architecture, PlannerPipeline serves as the high-level
+task scheduler that decomposes user goals into executable DAGs:
+- Goal analysis -> Job admission
+- Rule matching -> Scheduler heuristics
+- LLM planning -> Dynamic scheduling decisions
+- DAG validation -> Dependency resolution
+
+The pipeline transforms abstract goals into concrete execution plans,
+similar to how a shell interprets commands into process trees.
+
 This module provides the PlannerPipeline class that orchestrates
 multi-stage planning through a series of PlannerStage instances.
 """
+
+__layer__ = 1  # Agent OS Layer
+__role__ = "Scheduler"  # Task planning and decomposition
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Set

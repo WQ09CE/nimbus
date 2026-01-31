@@ -1,5 +1,12 @@
 """Base LLM Client Protocol for Nimbus.
 
+Architecture Layer: 0 (Infrastructure)
+Von Neumann Role: ALU Interface (Arithmetic Logic Unit Protocol)
+
+This module defines the LLMClient protocol - the interface contract for
+all computational units (LLM providers). In Von Neumann terms, this is
+the specification for how the Control Unit communicates with the ALU.
+
 This module defines the LLMClient protocol that all LLM providers must implement.
 It provides a unified interface for text completion and streaming.
 
@@ -20,6 +27,9 @@ Example:
     client: LLMClient = MyLLMClient()
     ```
 """
+
+__layer__ = 0  # Infrastructure Layer
+__role__ = "ALU_Interface"  # ALU protocol definition
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field

@@ -39,9 +39,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.nimbus.llm import create_llm_client, LLMError
-from src.nimbus.core.agent import CodeAgent
-from src.nimbus.core.types import TaskDAG
+from src.nimbus.apps.code_agent import CodeAgent
 
 
 # =============================================================================
@@ -113,8 +111,7 @@ class BenchmarkRunner:
         self.results: List[TestResult] = []
         self.provider = provider
 
-        # LLM client and agent will be initialized in run()
-        self.llm_client = None
+        # Agent will be initialized in run()
         self.llm_model = "unknown"
         self.agent = None
 
@@ -135,41 +132,38 @@ class BenchmarkRunner:
             self.log(f"    Error: {result.error}")
 
     async def setup(self) -> bool:
-        """Initialize LLM client and agent.
+        """Initialize CodeAgent.
 
         Returns:
             True if setup succeeded.
         """
         try:
-            self.log("Initializing LLM client...")
-            self.llm_client = create_llm_client(provider=self.provider)
+            llm_provider = self.provider or "gemini"
+            self.log(f"Initializing CodeAgent (provider={llm_provider})...")
 
-            # Extract model name
-            if hasattr(self.llm_client, 'config'):
-                self.llm_model = self.llm_client.config.model
-            elif hasattr(self.llm_client, '_model'):
-                self.llm_model = self.llm_client._model
-            else:
-                self.llm_model = "unknown"
-
-            self.log(f"  Provider: {self.provider or 'default'}")
-            self.log(f"  Model: {self.llm_model}")
-
-            # Initialize agent
-            self.log("Initializing CodeAgent...")
             self.agent = CodeAgent(
-                llm_client=self.llm_client,
-                memory_type="simple",
-                planner_type="dag",
-                workspace=self.workspace,
-                enable_logging=False,
+                workspace=str(self.workspace),
+                llm_provider=llm_provider,
+                max_iterations=50,
             )
+
+            # Extract model name from agent's LLM client
+            if hasattr(self.agent, 'llm'):
+                llm = self.agent.llm
+                if hasattr(llm, '_client') and hasattr(llm._client, '_model'):
+                    self.llm_model = llm._client._model
+                elif hasattr(llm, 'config') and hasattr(llm.config, 'model'):
+                    self.llm_model = llm.config.model
+                elif hasattr(llm, '_model'):
+                    self.llm_model = llm._model
+                else:
+                    self.llm_model = llm_provider
+
+            self.log(f"  Provider: {llm_provider}")
+            self.log(f"  Model: {self.llm_model}")
             self.log("  Agent ready.")
 
             return True
-        except LLMError as e:
-            self.log(f"  LLM initialization failed: {e}")
-            return False
         except Exception as e:
             self.log(f"  Setup failed: {e}")
             return False
@@ -232,37 +226,31 @@ class BenchmarkRunner:
         """Test task decomposition capability.
 
         Input: Complex multi-step request
-        Expected: DAG with multiple tasks
+        Expected: Agent completes multi-step task
         """
-        # Reset agent memory
-        self.agent.clear_memory()
-
-        response = await self.agent.run(
-            "Search for Python files in src/ directory, then find all async functions in them"
+        result = await self.agent.run(
+            goal="Search for Python files in src/ directory, then find all async functions in them",
+            allowed_tools={"Glob", "Grep", "Read"},
         )
 
-        dag = response.dag
+        text = result.get("output", "")
         details = {
-            "has_dag": dag is not None,
-            "task_count": len(dag.nodes) if dag else 0,
-            "response_length": len(response.text),
+            "response_length": len(text),
+            "status": result.get("status"),
+            "turns": result.get("turns", 0),
         }
 
-        if dag:
-            details["skills_used"] = list({n.skill for n in dag.nodes.values()})
-
         # Score criteria:
-        # - Has DAG: +0.3
-        # - Multiple tasks: +0.3
-        # - Uses search skills (Glob/Grep): +0.4
+        # - Task completed successfully: +0.4
+        # - Response contains async function mentions: +0.3
+        # - Response is substantial: +0.3
         score = 0.0
-        if dag:
+        if result.get("status") == "success":
+            score += 0.4
+        if "async" in text.lower() or "def " in text.lower():
             score += 0.3
-            if len(dag.nodes) >= 2:
-                score += 0.3
-            skills = {n.skill for n in dag.nodes.values()}
-            if "Glob" in skills or "Grep" in skills:
-                score += 0.4
+        if len(text) > 100:
+            score += 0.3
 
         passed = score >= 0.6
         return passed, score, details
@@ -273,74 +261,59 @@ class BenchmarkRunner:
         Input: Search for CodeAgent class
         Expected: Find correct file path
         """
-        self.agent.clear_memory()
-
-        response = await self.agent.run(
-            "Find the definition of CodeAgent class in the nimbus codebase"
+        result = await self.agent.run(
+            goal="Find the definition of CodeAgent class in the nimbus codebase",
+            allowed_tools={"Glob", "Grep", "Read"},
         )
 
-        text = response.text.lower()
-        dag = response.dag
-
-        # Check DAG used Grep tool
-        used_grep = False
-        grep_pattern = ""
-        if dag:
-            for node in dag.nodes.values():
-                if node.skill == "Grep":
-                    used_grep = True
-                    grep_pattern = node.params.get("pattern", "")
-                    break
+        text = result.get("output", "").lower()
 
         # Check response content - tool output may contain file paths
         mentions_agent = "codeagent" in text or "code_agent" in text or "class codeagent" in text
         mentions_file = "agent.py" in text or "core/agent" in text or "src/nimbus" in text
 
         details = {
-            "response_length": len(response.text),
+            "response_length": len(result.get("output", "")),
             "mentions_agent": mentions_agent,
             "mentions_file": mentions_file,
-            "used_grep": used_grep,
-            "grep_pattern": grep_pattern,
+            "status": result.get("status"),
         }
 
         # Score criteria:
-        # - Used Grep tool: +0.4
+        # - Task completed successfully: +0.4
         # - Mentions CodeAgent or file path: +0.3
         # - Has meaningful response: +0.3
         score = 0.0
-        if used_grep:
+        if result.get("status") == "success":
             score += 0.4
         if mentions_agent or mentions_file:
             score += 0.3
-        if len(response.text) > 20:
+        if len(result.get("output", "")) > 20:
             score += 0.3
 
         passed = score >= 0.6
         return passed, score, details
 
     async def test_context_understanding_pronoun(self) -> Tuple[bool, float, Dict[str, Any]]:
-        """Test pronoun resolution in context.
+        """Test context understanding.
 
-        Multi-turn conversation test.
+        Note: New CodeAgent doesn't maintain multi-turn context per run,
+        so we test single-turn context comprehension.
         """
-        self.agent.clear_memory()
+        result = await self.agent.run(
+            goal="Read pyproject.toml file and tell me the project name defined in it",
+            allowed_tools={"Read"},
+        )
 
-        # Turn 1: Read a file
-        await self.agent.run("Read pyproject.toml file")
-
-        # Turn 2: Ask about it with pronoun
-        response = await self.agent.run("What is the project name in that file?")
-
-        text = response.text.lower()
+        text = result.get("output", "").lower()
         details = {
-            "response_length": len(response.text),
+            "response_length": len(result.get("output", "")),
             "mentions_nimbus": "nimbus" in text,
             "mentions_project": "project" in text or "name" in text,
+            "status": result.get("status"),
         }
 
         # Score criteria:
-        # - Understands "that file" refers to pyproject.toml: implicit
         # - Mentions nimbus (project name): +0.7
         # - Provides context about project: +0.3
         score = 0.0
@@ -353,12 +326,10 @@ class BenchmarkRunner:
         return passed, score, details
 
     async def test_code_modification(self) -> Tuple[bool, float, Dict[str, Any]]:
-        """Test code modification capability.
+        """Test code reading capability.
 
         Create a temp file and ask agent to read it.
         """
-        self.agent.clear_memory()
-
         # Create a temporary file
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -370,20 +341,12 @@ class BenchmarkRunner:
             temp_file = f.name
 
         try:
-            response = await self.agent.run(
-                f"Read the file {temp_file} and tell me what function it contains"
+            result = await self.agent.run(
+                goal=f"Read the file {temp_file} and tell me what function it contains",
+                allowed_tools={"Read"},
             )
 
-            text = response.text.lower()
-            dag = response.dag
-
-            # Check DAG used Read tool
-            used_read = False
-            if dag:
-                for node in dag.nodes.values():
-                    if node.skill == "Read":
-                        used_read = True
-                        break
+            text = result.get("output", "").lower()
 
             # Check response contains file content
             mentions_existing_func = "existing_func" in text
@@ -391,19 +354,19 @@ class BenchmarkRunner:
             has_function = "function" in text or "test module" in text
 
             details = {
-                "response_length": len(response.text),
+                "response_length": len(result.get("output", "")),
                 "mentions_existing_func": mentions_existing_func,
                 "has_def": has_def,
                 "has_function": has_function,
-                "used_read": used_read,
+                "status": result.get("status"),
             }
 
             # Score criteria:
-            # - Used Read tool: +0.3
+            # - Task completed successfully: +0.3
             # - Identifies existing_func: +0.4
             # - Shows def or function reference: +0.3
             score = 0.0
-            if used_read:
+            if result.get("status") == "success":
                 score += 0.3
             if mentions_existing_func:
                 score += 0.4
@@ -421,34 +384,21 @@ class BenchmarkRunner:
                 pass
 
     async def test_bash_execution_ls(self) -> Tuple[bool, float, Dict[str, Any]]:
-        """Test bash execution with ls command.
+        """Test file listing capability.
 
         Note: Agent may use Glob or Bash for listing files.
         """
-        self.agent.clear_memory()
-
-        response = await self.agent.run(
-            "List the files in the current directory"
+        result = await self.agent.run(
+            goal="List the files in the current directory",
+            allowed_tools={"Glob", "Bash"},
         )
 
-        text = response.text
-        dag = response.dag
-
-        # Check if Glob or Bash was used
-        used_glob = False
-        used_bash = False
-        if dag:
-            for node in dag.nodes.values():
-                if node.skill == "Glob":
-                    used_glob = True
-                if node.skill == "Bash":
-                    used_bash = True
+        text = result.get("output", "")
 
         details = {
             "response_length": len(text),
             "has_output": len(text) > 50,
-            "used_glob": used_glob,
-            "used_bash": used_bash,
+            "status": result.get("status"),
         }
 
         # Check for common project files in output
@@ -458,12 +408,12 @@ class BenchmarkRunner:
 
         # Score criteria:
         # - Has substantial output: +0.3
-        # - Used Glob or Bash tool: +0.3
+        # - Task completed successfully: +0.3
         # - Found expected file patterns: +0.4 scaled by found ratio
         score = 0.0
         if details["has_output"]:
             score += 0.3
-        if used_glob or used_bash:
+        if result.get("status") == "success":
             score += 0.3
         if found_files:
             score += 0.4 * (len(found_files) / len(common_files))
@@ -473,35 +423,25 @@ class BenchmarkRunner:
 
     async def test_bash_execution_echo(self) -> Tuple[bool, float, Dict[str, Any]]:
         """Test bash execution with echo command."""
-        self.agent.clear_memory()
-
         test_string = "benchmark_test_123"
-        response = await self.agent.run(
-            f"Run the command: echo '{test_string}'"
+        result = await self.agent.run(
+            goal=f"Run the command: echo '{test_string}'",
+            allowed_tools={"Bash"},
         )
 
-        text = response.text
-        dag = response.dag
-
-        # Check if Bash was used
-        used_bash = False
-        if dag:
-            for node in dag.nodes.values():
-                if node.skill == "Bash":
-                    used_bash = True
-                    break
+        text = result.get("output", "")
 
         details = {
             "response_length": len(text),
             "echo_output_found": test_string in text,
-            "used_bash": used_bash,
+            "status": result.get("status"),
         }
 
         # Score criteria:
-        # - Used Bash tool: +0.5
+        # - Task completed successfully: +0.5
         # - Output contains test string: +0.5
         score = 0.0
-        if used_bash:
+        if result.get("status") == "success":
             score += 0.5
         if details["echo_output_found"]:
             score += 0.5
@@ -511,24 +451,12 @@ class BenchmarkRunner:
 
     async def test_code_summarization(self) -> Tuple[bool, float, Dict[str, Any]]:
         """Test code summarization capability."""
-        self.agent.clear_memory()
-
-        response = await self.agent.run(
-            "Read src/nimbus/core/agent.py and summarize its main purpose"
+        result = await self.agent.run(
+            goal="Read src/nimbus/core/agent.py and summarize its main purpose",
+            allowed_tools={"Read"},
         )
 
-        text = response.text.lower()
-        dag = response.dag
-
-        # Check DAG used Read tool
-        used_read = False
-        used_summarize = False
-        if dag:
-            for node in dag.nodes.values():
-                if node.skill == "Read":
-                    used_read = True
-                if node.skill == "summarize":
-                    used_summarize = True
+        text = result.get("output", "").lower()
 
         # Expected concepts in summary or raw file content
         expected_concepts = [
@@ -544,18 +472,17 @@ class BenchmarkRunner:
         found_concepts = [c for c in expected_concepts if c in text]
 
         details = {
-            "response_length": len(response.text),
+            "response_length": len(result.get("output", "")),
             "found_concepts": found_concepts,
             "concept_count": len(found_concepts),
-            "used_read": used_read,
-            "used_summarize": used_summarize,
+            "status": result.get("status"),
         }
 
         # Score criteria:
-        # - Used Read tool: +0.3
+        # - Task completed successfully: +0.3
         # - Found concepts scaled by ratio: +0.7
         score = 0.0
-        if used_read:
+        if result.get("status") == "success":
             score += 0.3
         if found_concepts:
             score += 0.7 * (len(found_concepts) / len(expected_concepts))
@@ -565,22 +492,22 @@ class BenchmarkRunner:
 
     async def test_repo_understanding(self) -> Tuple[bool, float, Dict[str, Any]]:
         """Test repository structure understanding."""
-        self.agent.clear_memory()
-
-        response = await self.agent.run(
-            "What are the main modules in the nimbus project? List the key directories under src/nimbus/"
+        result = await self.agent.run(
+            goal="What are the main modules in the nimbus project? List the key directories under src/nimbus/",
+            allowed_tools={"Glob", "Read", "Bash"},
         )
 
-        text = response.text.lower()
+        text = result.get("output", "").lower()
 
         # Expected modules
         expected_modules = ["core", "llm", "server", "tools", "skills"]
         found_modules = [m for m in expected_modules if m in text]
 
         details = {
-            "response_length": len(response.text),
+            "response_length": len(result.get("output", "")),
             "found_modules": found_modules,
             "module_count": len(found_modules),
+            "status": result.get("status"),
         }
 
         # Score criteria:

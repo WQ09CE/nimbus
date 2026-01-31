@@ -55,13 +55,13 @@ class TestPlannerPipelineBasic:
         dag = await pipeline.plan(
             goal="搜索 Python 教程",
             context="",
-            available_skills={"search", "synthesize"},
+            available_skills={"Grep", "synthesize"},
         )
 
         assert dag is not None
         nodes = list(dag.nodes.values())
-        # Should use search skill
-        assert any(n.skill == "search" for n in nodes)
+        # Should use Grep skill for search
+        assert any(n.skill == "Grep" for n in nodes)
 
     @pytest.mark.asyncio
     async def test_default_pipeline_with_llm_fallback(self):

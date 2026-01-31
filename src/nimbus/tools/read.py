@@ -64,11 +64,11 @@ def _format_line_number(line_num: int, content: str, max_num_width: int = 5) -> 
 
     Example:
         >>> _format_line_number(1, "hello")
-        '    1→hello'
+        '    1 | hello'
         >>> _format_line_number(100, "world")
-        '  100→world'
+        '  100 | world'
     """
-    return f"{line_num:>{max_num_width}}→{content}"
+    return f"{line_num:>{max_num_width}} | {content}"
 
 
 def _read_file_with_encoding(file_path: Path) -> tuple[str, str]:

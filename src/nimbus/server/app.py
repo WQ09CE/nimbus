@@ -7,12 +7,17 @@ This module provides:
 - API route registration
 """
 
+import logging
 import os
+import traceback
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+logger = logging.getLogger(__name__)
 
 from .sse import SSEHub
 from .session import SessionManager
@@ -50,7 +55,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await sse_hub.start()
 
     permission_manager = PermissionManager()
-    session_manager = SessionManager(storage, sse_hub, permission_manager)
+    
+    # Use v2 session manager (AgentOS-based)
+    from .session_v2 import SessionManagerV2
+    session_manager = SessionManagerV2(storage, sse_hub, permission_manager)
 
     # Initialize message cache for conversation history
     message_cache = MessageCache(
@@ -92,17 +100,33 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Configure CORS - specific origins for credentials support
+    # Configure CORS - allow all origins for development
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:3000",
-            "http://127.0.0.1:3000",
-        ],
-        allow_credentials=True,
+        allow_origins=["*"],
+        allow_credentials=False,  # Cannot use credentials with allow_origins=["*"]
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["*"],
     )
+
+    # Add global exception handler to ensure CORS headers on errors
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception):
+        """Handle all unhandled exceptions with proper CORS headers."""
+        logger.error(f"Unhandled exception: {exc}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": str(exc),
+                "type": type(exc).__name__,
+            },
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "*",
+                "Access-Control-Allow-Headers": "*",
+            },
+        )
 
     # Register routes
     from .api import router

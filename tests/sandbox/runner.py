@@ -9,19 +9,49 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from nimbus.core.agent import CodeAgent
-from nimbus.core.types import AgentResponse
-from nimbus.llm import create_llm_client
-from nimbus.tools import (
-    ToolRegistry,
-    read_file,
-    write_file,
-    edit_file,
-    glob_files,
-    grep_content,
-    bash_command,
-)
-from nimbus.tools.subagent import subagent_task
+from nimbus.apps.code_agent import CodeAgent
+
+
+class AgentResponse:
+    """Compatibility wrapper for CodeAgent response.
+
+    The new CodeAgent.run() returns a dict, but tests expect an object
+    with a .text attribute. This wrapper provides backward compatibility.
+
+    Attributes:
+        text: The output text from the agent
+        status: "success" or "failed"
+        exit_code: 0 for success, non-zero for failure
+        error: Error message if failed
+        raw: The raw response dict
+    """
+
+    def __init__(self, response_dict: Dict[str, Any]):
+        """Initialize from response dict.
+
+        Args:
+            response_dict: Dict returned by CodeAgent.run() with keys:
+                - output: The agent's text output
+                - status: "success" or "failed"
+                - exit_code: 0 for success
+                - error: Error message if any
+        """
+        self.raw = response_dict
+        self.text = response_dict.get("output", "")
+        self.status = response_dict.get("status", "unknown")
+        self.exit_code = response_dict.get("exit_code", -1)
+        self.error = response_dict.get("error")
+        self.token_usage = response_dict.get("token_usage", 0)
+        self.turns = response_dict.get("turns", 0)
+
+    @property
+    def success(self) -> bool:
+        """Check if the response indicates success."""
+        return self.status == "success" and self.exit_code == 0
+
+    def __repr__(self) -> str:
+        """String representation."""
+        return f"AgentResponse(status={self.status}, text={self.text[:50]}...)"
 
 
 class SandboxRunner:
@@ -87,7 +117,6 @@ class SandboxRunner:
 
         self.workspace: Optional[Path] = None
         self.agent: Optional[CodeAgent] = None
-        self._llm_client: Optional[Any] = None
         self._temp_dir: Optional[str] = None
         self._log_handler_id: Optional[int] = None
 
@@ -97,29 +126,33 @@ class SandboxRunner:
         self._temp_dir = tempfile.mkdtemp(prefix=self.workspace_prefix)
         self.workspace = Path(self._temp_dir)
 
-        # Create LLM client using unified config
-        self._llm_client = self._create_llm_client()
-
-        # Create tool registry
-        tool_registry = self._create_tool_registry()
-
         # Configure logging to file if enabled
         if self._enable_logging:
             self._setup_logging()
 
-        # Create agent (uses task mode by default)
+        # Create agent with new Agent OS-based CodeAgent
+        # Signature: CodeAgent(workspace, llm_provider, system_prompt=None, max_iterations=50, **llm_kwargs)
+        llm_kwargs: Dict[str, Any] = {}
+        if self.model:
+            llm_kwargs["model"] = self.model
+
         self.agent = CodeAgent(
-            llm_client=self._llm_client,
-            tool_registry=tool_registry,
-            workspace=self.workspace,
-            memory_type=self.memory_type,
-            enable_logging=self._enable_logging,
+            workspace=str(self.workspace),
+            llm_provider=self.provider,
+            max_iterations=50,
+            **llm_kwargs,
         )
 
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Cleanup workspace."""
+        """Cleanup workspace and agent resources."""
+        # Close agent to release LLM client connections
+        if self.agent is not None:
+            await self.agent.close()
+            self.agent = None
+
+        # Cleanup workspace
         if not self.keep_workspace and self._temp_dir:
             shutil.rmtree(self._temp_dir, ignore_errors=True)
 
@@ -127,86 +160,25 @@ class SandboxRunner:
         """Setup logging to file for debugging.
 
         Logs are written to .logs/nimbus.log in the project root.
+        Uses the unified nimbus logging system which intercepts standard logging.
         """
-        from loguru import logger
-        import sys
+        from nimbus.core.logging import setup_logging
 
         # Find project root (where .logs directory should be)
         project_root = Path(__file__).parent.parent.parent
-        log_dir = project_root / ".logs"
-        log_dir.mkdir(exist_ok=True)
-        log_file = log_dir / "nimbus.log"
+        log_dir = str(project_root / ".logs")
 
-        # Remove default stderr handler to reduce noise
-        logger.remove()
-
-        # Add file handler
-        self._log_handler_id = logger.add(
-            log_file,
-            format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} - {message}",
+        # Use unified logging system with stdlib interception
+        # This captures logs from both loguru and standard logging (kernel layer)
+        # Disable enqueue to avoid deadlock with pytest
+        setup_logging(
             level="DEBUG",
-            rotation="10 MB",
-            retention="3 days",
+            log_dir=log_dir,
+            log_file="nimbus.log",
+            console=False,  # Disable console to reduce test noise
+            intercept_stdlib=True,  # Intercept kernel layer logs (vcpu, scheduler)
+            enqueue=False,  # Disable to avoid pytest deadlock
         )
-
-        # Add minimal stderr handler for errors only
-        logger.add(sys.stderr, level="WARNING", format="{message}")
-
-        logger.info(f"Logging initialized: {log_file}")
-
-    def _create_llm_client(self) -> Any:
-        """Create LLM client based on configuration.
-
-        Priority:
-        1. Explicit provider/model from constructor
-        2. Unified config from ~/.nimbus/config.json agents.core
-        3. Default provider from config.json llm.default
-
-        Returns:
-            LLM client instance.
-        """
-        # If explicit provider/model specified, use them directly
-        if self.provider or self.model:
-            kwargs: Dict[str, Any] = {}
-            if self.provider:
-                kwargs["provider"] = self.provider
-            if self.model:
-                kwargs["model"] = self.model
-            return create_llm_client(**kwargs)
-
-        # Use unified config: read core agent model from config.json
-        from nimbus.core.agents_config import create_llm_client_for_agent
-        return create_llm_client_for_agent("core")
-
-    def _create_tool_registry(self) -> ToolRegistry:
-        """Create and configure tool registry.
-
-        Returns:
-            Configured ToolRegistry instance.
-        """
-        registry = ToolRegistry()
-
-        # Define available tools
-        all_tools = {
-            "Read": read_file,
-            "Write": write_file,
-            "Edit": edit_file,
-            "Glob": glob_files,
-            "Grep": grep_content,
-            "Bash": bash_command,
-        }
-
-        # Register requested tools (or all if none specified)
-        tools_to_register = self.tools or list(all_tools.keys())
-        for tool_name in tools_to_register:
-            if tool_name in all_tools:
-                registry.register_decorated(all_tools[tool_name])
-
-        # Register Subagent tool if multi_agent mode is enabled
-        if self.multi_agent:
-            registry.register_decorated(subagent_task)
-
-        return registry
 
     async def run(self, task: str, **kwargs) -> AgentResponse:
         """Run agent with task.
@@ -216,32 +188,20 @@ class SandboxRunner:
             **kwargs: Additional arguments passed to agent.run()
 
         Returns:
-            AgentResponse from the agent.
+            AgentResponse with .text attribute for backward compatibility.
 
         Raises:
             RuntimeError: If runner is not initialized (not in context).
         """
         if self.agent is None:
             raise RuntimeError("SandboxRunner must be used as async context manager")
-        return await self.agent.run(task, **kwargs)
-
-    async def run_stream(self, task: str, **kwargs):
-        """Run agent with streaming output.
-
-        Args:
-            task: Task description for the agent.
-            **kwargs: Additional arguments passed to agent.run_stream()
-
-        Yields:
-            Status dicts from agent execution.
-
-        Raises:
-            RuntimeError: If runner is not initialized.
-        """
-        if self.agent is None:
-            raise RuntimeError("SandboxRunner must be used as async context manager")
-        async for status in self.agent.run_stream(task, **kwargs):
-            yield status
+        # New CodeAgent.run() takes goal=task and returns dict
+        # Default to all tools if not specified
+        if "allowed_tools" not in kwargs:
+            kwargs["allowed_tools"] = {"Read", "Glob", "Grep", "Write", "Edit", "Bash"}
+        # Wrap in AgentResponse for backward compatibility with tests
+        result = await self.agent.run(goal=task, **kwargs)
+        return AgentResponse(result)
 
     def create_file(self, relative_path: str, content: str) -> Path:
         """Create file in workspace.

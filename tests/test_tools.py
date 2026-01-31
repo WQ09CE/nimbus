@@ -154,7 +154,7 @@ class TestEditTool:
         file_path = temp_workspace / "test.py"
         file_path.write_text("hello world\n")
 
-        with pytest.raises(ValueError, match="old_string not found"):
+        with pytest.raises(ValueError, match="not found"):
             await edit_file(
                 str(file_path),
                 old_string="nonexistent",
@@ -184,6 +184,191 @@ class TestEditTool:
                 str(file_path),
                 old_string="hello",
                 new_string="hello",
+                workspace=temp_workspace,
+            )
+
+    @pytest.mark.asyncio
+    async def test_edit_with_line_number_prefix(self, temp_workspace):
+        """Test that line number prefixes from Read output are cleaned."""
+        file_path = temp_workspace / "test.py"
+        file_path.write_text("def hello():\n    pass\n")
+
+        # Simulate LLM including line number prefixes from Read output
+        result = await edit_file(
+            str(file_path),
+            old_string="   1→def hello():\n   2→    pass",
+            new_string="   1→def greet():\n   2→    return 42",
+            workspace=temp_workspace,
+        )
+
+        assert "has been updated successfully" in result
+        assert file_path.read_text() == "def greet():\n    return 42\n"
+
+    @pytest.mark.asyncio
+    async def test_edit_with_escaped_newlines(self, temp_workspace):
+        """Test that escaped newlines (\\n) are converted to actual newlines."""
+        file_path = temp_workspace / "test.py"
+        file_path.write_text("def hello():\n    pass\n")
+
+        # LLM outputs \\n instead of actual newlines
+        result = await edit_file(
+            str(file_path),
+            old_string="def hello():\\n    pass",
+            new_string="def greet():\\n    return 42",
+            workspace=temp_workspace,
+        )
+
+        assert "has been updated successfully" in result
+        assert file_path.read_text() == "def greet():\n    return 42\n"
+
+    @pytest.mark.asyncio
+    async def test_edit_with_markdown_code_blocks(self, temp_workspace):
+        """Test that markdown code blocks are removed."""
+        file_path = temp_workspace / "test.py"
+        file_path.write_text("def hello():\n    pass\n")
+
+        result = await edit_file(
+            str(file_path),
+            old_string="```python\ndef hello():\n    pass\n```",
+            new_string="```python\ndef greet():\n    return 42\n```",
+            workspace=temp_workspace,
+        )
+
+        assert "has been updated successfully" in result
+        assert file_path.read_text() == "def greet():\n    return 42\n"
+
+    @pytest.mark.asyncio
+    async def test_edit_whitespace_normalized_match(self, temp_workspace):
+        """Test that trailing whitespace differences are handled."""
+        file_path = temp_workspace / "test.py"
+        # File has trailing spaces
+        file_path.write_text("def hello():   \n    pass   \n")
+
+        # old_string doesn't have trailing spaces
+        result = await edit_file(
+            str(file_path),
+            old_string="def hello():\n    pass",
+            new_string="def greet():\n    return 42",
+            workspace=temp_workspace,
+        )
+
+        assert "has been updated successfully" in result
+        # Note: replacement uses original whitespace from file
+        content = file_path.read_text()
+        assert "def greet()" in content
+
+    @pytest.mark.asyncio
+    async def test_edit_fuzzy_match(self, temp_workspace):
+        """Test fuzzy matching for slight differences."""
+        file_path = temp_workspace / "test.py"
+        file_path.write_text("def hello_world():\n    print('Hello World!')\n")
+
+        # old_string has a small typo (< 10% difference)
+        result = await edit_file(
+            str(file_path),
+            old_string="def hello_world():\n    print('Hello World')",  # Missing !
+            new_string="def greet():\n    print('Hi')",
+            workspace=temp_workspace,
+        )
+
+        assert "has been updated successfully" in result
+        assert "fuzzy matching" in result
+        assert "def greet()" in file_path.read_text()
+
+    @pytest.mark.asyncio
+    async def test_edit_fuzzy_match_disabled_for_replace_all(self, temp_workspace):
+        """Test that fuzzy matching is disabled for replace_all mode."""
+        file_path = temp_workspace / "test.py"
+        file_path.write_text("foo bar foo\n")
+
+        # old_string doesn't exist exactly, but would fuzzy match
+        with pytest.raises(ValueError, match="not found"):
+            await edit_file(
+                str(file_path),
+                old_string="fo bar",  # Typo, would fuzzy match
+                new_string="baz",
+                replace_all=True,
+                workspace=temp_workspace,
+            )
+
+    @pytest.mark.asyncio
+    async def test_edit_batch_mode(self, temp_workspace):
+        """Test batch edit mode with multiple replacements."""
+        file_path = temp_workspace / "test.py"
+        file_path.write_text("def foo():\n    pass\n\ndef bar():\n    pass\n")
+
+        result = await edit_file(
+            str(file_path),
+            edits=[
+                {"search": "def foo():", "replace": "def qux():"},
+                {"search": "def bar():", "replace": "def baz():"},
+            ],
+            workspace=temp_workspace,
+        )
+
+        assert "2 edits" in result
+        content = file_path.read_text()
+        assert "def qux():" in content
+        assert "def baz():" in content
+        assert "def foo():" not in content
+        assert "def bar():" not in content
+
+    @pytest.mark.asyncio
+    async def test_edit_batch_mode_empty_search_raises(self, temp_workspace):
+        """Test that empty search in batch mode raises error."""
+        file_path = temp_workspace / "test.py"
+        file_path.write_text("hello\n")
+
+        with pytest.raises(ValueError, match="non-empty 'search' field"):
+            await edit_file(
+                str(file_path),
+                edits=[{"search": "", "replace": "world"}],
+                workspace=temp_workspace,
+            )
+
+    @pytest.mark.asyncio
+    async def test_edit_indent_agnostic_match(self, temp_workspace):
+        """Test indent-agnostic matching (Tier 2)."""
+        file_path = temp_workspace / "test.py"
+        # File has 4-space indentation
+        file_path.write_text("class Foo:\n    def hello(self):\n        pass\n")
+
+        # old_string has 2-space indentation (wrong), but content matches
+        result = await edit_file(
+            str(file_path),
+            old_string="def hello(self):\n  pass",  # 2-space indent
+            new_string="def greet(self):\n  return 42",
+            workspace=temp_workspace,
+        )
+
+        assert "has been updated successfully" in result
+        content = file_path.read_text()
+        # Should preserve original 4-space indentation
+        assert "    def greet(self):" in content
+        assert "        return 42" in content
+
+    @pytest.mark.asyncio
+    async def test_edit_no_params_raises(self, temp_workspace):
+        """Test that missing both edits and old_string raises error."""
+        file_path = temp_workspace / "test.py"
+        file_path.write_text("hello\n")
+
+        with pytest.raises(ValueError, match="Either 'edits' array or"):
+            await edit_file(
+                str(file_path),
+                workspace=temp_workspace,
+            )
+
+    @pytest.mark.asyncio
+    async def test_edit_old_string_without_new_string_raises(self, temp_workspace):
+        """Test that old_string without new_string raises error."""
+        file_path = temp_workspace / "test.py"
+        file_path.write_text("hello\n")
+
+        with pytest.raises(ValueError, match="new_string is required"):
+            await edit_file(
+                str(file_path),
+                old_string="hello",
                 workspace=temp_workspace,
             )
 

@@ -298,9 +298,11 @@ class TestGeminiClientAsync:
             }]
 
             result = await client.complete_with_tools("What's the weather in Tokyo?", tools)
-            assert len(result["function_calls"]) == 1
-            assert result["function_calls"][0]["name"] == "get_weather"
-            assert result["function_calls"][0]["arguments"]["location"] == "Tokyo"
+            assert result.has_tool_calls
+            assert len(result.tool_calls) == 1
+            assert result.tool_calls[0].name == "get_weather"
+            assert result.tool_calls[0].arguments["location"] == "Tokyo"
+            assert result.finish_reason == "tool_calls"
 
         await client.close()
 

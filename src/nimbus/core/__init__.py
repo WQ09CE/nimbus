@@ -1,8 +1,7 @@
 """OpenNotebook Core Module.
 
-Simplified execution model: CodeAgent now uses task mode (SubagentDAG) exclusively.
-The previous dag/agentic modes have been removed. Legacy planner/runtime components
-are still available for internal use but not directly used by CodeAgent.
+Execution model: CodeAgent uses v2 AgentOS exclusively.
+The previous v1 task/runtime modules have been removed.
 """
 
 from .types import (
@@ -11,7 +10,7 @@ from .types import (
     Plan,
     AgentResponse,
     NotebookResponse,  # Backward compatibility alias
-    # DAG types (used by SubagentDAG internally)
+    # DAG types (used by v2 scheduler)
     TaskStatus,
     TaskNode,
     TaskDAG,
@@ -37,20 +36,7 @@ from .memory import (
     Message,
     MemoryTier,
 )
-# Task mode components (primary execution path)
-from .task import (
-    TaskPlanner,
-    SubagentRuntime,
-    SubagentRuntimeConfig,
-    SubagentType,
-    SubagentStatus,
-    SubagentNode,
-    SubagentDAG,
-    SubagentResult,
-    SubagentExecutionResult,
-    SubagentExecutionStats,
-)
-# Legacy planner components (kept for internal use)
+# Planner components
 from .planner import (
     # Legacy (backward compatibility)
     SimplePlanner,
@@ -116,13 +102,6 @@ from .context import (
     ContextStackUnderflow,
 )
 from .executor import SimpleExecutor
-# Legacy runtime components (kept for internal use)
-from .runtime import (
-    AsyncRuntime,
-    ReplanCoordinator,
-    CoordinatorConfig,
-    CancellationToken,
-)
 from .agent import CodeAgent, NotebookAgent  # NotebookAgent is backward compatibility alias
 from .logging import (
     logger,
@@ -164,7 +143,7 @@ __all__ = [
     "Plan",
     "AgentResponse",
     "NotebookResponse",  # Backward compatibility alias
-    # DAG types (legacy, used internally)
+    # DAG types
     "TaskStatus",
     "TaskNode",
     "TaskDAG",
@@ -188,17 +167,6 @@ __all__ = [
     "PinnedItem",
     "Message",
     "MemoryTier",
-    # Task mode components (primary execution path)
-    "TaskPlanner",
-    "SubagentRuntime",
-    "SubagentRuntimeConfig",
-    "SubagentType",
-    "SubagentStatus",
-    "SubagentNode",
-    "SubagentDAG",
-    "SubagentResult",
-    "SubagentExecutionResult",
-    "SubagentExecutionStats",
     # Config (Phase 3)
     "AgentConfig",
     "LLMConfig",
@@ -239,7 +207,7 @@ __all__ = [
     "FrameFactory",
     "ContextStackOverflow",
     "ContextStackUnderflow",
-    # Legacy components (kept for backward compatibility)
+    # Planner components
     "SimplePlanner",
     "DAGPlanner",
     "AdaptivePlanner",
@@ -255,10 +223,6 @@ __all__ = [
     "PipelineConfig",
     "PlannerPipeline",
     "SimpleExecutor",
-    "AsyncRuntime",
-    "ReplanCoordinator",
-    "CoordinatorConfig",
-    "CancellationToken",
     # Main agent
     "CodeAgent",
     "NotebookAgent",  # Backward compatibility alias

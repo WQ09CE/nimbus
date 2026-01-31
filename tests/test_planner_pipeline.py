@@ -271,15 +271,16 @@ class TestRulePlanner:
         ctx = PlanningContext(
             goal="搜索 Python 教程",
             conversation_context="",
-            available_skills={"search", "synthesize"},
+            available_skills={"Grep", "synthesize"},
         )
 
         ctx = await planner.process(ctx)
         assert ctx.rule_dag is not None
-        assert ctx.metadata.get("matched_rule") == "search"
-        # Check that search skill is used
+        # May match grep_code_cn or search rule, both use Grep
+        assert ctx.metadata.get("matched_rule") in {"search", "grep_code_cn"}
+        # Check that Grep skill is used for search
         nodes = list(ctx.rule_dag.nodes.values())
-        assert any(n.skill == "search" for n in nodes)
+        assert any(n.skill == "Grep" for n in nodes)
 
     @pytest.mark.asyncio
     async def test_no_match(self, planner):

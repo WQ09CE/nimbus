@@ -1,0 +1,15 @@
+{
+  "name": "nimbus-pi-extension",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "pi -e ./nimbus-core.ts"
+  },
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}

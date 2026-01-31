@@ -46,8 +46,30 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import aiohttp
 
 from ..core.logging import get_logger
+from .base import CompletionResponse
+from .base import ToolCall as BaseToolCall
 
 logger = get_logger("gemini")
+
+
+@dataclass
+class ToolCall:
+    """Represents a tool/function call from the LLM."""
+    id: str
+    name: str
+    arguments: Dict[str, Any]
+
+
+@dataclass
+class ToolCallResponse:
+    """Response from LLM that may contain tool calls."""
+    content: str
+    tool_calls: List[ToolCall]
+
+    @property
+    def has_tool_calls(self) -> bool:
+        """Check if response contains tool calls."""
+        return len(self.tool_calls) > 0
 
 
 @dataclass
@@ -55,7 +77,7 @@ class GeminiConfig:
     """Configuration for Gemini client.
 
     Attributes:
-        model: Model name to use (default: gemini-2.0-flash).
+        model: Model name to use (default: gemini-3-flash-preview).
         api_key: API key for authentication. If not provided, uses GEMINI_API_KEY env var.
         base_url: Base URL for Gemini API.
         temperature: Sampling temperature (0.0 - 2.0).
@@ -197,6 +219,9 @@ class GeminiClient:
 
         contents = []
         for msg in history:
+            # Skip non-dict items (defensive)
+            if not isinstance(msg, dict):
+                continue
             role = msg.get("role", "user")
             content = msg.get("content", "")
             if content:
@@ -244,6 +269,14 @@ class GeminiClient:
         # Add tools if provided (for function calling)
         if tools:
             body["tools"] = tools
+            # Configure function calling behavior to encourage tool usage
+            # AUTO: Model decides whether to call functions or respond with text
+            # This helps models like Gemini be more reliable with tool calling
+            body["toolConfig"] = {
+                "functionCallingConfig": {
+                    "mode": "AUTO"
+                }
+            }
 
         return body
 
@@ -459,44 +492,48 @@ class GeminiClient:
 
     async def complete_with_tools(
         self,
-        prompt: str,
-        tools: List[Dict[str, Any]],
+        prompt: Optional[str] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
         history: Optional[List[Dict[str, str]]] = None,
         system_instruction: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        messages: Optional[List[Dict[str, Any]]] = None,
+        **kwargs: Any,
+    ) -> CompletionResponse:
         """Generate a completion with tool calling support.
 
         This method handles Gemini's function calling feature, returning
         either text or function call requests.
 
+        Supports two calling conventions:
+        1. Legacy: prompt + history (original Nimbus style)
+        2. OpenAI-compatible: messages (AgenticRunner style)
+
         Args:
-            prompt: The user's prompt.
+            prompt: The user's prompt (legacy style).
             tools: List of tool/function definitions.
-            history: Optional conversation history.
+            history: Optional conversation history (legacy style).
             system_instruction: Optional system instruction.
+            messages: OpenAI-style messages list (alternative to prompt+history).
+            **kwargs: Additional options (ignored for compatibility).
 
         Returns:
-            Dict with either 'text' key or 'function_calls' key.
-
-        Example tools format:
-            ```python
-            tools = [{
-                "function_declarations": [{
-                    "name": "get_weather",
-                    "description": "Get current weather",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "location": {"type": "string", "description": "City name"}
-                        },
-                        "required": ["location"]
-                    }
-                }]
-            }]
-            ```
+            CompletionResponse with content, tool_calls, and finish_reason.
         """
+        # Support OpenAI-style messages parameter
+        if messages is not None:
+            # Convert messages to prompt + history + system_instruction format
+            prompt, history, extracted_sys_inst = self._convert_messages_to_prompt_history(messages)
+            # Use extracted system instruction if not explicitly provided
+            if system_instruction is None:
+                system_instruction = extracted_sys_inst
+        elif prompt is None:
+            raise ValueError("Either 'prompt' or 'messages' must be provided")
+
+        # Convert OpenAI-format tools to Gemini format if needed
+        gemini_tools = self._convert_tools_to_gemini_format(tools) if tools else None
+
         url = self._build_url("generateContent")
-        body = self._build_request_body(prompt, history, system_instruction, tools)
+        body = self._build_request_body(prompt, history, system_instruction, gemini_tools)
 
         resp = await self._request_with_retry(url, body)
         data = await resp.json()
@@ -504,32 +541,142 @@ class GeminiClient:
         try:
             candidates = data.get("candidates", [])
             if not candidates:
-                return {"text": "", "function_calls": []}
+                return CompletionResponse(content="", tool_calls=[], finish_reason="stop")
 
             candidate = candidates[0]
             content = candidate.get("content", {})
             parts = content.get("parts", [])
 
             texts = []
-            function_calls = []
+            tool_calls: List[BaseToolCall] = []
 
             for part in parts:
                 if "text" in part:
                     texts.append(part["text"])
                 elif "functionCall" in part:
                     fc = part["functionCall"]
-                    function_calls.append({
-                        "name": fc.get("name"),
-                        "arguments": fc.get("args", {}),
-                    })
+                    # Generate a unique ID for the tool call
+                    import uuid
+                    call_id = f"call_{uuid.uuid4().hex[:8]}"
+                    tool_calls.append(BaseToolCall(
+                        id=call_id,
+                        name=fc.get("name", ""),
+                        arguments=fc.get("args", {}),
+                    ))
 
-            return {
-                "text": "".join(texts),
-                "function_calls": function_calls,
-            }
+            # Determine finish_reason based on whether tool calls were made
+            finish_reason = "tool_calls" if tool_calls else "stop"
+
+            return CompletionResponse(
+                content="".join(texts) if texts else None,
+                tool_calls=tool_calls,
+                finish_reason=finish_reason,
+                raw_response=data,
+            )
 
         except (KeyError, IndexError) as e:
             raise GeminiError(f"Failed to parse tool response: {e}")
+
+    def _convert_messages_to_prompt_history(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> tuple[str, List[Dict[str, str]], Optional[str]]:
+        """Convert OpenAI-style messages to Gemini format.
+
+        Handles all message types:
+        - system: extracted as system_instruction
+        - user: regular user messages
+        - assistant: model responses (with optional tool_calls)
+        - tool: tool results, converted to user messages for Gemini
+
+        Args:
+            messages: List of messages with 'role' and 'content' keys.
+
+        Returns:
+            Tuple of (prompt, history, system_instruction)
+        """
+        if not messages:
+            return "", [], None
+
+        prompt = ""
+        history: List[Dict[str, str]] = []
+        system_instruction = None
+
+        for i, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                continue
+
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+
+            # Extract system instruction
+            if role == "system":
+                system_instruction = content
+                continue
+
+            # Convert tool results to user messages (Gemini doesn't support tool role)
+            if role == "tool":
+                tool_call_id = msg.get("tool_call_id", "")
+                history.append({
+                    "role": "user",
+                    "content": f"[Tool Result ({tool_call_id})]\n{content}"
+                })
+                continue
+
+            # Handle assistant messages with tool_calls
+            if role == "assistant":
+                tool_calls = msg.get("tool_calls", [])
+                if tool_calls:
+                    tool_info = []
+                    for tc in tool_calls:
+                        if isinstance(tc, dict):
+                            func = tc.get("function", {})
+                            name = func.get("name", "unknown")
+                            args = func.get("arguments", {})
+                            tool_info.append(f"[Called {name} with {args}]")
+                    if tool_info:
+                        content = (content + "\n" + "\n".join(tool_info)) if content else "\n".join(tool_info)
+
+                if content:
+                    history.append({"role": "assistant", "content": content})
+                continue
+
+            # Regular user message
+            if i == len(messages) - 1 and role == "user":
+                prompt = content
+            else:
+                history.append({"role": role, "content": content})
+
+        return prompt, history, system_instruction
+
+    def _convert_tools_to_gemini_format(
+        self,
+        tools: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Convert OpenAI-format tools to Gemini format.
+
+        Args:
+            tools: Tools in OpenAI format (with 'type': 'function', 'function': {...}).
+
+        Returns:
+            Tools in Gemini format (with 'function_declarations').
+        """
+        # Check if already in Gemini format
+        if tools and "function_declarations" in tools[0]:
+            return tools
+
+        # Convert from OpenAI format
+        function_declarations = []
+        for tool in tools:
+            if tool.get("type") == "function":
+                func = tool.get("function", {})
+                function_declarations.append({
+                    "name": func.get("name", ""),
+                    "description": func.get("description", ""),
+                    "parameters": func.get("parameters", {}),
+                })
+
+        return [{"function_declarations": function_declarations}] if function_declarations else []
 
     async def __aenter__(self) -> "GeminiClient":
         """Async context manager entry."""

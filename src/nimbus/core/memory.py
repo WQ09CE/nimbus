@@ -1,10 +1,28 @@
 """Memory management for conversation history.
 
+Architecture Layer: 1 (Agent OS - vCPU)
+Von Neumann Role: MMU (Memory Management Unit)
+
+In the Agent OS architecture, TieredMemoryManager serves as the MMU,
+managing the agent's "address space" through tiered memory organization:
+- Pinned tier -> Hardware registers (always accessible)
+- Working tier -> L1/L2 cache (current task state)
+- Episodic tier -> RAM (conversation history)
+- Semantic tier -> Disk/swap (RAG cache)
+
+The MMU handles "virtual memory" concepts like:
+- Memory budgets (page limits)
+- Compression (paging/swapping)
+- Checkpointing (memory persistence)
+
 This module provides:
 - SimpleMemory: Basic memory with conversation history and pinned items
 - TieredMemoryManager: Advanced multi-tier memory with compression and checkpointing
 - SubagentContext: Isolated context for subagent execution
 """
+
+__layer__ = 1  # Agent OS Layer
+__role__ = "MMU"  # Memory Management Unit
 
 from dataclasses import dataclass, field
 from datetime import datetime

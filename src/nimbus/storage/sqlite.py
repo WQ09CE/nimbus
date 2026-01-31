@@ -109,6 +109,7 @@ class SQLiteStorage:
         memory_type: str = "tiered",
         planner_type: str = "dag",
         config_overrides: Optional[Dict[str, Any]] = None,
+        model_config: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Create a new session.
 
@@ -119,6 +120,7 @@ class SQLiteStorage:
             memory_type: Memory manager type ("simple" or "tiered").
             planner_type: Planner type ("simple" or "dag").
             config_overrides: Optional configuration overrides as JSON.
+            model_config: Optional model configuration as JSON.
 
         Returns:
             Dictionary with created session data.
@@ -128,6 +130,18 @@ class SQLiteStorage:
         """
         async with self._get_connection() as db:
             config_json = json.dumps(config_overrides) if config_overrides else None
+            model_config_json = json.dumps(model_config) if model_config else None
+
+            # We need to add model_config column if it doesn't exist
+            # But for now let's store it in config_overrides if schema not updated
+            # Or assume schema update. Let's check schema.sql or just use config_overrides
+            
+            # Actually, let's merge it into config_overrides to avoid schema change for now
+            if model_config:
+                if not config_overrides:
+                    config_overrides = {}
+                config_overrides["model_config"] = model_config
+                config_json = json.dumps(config_overrides)
 
             await db.execute(
                 """
@@ -142,7 +156,15 @@ class SQLiteStorage:
                 "SELECT * FROM sessions WHERE id = ?", (session_id,)
             )
             row = await cursor.fetchone()
-            return self._row_to_dict(row)
+            
+            # Unpack model_config from config_overrides for caller convenience
+            result = self._row_to_dict(row)
+            if result.get("config_overrides"):
+                overrides = json.loads(result["config_overrides"])
+                if "model_config" in overrides:
+                    result["model_config"] = overrides["model_config"]
+            
+            return result
 
     async def get_session(self, session_id: str, include_deleted: bool = False) -> Optional[Dict[str, Any]]:
         """Get session by ID.
@@ -169,6 +191,10 @@ class SQLiteStorage:
                 # Parse JSON fields
                 if result.get("config_overrides"):
                     result["config_overrides"] = json.loads(result["config_overrides"])
+                    # Extract model_config for convenience
+                    if "model_config" in result["config_overrides"]:
+                        result["model_config"] = result["config_overrides"]["model_config"]
+                
                 if result.get("memory_state"):
                     result["memory_state"] = json.loads(result["memory_state"])
                 return result

@@ -1,5 +1,12 @@
 """LLM Provider Adapters for Nimbus.
 
+Architecture Layer: 0 (Infrastructure)
+Von Neumann Role: ALU (Arithmetic Logic Unit)
+
+In the Agent OS architecture, LLM providers serve as the computational core,
+analogous to the ALU in Von Neumann architecture. They perform the "thinking"
+operations - processing natural language inputs and generating responses.
+
 This module provides LLM client implementations for various providers:
 - Gemini (Google AI)
 - Ollama (local models)
@@ -52,6 +59,9 @@ Environment Variables:
     NIMBUS_LLM_URL: Ollama server URL
     NIMBUS_LLM_MODEL: Default model name
 """
+
+__layer__ = 0  # Infrastructure Layer
+__role__ = "ALU"  # Arithmetic Logic Unit - computational core
 
 # Base protocol and errors
 from .base import (
