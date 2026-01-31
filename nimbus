@@ -93,8 +93,8 @@ start_pi_ai() {
         npm install @mariozechner/pi-ai 2>/dev/null
     fi
     
-    # 启动服务
-    setsid npx tsx bridge/pi-ai-server.ts > "$LOG_DIR/pi-ai.log" 2>&1 &
+    # 启动服务 (使用 screen 完全脱离终端)
+    screen -dmS nimbus-pi-ai bash -c "npx tsx bridge/pi-ai-server.ts > '$LOG_DIR/pi-ai.log' 2>&1"
     
     if wait_for_port $PI_AI_PORT 10; then
         log_ok "pi-ai started on :$PI_AI_PORT"
@@ -112,8 +112,8 @@ start_nimbus() {
     
     log_info "Starting nimbus server..."
     
-    # 启动服务
-    setsid uv run nimbus serve --port $NIMBUS_PORT > "$LOG_DIR/nimbus.log" 2>&1 &
+    # 启动服务 (使用 screen 完全脱离终端)
+    screen -dmS nimbus-server bash -c "uv run nimbus serve --port $NIMBUS_PORT > '$LOG_DIR/nimbus.log' 2>&1"
     
     if wait_for_port $NIMBUS_PORT 15; then
         log_ok "nimbus started on :$NIMBUS_PORT"
@@ -137,8 +137,8 @@ start_webui() {
         (cd web-ui && npm install) 2>/dev/null
     fi
     
-    # 启动服务
-    (cd web-ui && setsid npm run dev > "$LOG_DIR/webui.log" 2>&1 &)
+    # 启动服务 (使用 screen 完全脱离终端)
+    screen -dmS nimbus-webui bash -c "cd '$SCRIPT_DIR/web-ui' && npm run dev > '$LOG_DIR/webui.log' 2>&1"
     
     if wait_for_port $WEBUI_PORT 20; then
         log_ok "web-ui started on :$WEBUI_PORT"
