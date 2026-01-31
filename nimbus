@@ -94,7 +94,8 @@ start_pi_ai() {
     fi
     
     # 启动服务 (使用 screen 完全脱离终端)
-    screen -dmS nimbus-pi-ai bash -c "npx tsx bridge/pi-ai-server.ts > '$LOG_DIR/pi-ai.log' 2>&1"
+    echo -e "\n\n========== $(date '+%Y-%m-%d %H:%M:%S') pi-ai starting ==========\n" >> "$LOG_DIR/pi-ai.log"
+    screen -dmS nimbus-pi-ai bash -c "npx tsx bridge/pi-ai-server.ts >> '$LOG_DIR/pi-ai.log' 2>&1"
     
     if wait_for_port $PI_AI_PORT 10; then
         log_ok "pi-ai started on :$PI_AI_PORT"
@@ -113,7 +114,8 @@ start_nimbus() {
     log_info "Starting nimbus server..."
     
     # 启动服务 (使用 screen 完全脱离终端)
-    screen -dmS nimbus-server bash -c "uv run nimbus serve --port $NIMBUS_PORT > '$LOG_DIR/nimbus.log' 2>&1"
+    echo -e "\n\n========== $(date '+%Y-%m-%d %H:%M:%S') nimbus starting ==========\n" >> "$LOG_DIR/nimbus.log"
+    screen -dmS nimbus-server bash -c "uv run nimbus serve --port $NIMBUS_PORT >> '$LOG_DIR/nimbus.log' 2>&1"
     
     if wait_for_port $NIMBUS_PORT 15; then
         log_ok "nimbus started on :$NIMBUS_PORT"
@@ -138,7 +140,8 @@ start_webui() {
     fi
     
     # 启动服务 (使用 screen 完全脱离终端)
-    screen -dmS nimbus-webui bash -c "cd '$SCRIPT_DIR/web-ui' && npm run dev > '$LOG_DIR/webui.log' 2>&1"
+    echo -e "\n\n========== $(date '+%Y-%m-%d %H:%M:%S') web-ui starting ==========\n" >> "$LOG_DIR/webui.log"
+    screen -dmS nimbus-webui bash -c "cd '$SCRIPT_DIR/web-ui' && npm run dev >> '$LOG_DIR/webui.log' 2>&1"
     
     if wait_for_port $WEBUI_PORT 20; then
         log_ok "web-ui started on :$WEBUI_PORT"
