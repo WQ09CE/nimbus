@@ -1,0 +1,337 @@
+#!/bin/bash
+#
+# Nimbus - 一键管理脚本
+#
+# Usage:
+#   ./nimbus start     # 启动所有服务
+#   ./nimbus stop      # 停止所有服务
+#   ./nimbus status    # 查看服务状态
+#   ./nimbus logs      # 查看日志
+#   ./nimbus restart   # 重启所有服务
+#
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# 端口配置
+PI_AI_PORT=${PI_AI_PORT:-3031}
+NIMBUS_PORT=${NIMBUS_PORT:-4096}
+WEBUI_PORT=${WEBUI_PORT:-3000}
+
+# 日志目录
+LOG_DIR="$SCRIPT_DIR/.logs"
+mkdir -p "$LOG_DIR"
+
+# 颜色
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# ============================================================================
+# 工具函数
+# ============================================================================
+
+log_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+log_ok() {
+    echo -e "${GREEN}[OK]${NC} $1"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+check_port() {
+    local port=$1
+    lsof -i :$port >/dev/null 2>&1
+}
+
+wait_for_port() {
+    local port=$1
+    local timeout=${2:-30}
+    local count=0
+    
+    while ! check_port $port; do
+        sleep 1
+        count=$((count + 1))
+        if [ $count -ge $timeout ]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+get_pid_on_port() {
+    lsof -ti :$1 2>/dev/null | head -1
+}
+
+# ============================================================================
+# 服务管理
+# ============================================================================
+
+start_pi_ai() {
+    if check_port $PI_AI_PORT; then
+        log_ok "pi-ai already running on :$PI_AI_PORT"
+        return 0
+    fi
+    
+    log_info "Starting pi-ai server..."
+    
+    # 检查依赖
+    if [ ! -d "node_modules/@mariozechner/pi-ai" ]; then
+        log_info "Installing @mariozechner/pi-ai..."
+        npm install @mariozechner/pi-ai 2>/dev/null
+    fi
+    
+    # 启动服务
+    setsid npx tsx bridge/pi-ai-server.ts > "$LOG_DIR/pi-ai.log" 2>&1 &
+    
+    if wait_for_port $PI_AI_PORT 10; then
+        log_ok "pi-ai started on :$PI_AI_PORT"
+    else
+        log_error "Failed to start pi-ai. Check $LOG_DIR/pi-ai.log"
+        return 1
+    fi
+}
+
+start_nimbus() {
+    if check_port $NIMBUS_PORT; then
+        log_ok "nimbus already running on :$NIMBUS_PORT"
+        return 0
+    fi
+    
+    log_info "Starting nimbus server..."
+    
+    # 启动服务
+    setsid uv run nimbus serve --port $NIMBUS_PORT > "$LOG_DIR/nimbus.log" 2>&1 &
+    
+    if wait_for_port $NIMBUS_PORT 15; then
+        log_ok "nimbus started on :$NIMBUS_PORT"
+    else
+        log_error "Failed to start nimbus. Check $LOG_DIR/nimbus.log"
+        return 1
+    fi
+}
+
+start_webui() {
+    if check_port $WEBUI_PORT; then
+        log_ok "web-ui already running on :$WEBUI_PORT"
+        return 0
+    fi
+    
+    log_info "Starting web-ui..."
+    
+    # 检查依赖
+    if [ ! -d "web-ui/node_modules" ]; then
+        log_info "Installing web-ui dependencies..."
+        (cd web-ui && npm install) 2>/dev/null
+    fi
+    
+    # 启动服务
+    (cd web-ui && setsid npm run dev > "$LOG_DIR/webui.log" 2>&1 &)
+    
+    if wait_for_port $WEBUI_PORT 20; then
+        log_ok "web-ui started on :$WEBUI_PORT"
+    else
+        log_error "Failed to start web-ui. Check $LOG_DIR/webui.log"
+        return 1
+    fi
+}
+
+stop_service() {
+    local port=$1
+    local name=$2
+    
+    if check_port $port; then
+        local pid=$(get_pid_on_port $port)
+        if [ -n "$pid" ]; then
+            kill $pid 2>/dev/null || true
+            sleep 1
+            # 如果还在运行，强制杀死
+            if check_port $port; then
+                kill -9 $pid 2>/dev/null || true
+            fi
+        fi
+        log_ok "$name stopped"
+    else
+        log_warn "$name not running"
+    fi
+}
+
+# ============================================================================
+# 命令处理
+# ============================================================================
+
+cmd_start() {
+    echo ""
+    echo "🚀 Starting Nimbus Stack..."
+    echo "═══════════════════════════════════════"
+    
+    start_pi_ai || exit 1
+    start_nimbus || exit 1
+    
+    # Web UI 是可选的
+    if [ "$1" != "--no-ui" ]; then
+        start_webui || log_warn "Web UI failed to start, continuing..."
+    fi
+    
+    echo ""
+    echo "═══════════════════════════════════════"
+    echo "✅ All services started!"
+    echo ""
+    echo "📡 Endpoints:"
+    echo "   • pi-ai:   http://localhost:$PI_AI_PORT"
+    echo "   • nimbus:  http://localhost:$NIMBUS_PORT"
+    if check_port $WEBUI_PORT; then
+        echo "   • web-ui:  http://localhost:$WEBUI_PORT"
+    fi
+    echo ""
+    echo "📁 Logs: $LOG_DIR/"
+    echo ""
+}
+
+cmd_stop() {
+    echo ""
+    echo "🛑 Stopping Nimbus Stack..."
+    echo "═══════════════════════════════════════"
+    
+    stop_service $WEBUI_PORT "web-ui"
+    stop_service $NIMBUS_PORT "nimbus"
+    stop_service $PI_AI_PORT "pi-ai"
+    
+    echo ""
+    echo "✅ All services stopped"
+    echo ""
+}
+
+cmd_status() {
+    echo ""
+    echo "📊 Nimbus Stack Status"
+    echo "═══════════════════════════════════════"
+    
+    # pi-ai
+    if check_port $PI_AI_PORT; then
+        local pid=$(get_pid_on_port $PI_AI_PORT)
+        echo -e "  pi-ai    ${GREEN}●${NC} running  :$PI_AI_PORT  (pid: $pid)"
+    else
+        echo -e "  pi-ai    ${RED}○${NC} stopped"
+    fi
+    
+    # nimbus
+    if check_port $NIMBUS_PORT; then
+        local pid=$(get_pid_on_port $NIMBUS_PORT)
+        echo -e "  nimbus   ${GREEN}●${NC} running  :$NIMBUS_PORT  (pid: $pid)"
+    else
+        echo -e "  nimbus   ${RED}○${NC} stopped"
+    fi
+    
+    # web-ui
+    if check_port $WEBUI_PORT; then
+        local pid=$(get_pid_on_port $WEBUI_PORT)
+        echo -e "  web-ui   ${GREEN}●${NC} running  :$WEBUI_PORT  (pid: $pid)"
+    else
+        echo -e "  web-ui   ${RED}○${NC} stopped"
+    fi
+    
+    echo ""
+}
+
+cmd_logs() {
+    local service=${1:-all}
+    
+    case $service in
+        pi-ai|pi)
+            tail -f "$LOG_DIR/pi-ai.log"
+            ;;
+        nimbus|n)
+            tail -f "$LOG_DIR/nimbus.log"
+            ;;
+        webui|web|ui)
+            tail -f "$LOG_DIR/webui.log"
+            ;;
+        all|*)
+            # 使用 multitail 如果可用，否则显示最后几行
+            if command -v multitail &> /dev/null; then
+                multitail "$LOG_DIR/pi-ai.log" "$LOG_DIR/nimbus.log" "$LOG_DIR/webui.log"
+            else
+                echo "=== pi-ai ==="
+                tail -20 "$LOG_DIR/pi-ai.log" 2>/dev/null || echo "(no logs)"
+                echo ""
+                echo "=== nimbus ==="
+                tail -20 "$LOG_DIR/nimbus.log" 2>/dev/null || echo "(no logs)"
+                echo ""
+                echo "=== web-ui ==="
+                tail -20 "$LOG_DIR/webui.log" 2>/dev/null || echo "(no logs)"
+                echo ""
+                echo "💡 Tip: Use './nimbus logs pi-ai' to follow a specific log"
+            fi
+            ;;
+    esac
+}
+
+cmd_restart() {
+    cmd_stop
+    sleep 2
+    cmd_start "$@"
+}
+
+cmd_help() {
+    echo ""
+    echo "Nimbus - AI Agent Framework"
+    echo ""
+    echo "Usage: ./nimbus <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  start [--no-ui]   Start all services (or without web-ui)"
+    echo "  stop              Stop all services"
+    echo "  restart           Restart all services"
+    echo "  status            Show service status"
+    echo "  logs [service]    View logs (pi-ai|nimbus|webui|all)"
+    echo "  help              Show this help"
+    echo ""
+    echo "Environment:"
+    echo "  PI_AI_PORT=$PI_AI_PORT"
+    echo "  NIMBUS_PORT=$NIMBUS_PORT"
+    echo "  WEBUI_PORT=$WEBUI_PORT"
+    echo ""
+}
+
+# ============================================================================
+# 主入口
+# ============================================================================
+
+case "${1:-help}" in
+    start)
+        cmd_start "$2"
+        ;;
+    stop)
+        cmd_stop
+        ;;
+    restart)
+        cmd_restart "$2"
+        ;;
+    status|st)
+        cmd_status
+        ;;
+    logs|log)
+        cmd_logs "$2"
+        ;;
+    help|--help|-h)
+        cmd_help
+        ;;
+    *)
+        log_error "Unknown command: $1"
+        cmd_help
+        exit 1
+        ;;
+esac

@@ -54,32 +54,58 @@
 
 ## 🚀 Quick Start
 
-### 1. Install
+### One-Command Start
 
 ```bash
+# 一键启动所有服务
+./nimbus start
+
+# 查看状态
+./nimbus status
+
+# 一键停止
+./nimbus stop
+```
+
+### Manual Start (Alternative)
+
+```bash
+# 1. Install
 pip install -e ".[all]"
-cd bridge && npm install
+npm install @mariozechner/pi-ai
+
+# 2. Start services individually
+./scripts/start-pi-ai.sh --daemon  # LLM backend
+uv run nimbus serve                 # API server
+cd web-ui && npm run dev           # Web UI
 ```
 
-### 2. Start Services
-
-```bash
-# Terminal 1: Start pi-ai HTTP server (LLM backend)
-./scripts/start-pi-ai.sh --daemon
-
-# Terminal 2: Start nimbus server
-uv run nimbus serve
-
-# Terminal 3: Start Web UI (optional)
-cd web-ui && npm run dev
-```
-
-### 3. Verify
+### Verify
 
 ```bash
 curl http://localhost:3031/health  # pi-ai server
 curl http://localhost:4096/health  # nimbus server
 open http://localhost:3000         # Web UI
+```
+
+### CLI Commands
+
+```bash
+./nimbus start       # Start all services
+./nimbus stop        # Stop all services
+./nimbus restart     # Restart all
+./nimbus status      # Show status
+./nimbus logs        # View logs
+./nimbus logs pi-ai  # View specific log
+```
+
+Or use `make`:
+
+```bash
+make start    # Start all
+make stop     # Stop all
+make dev      # Dev mode (foreground)
+make status   # Show status
 ```
 
 ## 📦 Components
