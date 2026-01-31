@@ -335,10 +335,12 @@ class VCPU:
                     # - Too many consecutive errors (any type)
                     # - Any doom loop (even first one triggers graceful report)
                     # - Too many total doom loops
+                    # - Empty response loop (LLM stuck/confused)
                     should_graceful_terminate = (
                         self._consecutive_errors >= 5 or 
                         self._doom_loop_count >= 1 or  # First doom loop triggers graceful termination
-                        step_result.fault.code == "DOOM_LOOP"
+                        step_result.fault.code == "DOOM_LOOP" or
+                        step_result.fault.code == "EMPTY_RESPONSE_LOOP"  # LLM stuck
                     )
                     
                     if should_graceful_terminate:
