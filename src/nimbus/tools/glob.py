@@ -24,6 +24,38 @@ from .sandbox import Sandbox, SandboxError
 DEFAULT_LIMIT = 100
 
 
+def _expand_braces(pattern: str) -> list[str]:
+    """
+    Expand brace patterns like {a,b,c} into multiple patterns.
+    
+    Python's glob doesn't support brace expansion, so we handle it manually.
+    
+    Examples:
+        "*.{js,ts}" -> ["*.js", "*.ts"]
+        "**/*.{js,jsx,ts,tsx}" -> ["**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx"]
+        "*.py" -> ["*.py"]  # No braces, return as-is
+    """
+    import re
+    
+    # Find brace pattern {a,b,c}
+    match = re.search(r'\{([^{}]+)\}', pattern)
+    if not match:
+        return [pattern]
+    
+    # Get the alternatives inside braces
+    alternatives = match.group(1).split(',')
+    prefix = pattern[:match.start()]
+    suffix = pattern[match.end():]
+    
+    # Recursively expand (in case there are nested braces)
+    results = []
+    for alt in alternatives:
+        expanded = _expand_braces(prefix + alt.strip() + suffix)
+        results.extend(expanded)
+    
+    return results
+
+
 @tool(
     name="Glob",
     description="Find files and directories matching a glob pattern. Returns paths sorted by modification time (newest first).",
@@ -126,9 +158,17 @@ async def glob_files(
     if not base_path.is_dir():
         raise NotADirectoryError(f"Base path is not a directory: {path}")
 
-    # Execute glob
+    # Execute glob with brace expansion support
+    # Python's glob doesn't support {a,b,c} syntax, so we expand it manually
     try:
-        matches = list(base_path.glob(pattern))
+        patterns = _expand_braces(pattern)
+        matches = []
+        seen = set()
+        for p in patterns:
+            for match in base_path.glob(p):
+                if match not in seen:
+                    seen.add(match)
+                    matches.append(match)
     except OSError as e:
         raise OSError(f"Glob error: {e}")
 
