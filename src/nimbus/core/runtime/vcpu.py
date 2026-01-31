@@ -243,6 +243,10 @@ class VCPU:
         self._recent_tool_calls: List[tuple] = []
         self._doom_loop_count = 0
         self._consecutive_errors = 0
+        
+        # Empty response detection
+        self._consecutive_empty_responses = 0
+        self._max_consecutive_empty = 5  # Stop after 5 consecutive empty responses
 
     # =========================================================================
     # Main Execution Loop
@@ -412,6 +416,22 @@ class VCPU:
             think_start = time.time_ns()
             messages = self.mmu.assemble_context()
             
+            # Enhanced logging: Show context summary
+            msg_count = len(messages)
+            last_msgs = messages[-3:] if len(messages) >= 3 else messages
+            logger.debug(f"📋 Context: {msg_count} messages, last {len(last_msgs)}:")
+            for i, msg in enumerate(last_msgs):
+                role = msg.get("role", "?")
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    preview = content[:200] + "..." if len(content) > 200 else content
+                    preview = preview.replace("\n", "\\n")
+                else:
+                    preview = f"[{type(content).__name__}]"
+                tool_calls = msg.get("tool_calls", [])
+                tc_info = f" | {len(tool_calls)} tool_calls" if tool_calls else ""
+                logger.debug(f"  [{role}]{tc_info}: {preview}")
+            
             # Log tool availability
             tools_to_pass = self.tools if self.tools else None
             if tools_to_pass:
@@ -425,8 +445,51 @@ class VCPU:
             step_result.timing_ms["think"] = think_duration
             
             tool_calls_count = len(response.tool_calls) if response.tool_calls else 0
-            content_preview = (response.content[:100] + "...") if response.content and len(response.content) > 100 else response.content
-            logger.info(f"Thought complete ({think_duration}ms) | Tool Calls: {tool_calls_count} | Content: {content_preview or '(no content)'}")
+            content_preview = (response.content[:200] + "...") if response.content and len(response.content) > 200 else response.content
+            
+            # Enhanced logging: Show full response details
+            if tool_calls_count == 0 and not response.content:
+                # Empty response - this is suspicious!
+                self._consecutive_empty_responses += 1
+                logger.warning(
+                    f"⚠️ EMPTY RESPONSE #{self._consecutive_empty_responses} from LLM (Iteration {self._iteration}) "
+                    f"- no content, no tool calls!"
+                )
+                logger.warning(f"   This may indicate: context too long, task too hard, or LLM confusion")
+                
+                # Check if we've hit too many consecutive empty responses
+                if self._consecutive_empty_responses >= self._max_consecutive_empty:
+                    logger.error(
+                        f"🛑 STOPPING: {self._consecutive_empty_responses} consecutive empty responses. "
+                        f"LLM appears to be stuck or confused."
+                    )
+                    step_result.fault = Fault(
+                        domain="RUNTIME",
+                        code="EMPTY_RESPONSE_LOOP",
+                        message=f"LLM returned {self._consecutive_empty_responses} consecutive empty responses",
+                        retryable=False,
+                        context={
+                            "consecutive_empty": self._consecutive_empty_responses,
+                            "iteration": self._iteration,
+                        }
+                    )
+                    step_result.timing_ms["total"] = (time.time_ns() - start_time) // 1_000_000
+                    return step_result
+            else:
+                # Reset counter on non-empty response
+                self._consecutive_empty_responses = 0
+                logger.info(f"Thought complete ({think_duration}ms) | Tool Calls: {tool_calls_count} | Content: {content_preview or '(no content)'}")
+            
+            # Log tool calls details
+            if response.tool_calls:
+                for tc in response.tool_calls:
+                    if hasattr(tc, 'function'):
+                        name = tc.function.name
+                        args = tc.function.arguments[:100] if tc.function.arguments else "{}"
+                    else:
+                        name = tc.get('function', {}).get('name', '?')
+                        args = str(tc.get('function', {}).get('arguments', '{}'))[:100]
+                    logger.debug(f"  🔧 Tool: {name}({args})")
 
             # 2. DECODE: Parse into ActionIR
             decode_start = time.time_ns()
@@ -1007,6 +1070,7 @@ class VCPU:
         self._doom_loop_count = 0  # Track how many doom loops occurred
         self._consecutive_errors = 0  # Track consecutive errors
         self._compaction_count = 0  # Reset compaction counter
+        self._consecutive_empty_responses = 0  # Reset empty response counter
 
     async def _generate_llm_failure_response(
         self,
