@@ -61,11 +61,24 @@ class VcpuLLMResponse:
 
 @dataclass
 class PiLLMConfig:
-    """Pi LLM 适配器配置"""
+    """Pi LLM 适配器配置
+    
+    可以用两种方式指定模型:
+    1. model: "anthropic/claude-sonnet-4-20250514" (pi-ai 格式)
+    2. provider + model_id: 分开指定 (会自动合并)
+    """
     base_url: str = "http://localhost:3031"
-    model: str = "anthropic/claude-sonnet-4-20250514"
+    model: str = ""  # 完整模型名 (provider/model_id)
+    provider: str = "anthropic"  # 兼容旧接口
+    model_id: str = "claude-sonnet-4-20250514"  # 兼容旧接口
     max_tokens: int = 8192
     timeout: float = 120.0
+    
+    def get_model(self) -> str:
+        """获取完整的模型名"""
+        if self.model:
+            return self.model
+        return f"{self.provider}/{self.model_id}"
 
 
 class PiLLMAdapter:
@@ -80,10 +93,11 @@ class PiLLMAdapter:
     
     def __init__(self, config: PiLLMConfig | None = None):
         self.config = config or PiLLMConfig()
+        self._model = self.config.get_model()
         self._client = PiAiHttpClient(
             base_url=self.config.base_url,
             timeout=self.config.timeout,
-            default_model=self.config.model,
+            default_model=self._model,
         )
         self._started = False
     
@@ -222,7 +236,7 @@ class PiLLMAdapter:
         try:
             result = await self._client.complete(
                 http_messages,
-                model=self.config.model,
+                model=self._model,
                 tools=http_tools,
             )
         except Exception as e:
@@ -269,7 +283,7 @@ class PiLLMAdapter:
         http_messages = self._convert_messages_to_http(messages)
         http_tools = self._convert_tools_to_http(tools)
         
-        async for event in self._client.stream(http_messages, self.config.model, http_tools):
+        async for event in self._client.stream(http_messages, self._model, http_tools):
             if event.type == "delta":
                 yield LLMStreamEvent(type="text", text=event.content or "")
             elif event.type == "tool_call" and event.tool_call:

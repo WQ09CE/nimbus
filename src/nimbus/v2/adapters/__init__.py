@@ -2,19 +2,21 @@
 Nimbus Adapters - 适配外部系统
 
 目前支持:
-- Pi Adapter: 使用 pi-ai 和 pi-tui
+- Pi Adapter: 使用 pi-ai HTTP 服务
 """
 
 from .pi_adapter import (
     PiLLMAdapter,
     PiLLMConfig,
-    PiIOAdapter,
-    create_pi_adapters,
+    VcpuLLMResponse,
+    LLMStreamEvent,
+    create_pi_adapter,
 )
 
 __all__ = [
     "PiLLMAdapter",
     "PiLLMConfig",
-    "PiIOAdapter",
-    "create_pi_adapters",
+    "VcpuLLMResponse",
+    "LLMStreamEvent",
+    "create_pi_adapter",
 ]
