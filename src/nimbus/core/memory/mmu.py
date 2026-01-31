@@ -542,6 +542,67 @@ class MMU:
         self._tool_markers.clear()
         self._frame_discardable.clear()
 
+    def rollback_incomplete_turn(self) -> int:
+        """
+        回滚未完成的对话轮次。
+        
+        当用户中断任务时，需要移除：
+        1. 最后一个 assistant 消息（如果有未完成的 tool calls）
+        2. 对应的 tool result 消息
+        
+        这样下一个用户消息不会和未完成的状态混在一起。
+        
+        Returns:
+            移除的消息数量
+        """
+        if not self._stack:
+            return 0
+        
+        frame = self.current_frame
+        messages = frame._messages
+        
+        if not messages:
+            return 0
+        
+        removed = 0
+        
+        # 从后往前找，移除未完成的 turn
+        # 一个完整的 turn: user → assistant (with tool_calls) → tool results → assistant (final)
+        # 未完成的 turn: user → assistant (with tool_calls) → tool results (可能不完整)
+        
+        while messages:
+            last_msg = messages[-1]
+            
+            # 如果最后是 user 消息，说明没有未完成的 turn
+            if last_msg.role == "user":
+                break
+            
+            # 如果是 tool 消息，移除它
+            if last_msg.role == "tool":
+                messages.pop()
+                removed += 1
+                continue
+            
+            # 如果是 assistant 消息
+            if last_msg.role == "assistant":
+                # 如果有 tool_calls 但没有对应的 tool results，移除这个 assistant 消息
+                if last_msg.tool_calls:
+                    messages.pop()
+                    removed += 1
+                    continue
+                # 如果是纯文本 assistant 消息，停止回滚
+                break
+            
+            # 其他情况，停止
+            break
+        
+        if removed > 0:
+            from nimbus.core.logging import get_logger
+            logger = get_logger("memory.mmu")
+            logger.info(f"🔙 Rolled back {removed} incomplete messages")
+        
+        return removed
+
     # =========================================================================
     # Context Assembly
     # =========================================================================

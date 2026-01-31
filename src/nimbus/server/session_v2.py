@@ -230,6 +230,19 @@ class SessionManagerV2:
                     logger.error(f"[stream_chat] Result Error: {result.fault}")
                 else:
                     logger.info(f"[stream_chat] Completed with status: {result.status}")
+            except asyncio.CancelledError:
+                # User interrupted - cleanup incomplete state
+                logger.info(f"[stream_chat] Cancelled by user for session {session_id}")
+                
+                # Rollback incomplete messages from MMU
+                if hasattr(agent_os, '_vcpu') and agent_os._vcpu:
+                    mmu = agent_os._vcpu.mmu
+                    # Remove the last incomplete assistant message and any pending tool results
+                    mmu.rollback_incomplete_turn()
+                    logger.info(f"[stream_chat] Rolled back incomplete turn")
+                
+                # Re-raise to propagate cancellation
+                raise
             except Exception as chat_err:
                 logger.error(f"[stream_chat] agent_os.chat FAILED: {chat_err}")
                 raise
@@ -266,6 +279,9 @@ class SessionManagerV2:
                 {"status": result.status},
             )
 
+        except asyncio.CancelledError:
+            # Already handled above, just propagate
+            raise
         except Exception as e:
             logger.error(f"Error in stream_chat: {e}", exc_info=True)
             await self._sse_hub.publish(

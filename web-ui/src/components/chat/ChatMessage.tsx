@@ -28,6 +28,7 @@ export function ChatMessage({ message, isStreaming }: ChatMessageProps) {
   const previousToolsLength = useRef(0);
 
   const isUser = message.role === "user";
+  const isSystem = message.role === "system";
 
   // Auto-scroll hook for this message
   const { elementRef: messageRef, scrollToBottom: scrollToMessage } = useAutoScroll({
@@ -93,6 +94,18 @@ export function ChatMessage({ message, isStreaming }: ChatMessageProps) {
   const toggleTool = (id: string | number) => {
     setExpandedTools(prev => ({ ...prev, [id]: !prev[id] }));
   };
+
+  // Special handling for system messages
+  if (isSystem) {
+    return (
+      <div className="flex justify-center my-2">
+        <div className="text-xs text-gray-500 bg-gray-900/30 border border-gray-800/50 rounded-full px-3 py-1 font-mono">
+          <span className="text-gray-400">💭</span>
+          <span className="ml-1">{message.content}</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div ref={messageRef} className={`flex ${isUser ? "justify-end" : "justify-start"} group`}>

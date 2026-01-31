@@ -310,22 +310,43 @@ export const useChatStore = create<ChatState>((set, get) => ({
         isInterrupting: false,
       });
     } catch (err) {
-      // Check if error is due to abort
-      const errorMessage = (err as any)?.name === 'AbortError'
-        ? '用户已取消对话'
-        : (err instanceof Error ? err.message : "Failed to send message");
+      // Handle user cancellation differently from errors
+      if ((err as any)?.name === 'AbortError') {
+        // User cancelled - add a gentle message instead of error
+        const cancelMessage: Message = {
+          id: `cancel-${Date.now()}`,
+          role: "system",
+          content: "已取消对话",
+          timestamp: Date.now(),
+        };
 
-      set({
-        error: errorMessage,
-        isStreaming: false,
-        streamingContent: "",
-        streamingToolCalls: [],
-        thinkingIteration: null,
-        currentActivity: null,
-        lastHeartbeat: null,
-        streamAbortController: null,
-        isInterrupting: false,
-      });
+        set({
+          messages: [...get().messages, cancelMessage],
+          isStreaming: false,
+          streamingContent: "",
+          streamingToolCalls: [],
+          thinkingIteration: null,
+          currentActivity: null,
+          lastHeartbeat: null,
+          streamAbortController: null,
+          isInterrupting: false,
+          error: null, // Don't set error for user cancellation
+        });
+      } else {
+        // Real error occurred
+        const errorMessage = err instanceof Error ? err.message : "Failed to send message";
+        set({
+          error: errorMessage,
+          isStreaming: false,
+          streamingContent: "",
+          streamingToolCalls: [],
+          thinkingIteration: null,
+          currentActivity: null,
+          lastHeartbeat: null,
+          streamAbortController: null,
+          isInterrupting: false,
+        });
+      }
     }
   },
 
