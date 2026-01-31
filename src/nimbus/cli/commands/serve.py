@@ -68,6 +68,15 @@ async def _run_server(
 ) -> None:
     """Run the server asynchronously."""
     import uvicorn
+    from nimbus.core.logging import setup_logging
+    
+    # Setup file logging
+    log_file = setup_logging(
+        level=log_level.upper(),
+        log_dir=".logs",
+        console=not quiet,
+    )
+    console.print(f"[dim]Log file: {log_file}[/dim]")
 
     # Ensure database directory exists
     db_dir = Path(db_path).parent
