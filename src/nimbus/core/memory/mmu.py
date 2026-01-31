@@ -180,6 +180,30 @@ class MMU:
             self._pinned = PinnedContext()
         self._pinned.capabilities = caps
 
+    def pin_user_goal(self, goal: str) -> None:
+        """
+        Pin the user's current goal to the top of context.
+        
+        This ensures the goal is NEVER lost during compaction.
+        The goal is stored as a special anchor that gets replaced
+        (not accumulated) on each new execute() call.
+        
+        Args:
+            goal: The user's goal/request text
+        """
+        if self._pinned is None:
+            self._pinned = PinnedContext()
+        
+        # Remove any existing goal anchor (identified by prefix)
+        goal_prefix = "# Current Goal\n"
+        self._pinned.custom_anchors = [
+            a for a in self._pinned.custom_anchors 
+            if not a.startswith(goal_prefix)
+        ]
+        
+        # Add new goal anchor
+        self._pinned.custom_anchors.append(f"{goal_prefix}{goal}")
+
     # =========================================================================
     # Stack Management (SUB_CALL / RETURN)
     # =========================================================================

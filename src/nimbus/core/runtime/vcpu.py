@@ -268,6 +268,9 @@ class VCPU:
         self._reset()
         self._is_running = True
 
+        # Pin goal to ensure it survives compaction
+        self.mmu.pin_user_goal(goal)
+        
         # Add goal as user message
         self.mmu.add_user_message(goal)
         self._emit_event("STEP_STARTED", {"goal": goal, "iteration": 0})
