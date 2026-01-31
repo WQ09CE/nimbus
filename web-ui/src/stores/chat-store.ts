@@ -311,7 +311,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
     } catch (err) {
       // Handle user cancellation differently from errors
-      if ((err as any)?.name === 'AbortError') {
+      if (err instanceof Error && err.name === 'AbortError') {
         // User cancelled - add a gentle message instead of error
         const cancelMessage: Message = {
           id: `cancel-${Date.now()}`,

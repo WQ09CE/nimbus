@@ -114,8 +114,9 @@ start_nimbus() {
     log_info "Starting nimbus server..."
     
     # 启动服务 (使用 screen 完全脱离终端)
+    # NIMBUS_DUMP_CONTEXT=1: 每次 LLM 调用前 dump context 到 .logs/context/
     echo -e "\n\n========== $(date '+%Y-%m-%d %H:%M:%S') nimbus starting ==========\n" >> "$LOG_DIR/nimbus.log"
-    screen -dmS nimbus-server bash -c "uv run nimbus serve --port $NIMBUS_PORT >> '$LOG_DIR/nimbus.log' 2>&1"
+    screen -dmS nimbus-server bash -c "NIMBUS_DUMP_CONTEXT=1 uv run nimbus serve --port $NIMBUS_PORT >> '$LOG_DIR/nimbus.log' 2>&1"
     
     if wait_for_port $NIMBUS_PORT 15; then
         log_ok "nimbus started on :$NIMBUS_PORT"

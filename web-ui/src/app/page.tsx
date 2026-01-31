@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useChatStore } from "@/stores";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
+import { DebugPanel } from "@/components/debug/DebugPanel";
 import { useAutoScroll, useScrollDetection } from "@/hooks/useAutoScroll";
 
 export default function Home() {
@@ -34,7 +35,7 @@ export default function Home() {
   });
 
   // Scroll detection hook
-  const { containerRef: messagesContainerRef, handleScroll, isAtBottom, scrollToBottom: scrollContainerToBottom } = useScrollDetection({
+  const { containerRef: messagesContainerRef, handleScroll, scrollToBottom: scrollContainerToBottom } = useScrollDetection({
     threshold: 50,
     onScrollUp: () => {
       setUserScrolledUp(true);
@@ -209,6 +210,9 @@ export default function Home() {
         isInterrupting={isInterrupting}
         placeholder="输入您的消息..."
       />
+
+      {/* Debug Panel */}
+      <DebugPanel />
     </div>
   );
 }

@@ -45,7 +45,7 @@ export function useAutoScroll({
         block: "end",
         inline: "nearest",
       });
-    } catch (error) {
+    } catch {
       // Fallback for older browsers
       elementRef.current.scrollTop = elementRef.current.scrollHeight;
     }
