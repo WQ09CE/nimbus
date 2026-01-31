@@ -56,6 +56,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, TYPE_CHECKING
 
+from loguru import logger
+
 if TYPE_CHECKING:
     from pathlib import Path as PathType
 
@@ -435,6 +437,11 @@ class AgentOS:
                 config=self.config.vcpu_config,
                 tools=self._tools.get_tool_definitions(),
             )
+            
+            # Set compaction callback
+            vcpu.set_compaction_callback(
+                lambda sid=session_id, m=mmu: self._compaction_for_process(sid, m)
+            )
 
             process = Process(
                 pid=session_id,
@@ -644,6 +651,66 @@ class AgentOS:
             
             self._emit_event("AUTO_COMPACTION_END", process.pid, {})
 
+    async def _compaction_for_process(self, pid: str, mmu: MMU) -> bool:
+        """
+        Perform compaction for a specific process.
+        
+        This is called by vCPU when iteration limit is reached.
+        
+        Args:
+            pid: Process ID
+            mmu: MMU instance for the process
+            
+        Returns:
+            True if compaction succeeded
+        """
+        try:
+            # Get all messages from MMU
+            messages = [msg for frame in mmu._stack for msg in frame.messages]
+            
+            if len(messages) < 10:
+                # Not enough messages to compact
+                return False
+            
+            # Use compaction engine
+            new_messages, result = await self._compaction_engine.compact(
+                messages=messages,
+                custom_instructions="Summarize the work done so far, focusing on progress and next steps.",
+            )
+            
+            if result and new_messages:
+                # Replace messages in root frame
+                if mmu._stack:
+                    mmu._stack[0].messages = new_messages
+                
+                # Record in session if available
+                if self._session_mgr:
+                    from nimbus.core.memory.context import Message
+                    self._session_mgr.append_compaction(
+                        Message(
+                            role="system",
+                            content=result.summary,
+                            meta={
+                                "tokens_before": result.tokens_before,
+                                "tokens_after": result.tokens_after,
+                                "compression_ratio": result.compression_ratio,
+                            }
+                        ),
+                        result.first_kept_entry_id,
+                    )
+                
+                logger.info(
+                    f"[{pid}] Compaction: {result.tokens_before} → {result.tokens_after} tokens "
+                    f"({result.compression_ratio:.1%} reduction)"
+                )
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"[{pid}] Compaction failed: {e}")
+            return False
+
     async def run_dag(self, dag: DAG) -> ToolResult:
         """
         Execute a DAG of tasks.
@@ -703,6 +770,11 @@ class AgentOS:
             mmu=mmu,
             config=self.config.vcpu_config,
             tools=self._tools.get_tool_definitions(),
+        )
+        
+        # Set compaction callback
+        vcpu.set_compaction_callback(
+            lambda: self._compaction_for_process(pid, mmu)
         )
 
         # Create process

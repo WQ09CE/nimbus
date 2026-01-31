@@ -31,7 +31,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Tuple
 
 from nimbus.core.memory.mmu import MMU
 from nimbus.core.protocol import ActionIR, Event, Fault, ToolResult
@@ -128,17 +128,21 @@ class VCPUConfig:
     Configuration for vCPU.
 
     Attributes:
-        max_iterations: Maximum Think-Act-Observe cycles
+        max_iterations: Maximum Think-Act-Observe cycles before compaction
         default_timeout: Default timeout for tool execution (seconds)
         max_consecutive_thoughts: Max thoughts before forcing action
         max_sub_call_depth: Maximum recursion depth for SUB_CALLs
         emit_step_events: Whether to emit step lifecycle events
+        compact_on_limit: Whether to compact memory when hitting iteration limit
+        max_compactions: Maximum compactions before stopping (prevents infinite loops)
     """
     max_iterations: int = 50
     default_timeout: float = 60.0
     max_consecutive_thoughts: int = 1  # Auto-return on first text-only response
     max_sub_call_depth: int = 10
     emit_step_events: bool = True
+    compact_on_limit: bool = True  # NEW: Trigger compaction instead of stopping
+    max_compactions: int = 10  # NEW: Max compactions (10 x 50 = 500 iterations max)
 
 
 # =============================================================================
@@ -229,6 +233,10 @@ class VCPU:
         self._is_running = False
         self._is_done = False
         self._final_result: Optional[ToolResult] = None
+        
+        # Compaction state (NEW)
+        self._compaction_count = 0
+        self._compaction_callback: Optional[Callable[[], Awaitable[bool]]] = None
 
         # Doom loop detection (learned from opencode)
         # Tracks recent tool calls as (tool_name, args_json) tuples
@@ -262,8 +270,35 @@ class VCPU:
 
         try:
             while not self._is_done:
-                # Check iteration limit
+                # Check iteration limit - trigger compaction instead of stopping
                 if self._iteration >= self.config.max_iterations:
+                    # Check if we've hit max compactions
+                    if self._compaction_count >= self.config.max_compactions:
+                        fault = Fault(
+                            domain="RESOURCE",
+                            code="BUDGET_EXCEEDED",
+                            message=f"Exceeded maximum iterations ({self.config.max_iterations} x {self.config.max_compactions} compactions)",
+                            retryable=False,
+                            context={
+                                "max_iterations": self.config.max_iterations,
+                                "compactions": self._compaction_count,
+                            }
+                        )
+                        return ToolResult(status="ERROR", fault=fault)
+                    
+                    # Try to compact memory and continue
+                    if self.config.compact_on_limit:
+                        compacted = await self._do_compaction()
+                        if compacted:
+                            # Reset iteration counter and continue
+                            logger.info(
+                                f"🗜️ Compaction #{self._compaction_count} complete, "
+                                f"resetting iteration counter (was {self._iteration})"
+                            )
+                            self._iteration = 0
+                            continue
+                    
+                    # Compaction disabled or failed - stop
                     fault = Fault(
                         domain="RESOURCE",
                         code="BUDGET_EXCEEDED",
@@ -841,6 +876,114 @@ class VCPU:
         )
 
     # =========================================================================
+    # Compaction
+    # =========================================================================
+    
+    def set_compaction_callback(
+        self, callback: Callable[[], Awaitable[bool]]
+    ) -> None:
+        """
+        Set a callback for memory compaction.
+        
+        The callback should:
+        1. Summarize and compress the MMU's context
+        2. Return True if compaction succeeded, False otherwise
+        
+        This is typically set by AgentOS to use the CompactionEngine.
+        
+        Args:
+            callback: Async function that performs compaction
+        """
+        self._compaction_callback = callback
+    
+    async def _do_compaction(self) -> bool:
+        """
+        Trigger memory compaction.
+        
+        If a callback is set, use it. Otherwise, use MMU's built-in compression.
+        
+        Returns:
+            True if compaction succeeded
+        """
+        self._compaction_count += 1
+        
+        self._emit_event("COMPACTION_START", {
+            "iteration": self._iteration,
+            "compaction_count": self._compaction_count,
+        })
+        
+        try:
+            if self._compaction_callback:
+                # Use external compaction (e.g., AgentOS CompactionEngine)
+                success = await self._compaction_callback()
+            else:
+                # Use MMU's built-in compression
+                success = self._compact_mmu()
+            
+            self._emit_event("COMPACTION_END", {
+                "success": success,
+                "compaction_count": self._compaction_count,
+            })
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Compaction failed: {e}")
+            self._emit_event("COMPACTION_END", {
+                "success": False,
+                "error": str(e),
+            })
+            return False
+    
+    def _compact_mmu(self) -> bool:
+        """
+        Use MMU's built-in compression as fallback.
+        
+        This generates a simple summary of older messages and replaces them.
+        """
+        try:
+            # Get all messages from current frame
+            if not self.mmu._stack:
+                return False
+            
+            frame = self.mmu._stack[-1]
+            messages = frame.messages
+            
+            if len(messages) < self.mmu.config.keep_recent_messages * 2:
+                # Not enough messages to compress
+                return False
+            
+            # Keep recent messages, summarize older ones
+            keep_count = self.mmu.config.keep_recent_messages
+            older = messages[:-keep_count]
+            recent = messages[-keep_count:]
+            
+            # Generate summary using MMU's summarizer
+            summary = self.mmu._summarize_messages(older)
+            
+            # Create summary message
+            from nimbus.core.memory.context import Message
+            summary_msg = Message(
+                role="system",
+                content=f"[Context Summary - {len(older)} messages compressed]\n{summary}",
+                meta={"compressed": True, "original_count": len(older)}
+            )
+            
+            # Replace messages in frame
+            frame.messages = [summary_msg] + recent
+            
+            logger.info(
+                f"MMU compaction: {len(older)} messages → 1 summary, "
+                f"kept {len(recent)} recent"
+            )
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"MMU compaction failed: {e}")
+            return False
+
+    # =========================================================================
     # Helper Methods
     # =========================================================================
 
@@ -854,6 +997,7 @@ class VCPU:
         self._recent_tool_calls = []  # Reset doom loop tracker
         self._doom_loop_count = 0  # Track how many doom loops occurred
         self._consecutive_errors = 0  # Track consecutive errors
+        self._compaction_count = 0  # Reset compaction counter
 
     async def _generate_llm_failure_response(
         self,
