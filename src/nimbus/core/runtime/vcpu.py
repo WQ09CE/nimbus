@@ -750,6 +750,29 @@ class VCPU:
                 self.mmu.add_system_message(hint)
                 logger.info(f"Injected Glob hint after {self._path_not_found_count} path failures")
         
+        # =========================================================================
+        # 策略 2: 目录误读取 - 提供帮助信息
+        # =========================================================================
+        if (
+            action.name == "Read" 
+            and fault.code == "TOOL_FAILURE" 
+            and "directory" in fault.message.lower()
+        ):
+            dir_path = action.args.get("file_path", "")
+            logger.info(f"🔧 Read attempted on directory: {dir_path}")
+            
+            # 返回一个有帮助的错误消息，而不是让 LLM 重试
+            return ToolResult(
+                status="OK",  # 返回 OK 避免重试
+                output=(
+                    f"[Note: '{dir_path}' is a directory, not a file]\n\n"
+                    f"To explore this directory, try:\n"
+                    f"  • Glob(pattern='{dir_path}/**/*.{{ts,tsx,py}}') - find source files\n"
+                    f"  • Bash(command='ls -la {dir_path}') - list directory contents\n"
+                    f"  • Read(file_path='{dir_path}/package.json') - read specific file"
+                ),
+            )
+        
         # 无法恢复，返回 None 让原始错误传播
         return None
 
