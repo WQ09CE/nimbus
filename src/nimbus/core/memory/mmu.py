@@ -447,7 +447,7 @@ class MMU:
         
         frame_id = self.current_frame.frame_id
         if value == "discard":
-            # 添加到当前 frame 的 discardable 集合
+            # 添加到当前 frame 的 discardable 集合 (Legacy support)
             if frame_id not in self._frame_discardable:
                 self._frame_discardable[frame_id] = set()
             self._frame_discardable[frame_id].add(tool_call_id)
@@ -455,6 +455,43 @@ class MMU:
             # 如果标记为 keep，从 discardable 移除
             if frame_id in self._frame_discardable:
                 self._frame_discardable[frame_id].discard(tool_call_id)
+
+        # 核心修复：直接标记 Message 对象，解决 ID 冲突问题
+        # 从最新的 frame 开始向前搜索
+        found = False
+        for frame in reversed(self._stack):
+            messages = frame.messages
+            for i in range(len(messages) - 1, -1, -1):
+                msg = messages[i]
+                if msg.role == "tool" and msg.tool_call_id == tool_call_id:
+                    # 找到了 tool result
+                    found = True
+                    if value == "discard":
+                        msg.meta["discard"] = True
+                        
+                        # 向前搜索对应的 assistant message
+                        for j in range(i - 1, -1, -1):
+                            prev = messages[j]
+                            if prev.role == "assistant" and prev.tool_calls:
+                                for tc in prev.tool_calls:
+                                    if tc.get("id") == tool_call_id:
+                                        # 标记 assistant message 中的 tool call
+                                        if "discard_tool_calls" not in prev.meta:
+                                            prev.meta["discard_tool_calls"] = []
+                                        if tool_call_id not in prev.meta["discard_tool_calls"]:
+                                            prev.meta["discard_tool_calls"].append(tool_call_id)
+                                        break
+                                else:
+                                    continue
+                                break
+                    else:
+                        msg.meta.pop("discard", None)
+                        # 注意：暂不支持从 assistant message 中移除 discard 标记（复杂且少见）
+                    
+                    break # 只处理最新的一个匹配项
+            
+            if found:
+                break
     
     def mark_recent_tool_calls(
         self,
@@ -527,9 +564,9 @@ class MMU:
         # 2. 工具特定的失败检测
         if tool_name == "Read":
             # Read 工具：文件不存在是明确失败
-            if "ENOENT" in content or "No such file" in content:
-                self.mark_tool_call(tool_call_id, "discard", "file_not_found", tool_name)
-                return True
+            # [Fixed] 移除 loose check，防止误判源码内容（如 vcpu.py 包含 ENOENT 字符串）
+            # Read 工具抛出异常时会由 vcpu 添加 [Error] 前缀，已被上方逻辑捕获
+            pass
         
         if tool_name == "Bash":
             # Bash 工具：检查是否有异常标记
@@ -716,37 +753,38 @@ class MMU:
         1. 移除被标记的 tool result 消息
         2. 从 assistant 消息中移除对应的 tool_calls
         """
-        # 收集所有需要移除的 tool call IDs
-        discardable_ids: Set[str] = set()
-        for frame_discardable in self._frame_discardable.values():
-            discardable_ids.update(frame_discardable)
-        
-        if not discardable_ids:
-            return messages
+        # 注意：不再依赖 discardable_ids 集合过滤，因为会导致 ID 冲突误删
+        # 改用 Message.meta 标记进行精确过滤
         
         filtered: List[Message] = []
         
         for msg in messages:
             if msg.role == "tool":
                 # 跳过被标记的 tool results
-                if msg.tool_call_id and msg.tool_call_id in discardable_ids:
+                if msg.meta.get("discard"):
                     continue
                 filtered.append(msg)
             elif msg.role == "assistant" and msg.tool_calls:
-                # 过滤 assistant 消息中的 tool_calls
-                filtered_calls = [
-                    tc for tc in msg.tool_calls
-                    if tc.get("id") not in discardable_ids
-                ]
+                discard_list = msg.meta.get("discard_tool_calls", [])
                 
-                # 如果还有 tool_calls 或有 content，保留消息
-                if filtered_calls or msg.content:
-                    filtered.append(Message(
-                        role=msg.role,
-                        content=msg.content,
-                        tool_calls=filtered_calls if filtered_calls else None,
-                        meta=msg.meta,
-                    ))
+                if discard_list:
+                    # 过滤 assistant 消息中的 tool_calls
+                    filtered_calls = [
+                        tc for tc in msg.tool_calls
+                        if tc.get("id") not in discard_list
+                    ]
+                    
+                    # 如果还有 tool_calls 或有 content，保留消息
+                    if filtered_calls or msg.content:
+                        # 创建新消息，保留 meta
+                        filtered.append(Message(
+                            role=msg.role,
+                            content=msg.content,
+                            tool_calls=filtered_calls if filtered_calls else None,
+                            meta=msg.meta,
+                        ))
+                else:
+                    filtered.append(msg)
             else:
                 filtered.append(msg)
         
