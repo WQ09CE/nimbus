@@ -123,6 +123,7 @@ class ToolResult:
     timing_ms: Dict[str, int] = field(default_factory=dict)
     cost: Dict[str, Any] = field(default_factory=dict)
     version: str = "1.0"
+    meta: Dict[str, Any] = field(default_factory=dict)  # Additional metadata
 
 
 # =============================================================================

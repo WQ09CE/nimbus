@@ -729,11 +729,21 @@ class VCPU:
             return None
         
         if recovery.action_type == "inject_hint":
-            # 注入提示消息
+            # 注入提示作为 tool result（而非 system message）
+            # 这样保持对话流的完整性：LLM 的 tool_call 会收到一个 tool result
             if recovery.hint:
-                self.mmu.add_system_message(recovery.hint)
-                logger.info(f"🔧 Injected hint for {original_action.name}: {recovery.hint[:80]}...")
-            return None  # 让原始错误传播，但 LLM 会看到提示
+                # 构造错误消息 + 提示
+                error_with_hint = f"[ERROR] {original_result.fault.message if original_result.fault else 'Tool failed'}\n\n{recovery.hint}"
+                self.mmu.add_tool_result(original_action.id, original_action.name, error_with_hint)
+                logger.info(f"🔧 Injected hint as tool result for {original_action.name}: {recovery.hint[:80]}...")
+                # 返回一个特殊结果，告诉 caller 不要再添加 tool result
+                return ToolResult(
+                    status="ERROR",
+                    output=error_with_hint,
+                    fault=original_result.fault,
+                    meta={"recovery_handled": True}  # 标记已处理
+                )
+            return None
         
         if recovery.action_type == "auto_tool":
             # 自动执行恢复工具
@@ -755,18 +765,27 @@ class VCPU:
                     timeout_sec=self.config.default_timeout
                 )
                 
-                # 组合提示和结果作为系统消息
-                combined_message = ""
+                # 组合错误消息、提示和恢复结果作为 tool result
+                error_msg = f"[ERROR] {original_result.fault.message if original_result.fault else 'Tool failed'}"
+                combined_message = error_msg
                 if recovery.hint:
-                    combined_message += recovery.hint + "\n\n"
+                    combined_message += f"\n\n{recovery.hint}"
                 if recovery_result.output:
-                    combined_message += str(recovery_result.output)
+                    combined_message += f"\n\n{recovery_result.output}"
                 
-                if combined_message:
-                    self.mmu.add_system_message(combined_message)
-                    logger.info(f"🔧 Recovery result injected: {combined_message[:100]}...")
+                # 注入为 tool result 而非 system message
+                self.mmu.add_tool_result(original_action.id, original_action.name, combined_message)
+                logger.info(f"🔧 Recovery result injected as tool result: {combined_message[:100]}...")
+                
+                # 返回一个特殊结果，告诉 caller 不要再添加 tool result
+                return ToolResult(
+                    status="ERROR",
+                    output=combined_message,
+                    fault=original_result.fault,
+                    meta={"recovery_handled": True}  # 标记已处理
+                )
             
-            return None  # 让原始错误传播，但 LLM 会看到恢复结果
+            return None
         
         if recovery.action_type == "modify_args":
             # 修改参数后重试
@@ -995,27 +1014,28 @@ class VCPU:
             if empty_override is not None:
                 result = empty_override  # Use error result to force behavior change
 
-        # Update memory with tool result
-        output_str = str(result.output) if result.output is not None else ""
-        if result.fault:
-            output_str = f"[Error] {result.fault.message}"
+        # Update memory with tool result (skip if already handled by recovery)
+        if not (result.meta and result.meta.get("recovery_handled")):
+            output_str = str(result.output) if result.output is not None else ""
+            if result.fault:
+                output_str = f"[Error] {result.fault.message}"
 
-        # Inject hint for state-modifying tools on success - append to tool result
-        # This reminds LLM to call return_result after Edit/Write (actual state changes)
-        # Note: Bash is excluded because it's often used for read operations (ls, grep, etc.)
-        # and we don't want to mislead the LLM when Bash output reveals infrastructure issues
-        if action.name in ("Edit", "Write") and result.status == "OK":
-            output_str += (
-                "\n\n[IMPORTANT] File modified successfully. "
-                "If your task is complete, call return_result immediately with a summary. "
-                "Do NOT call more tools to verify - trust the success message above."
+            # Inject hint for state-modifying tools on success - append to tool result
+            # This reminds LLM to call return_result after Edit/Write (actual state changes)
+            # Note: Bash is excluded because it's often used for read operations (ls, grep, etc.)
+            # and we don't want to mislead the LLM when Bash output reveals infrastructure issues
+            if action.name in ("Edit", "Write") and result.status == "OK":
+                output_str += (
+                    "\n\n[IMPORTANT] File modified successfully. "
+                    "If your task is complete, call return_result immediately with a summary. "
+                    "Do NOT call more tools to verify - trust the success message above."
+                )
+
+            self.mmu.add_tool_result(
+                tool_call_id=action.id,
+                name=action.name,
+                content=output_str
             )
-
-        self.mmu.add_tool_result(
-            tool_call_id=action.id,
-            name=action.name,
-            content=output_str
-        )
 
         # Reset consecutive thoughts counter on tool call
         self._state.on_action()
