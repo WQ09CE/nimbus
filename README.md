@@ -1,163 +1,240 @@
 # Nimbus Agent Framework
 
-A notebook-style AI assistant framework with DAG planning and tiered memory management.
+> 🚀 Production-ready AI Agent framework with vCPU-based process model and multi-provider LLM support.
 
-## Features
+## ✨ Features
 
+- **v2 AgentOS Architecture** - vCPU + Process model for robust agent execution
+- **pi-ai Integration** - Unified LLM API via HTTP service (supports 10+ providers)
+- **Web UI** - Modern React chat interface with SSE streaming
 - **DAG-based Task Planning** - Parallel execution of independent tasks
 - **Tiered Memory Management** - Pinned, Working, Episodic, Semantic layers
-- **RESTful API with SSE Streaming** - Real-time response streaming
+- **Doom Loop Detection** - Graceful termination when agent gets stuck
 - **OpenCode TUI Compatible** - Drop-in replacement for OpenCode backend
-- **Flexible LLM Support** - Anthropic, OpenAI, Gemini, Ollama adapters
-- **Permission System** - Tool execution control with user approval
-- **SQLite Persistence** - Session, Message, DAG, Memory checkpoints
 
-## Installation
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Interfaces                               │
+│  ┌──────────┐  ┌──────────────┐  ┌──────────────┐               │
+│  │  Web UI  │  │  HTTP API    │  │    CLI       │               │
+│  │ :3000    │  │  :4096       │  │  nimbus      │               │
+│  └────┬─────┘  └──────┬───────┘  └──────────────┘               │
+│       │               │                                          │
+├───────┴───────────────┴─────────────────────────────────────────┤
+│                       v2 AgentOS                                 │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │                      vCPU                                │    │
+│  │  ┌──────────┐  ┌──────────────┐  ┌─────────────────┐   │    │
+│  │  │  Fetch   │  │    Decode    │  │     Execute     │   │    │
+│  │  │  (LLM)   │  │  (Actions)   │  │    (Tools)      │   │    │
+│  │  └──────────┘  └──────────────┘  └─────────────────┘   │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                           │                                      │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │                     Process                              │    │
+│  │  ┌──────────┐  ┌──────────────┐  ┌─────────────────┐   │    │
+│  │  │ Messages │  │    Context   │  │     Gates       │   │    │
+│  │  │  (PCB)   │  │   (Memory)   │  │   (Syscalls)    │   │    │
+│  │  └──────────┘  └──────────────┘  └─────────────────┘   │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                                                                  │
+├──────────────────────────────────────────────────────────────────┤
+│                        LLM Layer                                 │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │                   pi-ai HTTP Server                      │    │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐  │    │
+│  │  │Anthropic │  │  OpenAI  │  │  Google  │  │ Others │  │    │
+│  │  └──────────┘  └──────────┘  └──────────┘  └────────┘  │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                           :3031                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+## 🚀 Quick Start
+
+### 1. Install
 
 ```bash
-pip install -e .
-
-# With LLM providers
-pip install -e ".[llm]"
-
-# Full installation
 pip install -e ".[all]"
+cd bridge && npm install
 ```
 
-## Quick Start
-
-### Start the Server
+### 2. Start Services
 
 ```bash
-# Default port 4096 (OpenCode compatible)
-nimbus serve
+# Terminal 1: Start pi-ai HTTP server (LLM backend)
+./scripts/start-pi-ai.sh --daemon
 
-# Custom port
-nimbus serve --port 8080
+# Terminal 2: Start nimbus server
+uv run nimbus serve
+
+# Terminal 3: Start Web UI (optional)
+cd web-ui && npm run dev
 ```
 
-### API Endpoints
+### 3. Verify
+
+```bash
+curl http://localhost:3031/health  # pi-ai server
+curl http://localhost:4096/health  # nimbus server
+open http://localhost:3000         # Web UI
+```
+
+## 📦 Components
+
+### v2 AgentOS (`src/nimbus/v2/`)
+
+The new architecture uses an OS-like process model:
+
+| Component | Description |
+|-----------|-------------|
+| **vCPU** | Fetch-Decode-Execute cycle for LLM interactions |
+| **Process** | Encapsulates agent state (messages, context, gates) |
+| **Gates** | Permission system for tool execution |
+| **MMU** | Memory management with tiered storage |
+
+```python
+from nimbus.v2.agentos import create_agent_os
+
+# Create AgentOS instance
+agent_os = create_agent_os(
+    llm_client=llm,
+    tools={"Read": read_tool, "Write": write_tool},
+    max_processes=5,
+)
+
+# Run a task
+result = await agent_os.run("Find all Python files")
+```
+
+### pi-ai HTTP Server (`bridge/pi-ai-server.ts`)
+
+Unified LLM API supporting multiple providers:
+
+| Provider | Models |
+|----------|--------|
+| Anthropic | claude-sonnet-4, claude-3.5-sonnet |
+| OpenAI | gpt-4o, gpt-4-turbo |
+| Google | gemini-2.0-flash, gemini-pro |
+| Mistral | mistral-large |
+| Groq | llama-3.1-70b |
+| Bedrock | claude-3-sonnet |
+| GitHub Copilot | gpt-4o (via OAuth) |
+
+```bash
+# Endpoints
+POST /v1/chat/completions  # OpenAI-compatible
+POST /v1/stream            # SSE streaming
+GET  /v1/models            # List available models
+GET  /health               # Health check
+```
+
+### Web UI (`web-ui/`)
+
+Modern React chat interface:
+
+- SSE streaming responses
+- Tool call visualization
+- Markdown rendering
+- Dark mode support
+
+```bash
+cd web-ui
+npm install
+npm run dev  # http://localhost:3000
+```
+
+## 🛠️ Tools
+
+Built-in tools for code exploration and editing:
+
+| Tool | Description |
+|------|-------------|
+| `Read` | Read file contents |
+| `Write` | Write/create files |
+| `Edit` | Surgical text replacement |
+| `Glob` | Find files by pattern |
+| `Grep` | Search file contents |
+| `Bash` | Execute shell commands |
+| `Kill` | Terminate running processes |
+
+## 📡 API Endpoints
+
+### Nimbus API (`:4096`)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/v1/health` | GET | Health check |
-| `/api/v1/sessions` | POST | Create session |
-| `/api/v1/sessions/{id}/chat` | POST | Chat (SSE stream) |
-| `/session` | POST | Create session (OpenCode) |
-| `/session/{id}/message` | POST | Send message (OpenCode SSE) |
-
-### CLI Commands
-
-```bash
-# Session management
-nimbus session list
-nimbus session create --name "my-project"
-nimbus session delete <session_id>
-
-# Configuration
-nimbus config show
-nimbus config set default_memory_type tiered
-```
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      CLI / HTTP API                         │
-│  ┌─────────────┐  ┌──────────────┐  ┌───────────────────┐  │
-│  │ nimbus serve│  │  /api/v1/*   │  │ /session/* (OC)   │  │
-│  └─────────────┘  └──────────────┘  └───────────────────┘  │
-├─────────────────────────────────────────────────────────────┤
-│                     Server Layer                            │
-│  ┌─────────────┐  ┌──────────────┐  ┌───────────────────┐  │
-│  │SessionManager│ │   SSE Hub    │  │PermissionManager  │  │
-│  └─────────────┘  └──────────────┘  └───────────────────┘  │
-├─────────────────────────────────────────────────────────────┤
-│                      Core Layer                             │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │                    CodeAgent                         │   │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  │   │
-│  │  │   Planner   │  │   Runtime   │  │   Memory    │  │   │
-│  │  │  Pipeline   │  │  (DAG Exec) │  │  (Tiered)   │  │   │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘  │   │
-│  └─────────────────────────────────────────────────────┘   │
-├─────────────────────────────────────────────────────────────┤
-│                    Skills & Tools                           │
-│  ┌─────────┐  ┌──────┐  ┌──────┐  ┌─────────┐  ┌──────┐   │
-│  │  Read   │  │ Glob │  │ Grep │  │  Chat   │  │ ...  │   │
-│  └─────────┘  └──────┘  └──────┘  └─────────┘  └──────┘   │
-├─────────────────────────────────────────────────────────────┤
-│                     Storage Layer                           │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │                SQLite (aiosqlite)                    │   │
-│  │  Sessions | Messages | DAGs | Memory | Permissions   │   │
-│  └─────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Key Components
-
-| Component | Location | Description |
-|-----------|----------|-------------|
-| **serve.py** | `cli/commands/serve.py` | Server entry point |
-| **app.py** | `server/app.py` | FastAPI application factory |
-| **api.py** | `server/api.py` | REST API routes |
-| **opencode.py** | `server/compat/opencode.py` | OpenCode compatible API |
-| **session.py** | `server/session.py` | Session & Agent pool management |
-| **sse.py** | `server/sse.py` | SSE event hub |
-| **agent.py** | `core/agent.py` | CodeAgent with streaming |
-| **pipeline.py** | `core/planner/pipeline.py` | Planner pipeline (Rule → Context → LLM) |
-| **runtime.py** | `core/runtime.py` | Async DAG executor |
-| **sqlite.py** | `storage/sqlite.py` | Persistence layer |
-
-### Planner Pipeline
-
-```
-User Goal
-    │
-    ▼
-┌─────────────┐
-│ RulePlanner │ ──── Fast pattern matching (no LLM)
-└─────────────┘
-    │
-    ▼
-┌─────────────────┐
-│ContextAnalyzer  │ ──── Detect context-dependent questions
-└─────────────────┘
-    │
-    ▼
-┌─────────────┐
-│ LLMEnhancer │ ──── Generate/enhance DAG with LLM
-└─────────────┘
-    │
-    ▼
-┌─────────────┐
-│  Validator  │ ──── Validate and repair DAG
-└─────────────┘
-    │
-    ▼
-  TaskDAG
-```
+| `/health` | GET | Health check |
+| `/session` | POST | Create session |
+| `/session/{id}/message` | POST | Send message (SSE) |
+| `/api/v1/sessions` | POST | Create session (v1) |
+| `/api/v1/sessions/{id}/chat` | POST | Chat (SSE) |
 
 ### SSE Event Types
 
-**Nimbus API** (`/api/v1/sessions/{id}/chat`):
 ```
-connected, message_start, planning, dag_created,
-task_start, tool_call, tool_result, task_done,
-task_failed, permission_request, dag_complete,
-message, error, heartbeat
-```
-
-**OpenCode API** (`/session/{id}/message`):
-```
-event.start, event.status, content.delta, content.done,
-tool.start, tool.done, tool.error, event.done, event.error
+event.start      # Conversation started
+content.delta    # Text chunk
+tool.start       # Tool call initiated
+tool.done        # Tool call completed
+event.done       # Conversation complete
+event.error      # Error occurred
 ```
 
-## LLM Configuration
+## 🧪 Testing
 
-Create `llm.yaml` in project root:
+```bash
+# Unit tests
+pytest tests/ -v
+
+# E2E tests (requires running servers)
+python tests/e2e_tool_call.py
+
+# Test pi-ai HTTP client
+pytest tests/test_pi_ai_http.py -v
+```
+
+## 📁 Project Structure
+
+```
+nimbus/
+├── src/nimbus/
+│   ├── v2/                    # v2 AgentOS architecture
+│   │   ├── agentos.py         # Main entry point
+│   │   ├── core/
+│   │   │   └── runtime/
+│   │   │       └── vcpu.py    # vCPU implementation
+│   │   ├── adapters/
+│   │   │   └── pi_adapter.py  # LLM adapter
+│   │   └── tools/             # Built-in tools
+│   ├── server/                # HTTP server
+│   └── core/                  # Legacy v1 (deprecated)
+├── bridge/
+│   └── pi-ai-server.ts        # pi-ai HTTP wrapper
+├── web-ui/                    # React frontend
+├── scripts/
+│   └── start-pi-ai.sh         # Launcher script
+└── docs/                      # Documentation
+```
+
+## 🔧 Configuration
+
+### Environment Variables
+
+```bash
+# LLM Provider
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+GOOGLE_API_KEY=...
+
+# Ports
+NIMBUS_PORT=4096
+PI_AI_PORT=3031
+```
+
+### LLM Configuration (`llm.yaml`)
 
 ```yaml
 default_provider: anthropic
@@ -170,84 +247,8 @@ providers:
   openai:
     api_key: ${OPENAI_API_KEY}
     model: gpt-4o
-
-  gemini:
-    api_key: ${GEMINI_API_KEY}
-    model: gemini-2.0-flash
-
-  ollama:
-    base_url: http://localhost:11434
-    model: llama3.2
 ```
 
-## Testing
-
-```bash
-# Unit tests
-pytest tests/
-
-# E2E tests (requires server running)
-python tests/e2e_readonly_agent.py    # Tool tests (Glob/Read/Grep)
-python tests/e2e_context_test.py      # Context understanding
-python tests/e2e_tiered_memory.py     # Multi-turn memory
-```
-
-## Project Structure
-
-```
-src/nimbus/
-├── cli/              # CLI commands
-│   ├── commands/     # serve, session, config
-│   └── main.py
-├── core/             # Core components
-│   ├── agent.py      # CodeAgent
-│   ├── planner/      # Planning pipeline
-│   ├── runtime/      # DAG executor
-│   ├── memory/       # Tiered memory
-│   └── types.py      # Core types
-├── server/           # HTTP server
-│   ├── app.py        # FastAPI app
-│   ├── api.py        # REST routes
-│   ├── sse.py        # SSE hub
-│   ├── session.py    # Session manager
-│   └── compat/       # OpenCode compat
-├── storage/          # Persistence
-│   └── sqlite.py
-├── skills/           # Built-in skills
-├── tools/            # Built-in tools
-└── llm/              # LLM adapters
-```
-
-## License
+## 📜 License
 
 MIT
-
-## Nimbus 架构概述
-
-根据提供的文件列表，Nimbus 似乎是一个 AI 代理框架，其架构可以概括为以下几个主要部分：
-
-1.  **核心组件 (`src/nimbus/core`)**:
-    *   **规划器 (Planner)**: 位于 `src/nimbus/core/planner`，包含 `pipeline.py`（规划流程）、`rule_planner.py`（规则规划）、`llm_enhancer.py`（LLM增强）、`validator.py`（验证器）等，负责任务分解、策略制定和验证。
-    *   **运行时 (Runtime)**: `src/nimbus/core/runtime/executor.py` 表明存在一个执行器，负责执行规划器生成的任务。
-    *   **代理 (Agent)**: `src/nimbus/core/agent.py` 可能是代理的核心协调逻辑。
-    *   **工厂 (Factory)**: `src/nimbus/core/factory.py` 用于创建和管理不同组件的实例。
-    *   **类型 (Types)**: `src/nimbus/core/types.py` 定义了系统中的数据结构。
-
-2.  **服务器组件 (`src/nimbus/server`)**:
-    *   **API**: `src/nimbus/server/api.py` 和 `src/nimbus/server/api_ai_sdk.py` 提供对外接口，可能用于与其他系统或前端交互。
-    *   **应用**: `src/nimbus/server/app.py` 是服务器的主应用入口。
-    *   **会话与权限**: `src/nimbus/server/session.py` 和 `src/nimbus/server/permission.py` 处理用户会话和访问权限。
-
-3.  **技能组件 (`src/nimbus/skills`)**:
-    *   `src/nimbus/skills/synthesize.py` 和 `src/nimbus/skills/delegation.py` 表明 Nimbus 具备信息综合、任务委托等特定技能。
-
-4.  **工具组件 (`src/nimbus/tools`)**:
-    *   提供了一系列工具供代理执行操作，例如：
-        *   文件系统操作: `read.py`, `write.py`, `edit.py`, `glob.py`
-        *   搜索与网络: `search.py`, `websearch.py`, `webfetch.py`
-        *   命令行执行: `bash.py`
-
-此外，`examples/` 目录下包含使用示例，而 `tests/` 目录下的测试文件（如 `tests/capabilities/` 中的 `test_task_decomposition.py`, `test_code_search.py`, `test_repo_understanding.py` 等）进一步揭示了 Nimbus 在任务分解、代码理解和修改、上下文理解等方面的能力。
-
-总结来说，Nimbus 架构围绕一个核心代理构建，该代理通过规划器制定执行计划，利用各种工具与环境交互，并通过服务器提供服务接口，并具备多种特定技能。
-
