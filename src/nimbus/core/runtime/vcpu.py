@@ -640,13 +640,8 @@ class VCPU:
 
         try:
             result = await handler(action)
-            
-            # Error Handler: 尝试恢复可修复的错误
-            if action.kind == "TOOL_CALL" and result.fault:
-                recovered = await self._handle_tool_error(action, result)
-                if recovered is not None:
-                    return recovered
-            
+            # Note: Error recovery for TOOL_CALL is handled inside _handle_tool_call
+            # BEFORE adding to memory, so failed attempts don't pollute context
             return result
         except Exception as e:
             from nimbus.core.logging import get_logger
@@ -847,6 +842,12 @@ class VCPU:
 
         # Execute the tool
         result = await self.gate.syscall_tool(action, timeout_sec=self.config.default_timeout)
+
+        # Try error recovery BEFORE adding to memory (so failed attempts don't pollute context)
+        if result.fault:
+            recovered = await self._handle_tool_error(action, result)
+            if recovered is not None:
+                result = recovered  # Use recovered result instead
 
         # Update memory with tool result
         output_str = str(result.output) if result.output is not None else ""
