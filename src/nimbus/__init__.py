@@ -1,87 +1,35 @@
-"""Nimbus - A code exploration agent framework.
+"""Nimbus - AI Agent Framework with vCPU-based process model.
 
-Nimbus provides a minimal but complete agent framework for building
-code exploration AI assistants with:
-- Read/Glob/Grep tools for code exploration
-- DAG-based parallel task execution
-- Memory for conversation context
-- Extensible skill system
-- Async execution
+Nimbus v2 provides a production-ready agent framework with:
+- vCPU + Process model for robust execution
+- pi-ai integration for multi-provider LLM support
+- Tool system (Read, Write, Edit, Glob, Grep, Bash)
+- SSE streaming API
+- Web UI
 
 Example:
-    from nimbus.core import CodeAgent
-
-    # Basic usage
-    agent = CodeAgent(llm_client=your_llm_client)
-    response = await agent.run("Find all Python files in src/")
-    print(response.text)
-
-    # With custom workspace
-    from pathlib import Path
-    agent = CodeAgent(
+    from nimbus.v2 import create_agent_os
+    
+    agent_os = create_agent_os(
         llm_client=your_llm_client,
-        workspace=Path("/path/to/project"),
-        planner_type="dag",
+        tools=tools,
     )
-    response = await agent.run("Search for 'TODO' comments")
+    result = await agent_os.run("Find all Python files")
+
+For legacy v1 modules, see nimbus.legacy
 """
 
-from .core import (
-    CodeAgent,
-    NotebookAgent,  # Backward compatibility alias
-    SimpleMemory,
-    SimplePlanner,
-    SimpleExecutor,
-    Task,
-    TaskType,
-    Plan,
-    AgentResponse,
-    NotebookResponse,  # Backward compatibility alias
+# v2 架构 - 主要导出
+from .v2 import (
+    AgentOS,
+    AgentOSConfig,
+    create_agent_os,
 )
 
-from .domain import (
-    SourceType,
-    Chunk,
-    Source,
-    Citation,
-    Note,
-    Artifact,
-    NotebookContext,
-)
-
-from .services import (
-    IngestionService,
-    RetrievalService,
-)
-
-from .llm import (
-    GeminiClient,
-)
-
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
-    # Core
-    "CodeAgent",
-    "NotebookAgent",  # Backward compatibility alias
-    "SimpleMemory",
-    "SimplePlanner",
-    "SimpleExecutor",
-    "Task",
-    "TaskType",
-    "Plan",
-    "AgentResponse",
-    "NotebookResponse",  # Backward compatibility alias
-    # Domain
-    "SourceType",
-    "Chunk",
-    "Source",
-    "Citation",
-    "Note",
-    "Artifact",
-    "NotebookContext",
-    # Services
-    "IngestionService",
-    "RetrievalService",
-    # LLM Providers
-    "GeminiClient",
+    # v2 核心
+    "AgentOS",
+    "AgentOSConfig", 
+    "create_agent_os",
 ]
