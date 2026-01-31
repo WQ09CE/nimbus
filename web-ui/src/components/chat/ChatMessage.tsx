@@ -178,26 +178,47 @@ export function ChatMessage({ message, isStreaming }: ChatMessageProps) {
 
           {/* Final Message Content - 现在放在最下面，增强 markdown 显示 */}
           {(message.content || (isStreaming && !tools.length)) && (
-            <div className="px-5 py-4">
+            <div className="px-5 py-4 bg-gradient-to-b from-transparent to-black/5">
               {isUser ? (
-                // 用户消息保持简单显示
+                // 用户消息保持简洁显示
                 <div className="text-sm leading-relaxed whitespace-pre-wrap text-gray-200 font-sans">
                   {message.content}
                 </div>
               ) : (
-                // 助手消息使用 markdown 渲染
+                // 助手消息使用增强的显示
                 <div className="text-sm leading-relaxed">
                   {message.content ? (
-                    <MarkdownRenderer
-                      content={message.content}
-                      className="text-gray-200"
-                    />
+                    <div>
+                      {/* 如果有工具调用，添加结论标题 */}
+                      {tools.length > 0 && (
+                        <div className="flex items-center gap-2 mb-4 pb-2 border-b border-gray-800/50">
+                          <span className="text-green-400">💡</span>
+                          <span className="text-xs uppercase text-gray-500 font-bold tracking-wider">
+                            Final Response
+                          </span>
+                        </div>
+                      )}
+
+                      <MarkdownRenderer
+                        content={message.content}
+                        className="text-gray-200"
+                      />
+
+                      {/* 流式输入光标 */}
+                      {isStreaming && (
+                        <span className="inline-block w-1.5 h-5 ml-1 bg-gradient-to-r from-blue-500 to-cyan-400 animate-pulse align-middle rounded-sm" />
+                      )}
+                    </div>
                   ) : isStreaming && !message.content ? (
-                    <span className="text-gray-500 italic animate-pulse">Thinking...</span>
+                    <div className="flex items-center gap-3 py-2">
+                      <div className="flex space-x-1">
+                        <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce"></div>
+                        <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                        <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                      </div>
+                      <span className="text-gray-500 italic">AI is thinking...</span>
+                    </div>
                   ) : null}
-                  {isStreaming && message.content && (
-                    <span className="inline-block w-1.5 h-4 ml-1 bg-blue-500 animate-pulse align-middle" />
-                  )}
                 </div>
               )}
             </div>

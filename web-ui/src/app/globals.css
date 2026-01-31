@@ -56,80 +56,185 @@ body {
   color: white;
 }
 
-/* Markdown Styles */
+/* Enhanced Markdown Styles */
 .markdown-content {
-  line-height: 1.6;
+  line-height: 1.7;
+  word-break: break-word;
 }
 
+/* Headers */
 .markdown-content .markdown-h1 {
-  @apply text-xl font-bold text-blue-300 mb-4 mt-6 first:mt-0;
+  @apply text-2xl font-bold text-blue-300 mb-4 mt-6 first:mt-0 border-b border-gray-700 pb-2;
 }
 
 .markdown-content .markdown-h2 {
-  @apply text-lg font-bold text-blue-300 mb-3 mt-5 first:mt-0;
+  @apply text-xl font-bold text-blue-300 mb-3 mt-5 first:mt-0 border-b border-gray-800 pb-1;
 }
 
 .markdown-content .markdown-h3 {
-  @apply text-base font-semibold text-blue-300 mb-2 mt-4 first:mt-0;
+  @apply text-lg font-semibold text-blue-300 mb-2 mt-4 first:mt-0;
 }
 
+.markdown-content .markdown-h4 {
+  @apply text-base font-semibold text-blue-300 mb-2 mt-3 first:mt-0;
+}
+
+/* Text */
 .markdown-content .markdown-p {
-  @apply mb-3 text-gray-200;
+  @apply mb-4 text-gray-200 leading-relaxed;
 }
 
 .markdown-content .markdown-link {
-  @apply text-blue-400 hover:text-blue-300 underline transition-colors;
+  @apply text-blue-400 hover:text-blue-300 underline transition-all duration-200 hover:bg-blue-900/20 px-1 py-0.5 rounded;
 }
 
+/* Lists */
 .markdown-content .markdown-ul {
-  @apply mb-3 ml-4 space-y-1;
+  @apply mb-4 ml-6 space-y-2;
 }
 
 .markdown-content .markdown-ol {
-  @apply mb-3 ml-4 space-y-1;
+  @apply mb-4 ml-6 space-y-2;
 }
 
 .markdown-content .markdown-li {
-  @apply text-gray-200 relative;
+  @apply text-gray-200 relative leading-relaxed;
   list-style-type: disc;
-  margin-left: 1em;
+  padding-left: 0.5em;
 }
 
 .markdown-content .markdown-oli {
-  @apply text-gray-200 relative;
+  @apply text-gray-200 relative leading-relaxed;
   list-style-type: decimal;
-  margin-left: 1em;
+  padding-left: 0.5em;
 }
 
+/* Task Lists */
+.markdown-content .markdown-task-list {
+  @apply mb-4 ml-4 space-y-2 list-none;
+}
+
+.markdown-content .markdown-task-item {
+  @apply text-gray-200 relative flex items-start gap-2 leading-relaxed;
+  list-style: none;
+}
+
+.markdown-content .markdown-checkbox {
+  @apply mt-1 flex-shrink-0;
+}
+
+/* Blockquotes */
 .markdown-content .markdown-blockquote {
-  @apply border-l-4 border-gray-600 pl-4 py-2 mb-3 text-gray-300 italic bg-gray-800/20 rounded-r;
+  @apply border-l-4 border-blue-500/50 pl-4 py-3 mb-4 text-gray-300 italic bg-blue-900/10 rounded-r-lg backdrop-blur-sm;
 }
 
+/* Horizontal Rules */
 .markdown-content .markdown-hr {
-  @apply border-gray-600 my-6;
+  @apply border-gray-600 my-8 border-t-2;
+}
+
+/* Code Blocks */
+.code-block-wrapper {
+  @apply relative mb-4;
 }
 
 .markdown-content .code-block {
-  @apply bg-black/60 border border-gray-700 rounded-lg p-4 mb-3 overflow-x-auto text-sm relative;
+  @apply bg-black/70 border border-gray-600/50 rounded-lg p-4 overflow-x-auto text-sm relative backdrop-blur-sm;
 }
 
 .markdown-content .code-block::before {
   content: attr(data-lang);
-  @apply absolute top-2 right-3 text-[10px] text-gray-500 uppercase font-mono;
+  @apply absolute top-2 right-10 text-[10px] text-gray-400 uppercase font-mono bg-gray-800 px-2 py-1 rounded;
+}
+
+.copy-code-btn {
+  @apply absolute top-2 right-2 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded transition-all duration-200 cursor-pointer border border-gray-600;
+}
+
+.copy-code-btn:hover {
+  @apply bg-gray-600 transform scale-105;
 }
 
 .markdown-content .code-block code {
-  @apply text-gray-300 font-mono;
+  @apply text-gray-300 font-mono leading-relaxed;
 }
 
 .markdown-content .inline-code {
-  @apply bg-gray-800/60 text-blue-300 px-1 py-0.5 rounded text-sm font-mono border border-gray-700;
+  @apply bg-gray-800/70 text-blue-300 px-2 py-1 rounded text-sm font-mono border border-gray-600/50 backdrop-blur-sm;
 }
 
+/* Text Formatting */
 .markdown-content strong {
-  @apply font-semibold text-white;
+  @apply font-bold text-white;
 }
 
 .markdown-content em {
   @apply italic text-gray-100;
+}
+
+.markdown-content .strikethrough {
+  @apply line-through text-gray-400;
+}
+
+.markdown-content .markdown-highlight {
+  @apply bg-yellow-500/20 text-yellow-300 px-1 py-0.5 rounded;
+}
+
+/* Keyboard */
+.markdown-content .markdown-kbd {
+  @apply bg-gray-700 text-gray-300 px-2 py-1 rounded text-xs font-mono border border-gray-600 shadow-sm;
+}
+
+/* Tables */
+.markdown-content .markdown-table {
+  @apply mb-4 w-full border-collapse bg-gray-900/40 rounded-lg overflow-hidden border border-gray-700;
+}
+
+.markdown-content .markdown-th {
+  @apply bg-gray-800/60 text-gray-300 font-semibold px-4 py-3 text-left border-b border-gray-700;
+}
+
+.markdown-content .markdown-td {
+  @apply text-gray-200 px-4 py-3 border-b border-gray-800 last:border-b-0;
+}
+
+.markdown-content .markdown-table tr:nth-child(even) .markdown-td {
+  @apply bg-gray-800/20;
+}
+
+.markdown-content .markdown-table tr:hover .markdown-td {
+  @apply bg-gray-700/30 transition-colors duration-200;
+}
+
+/* Images */
+.markdown-content .markdown-image-wrapper {
+  @apply mb-4 text-center;
+}
+
+.markdown-content .markdown-image {
+  @apply max-w-full h-auto rounded-lg border border-gray-700 shadow-lg;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .markdown-content {
+    @apply text-sm;
+  }
+
+  .markdown-content .markdown-h1 {
+    @apply text-xl;
+  }
+
+  .markdown-content .markdown-h2 {
+    @apply text-lg;
+  }
+
+  .markdown-content .markdown-table {
+    @apply text-xs;
+  }
+
+  .markdown-content .markdown-th,
+  .markdown-content .markdown-td {
+    @apply px-2 py-2;
+  }
 }
