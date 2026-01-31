@@ -70,6 +70,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Set up log hub for real-time log streaming
     setup_log_hub_handler(log_hub)
 
+    # Initialize default AgentOS for /api/chat endpoint
+    from pathlib import Path
+    from nimbus.agentos import AgentOS, AgentOSConfig, create_agent_os
+    from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+    from nimbus.core.runtime.vcpu import VCPUConfig
+    
+    pi_url = os.environ.get("PI_AI_URL", "http://localhost:3031")
+    model = os.environ.get("NIMBUS_MODEL", "anthropic/claude-sonnet-4-20250514")
+    
+    pi_config = PiLLMConfig(base_url=pi_url, model=model)
+    llm = PiLLMAdapter(pi_config)
+    await llm.start()
+    
+    vcpu_config = VCPUConfig(max_iterations=50)
+    agent_config = AgentOSConfig(vcpu_config=vcpu_config)
+    
+    agent_os = AgentOS(llm_client=llm, config=agent_config)
+    
+    # Register default tools
+    from nimbus.tools import register_default_tools
+    workspace = Path.cwd()
+    register_default_tools(agent_os, workspace=workspace)
+    
+    logger.info(f"Initialized default AgentOS with model={model}, workspace={workspace}")
+
     # Store in app state
     app.state.storage = storage
     app.state.log_hub = log_hub
@@ -77,8 +102,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.permission_manager = permission_manager
     app.state.session_manager = session_manager
     app.state.message_cache = message_cache
+    app.state.agent_os = agent_os
+    app.state.default_workspace = workspace
+    app.state.workspace_agents = {}  # Cache for workspace-specific agents
+    app.state.llm = llm  # Keep reference to close on shutdown
 
     yield
+    
+    # Cleanup LLM adapter
+    await llm.stop()
 
     # Cleanup
     await session_manager.close_all()
@@ -147,6 +179,22 @@ def create_app() -> FastAPI:
     # Register debug routes (for inspecting agent state)
     from .api_debug import router as debug_router
     app.include_router(debug_router, tags=["Debug"])
+
+    # Register Vibe Coding IDE compatible routes
+    from .api_vibe import router as vibe_router, models_router as vibe_models_router
+    app.include_router(vibe_router, tags=["Vibe IDE"])
+    app.include_router(vibe_models_router, tags=["Vibe IDE"])
+
+    # Serve static chat UI
+    from fastapi.responses import FileResponse
+    from pathlib import Path
+    
+    static_dir = Path(__file__).parent / "static"
+    
+    @app.get("/chat")
+    async def serve_chat_ui():
+        """Serve the built-in chat UI."""
+        return FileResponse(static_dir / "chat.html")
 
     return app
 

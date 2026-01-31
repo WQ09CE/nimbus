@@ -254,6 +254,19 @@ class SSEHub:
             return len(self._connections.get(session_id, []))
         return sum(len(conns) for conns in self._connections.values())
 
+    async def close_session(self, session_id: str) -> None:
+        """Close all connections for a session.
+        
+        Args:
+            session_id: Session to close.
+        """
+        async with self._lock:
+            connections = self._connections.get(session_id, [])
+            for conn in connections:
+                await conn.queue.put(None)  # Signal to close
+            if session_id in self._connections:
+                del self._connections[session_id]
+
     def get_active_sessions(self) -> List[str]:
         """Get list of session IDs with active connections."""
         return list(self._connections.keys())

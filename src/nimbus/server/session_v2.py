@@ -278,6 +278,9 @@ class SessionManagerV2:
                 "dag_complete",
                 {"status": result.status},
             )
+            
+            # Close SSE connection to signal end of stream
+            await self._sse_hub.close_session(session_id)
 
         except asyncio.CancelledError:
             # Already handled above, just propagate

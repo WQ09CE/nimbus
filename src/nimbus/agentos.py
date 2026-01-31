@@ -436,31 +436,40 @@ class AgentOS:
                 action_kind = getattr(action, "kind", None)
                 
                 if action_kind == "TOOL_CALL":
+                    # ActionIR uses 'name' and 'args', not 'tool_name' and 'tool_args'
+                    tool_name = getattr(action, "name", "unknown")
+                    tool_args = getattr(action, "args", {})
+                    tool_id = getattr(action, "id", None)
+                    
                     yield {
                         "type": "tool_call",
-                        "name": getattr(action, "tool_name", "unknown"),
-                        "args": getattr(action, "tool_args", {}),
-                        "call_id": getattr(action, "tool_call_id", None),
+                        "name": tool_name,
+                        "args": tool_args,
+                        "call_id": tool_id,
                     }
                     # Get corresponding result if available
                     if i < len(result.results):
                         tool_result = result.results[i]
                         yield {
                             "type": "tool_result",
-                            "tool_use_id": getattr(action, "tool_call_id", None),
+                            "name": tool_name,
+                            "args": tool_args,
+                            "tool_use_id": tool_id,
                             "content": getattr(tool_result, "output", str(tool_result)),
                         }
                 elif action_kind == "THOUGHT":
-                    content = getattr(action, "content", None)
+                    # ActionIR thoughts have content in args
+                    content = action.args.get("content", "") if action.args else ""
                     if content:
                         yield {"type": "text", "content": content}
                 elif action_kind == "RETURN":
-                    # Task complete
+                    # Task complete - result is in args
+                    result_value = action.args.get("result", "") if action.args else ""
                     yield {
                         "type": "done",
                         "result": {
                             "status": "OK",
-                            "output": getattr(action, "return_value", None),
+                            "output": result_value,
                         },
                     }
                     return
