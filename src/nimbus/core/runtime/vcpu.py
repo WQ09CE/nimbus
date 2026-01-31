@@ -629,7 +629,15 @@ class VCPU:
             )
 
         try:
-            return await handler(action)
+            result = await handler(action)
+            
+            # Error Handler: 尝试恢复可修复的错误
+            if action.kind == "TOOL_CALL" and result.fault:
+                recovered = await self._handle_tool_error(action, result)
+                if recovered is not None:
+                    return recovered
+            
+            return result
         except Exception as e:
             from nimbus.core.logging import get_logger
             logger = get_logger("kernel.vcpu")
@@ -643,6 +651,102 @@ class VCPU:
                     retryable=False
                 )
             )
+
+    async def _handle_tool_error(
+        self, action: ActionIR, result: ToolResult
+    ) -> Optional[ToolResult]:
+        """
+        Error Handler: 尝试恢复工具调用错误。
+        
+        类似操作系统的错误处理机制：
+        - Tool 层只抛出错误（如 ENOENT）
+        - Error Handler 层决定恢复策略
+        
+        当前支持的恢复策略：
+        1. 路径解析：File not found → 尝试 TypeScript 模块解析规则
+        2. 提示注入：多次失败后提示 LLM 使用 Glob 搜索
+        
+        Args:
+            action: 失败的 ActionIR
+            result: 包含错误信息的 ToolResult
+            
+        Returns:
+            恢复后的 ToolResult，如果无法恢复则返回 None
+        """
+        from nimbus.core.logging import get_logger
+        import os
+        
+        logger = get_logger("kernel.vcpu.error_handler")
+        fault = result.fault
+        
+        if not fault:
+            return None
+        
+        # =========================================================================
+        # 策略 1: TypeScript/Node.js 模块路径解析
+        # =========================================================================
+        if (
+            action.name == "Read" 
+            and fault.code == "TOOL_FAILURE" 
+            and "not found" in fault.message.lower()
+        ):
+            file_path = action.args.get("file_path", "")
+            
+            # TypeScript/Node.js 模块解析规则
+            alternatives = [
+                f"{file_path}/index.ts",
+                f"{file_path}/index.tsx",
+                f"{file_path}/index.js",
+                f"{file_path}/index.jsx",
+            ]
+            
+            # 如果路径以 .ts 结尾但不存在，尝试目录形式
+            if file_path.endswith(".ts"):
+                base = file_path[:-3]
+                alternatives.extend([
+                    f"{base}/index.ts",
+                    f"{base}/index.tsx",
+                ])
+            
+            for alt_path in alternatives:
+                if os.path.exists(alt_path):
+                    logger.info(f"🔧 Path resolved: {file_path} → {alt_path}")
+                    
+                    # 创建新的 action 并重新执行
+                    new_action = ActionIR(
+                        kind=action.kind,
+                        name=action.name,
+                        id=action.id,
+                        args={**action.args, "file_path": alt_path},
+                        meta={**(action.meta or {}), "resolved_from": file_path},
+                    )
+                    
+                    # 重新执行工具调用
+                    new_result = await self._handle_tool_call(new_action)
+                    
+                    if new_result.status == "OK":
+                        # 在输出中添加提示
+                        new_result.output = (
+                            f"[Path resolved: {file_path} → {alt_path}]\n"
+                            f"{new_result.output or ''}"
+                        )
+                        return new_result
+            
+            # 路径解析失败，记录并注入提示
+            self._path_not_found_count = getattr(self, '_path_not_found_count', 0) + 1
+            
+            if self._path_not_found_count >= 2:
+                # 多次失败后，注入提示让 LLM 使用 Glob
+                filename = os.path.basename(file_path)
+                hint = (
+                    f"💡 File '{file_path}' not found after path resolution. "
+                    f"Try: Glob(pattern='**/{filename}*') or Glob(pattern='**/api*') to find the correct path."
+                )
+                self.mmu.add_system_message(hint)
+                logger.info(f"Injected Glob hint after {self._path_not_found_count} path failures")
+        
+        # 无法恢复，返回 None 让原始错误传播
+        return None
 
     async def _handle_tool_call(self, action: ActionIR) -> ToolResult:
         """
@@ -1071,6 +1175,7 @@ class VCPU:
         self._consecutive_errors = 0  # Track consecutive errors
         self._compaction_count = 0  # Reset compaction counter
         self._consecutive_empty_responses = 0  # Reset empty response counter
+        self._path_not_found_count = 0  # Reset path resolution counter
 
     async def _generate_llm_failure_response(
         self,
