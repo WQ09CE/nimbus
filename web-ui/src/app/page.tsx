@@ -16,8 +16,10 @@ export default function Home() {
     thinkingIteration,
     currentActivity,
     error,
+    isInterrupting,
     createNewSession,
     sendMessage,
+    interruptMessage,
     clearError,
   } = useChatStore();
 
@@ -201,8 +203,11 @@ export default function Home() {
       {/* Input */}
       <ChatInput
         onSend={sendMessage}
-        disabled={isStreaming}
-        placeholder="Type your message..."
+        onInterrupt={interruptMessage}
+        disabled={isStreaming && !isInterrupting}
+        isStreaming={isStreaming}
+        isInterrupting={isInterrupting}
+        placeholder="输入您的消息..."
       />
     </div>
   );

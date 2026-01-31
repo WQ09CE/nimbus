@@ -4,11 +4,21 @@ import { useState, useRef, useEffect } from "react";
 
 interface ChatInputProps {
   onSend: (message: string) => void;
+  onInterrupt?: () => void;
   disabled?: boolean;
+  isStreaming?: boolean;
+  isInterrupting?: boolean;
   placeholder?: string;
 }
 
-export function ChatInput({ onSend, disabled, placeholder }: ChatInputProps) {
+export function ChatInput({
+  onSend,
+  onInterrupt,
+  disabled,
+  isStreaming,
+  isInterrupting,
+  placeholder
+}: ChatInputProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const wasDisabledRef = useRef(false);
@@ -68,21 +78,40 @@ export function ChatInput({ onSend, disabled, placeholder }: ChatInputProps) {
               transition-colors
             `}
           />
-          <button
-            type="submit"
-            disabled={!input.trim() || disabled}
-            className={`
-              px-5 py-3 rounded-lg font-semibold text-sm
-              transition-all
-              ${
-                input.trim() && !disabled
-                  ? "bg-blue-600 hover:bg-blue-700 text-white"
-                  : "bg-gray-800 text-gray-600 cursor-not-allowed"
-              }
-            `}
-          >
-            {disabled ? "..." : "Send"}
-          </button>
+          {isStreaming ? (
+            <button
+              type="button"
+              onClick={onInterrupt}
+              disabled={isInterrupting}
+              className={`
+                px-5 py-3 rounded-lg font-semibold text-sm
+                transition-all
+                ${
+                  isInterrupting
+                    ? "bg-gray-600 text-gray-400 cursor-not-allowed"
+                    : "bg-red-600 hover:bg-red-700 text-white"
+                }
+              `}
+            >
+              {isInterrupting ? "正在停止..." : "停止"}
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={!input.trim() || disabled}
+              className={`
+                px-5 py-3 rounded-lg font-semibold text-sm
+                transition-all
+                ${
+                  input.trim() && !disabled
+                    ? "bg-blue-600 hover:bg-blue-700 text-white"
+                    : "bg-gray-800 text-gray-600 cursor-not-allowed"
+                }
+              `}
+            >
+              {disabled ? "..." : "发送"}
+            </button>
+          )}
         </div>
         <div className="text-xs text-gray-700 mt-2">
           Press Enter to send, Shift+Enter for new line

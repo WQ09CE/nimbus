@@ -281,6 +281,19 @@ async def chat(
             logger.info(f"📞 Calling stream_chat...")
             await session_manager.stream_chat(session_id, data.content)
             logger.info(f"✅ stream_chat completed")
+        except asyncio.CancelledError:
+            # Client disconnected - this is expected, not an error
+            logger.info(f"🛑 stream_chat cancelled for session {session_id} (client disconnected)")
+            # Emit cancelled event so frontend knows
+            try:
+                await sse_hub.publish(
+                    session_id,
+                    "message",
+                    {"content": "\n\n[用户已中断操作]", "done": True}
+                )
+            except Exception:
+                pass  # Client already disconnected, ignore
+            raise  # Re-raise to properly cancel the task
         except Exception as e:
             import logging
             import traceback
@@ -312,9 +325,29 @@ async def chat(
     
     task.add_done_callback(task_done_callback)
 
+    # Wrap SSE stream to detect client disconnect and cancel task
+    async def stream_with_disconnect_detection():
+        """SSE stream that cancels background task when client disconnects."""
+        try:
+            async for event in sse_hub.subscribe(session_id):
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    logger.warning(f"🔌 Client disconnected, cancelling task for session {session_id}")
+                    task.cancel()
+                    break
+                yield event
+        except asyncio.CancelledError:
+            logger.info(f"⚠️ SSE stream cancelled for session {session_id}")
+            task.cancel()
+        finally:
+            # Ensure task is cancelled if stream ends for any reason
+            if not task.done():
+                logger.info(f"🛑 Cancelling background task for session {session_id}")
+                task.cancel()
+
     # Return SSE stream (subscribe is an async generator)
     return StreamingResponse(
-        sse_hub.subscribe(session_id),
+        stream_with_disconnect_detection(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

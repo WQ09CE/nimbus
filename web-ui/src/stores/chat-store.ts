@@ -53,27 +53,32 @@ interface ToolResultData {
 interface ChatState {
   // Session
   session: Session | null;
-  
+
   // Messages
   messages: Message[];
-  
+
   // Streaming state
   isStreaming: boolean;
   streamingContent: string;
   streamingToolCalls: ToolCall[];
-  
+
   // Real-time progress indicators
   thinkingIteration: number | null;  // Current thinking iteration
   currentActivity: string | null;     // Current activity description
   lastHeartbeat: number | null;       // Timestamp of last heartbeat
-  
+
+  // Interrupt state
+  isInterrupting: boolean;            // Whether interrupt request is being processed
+  streamAbortController: AbortController | null;  // For aborting stream requests
+
   // UI state
   isLoading: boolean;
   error: string | null;
-  
+
   // Actions
   createNewSession: () => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
+  interruptMessage: () => void;
   clearError: () => void;
   reset: () => void;
 }
@@ -87,6 +92,8 @@ const initialState = {
   thinkingIteration: null,
   currentActivity: null,
   lastHeartbeat: null,
+  isInterrupting: false,
+  streamAbortController: null,
   isLoading: false,
   error: null,
 };
@@ -132,6 +139,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       timestamp: Date.now(),
     };
 
+    // Create abort controller for this request
+    const abortController = new AbortController();
+
     set({
       messages: [...messages, userMessage],
       isStreaming: true,
@@ -140,6 +150,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       thinkingIteration: null,
       currentActivity: "连接中...",
       lastHeartbeat: Date.now(),
+      streamAbortController: abortController,
       error: null,
     });
 
@@ -150,7 +161,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let shouldContinue = true;
 
       // Stream response
-      for await (const event of streamChat(currentSession.id, content)) {
+      for await (const event of streamChat(currentSession.id, content, abortController.signal)) {
         const { type, data } = event;
 
         switch (type) {
@@ -295,21 +306,39 @@ export const useChatStore = create<ChatState>((set, get) => ({
         thinkingIteration: null,
         currentActivity: null,
         lastHeartbeat: null,
+        streamAbortController: null,
+        isInterrupting: false,
       });
     } catch (err) {
+      // Check if error is due to abort
+      const errorMessage = (err as any)?.name === 'AbortError'
+        ? '用户已取消对话'
+        : (err instanceof Error ? err.message : "Failed to send message");
+
       set({
-        error: err instanceof Error ? err.message : "Failed to send message",
+        error: errorMessage,
         isStreaming: false,
         streamingContent: "",
         streamingToolCalls: [],
         thinkingIteration: null,
         currentActivity: null,
         lastHeartbeat: null,
+        streamAbortController: null,
+        isInterrupting: false,
       });
     }
   },
 
   clearError: () => set({ error: null }),
-  
-  reset: () => set(initialState),
+
+  interruptMessage: () => {
+      const { streamAbortController, isStreaming } = get();
+
+      if (isStreaming && streamAbortController) {
+        set({ isInterrupting: true });
+        streamAbortController.abort();
+      }
+    },
+
+    reset: () => set(initialState),
 }));
