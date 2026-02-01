@@ -12,15 +12,17 @@ This module defines request/response models for:
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
 
+from pydantic import BaseModel, Field
 
 # =============================================================================
 # Enums
 # =============================================================================
 
+
 class SessionStatus(str, Enum):
     """Session lifecycle status."""
+
     ACTIVE = "active"
     ARCHIVED = "archived"
     DELETED = "deleted"
@@ -28,6 +30,7 @@ class SessionStatus(str, Enum):
 
 class PermissionDecision(str, Enum):
     """Permission decision types."""
+
     ASK = "ask"
     ALLOW_ONCE = "allow_once"
     ALLOW_ALWAYS = "allow_always"
@@ -36,6 +39,7 @@ class PermissionDecision(str, Enum):
 
 class TaskStatusEnum(str, Enum):
     """Task execution status."""
+
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -47,17 +51,20 @@ class TaskStatusEnum(str, Enum):
 # Session Models
 # =============================================================================
 
+
 class SessionCreate(BaseModel):
     """Request model for creating a new session."""
+
     name: Optional[str] = None
     workspace_path: Optional[str] = None
     memory_type: str = "tiered"  # simple | tiered
-    planner_type: str = "dag"    # simple | dag
+    planner_type: str = "dag"  # simple | dag
     llm_config: Optional[Dict[str, str]] = None  # {provider, model_id}
 
 
 class SessionResponse(BaseModel):
     """Response model for session info."""
+
     id: str
     name: Optional[str] = None
     created_at: datetime
@@ -71,12 +78,14 @@ class SessionResponse(BaseModel):
 
 class SessionDetail(SessionResponse):
     """Detailed session response with memory stats."""
+
     memory_stats: Optional[Dict[str, Any]] = None
     workspace_path: Optional[str] = None
 
 
 class SessionList(BaseModel):
     """Paginated list of sessions."""
+
     items: List[SessionResponse]
     total: int
     limit: int
@@ -87,8 +96,10 @@ class SessionList(BaseModel):
 # Message Models
 # =============================================================================
 
+
 class AttachmentCreate(BaseModel):
     """Attachment in a chat request."""
+
     type: str  # file, url, text
     path: Optional[str] = None
     url: Optional[str] = None
@@ -98,12 +109,14 @@ class AttachmentCreate(BaseModel):
 
 class ChatRequest(BaseModel):
     """Request model for sending a chat message."""
+
     content: str
     attachments: List[AttachmentCreate] = Field(default_factory=list)
 
 
 class ArtifactResponse(BaseModel):
     """Artifact produced by agent execution."""
+
     id: str
     type: str  # file, chart, code, table, image, markdown
     title: str
@@ -114,6 +127,7 @@ class ArtifactResponse(BaseModel):
 
 class MessageResponse(BaseModel):
     """Response model for a message."""
+
     id: str
     role: str  # user | assistant | system
     content: str
@@ -124,6 +138,7 @@ class MessageResponse(BaseModel):
 
 class MessageList(BaseModel):
     """List of messages."""
+
     items: List[MessageResponse]
 
 
@@ -131,8 +146,10 @@ class MessageList(BaseModel):
 # Permission Models
 # =============================================================================
 
+
 class PermissionRequest(BaseModel):
     """Pending permission request."""
+
     request_id: str
     tool: str
     args: Dict[str, Any]
@@ -142,11 +159,13 @@ class PermissionRequest(BaseModel):
 
 class PermissionRespond(BaseModel):
     """Request model for responding to a permission request."""
+
     decision: PermissionDecision
 
 
 class PermissionResponseResult(BaseModel):
     """Response after resolving a permission request."""
+
     request_id: str
     decision: PermissionDecision
     tool: str
@@ -155,17 +174,20 @@ class PermissionResponseResult(BaseModel):
 
 class PermissionRule(BaseModel):
     """Permission rule for a tool."""
+
     tool: str
     decision: PermissionDecision
 
 
 class PermissionRuleList(BaseModel):
     """List of permission rules."""
+
     rules: List[PermissionRule]
 
 
 class PermissionRuleUpdate(BaseModel):
     """Request model for updating a permission rule."""
+
     decision: PermissionDecision
 
 
@@ -173,8 +195,10 @@ class PermissionRuleUpdate(BaseModel):
 # DAG Models (Nimbus Extension)
 # =============================================================================
 
+
 class TaskNodeResponse(BaseModel):
     """Task node in a DAG."""
+
     id: str
     skill: str
     params: Dict[str, Any] = Field(default_factory=dict)
@@ -189,6 +213,7 @@ class TaskNodeResponse(BaseModel):
 
 class DAGStatsResponse(BaseModel):
     """Statistics for DAG execution."""
+
     total: int
     completed: int
     running: int
@@ -199,6 +224,7 @@ class DAGStatsResponse(BaseModel):
 
 class DAGResponse(BaseModel):
     """Response model for DAG status."""
+
     id: str
     goal: str
     status: str  # pending | running | completed | failed
@@ -211,8 +237,10 @@ class DAGResponse(BaseModel):
 # Skill/Tool Models
 # =============================================================================
 
+
 class SkillParameter(BaseModel):
     """Parameter definition for a skill."""
+
     name: str
     type: str
     description: str
@@ -222,6 +250,7 @@ class SkillParameter(BaseModel):
 
 class SkillResponse(BaseModel):
     """Response model for a skill."""
+
     name: str
     description: str
     source: str  # builtin | mcp:{server_name} | markdown
@@ -230,11 +259,13 @@ class SkillResponse(BaseModel):
 
 class SkillList(BaseModel):
     """List of available skills."""
+
     skills: List[SkillResponse]
 
 
 class MCPServerStatus(BaseModel):
     """Status of an MCP server."""
+
     name: str
     status: str  # connected | disconnected | error
     tools: List[str]
@@ -243,6 +274,7 @@ class MCPServerStatus(BaseModel):
 
 class MCPServerList(BaseModel):
     """List of MCP servers."""
+
     servers: List[MCPServerStatus]
 
 
@@ -250,8 +282,10 @@ class MCPServerList(BaseModel):
 # SSE Event Models
 # =============================================================================
 
+
 class SSEEvent(BaseModel):
     """Server-Sent Event structure."""
+
     event: str
     data: Dict[str, Any]
 
@@ -260,8 +294,10 @@ class SSEEvent(BaseModel):
 # Config Models
 # =============================================================================
 
+
 class ServerConfig(BaseModel):
     """Server configuration response."""
+
     default_memory_type: str = "tiered"
     default_planner_type: str = "dag"
     max_concurrent_sessions: int = 10
@@ -270,6 +306,7 @@ class ServerConfig(BaseModel):
 
 class HealthResponse(BaseModel):
     """Health check response."""
+
     status: str
     version: str
 
@@ -278,8 +315,10 @@ class HealthResponse(BaseModel):
 # Error Models
 # =============================================================================
 
+
 class ErrorResponse(BaseModel):
     """Error response model."""
+
     code: str
     message: str
     details: Optional[Dict[str, Any]] = None

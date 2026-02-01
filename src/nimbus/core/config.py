@@ -12,7 +12,11 @@ This module provides type-safe configuration classes for:
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+
+if TYPE_CHECKING:
+    from .memory import MemoryConfig
+    from .types import PipelineConfig, RuntimeConfig
 
 import yaml
 
@@ -23,9 +27,10 @@ logger = get_logger("config")
 
 class SkillType(Enum):
     """Types of skills that can be loaded."""
-    BUILTIN = "builtin"      # Built-in Python skills
-    MARKDOWN = "markdown"    # Markdown-defined skills
-    WUKONG = "wukong"        # Wukong framework skills
+
+    BUILTIN = "builtin"  # Built-in Python skills
+    MARKDOWN = "markdown"  # Markdown-defined skills
+    WUKONG = "wukong"  # Wukong framework skills
 
 
 @dataclass
@@ -39,6 +44,7 @@ class LLMConfig:
         api_key_env: Environment variable name for API key.
         base_url: Optional base URL for API endpoint.
     """
+
     model: str = "claude-3-5-sonnet"
     temperature: float = 0.7
     max_tokens: int = 4096
@@ -81,6 +87,7 @@ class MemoryConfigSpec:
         checkpoint_interval: Turns between checkpoints.
         checkpoint_path: Path for checkpoint storage.
     """
+
     type: str = "simple"
     pinned_budget: int = 1000
     working_budget: int = 4000
@@ -119,6 +126,7 @@ class MemoryConfigSpec:
             MemoryConfig instance for TieredMemoryManager.
         """
         from .memory import MemoryConfig
+
         return MemoryConfig(
             pinned_budget=self.pinned_budget,
             working_budget=self.working_budget,
@@ -140,6 +148,7 @@ class RuntimeConfigSpec:
         retry_delay: Delay between retries in seconds.
         max_concurrent: Maximum concurrent tasks.
     """
+
     default_timeout: float = 30.0
     max_retries: int = 2
     retry_delay: float = 1.0
@@ -169,6 +178,7 @@ class RuntimeConfigSpec:
             RuntimeConfig instance for AsyncRuntime.
         """
         from .types import RuntimeConfig
+
         return RuntimeConfig(
             default_timeout=self.default_timeout,
             max_retries=self.max_retries,
@@ -188,6 +198,7 @@ class PlannerConfigSpec:
         enable_rule_planner: Enable rule-based fast path.
         enable_llm_enhancer: Enable LLM-based planning.
     """
+
     enable_router: bool = False
     use_tool_planner: bool = False
     enable_context_analyzer: bool = True
@@ -219,6 +230,7 @@ class PlannerConfigSpec:
             PipelineConfig instance for PlannerPipeline.
         """
         from .planner import PipelineConfig, PlanningMode
+
         return PipelineConfig(
             enable_router=self.enable_router,
             use_tool_planner=self.use_tool_planner,
@@ -240,6 +252,7 @@ class SkillConfig:
         params: Optional default parameters for the skill.
         enabled: Whether the skill is enabled.
     """
+
     name: str
     type: str = "builtin"
     path: Optional[str] = None
@@ -288,6 +301,7 @@ class AgentConfig:
         planner_type: Planner type ("simple" or "dag").
         enable_logging: Whether to enable logging.
     """
+
     name: str
     version: str = "1.0.0"
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -432,15 +446,16 @@ class CoreAgentConfig:
         planner: Planner configuration spec (router, tool planner, etc.).
         enable_logging: Whether to enable logging.
     """
+
     name: str = "core"
     description: str = "核心 Agent，负责任务规划、分发和协调"
     mode: str = "primary"
     model: str = "claude-sonnet-4-20250514"
     temperature: float = 0.7
     max_tokens: int = 8192
-    allowed_tools: List[str] = field(default_factory=lambda: [
-        "Read", "Write", "Edit", "Bash", "Glob", "Grep", "Subagent"
-    ])
+    allowed_tools: List[str] = field(
+        default_factory=lambda: ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Subagent"]
+    )
     prompt: str = ""  # 统一使用 prompt 字段
     max_turns: int = 100
     memory: MemoryConfigSpec = field(default_factory=MemoryConfigSpec)
@@ -481,9 +496,9 @@ class CoreAgentConfig:
             model=data.get("model", "claude-sonnet-4-20250514"),
             temperature=data.get("temperature", 0.7),
             max_tokens=data.get("max_tokens", 8192),
-            allowed_tools=data.get("allowed_tools", [
-                "Read", "Write", "Edit", "Bash", "Glob", "Grep", "Subagent"
-            ]),
+            allowed_tools=data.get(
+                "allowed_tools", ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Subagent"]
+            ),
             prompt=prompt,
             max_turns=data.get("max_turns", 100),
             memory=MemoryConfigSpec.from_dict(memory_data),

@@ -3,7 +3,7 @@ Pi Bridge - 让 Nimbus 复用 pi-ai
 
 推荐使用 HTTP 客户端（新方式）：
     from nimbus.bridge import PiAiHttpClient
-    
+
     client = PiAiHttpClient()
     await client.start()
     result = await client.complete(messages, model="anthropic/claude-sonnet-4-20250514")
@@ -14,26 +14,32 @@ Pi Bridge - 让 Nimbus 复用 pi-ai
 
 # 新的 HTTP 客户端（推荐）
 from .pi_ai_http import (
-    PiAiHttpClient,
-    Message,
-    ToolCall,
     CompletionResult,
+    Message,
+    PiAiHttpClient,
     StreamEvent,
-    get_client,
+    ToolCall,
     complete,
+    get_client,
     stream,
 )
 
 # 旧的 subprocess 客户端（向后兼容，但已废弃）
 try:
     from .pi_client import (
-        PiClient,
-        PiAI,
-        PiTUI,
-        Message as PiMessage,
-        StreamEvent as PiStreamEvent,
         CompletionResult as PiCompletionResult,
+    )
+    from .pi_client import (
+        Message as PiMessage,
+    )
+    from .pi_client import (
+        PiAI,
+        PiClient,
+        PiTUI,
         create_pi_client,
+    )
+    from .pi_client import (
+        StreamEvent as PiStreamEvent,
     )
 except ImportError:
     # 如果旧客户端被删除，提供空实现

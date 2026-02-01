@@ -13,47 +13,42 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-logger = logging.getLogger(__name__)
-
 from .models import (
-    # Session
-    SessionCreate,
-    SessionResponse,
-    SessionDetail,
-    SessionList,
-    SessionStatus,
     # Message
     ChatRequest,
-    MessageResponse,
+    DAGResponse,
+    DAGStatsResponse,
+    HealthResponse,
+    MCPServerList,
     MessageList,
+    MessageResponse,
     # Permission
     PermissionRespond,
     PermissionResponseResult,
     PermissionRule,
     PermissionRuleList,
     PermissionRuleUpdate,
-    PermissionDecision,
-    # DAG
-    DAGResponse,
-    DAGStatsResponse,
-    TaskNodeResponse,
-    TaskStatusEnum,
-    # Skill
-    SkillResponse,
-    SkillList,
-    SkillParameter,
-    MCPServerStatus,
-    MCPServerList,
     # Config
     ServerConfig,
-    HealthResponse,
-    ErrorResponse,
+    # Session
+    SessionCreate,
+    SessionDetail,
+    SessionList,
+    SessionResponse,
+    SessionStatus,
+    SkillList,
+    SkillParameter,
+    # Skill
+    SkillResponse,
+    TaskNodeResponse,
+    TaskStatusEnum,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -61,6 +56,7 @@ router = APIRouter()
 # =============================================================================
 # Dependencies
 # =============================================================================
+
 
 async def get_storage(request: Request):
     """Get storage from app state."""
@@ -85,6 +81,7 @@ async def get_permission_manager(request: Request):
 # =============================================================================
 # Health & Config
 # =============================================================================
+
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
@@ -124,6 +121,7 @@ async def list_models(
 # =============================================================================
 # Session APIs
 # =============================================================================
+
 
 @router.post("/sessions", response_model=SessionResponse, status_code=201)
 async def create_session(
@@ -232,6 +230,7 @@ async def delete_session(
 # Chat APIs
 # =============================================================================
 
+
 @router.post("/sessions/{session_id}/chat")
 async def chat(
     session_id: str,
@@ -259,8 +258,6 @@ async def chat(
     - message: Final response
     - error: Error occurred
     """
-    import json
-    import os
 
     session = await session_manager.get_session(session_id)
     if not session:
@@ -278,20 +275,20 @@ async def chat(
     # Start background task to run chat
     async def run_chat():
         """Background task that runs the chat and emits events via SSE hub."""
-        logger.info(f"🚀 run_chat started for session {session_id}, message: {data.content[:50]}...")
+        logger.info(
+            f"🚀 run_chat started for session {session_id}, message: {data.content[:50]}..."
+        )
         try:
-            logger.info(f"📞 Calling stream_chat...")
+            logger.info("📞 Calling stream_chat...")
             await session_manager.stream_chat(session_id, data.content)
-            logger.info(f"✅ stream_chat completed")
+            logger.info("✅ stream_chat completed")
         except asyncio.CancelledError:
             # Client disconnected - this is expected, not an error
             logger.info(f"🛑 stream_chat cancelled for session {session_id} (client disconnected)")
             # Emit cancelled event so frontend knows
             try:
                 await sse_hub.publish(
-                    session_id,
-                    "message",
-                    {"content": "\n\n[用户已中断操作]", "done": True}
+                    session_id, "message", {"content": "\n\n[用户已中断操作]", "done": True}
                 )
             except Exception:
                 pass  # Client already disconnected, ignore
@@ -299,6 +296,7 @@ async def chat(
         except Exception as e:
             import logging
             import traceback
+
             error_logger = logging.getLogger(__name__)
             error_logger.error(f"❌ Error in stream_chat: {e}", exc_info=True)
             # Emit error event
@@ -306,25 +304,29 @@ async def chat(
                 await sse_hub.publish(
                     session_id,
                     "error",
-                    {"code": "server_error", "message": str(e), "traceback": traceback.format_exc()}
+                    {
+                        "code": "server_error",
+                        "message": str(e),
+                        "traceback": traceback.format_exc(),
+                    },
                 )
             except Exception as pub_err:
                 error_logger.error(f"❌ Failed to publish error event: {pub_err}")
 
     # Create task and keep reference to prevent GC
     task = asyncio.create_task(run_chat())
-    
+
     # Log task creation
     logger.info(f"✅ Created background task for session {session_id}: {task}")
-    
+
     # Add task done callback to catch exceptions
     def task_done_callback(t):
         try:
             if t.exception():
                 logger.error(f"❌ Background task failed: {t.exception()}", exc_info=t.exception())
         except asyncio.CancelledError:
-            logger.warning(f"⚠️ Background task cancelled")
-    
+            logger.warning("⚠️ Background task cancelled")
+
     task.add_done_callback(task_done_callback)
 
     # Wrap SSE stream to detect client disconnect and cancel task
@@ -334,7 +336,9 @@ async def chat(
             async for event in sse_hub.subscribe(session_id):
                 # Check if client disconnected
                 if await request.is_disconnected():
-                    logger.warning(f"🔌 Client disconnected, cancelling task for session {session_id}")
+                    logger.warning(
+                        f"🔌 Client disconnected, cancelling task for session {session_id}"
+                    )
                     task.cancel()
                     break
                 yield event
@@ -385,14 +389,16 @@ async def get_messages(
         if artifacts is None:
             artifacts = []
 
-        items.append(MessageResponse(
-            id=m["id"],
-            role=m["role"],
-            content=m["content"],
-            created_at=created_at,
-            artifacts=artifacts,
-            dag_id=m.get("dag_id"),
-        ))
+        items.append(
+            MessageResponse(
+                id=m["id"],
+                role=m["role"],
+                content=m["content"],
+                created_at=created_at,
+                artifacts=artifacts,
+                dag_id=m.get("dag_id"),
+            )
+        )
 
     return MessageList(items=items)
 
@@ -400,6 +406,7 @@ async def get_messages(
 # =============================================================================
 # Permission APIs
 # =============================================================================
+
 
 @router.post("/permissions/{request_id}/respond", response_model=PermissionResponseResult)
 async def respond_to_permission(
@@ -431,10 +438,7 @@ async def get_permission_rules(
     """Get all permission rules."""
     rules = permission_manager.get_all_rules()
     return PermissionRuleList(
-        rules=[
-            PermissionRule(tool=tool, decision=decision)
-            for tool, decision in rules.items()
-        ]
+        rules=[PermissionRule(tool=tool, decision=decision) for tool, decision in rules.items()]
     )
 
 
@@ -452,6 +456,7 @@ async def update_permission_rule(
 # =============================================================================
 # DAG APIs (Nimbus Extension)
 # =============================================================================
+
 
 @router.get("/sessions/{session_id}/dags/{dag_id}", response_model=DAGResponse)
 async def get_dag(
@@ -475,15 +480,17 @@ async def get_dag(
 
     for node_id, node in dag.nodes.items():
         status = TaskStatusEnum(node.status.value)
-        nodes.append(TaskNodeResponse(
-            id=node_id,
-            skill=node.skill_name,
-            params=node.params,
-            status=status,
-            depends_on=list(node.depends_on),
-            result=node.result,
-            error=node.error,
-        ))
+        nodes.append(
+            TaskNodeResponse(
+                id=node_id,
+                skill=node.skill_name,
+                params=node.params,
+                status=status,
+                depends_on=list(node.depends_on),
+                result=node.result,
+                error=node.error,
+            )
+        )
 
         stats["total"] += 1
         if status == TaskStatusEnum.COMPLETED:
@@ -512,6 +519,7 @@ async def get_dag(
 # =============================================================================
 # Skill/Tool APIs
 # =============================================================================
+
 
 @router.get("/skills", response_model=SkillList)
 async def list_skills():

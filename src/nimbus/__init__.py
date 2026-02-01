@@ -9,7 +9,7 @@ Nimbus provides a production-ready agent framework with:
 
 Example:
     from nimbus import create_agent_os
-    
+
     agent_os = create_agent_os(
         llm_client=your_llm_client,
         tools=tools,
@@ -29,6 +29,6 @@ from .agentos import (
 __version__ = "0.5.0"
 __all__ = [
     "AgentOS",
-    "AgentOSConfig", 
+    "AgentOSConfig",
     "create_agent_os",
 ]

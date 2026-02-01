@@ -9,11 +9,10 @@ This module provides:
 import asyncio
 import os
 import uuid
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from .sse import SSEHub
 from .permission import PermissionManager
+from .sse import SSEHub
 
 
 class SessionManager:
@@ -152,12 +151,15 @@ class SessionManager:
             ValueError: If session not found.
         """
         import logging
+
         logger = logging.getLogger(__name__)
 
         async with self._lock:
             if session_id in self._agents:
                 agent = self._agents[session_id]
-                logger.info(f"📦 Returning cached agent for session {session_id}, workspace: {agent.workspace}")
+                logger.info(
+                    f"📦 Returning cached agent for session {session_id}, workspace: {agent.workspace}"
+                )
                 return agent
 
         # Get session info
@@ -167,6 +169,7 @@ class SessionManager:
 
         # Import here to avoid circular imports
         from pathlib import Path
+
         from nimbus.core.agent import CodeAgent
         from nimbus.core.memory import MemoryConfig
 
@@ -182,6 +185,7 @@ class SessionManager:
 
         # Log workspace for debugging
         import logging
+
         logger = logging.getLogger(__name__)
         logger.info(f"🔧 Creating agent for session {session_id} with workspace: {workspace}")
 
@@ -209,6 +213,7 @@ class SessionManager:
         3. Auto-detection based on available API keys
         """
         from nimbus.llm import create_llm_client
+
         return create_llm_client()
 
     async def save_session_state(self, session_id: str) -> None:
@@ -221,7 +226,7 @@ class SessionManager:
         async with self._lock:
             agent = self._agents.get(session_id)
 
-        if agent and hasattr(agent, '_memory'):
+        if agent and hasattr(agent, "_memory"):
             await self._storage.save_memory_checkpoint(
                 session_id,
                 agent._memory,

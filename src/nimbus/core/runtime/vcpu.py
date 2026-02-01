@@ -36,10 +36,10 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Tup
 from nimbus.core.memory.mmu import MMU
 from nimbus.core.protocol import ActionIR, Event, Fault, ToolResult
 from nimbus.core.runtime.decoder import InstructionDecoder
-from nimbus.core.runtime.doom_loop import DoomLoopDetector, DoomLoopResult
+from nimbus.core.runtime.doom_loop import DoomLoopDetector
 from nimbus.core.runtime.error_handler import ErrorHandlerRegistry, RecoveryAction
 from nimbus.core.runtime.execution_state import ExecutionState
-from nimbus.core.runtime.failure_reporter import FailureReporter, FailureContext
+from nimbus.core.runtime.failure_reporter import FailureReporter
 from nimbus.os.gate import KernelGate
 
 # =============================================================================
@@ -82,6 +82,7 @@ TOOL_NAME_CANONICAL: Dict[str, str] = {
 # =============================================================================
 # LLM Client Protocol
 # =============================================================================
+
 
 class LLMResponse(Protocol):
     """Protocol for LLM response objects."""
@@ -127,6 +128,7 @@ class LLMClient(Protocol):
 # vCPU Configuration
 # =============================================================================
 
+
 @dataclass
 class VCPUConfig:
     """
@@ -141,6 +143,7 @@ class VCPUConfig:
         compact_on_limit: Whether to compact memory when hitting iteration limit
         max_compactions: Maximum compactions before stopping (prevents infinite loops)
     """
+
     max_iterations: int = 50
     default_timeout: float = 60.0
     max_consecutive_thoughts: int = 1  # Auto-return on first text-only response
@@ -157,6 +160,7 @@ class VCPUConfig:
 # Step Result
 # =============================================================================
 
+
 @dataclass
 class StepResult:
     """
@@ -170,6 +174,7 @@ class StepResult:
         fault: Any fault that occurred during the step
         timing_ms: Timing breakdown for the step
     """
+
     actions: List[ActionIR] = field(default_factory=list)
     results: List[ToolResult] = field(default_factory=list)
     is_final: bool = False
@@ -181,6 +186,7 @@ class StepResult:
 # =============================================================================
 # Virtual CPU
 # =============================================================================
+
 
 class VCPU:
     """
@@ -241,7 +247,7 @@ class VCPU:
             max_compactions=self.config.max_compactions,
             max_tool_failures=6,
         )
-        
+
         # Compaction callback (external)
         self._compaction_callback: Optional[Callable[[], Awaitable[bool]]] = None
 
@@ -249,7 +255,7 @@ class VCPU:
         self._doom_detector = DoomLoopDetector(threshold=DOOM_LOOP_THRESHOLD)
         self._error_registry = ErrorHandlerRegistry()
         self._failure_reporter = FailureReporter(alu)
-        
+
         # Legacy compatibility properties (will be removed in future)
         self._max_consecutive_empty = 5  # Stop after 5 consecutive empty responses
 
@@ -277,7 +283,7 @@ class VCPU:
         if self.config.pin_goal:
             pinned_goal = await self._prepare_goal_for_pinning(goal)
             self.mmu.pin_user_goal(pinned_goal)
-        
+
         # Add goal as user message (always use original)
         self.mmu.add_user_message(goal)
         self._emit_event("STEP_STARTED", {"goal": goal, "iteration": 0})
@@ -296,30 +302,31 @@ class VCPU:
                             context={
                                 "max_iterations": self.config.max_iterations,
                                 "compactions": self._compaction_count,
-                            }
+                            },
                         )
                         return ToolResult(status="ERROR", fault=fault)
-                    
+
                     # Try to compact memory and continue
                     if self.config.compact_on_limit:
                         compacted = await self._do_compaction()
                         if compacted:
                             # Reset iteration counter and continue
                             from nimbus.core.logging import get_logger
+
                             get_logger("kernel.vcpu").info(
                                 f"🗜️ Compaction #{self._compaction_count} complete, "
                                 f"resetting iteration counter (was {self._iteration})"
                             )
                             self._iteration = 0
                             continue
-                    
+
                     # Compaction disabled or failed - stop
                     fault = Fault(
                         domain="RESOURCE",
                         code="BUDGET_EXCEEDED",
                         message=f"Exceeded maximum iterations ({self.config.max_iterations})",
                         retryable=False,
-                        context={"max_iterations": self.config.max_iterations}
+                        context={"max_iterations": self.config.max_iterations},
                     )
                     return ToolResult(status="ERROR", fault=fault)
 
@@ -328,19 +335,20 @@ class VCPU:
 
                 if step_result.fault:
                     self._consecutive_errors += 1
-                    
+
                     # Graceful termination conditions (checked BEFORE retryable check):
                     # - Too many consecutive errors (any type)
                     # - Any doom loop (even first one triggers graceful report)
                     # - Too many total doom loops
                     # - Empty response loop (LLM stuck/confused)
                     should_graceful_terminate = (
-                        self._consecutive_errors >= 5 or 
-                        self._doom_loop_count >= 1 or  # First doom loop triggers graceful termination
-                        step_result.fault.code == "DOOM_LOOP" or
-                        step_result.fault.code == "EMPTY_RESPONSE_LOOP"  # LLM stuck
+                        self._consecutive_errors >= 5
+                        or self._doom_loop_count
+                        >= 1  # First doom loop triggers graceful termination
+                        or step_result.fault.code == "DOOM_LOOP"
+                        or step_result.fault.code == "EMPTY_RESPONSE_LOOP"  # LLM stuck
                     )
-                    
+
                     if should_graceful_terminate:
                         # Let LLM generate a natural response about the failure
                         graceful_response = await self._generate_llm_failure_response(
@@ -351,13 +359,13 @@ class VCPU:
                         return ToolResult(
                             status="OK",  # Report as OK with explanation, not ERROR
                             output=graceful_response,
-                            is_final=True
+                            is_final=True,
                         )
-                    
+
                     # Propagate non-retryable faults (but not DOOM_LOOP, handled above)
                     if not step_result.fault.retryable:
                         return ToolResult(status="ERROR", fault=step_result.fault)
-                    
+
                     # For retryable faults, add error to memory and continue
                     self.mmu.add_assistant_message(
                         f"[Error] {step_result.fault.message}. Retrying..."
@@ -367,11 +375,16 @@ class VCPU:
                     self._consecutive_errors = 0
 
                 if step_result.is_final:
-                    return step_result.final_result or ToolResult(
-                        status="OK",
-                        output="Task completed",
-                        is_final=True
+                    final_result = step_result.final_result or ToolResult(
+                        status="OK", output="Task completed", is_final=True
                     )
+                    
+                    # Add completion marker to history to prevent context bleeding
+                    # This tells the LLM that the previous goal is DONE.
+                    result_preview = str(final_result.output)[:100].replace("\n", " ")
+                    self.mmu.add_system_message(f"✓ Task completed. Result: {result_preview}...")
+                    
+                    return final_result
 
         except asyncio.CancelledError:
             return ToolResult(
@@ -380,8 +393,8 @@ class VCPU:
                     domain="KERNEL",
                     code="SYSTEM_ERROR",
                     message="Execution was cancelled",
-                    retryable=True
-                )
+                    retryable=True,
+                ),
             )
         except Exception as e:
             return ToolResult(
@@ -391,8 +404,8 @@ class VCPU:
                     code="SYSTEM_ERROR",
                     message=str(e),
                     retryable=False,
-                    context={"exception_type": type(e).__name__}
-                )
+                    context={"exception_type": type(e).__name__},
+                ),
             )
         finally:
             self._is_running = False
@@ -416,6 +429,7 @@ class VCPU:
         self._emit_event("STEP_STARTED", {"iteration": self._iteration})
 
         from nimbus.core.logging import get_logger
+
         logger = get_logger("kernel.vcpu")
 
         try:
@@ -423,12 +437,13 @@ class VCPU:
             logger.info(f"Thinking... (Iteration {self._iteration})")
             think_start = time.time_ns()
             messages = self.mmu.assemble_context()
-            
+
             # Debug: Dump full context to file if NIMBUS_DUMP_CONTEXT is set
             import os
+
             if os.environ.get("NIMBUS_DUMP_CONTEXT"):
                 self._dump_context_to_file(messages, self._iteration)
-            
+
             # Enhanced logging: Show context summary
             msg_count = len(messages)
             last_msgs = messages[-3:] if len(messages) >= 3 else messages
@@ -444,22 +459,32 @@ class VCPU:
                 tool_calls = msg.get("tool_calls", [])
                 tc_info = f" | {len(tool_calls)} tool_calls" if tool_calls else ""
                 logger.debug(f"  [{role}]{tc_info}: {preview}")
-            
+
             # Log tool availability
             tools_to_pass = self.tools if self.tools else None
             if tools_to_pass:
-                tool_names = [t.get('function', {}).get('name', '?') for t in tools_to_pass]
+                tool_names = [t.get("function", {}).get("name", "?") for t in tools_to_pass]
                 logger.info(f"🔧 Passing {len(tools_to_pass)} tools to LLM: {tool_names}")
             else:
-                logger.warning(f"⚠️ No tools available in VCPU.tools! LLM will not be able to call tools.")
-            
-            response = await self.alu.chat(messages, tools=tools_to_pass)
+                logger.warning(
+                    "⚠️ No tools available in VCPU.tools! LLM will not be able to call tools."
+                )
+
+            # Callback for streaming thinking process
+            def on_think_chunk(chunk: str):
+                self._emit_event("THINKING", {"content": chunk})
+
+            response = await self.alu.chat(messages, tools=tools_to_pass, on_chunk=on_think_chunk)
             think_duration = (time.time_ns() - think_start) // 1_000_000
             step_result.timing_ms["think"] = think_duration
-            
+
             tool_calls_count = len(response.tool_calls) if response.tool_calls else 0
-            content_preview = (response.content[:200] + "...") if response.content and len(response.content) > 200 else response.content
-            
+            content_preview = (
+                (response.content[:200] + "...")
+                if response.content and len(response.content) > 200
+                else response.content
+            )
+
             # Enhanced logging: Show full response details
             if tool_calls_count == 0 and not response.content:
                 # Empty response - this is suspicious!
@@ -468,8 +493,10 @@ class VCPU:
                     f"⚠️ EMPTY RESPONSE #{self._consecutive_empty_responses} from LLM (Iteration {self._iteration}) "
                     f"- no content, no tool calls!"
                 )
-                logger.warning(f"   This may indicate: context too long, task too hard, or LLM confusion")
-                
+                logger.warning(
+                    "   This may indicate: context too long, task too hard, or LLM confusion"
+                )
+
                 # Check if we've hit too many consecutive empty responses
                 if self._consecutive_empty_responses >= self._max_consecutive_empty:
                     logger.error(
@@ -484,32 +511,33 @@ class VCPU:
                         context={
                             "consecutive_empty": self._consecutive_empty_responses,
                             "iteration": self._iteration,
-                        }
+                        },
                     )
                     step_result.timing_ms["total"] = (time.time_ns() - start_time) // 1_000_000
                     return step_result
             else:
                 # Reset counter on non-empty response
                 self._consecutive_empty_responses = 0
-                logger.info(f"Thought complete ({think_duration}ms) | Tool Calls: {tool_calls_count} | Content: {content_preview or '(no content)'}")
-            
+                logger.info(
+                    f"Thought complete ({think_duration}ms) | Tool Calls: {tool_calls_count} | Content: {content_preview or '(no content)'}"
+                )
+
             # Log tool calls details
             if response.tool_calls:
                 for tc in response.tool_calls:
-                    if hasattr(tc, 'function'):
+                    if hasattr(tc, "function"):
                         name = tc.function.name
                         args = tc.function.arguments[:100] if tc.function.arguments else "{}"
                     else:
-                        name = tc.get('function', {}).get('name', '?')
-                        args = str(tc.get('function', {}).get('arguments', '{}'))[:100]
+                        name = tc.get("function", {}).get("name", "?")
+                        args = str(tc.get("function", {}).get("arguments", "{}"))[:100]
                     logger.debug(f"  🔧 Tool: {name}({args})")
 
             # 2. DECODE: Parse into ActionIR
             decode_start = time.time_ns()
             try:
                 actions = self.decoder.decode(
-                    content=response.content,
-                    tool_calls=response.tool_calls
+                    content=response.content, tool_calls=response.tool_calls
                 )
             except Fault as f:
                 step_result.fault = f
@@ -531,32 +559,39 @@ class VCPU:
                 tool_calls_for_storage = []
                 for tc in response.tool_calls:
                     # Handle both object-style and dict-style tool calls
-                    if hasattr(tc, 'id'):
-                        tool_calls_for_storage.append({
-                            "id": tc.id,
-                            "type": getattr(tc, 'type', 'function'),
-                            "function": {
-                                "name": tc.function.name if hasattr(tc, 'function') else tc.get('function', {}).get('name', ''),
-                                "arguments": tc.function.arguments if hasattr(tc, 'function') else tc.get('function', {}).get('arguments', '{}')
+                    if hasattr(tc, "id"):
+                        tool_calls_for_storage.append(
+                            {
+                                "id": tc.id,
+                                "type": getattr(tc, "type", "function"),
+                                "function": {
+                                    "name": tc.function.name
+                                    if hasattr(tc, "function")
+                                    else tc.get("function", {}).get("name", ""),
+                                    "arguments": tc.function.arguments
+                                    if hasattr(tc, "function")
+                                    else tc.get("function", {}).get("arguments", "{}"),
+                                },
                             }
-                        })
+                        )
                     else:
                         # Already a dict
                         tool_calls_for_storage.append(tc)
 
                 self.mmu.add_assistant_with_tool_calls(
-                    content=response.content,
-                    tool_calls=tool_calls_for_storage
+                    content=response.content, tool_calls=tool_calls_for_storage
                 )
+            elif response.content:
+                # Add text-only assistant message (Implicit Return / Thought)
+                self.mmu.add_assistant_message(response.content)
 
             # Emit action events
             for action in actions:
-                self._emit_event("ACTION_EMITTED", {
-                    "action_id": action.id,
-                    "kind": action.kind,
-                    "name": action.name
-                })
-                
+                self._emit_event(
+                    "ACTION_EMITTED",
+                    {"action_id": action.id, "kind": action.kind, "name": action.name},
+                )
+
                 # Log action plan
                 if action.kind == "TOOL_CALL":
                     # Create a summarized args string for logging
@@ -565,7 +600,7 @@ class VCPU:
                         args_summary = args_summary[:197] + "..."
                     logger.info(f"Plan: Call tool '{action.name}' with args: {args_summary}")
                 elif action.kind == "THOUGHT":
-                    pass # Already logged thought above/below
+                    pass  # Already logged thought above/below
                 else:
                     logger.info(f"Plan: Action {action.kind} ({action.name})")
 
@@ -597,7 +632,7 @@ class VCPU:
                 code="SYSTEM_ERROR",
                 message=str(e),
                 retryable=False,
-                context={"exception_type": type(e).__name__}
+                context={"exception_type": type(e).__name__},
             )
 
         step_result.timing_ms["total"] = (time.time_ns() - start_time) // 1_000_000
@@ -621,9 +656,9 @@ class VCPU:
         """
         handlers = {
             "TOOL_CALL": self._handle_tool_call,
-            "SUB_CALL": self._handle_sub_call,
             "RETURN": self._handle_return,
-            "THOUGHT": self._handle_thought,
+            # Treat THOUGHT as implicit RETURN (Natural conversation)
+            "THOUGHT": self._handle_return,
             "POST_IPC": self._handle_post_ipc,
             "REQUEST_REPLAN": self._handle_request_replan,
             "CANCEL": self._handle_cancel,
@@ -637,8 +672,8 @@ class VCPU:
                     domain="KERNEL",
                     code="ILL_INSTRUCTION",
                     message=f"Unknown action kind: {action.kind}",
-                    retryable=False
-                )
+                    retryable=False,
+                ),
             )
 
         try:
@@ -648,16 +683,19 @@ class VCPU:
             return result
         except Exception as e:
             from nimbus.core.logging import get_logger
+
             logger = get_logger("kernel.vcpu")
-            logger.error(f"Exception in handler for {action.kind}/{action.name}: {e}", exc_info=True)
+            logger.error(
+                f"Exception in handler for {action.kind}/{action.name}: {e}", exc_info=True
+            )
             return ToolResult(
                 status="ERROR",
                 fault=Fault(
                     domain="KERNEL",
                     code="HANDLER_ERROR",
                     message=f"Handler error: {e}",
-                    retryable=False
-                )
+                    retryable=False,
+                ),
             )
 
     async def _handle_tool_error(
@@ -665,32 +703,32 @@ class VCPU:
     ) -> Optional[ToolResult]:
         """
         Smart Error Handler: 使用注册的 error handlers 尝试恢复工具调用错误。
-        
+
         类似操作系统的错误处理机制：
         - Tool 层只抛出错误（如 ENOENT）
         - Error Handler Registry 根据错误类型决定恢复策略
-        
+
         恢复策略类型（由 ErrorHandlerRegistry 管理）：
         1. inject_hint: 注入提示消息给 LLM
         2. auto_tool: 自动执行恢复工具（如 ls 列目录）
         3. modify_args: 修改参数后重试
         4. skip: 不干预，让 LLM 自己处理
-        
+
         Args:
             action: 失败的 ActionIR
             result: 包含错误信息的 ToolResult
-            
+
         Returns:
             恢复后的 ToolResult，如果无法恢复则返回 None
         """
         from nimbus.core.logging import get_logger
-        
+
         logger = get_logger("kernel.vcpu.error_handler")
         fault = result.fault
-        
+
         if not fault:
             return None
-        
+
         # 使用 ErrorHandlerRegistry 处理错误
         recovery = await self._error_registry.handle_error(
             fault_message=fault.message,
@@ -698,58 +736,64 @@ class VCPU:
             args=action.args,
             workspace=None,  # TODO: 获取 workspace 路径
         )
-        
+
         if recovery is None:
             return None
-        
+
         # 执行恢复动作
         return await self._execute_recovery(action, result, recovery, logger)
-    
+
     async def _execute_recovery(
-        self, 
+        self,
         original_action: ActionIR,
         original_result: ToolResult,
         recovery: RecoveryAction,
-        logger
+        logger,
     ) -> Optional[ToolResult]:
         """
         执行错误恢复动作。
-        
+
         Args:
             original_action: 原始失败的 action
             original_result: 原始失败的结果
             recovery: 恢复动作
             logger: 日志器
-            
+
         Returns:
             恢复后的 ToolResult，或 None（让原始错误传播）
         """
         if recovery.action_type == "skip":
             # 不干预
             return None
-        
+
         if recovery.action_type == "inject_hint":
-            # 注入提示作为 tool result（而非 system message）
-            # 这样保持对话流的完整性：LLM 的 tool_call 会收到一个 tool result
+            # 策略调整：不再隐藏错误，而是将 Hint 追加到错误消息后
             if recovery.hint:
-                # 构造错误消息 + 提示
-                error_with_hint = f"[ERROR] {original_result.fault.message if original_result.fault else 'Tool failed'}\n\n{recovery.hint}"
-                self.mmu.add_tool_result(original_action.id, original_action.name, error_with_hint)
-                logger.info(f"🔧 Injected hint as tool result for {original_action.name}: {recovery.hint[:80]}...")
-                # 返回一个特殊结果，告诉 caller 不要再添加 tool result
+                # 构造增强的输出：原始错误 + Hint
+                # Gate 已标准化错误输出（包含 [Error] 前缀），直接使用即可
+                error_msg = (
+                    str(original_result.output)
+                    if original_result.output
+                    else f"[Error] {original_result.fault.message}"
+                )
+                enhanced_output = f"{error_msg}\n\n{recovery.hint}"
+
+                logger.info(f"🔧 Enhancing error output with hint: {recovery.hint[:50]}...")
+
+                # 返回修改后的结果（Status 仍为 ERROR，但 Output 包含更有用的信息）
                 return ToolResult(
                     status="ERROR",
-                    output=error_with_hint,
+                    output=enhanced_output,
                     fault=original_result.fault,
-                    meta={"recovery_handled": True}  # 标记已处理
+                    # 不再设置 recovery_handled，让 caller 正常添加到 Memory
                 )
             return None
-        
+
         if recovery.action_type == "auto_tool":
             # 自动执行恢复工具
             if recovery.auto_tool and recovery.auto_args:
                 logger.info(f"🔧 Auto-executing recovery tool: {recovery.auto_tool}")
-                
+
                 # 创建恢复 action
                 recovery_action = ActionIR(
                     kind="TOOL_CALL",
@@ -758,40 +802,43 @@ class VCPU:
                     args=recovery.auto_args,
                     meta={"recovery_for": original_action.name},
                 )
-                
+
                 # 执行恢复工具
                 recovery_result = await self.gate.syscall_tool(
-                    recovery_action,
-                    timeout_sec=self.config.default_timeout
+                    recovery_action, timeout_sec=self.config.default_timeout
                 )
-                
-                # 组合错误消息、提示和恢复结果作为 tool result
-                error_msg = f"[ERROR] {original_result.fault.message if original_result.fault else 'Tool failed'}"
-                combined_message = error_msg
+
+                # 组合错误消息、提示和恢复结果
+                error_msg = (
+                    str(original_result.output)
+                    if original_result.output
+                    else f"[Error] {original_result.fault.message}"
+                )
+                parts = [error_msg]
+
                 if recovery.hint:
-                    combined_message += f"\n\n{recovery.hint}"
+                    parts.append(f"(Hint: {recovery.hint})")
+
                 if recovery_result.output:
-                    combined_message += f"\n\n{recovery_result.output}"
-                
-                # 注入为 tool result 而非 system message
-                self.mmu.add_tool_result(original_action.id, original_action.name, combined_message)
-                logger.info(f"🔧 Recovery result injected as tool result: {combined_message[:100]}...")
-                
-                # 返回一个特殊结果，告诉 caller 不要再添加 tool result
+                    parts.append(f"\n[Auto-Recovery Output]:\n{recovery_result.output}")
+
+                combined_message = "\n".join(parts)
+                logger.info("🔧 Enhancing error output with auto-recovery result")
+
                 return ToolResult(
                     status="ERROR",
                     output=combined_message,
                     fault=original_result.fault,
-                    meta={"recovery_handled": True}  # 标记已处理
+                    # 不再设置 recovery_handled，让 caller 正常添加到 Memory
                 )
-            
+
             return None
-        
+
         if recovery.action_type == "modify_args":
             # 修改参数后重试
             if recovery.modified_args:
                 logger.info(f"🔧 Retrying {original_action.name} with modified args")
-                
+
                 # 创建修改后的 action
                 new_action = ActionIR(
                     kind=original_action.kind,
@@ -800,73 +847,70 @@ class VCPU:
                     args={**original_action.args, **recovery.modified_args},
                     meta={**(original_action.meta or {}), "modified_by_recovery": True},
                 )
-                
+
                 # 重新执行
                 new_result = await self.gate.syscall_tool(
-                    new_action,
-                    timeout_sec=self.config.default_timeout
+                    new_action, timeout_sec=self.config.default_timeout
                 )
-                
+
                 if new_result.status == "OK":
                     # 成功！清除失败计数
                     self._error_registry.clear_failure(original_action.name, original_action.args)
-                    
+
                     # 添加说明
                     if new_result.output:
-                        new_result.output = (
-                            f"[Recovered with modified args]\n{new_result.output}"
-                        )
+                        new_result.output = f"[Recovered with modified args]\n{new_result.output}"
                     return new_result
-            
+
             return None  # 修改后仍然失败
-        
+
         return None
-    
-    async def _handle_empty_result(self, action: ActionIR, result: ToolResult) -> Optional[ToolResult]:
+
+    async def _handle_empty_result(
+        self, action: ActionIR, result: ToolResult
+    ) -> Optional[ToolResult]:
         """
         处理"成功但无结果"的情况（如 Glob/Grep 无匹配）。
-        
+
         这些情况 status=OK，但 LLM 可能会陷入重复尝试。
         我们使用 ErrorHandlerRegistry 来提供智能恢复提示。
-        
+
         如果同一工具失败次数过多，直接返回错误终止。
-        
+
         Args:
             action: 执行的 action
             result: 工具执行结果
-            
+
         Returns:
             如果需要覆盖原结果，返回新的 ToolResult；否则返回 None
         """
         from nimbus.core.logging import get_logger
-        from nimbus.core.runtime.error_handler import ToolErrorCode
-        
+
         logger = get_logger("kernel.vcpu.error_handler")
-        
+
         # 检查是否是"无结果"的情况
         output = str(result.output) if result.output else ""
-        
-        is_no_match = (
-            action.name in ("Glob", "Grep") and
-            ("no match" in output.lower() or "matched nothing" in output.lower())
+
+        is_no_match = action.name in ("Glob", "Grep") and (
+            "no match" in output.lower() or "matched nothing" in output.lower()
         )
-        
+
         if not is_no_match:
             # 有结果，清除失败计数
             self._error_registry.clear_failure(action.name, action.args)
             self._tool_failure_counts[action.name] = 0  # Reset tool-level count
             return None
-        
+
         # 记录工具级别的失败（不管参数如何）
         self._tool_failure_counts[action.name] = self._tool_failure_counts.get(action.name, 0) + 1
         tool_failures = self._tool_failure_counts[action.name]
-        
+
         logger.debug(f"🔧 {action.name} no-match count: {tool_failures}/{self._max_tool_failures}")
-        
+
         # 如果同一工具失败过多次，强制终止
         if tool_failures >= self._max_tool_failures:
             logger.warning(f"🛑 {action.name} failed {tool_failures} times, forcing termination")
-            
+
             # 返回一个错误，强制 LLM 改变策略
             return ToolResult(
                 status="ERROR",
@@ -885,10 +929,10 @@ class VCPU:
                     domain="RUNTIME",
                     code="EXCESSIVE_FAILURES",
                     message=f"{action.name} returned no matches {tool_failures} consecutive times",
-                    retryable=False
-                )
+                    retryable=False,
+                ),
             )
-        
+
         # 使用 error handler 处理
         recovery = await self._error_registry.handle_error(
             fault_message="No matches found",
@@ -896,12 +940,12 @@ class VCPU:
             args=action.args,
             workspace=None,
         )
-        
+
         if recovery and recovery.action_type == "auto_tool":
             # 自动执行恢复工具
             if recovery.auto_tool and recovery.auto_args:
                 logger.info(f"🔧 Auto-executing recovery for no-match: {recovery.auto_tool}")
-                
+
                 recovery_action = ActionIR(
                     kind="TOOL_CALL",
                     name=recovery.auto_tool,
@@ -909,27 +953,26 @@ class VCPU:
                     args=recovery.auto_args,
                     meta={"recovery_for": action.name},
                 )
-                
+
                 recovery_result = await self.gate.syscall_tool(
-                    recovery_action,
-                    timeout_sec=self.config.default_timeout
+                    recovery_action, timeout_sec=self.config.default_timeout
                 )
-                
+
                 # 组合提示和结果
                 combined = ""
                 if recovery.hint:
                     combined += recovery.hint + "\n\n"
                 if recovery_result.output:
                     combined += str(recovery_result.output)
-                
+
                 if combined:
                     self.mmu.add_system_message(combined)
                     logger.info(f"🔧 Recovery hint injected for {action.name}")
-        
+
         elif recovery and recovery.action_type == "inject_hint" and recovery.hint:
             self.mmu.add_system_message(recovery.hint)
             logger.info(f"🔧 Hint injected for no-match: {recovery.hint[:80]}...")
-        
+
         return None  # 继续使用原始结果
 
     async def _handle_tool_call(self, action: ActionIR) -> ToolResult:
@@ -951,15 +994,13 @@ class VCPU:
         """
         # Auto-repair tool name if needed (learned from opencode's llm.ts)
         # Only repair built-in tools; custom tools pass through unchanged
-        original_name = action.name
         canonical_name = TOOL_NAME_CANONICAL.get(action.name.lower())
 
         if canonical_name and canonical_name != action.name:
             # Log the repair for built-in tools
-            self._emit_event("TOOL_NAME_REPAIRED", {
-                "original": action.name,
-                "repaired": canonical_name
-            })
+            self._emit_event(
+                "TOOL_NAME_REPAIRED", {"original": action.name, "repaired": canonical_name}
+            )
             # Create a new action with the corrected name
             action = ActionIR(
                 kind=action.kind,
@@ -973,14 +1014,17 @@ class VCPU:
 
         # Check for doom loop BEFORE executing (using DoomLoopDetector)
         doom_result = self._doom_detector.check(action.name, action.args)
-        
+
         if doom_result.is_loop:
             # Doom loop detected!
-            self._emit_event("DOOM_LOOP_DETECTED", {
-                "tool": action.name,
-                "args": action.args,
-                "consecutive_count": doom_result.consecutive_count
-            })
+            self._emit_event(
+                "DOOM_LOOP_DETECTED",
+                {
+                    "tool": action.name,
+                    "args": action.args,
+                    "consecutive_count": doom_result.consecutive_count,
+                },
+            )
 
             # Return a recoverable error using FailureReporter
             return ToolResult(
@@ -995,8 +1039,8 @@ class VCPU:
                     domain="RUNTIME",
                     code="DOOM_LOOP",
                     message=f"Operation failed: {action.name} unsuccessful after {doom_result.consecutive_count} attempts",
-                    retryable=False
-                )
+                    retryable=False,
+                ),
             )
 
         # Execute the tool
@@ -1014,28 +1058,27 @@ class VCPU:
             if empty_override is not None:
                 result = empty_override  # Use error result to force behavior change
 
-        # Update memory with tool result (skip if already handled by recovery)
-        if not (result.meta and result.meta.get("recovery_handled")):
-            output_str = str(result.output) if result.output is not None else ""
-            if result.fault:
-                output_str = f"[Error] {result.fault.message}"
+        # Update memory with tool result
+        # Logic update: Prioritize result.output if available (even for errors),
+        # as it might contain enhanced error messages/hints from recovery.
+        output_str = str(result.output) if result.output is not None else ""
 
-            # Inject hint for state-modifying tools on success - append to tool result
-            # This reminds LLM to call return_result after Edit/Write (actual state changes)
-            # Note: Bash is excluded because it's often used for read operations (ls, grep, etc.)
-            # and we don't want to mislead the LLM when Bash output reveals infrastructure issues
-            if action.name in ("Edit", "Write") and result.status == "OK":
-                output_str += (
-                    "\n\n[IMPORTANT] File modified successfully. "
-                    "If your task is complete, call return_result immediately with a summary. "
-                    "Do NOT call more tools to verify - trust the success message above."
-                )
+        # Only fallback to raw fault message if output is empty
+        if result.fault and not output_str:
+            output_str = f"[Error] {result.fault.message}"
 
-            self.mmu.add_tool_result(
-                tool_call_id=action.id,
-                name=action.name,
-                content=output_str
+        # Inject hint for state-modifying tools on success - append to tool result
+        # This reminds LLM to call return_result after Edit/Write (actual state changes)
+        # Note: Bash is excluded because it's often used for read operations (ls, grep, etc.)
+        # and we don't want to mislead the LLM when Bash output reveals infrastructure issues
+        if action.name in ("Edit", "Write") and result.status == "OK":
+            output_str += (
+                "\n\n[IMPORTANT] File modified successfully. "
+                "If your task is complete, call return_result immediately with a summary. "
+                "Do NOT call more tools to verify - trust the success message above."
             )
+
+        self.mmu.add_tool_result(tool_call_id=action.id, name=action.name, content=output_str)
 
         # Reset consecutive thoughts counter on tool call
         self._state.on_action()
@@ -1044,128 +1087,36 @@ class VCPU:
 
         return result
 
-    async def _handle_sub_call(self, action: ActionIR) -> ToolResult:
-        """
-        Handle SUB_CALL action by pushing a new frame.
-
-        Creates a new stack frame for the subprocess and recursively
-        executes the subgoal.
-        """
-        # Check recursion depth
-        if self.mmu.stack_depth >= self.config.max_sub_call_depth:
-            return ToolResult(
-                status="ERROR",
-                fault=Fault(
-                    domain="RESOURCE",
-                    code="BUDGET_EXCEEDED",
-                    message=f"Maximum sub-call depth ({self.config.max_sub_call_depth}) exceeded",
-                    retryable=False
-                )
-            )
-
-        # Get the goal from action
-        goal = action.args.get("goal", action.name)
-
-        # Push new frame
-        frame_id = self.mmu.push_frame(goal, meta={"action_id": action.id})
-
-        self._emit_event("PROC_SPAWNED", {
-            "frame_id": frame_id,
-            "goal": goal,
-            "depth": self.mmu.stack_depth
-        })
-
-        # Add goal as user message in new frame
-        self.mmu.add_user_message(goal)
-
-        # Continue execution in this frame (recursive Think-Act-Observe)
-        # The execution will continue until a RETURN is encountered
-        return ToolResult(status="OK", output=f"Started subtask: {goal}")
-
     async def _handle_return(self, action: ActionIR) -> ToolResult:
         """
-        Handle RETURN action by popping the current frame.
+        Handle RETURN action (and implicit RETURN via THOUGHT).
 
-        Returns the result to the parent frame or finalizes execution
-        if at root frame.
+        Returns the result and finalizes execution.
         """
-        result = action.args.get("result", action.args.get("output", ""))
-
-        if self.mmu.is_root_frame:
-            # At root frame - this is the final result
-            self._emit_event("PROC_FINISHED", {
-                "result": str(result)[:200],  # Truncate for event
-                "is_final": True
-            })
-
-            return ToolResult(
-                status="OK",
-                output=result,
-                is_final=True
-            )
-        else:
-            # Pop frame and return to parent
-            self.mmu.pop_frame(result)
-
-            self._emit_event("PROC_FINISHED", {
-                "result": str(result)[:200],
-                "is_final": False
-            })
-
-            return ToolResult(status="OK", output=f"Subtask completed: {result}")
-
-    async def _handle_thought(self, action: ActionIR) -> ToolResult:
-        """
-        Handle THOUGHT action by recording to memory.
-
-        Thoughts are internal reasoning that don't produce side effects.
-
-        Auto-return: If consecutive thoughts reach the limit, treat the last
-        thought as a final result. This handles cases where the LLM responds
-        with text instead of calling return_result.
-        """
-        thought_text = action.args.get("text", "")
-
-        # Add thought as assistant message
-        self.mmu.add_assistant_message(thought_text)
-
-        # Track consecutive thoughts
-        self._consecutive_thoughts += 1
-        
-        from nimbus.core.logging import get_logger
-        logger = get_logger("kernel.vcpu")
-        logger.info(f"Thought processed. Count: {self._consecutive_thoughts}/{self.config.max_consecutive_thoughts}")
-
-        # Check if this thought looks like a final answer (heuristic)
-        # If it doesn't suggest using tools, and it's long enough, it might be an answer
-        # This is a bit aggressive but helps with LLMs that refuse to call return_result
-        is_likely_answer = (
-            len(thought_text) > 10 and 
-            "tool" not in thought_text.lower() and 
-            "call" not in thought_text.lower()
+        # Support various argument names for flexibility
+        # 'result'/'output': from explicit RETURN tool call
+        # 'content'/'text': from implicit THOUGHT action
+        result = action.args.get(
+            "result",
+            action.args.get("output", action.args.get("content", action.args.get("text", ""))),
         )
 
-        # Auto-return if too many consecutive thoughts without tool calls
-        # This is a safety net for LLMs that don't follow instructions
-        if self._consecutive_thoughts >= self.config.max_consecutive_thoughts:
-            self._emit_event("AUTO_RETURN", {
-                "reason": "max_consecutive_thoughts",
-                "thought_count": self._consecutive_thoughts,
-                "result": thought_text[:200]
-            })
-            self._consecutive_thoughts = 0
-            
-            # If we are auto-returning, we should reset the thought counter
-            # so we don't get into a loop of auto-returns if the user continues chatting
-            
-            # Treat the last thought as final result
-            return ToolResult(
-                status="OK",
-                output=thought_text,
-                is_final=True
-            )
+        self._emit_event(
+            "PROC_FINISHED",
+            {
+                "result": str(result)[:200],  # Truncate for event
+                "is_final": True,
+            },
+        )
 
-        return ToolResult(status="OK", output="Thought recorded")
+        return ToolResult(
+            status="OK",
+            output=result,
+            is_final=True,
+            meta={"streamed": action.kind == "THOUGHT"},
+        )
+
+    # _handle_thought removed (mapped to _handle_return for implicit return)
 
     async def _handle_post_ipc(self, action: ActionIR) -> ToolResult:
         """
@@ -1176,9 +1127,10 @@ class VCPU:
         """
         channel = action.args.get("channel", "default")
         key = action.args.get("key", action.id)
-        
+
         # Log but don't execute (IPC was removed)
         from nimbus.core.logging import get_logger
+
         logger = get_logger("kernel.vcpu")
         logger.debug(f"POST_IPC called (no-op): {channel}:{key}")
 
@@ -1192,9 +1144,10 @@ class VCPU:
         for compatibility but does nothing. Re-implement if actually needed.
         """
         reason = action.args.get("reason", {})
-        
+
         # Log but don't execute (replan was removed)
         from nimbus.core.logging import get_logger
+
         logger = get_logger("kernel.vcpu")
         logger.debug(f"REQUEST_REPLAN called (no-op): {reason}")
 
@@ -1213,126 +1166,112 @@ class VCPU:
             status="CANCELLED",
             output=reason,
             is_final=True,
-            fault=Fault(
-                domain="KERNEL",
-                code="SYSTEM_ERROR",
-                message=reason,
-                retryable=False
-            )
+            fault=Fault(domain="KERNEL", code="SYSTEM_ERROR", message=reason, retryable=False),
         )
 
     # =========================================================================
     # Compaction
     # =========================================================================
-    
-    def set_compaction_callback(
-        self, callback: Callable[[], Awaitable[bool]]
-    ) -> None:
+
+    def set_compaction_callback(self, callback: Callable[[], Awaitable[bool]]) -> None:
         """
         Set a callback for memory compaction.
-        
+
         The callback should:
         1. Summarize and compress the MMU's context
         2. Return True if compaction succeeded, False otherwise
-        
+
         This is typically set by AgentOS to use the CompactionEngine.
-        
+
         Args:
             callback: Async function that performs compaction
         """
         self._compaction_callback = callback
-    
+
     async def _do_compaction(self) -> bool:
         """
         Trigger memory compaction.
-        
+
         If a callback is set, use it. Otherwise, use MMU's built-in compression.
-        
+
         Returns:
             True if compaction succeeded
         """
         self._compaction_count += 1
-        
-        self._emit_event("COMPACTION_START", {
-            "iteration": self._iteration,
-            "compaction_count": self._compaction_count,
-        })
-        
+
+        self._emit_event(
+            "COMPACTION_START",
+            {
+                "iteration": self._iteration,
+                "compaction_count": self._compaction_count,
+            },
+        )
+
         try:
             if self._compaction_callback:
                 # Use external compaction (e.g., AgentOS CompactionEngine)
                 success = await self._compaction_callback()
             else:
-                # Use MMU's built-in compression
-                success = self._compact_mmu()
-            
-            self._emit_event("COMPACTION_END", {
-                "success": success,
-                "compaction_count": self._compaction_count,
-            })
-            
+                # Use MMU's built-in compression (now async)
+                success = await self._compact_mmu()
+
+            self._emit_event(
+                "COMPACTION_END",
+                {
+                    "success": success,
+                    "compaction_count": self._compaction_count,
+                },
+            )
+
             return success
-            
+
         except Exception as e:
             from nimbus.core.logging import get_logger
+
             get_logger("kernel.vcpu").error(f"Compaction failed: {e}")
-            self._emit_event("COMPACTION_END", {
-                "success": False,
-                "error": str(e),
-            })
+            self._emit_event(
+                "COMPACTION_END",
+                {
+                    "success": False,
+                    "error": str(e),
+                },
+            )
             return False
-    
-    def _compact_mmu(self) -> bool:
+
+    async def _compact_mmu(self) -> bool:
         """
-        Use MMU's built-in compression as fallback.
-        
-        This generates a simple summary of older messages and replaces them.
-        If there aren't enough messages to compress, we still return True
-        to allow the iteration counter to reset (the goal is to prevent
-        infinite loops, not necessarily to reduce memory).
+        Use MMU's built-in compression (Archive & Reset).
+
+        New Strategy (v2):
+        Instead of summarizing in-memory (which degrades quality), we
+        ARCHIVE the current context to disk and RESET the frame.
+
+        This effectively gives us "Infinite Context" via file storage.
         """
         from nimbus.core.logging import get_logger
+
         logger = get_logger("kernel.vcpu")
-        
+
         try:
-            # Get all messages from current frame
-            if not self.mmu._stack:
-                return True  # No stack, but allow reset
-            
-            frame = self.mmu._stack[-1]
-            messages = frame.messages
-            
-            if len(messages) < self.mmu.config.keep_recent_messages * 2:
-                # Not enough messages to compress, but still allow iteration reset
-                logger.info(f"MMU: Only {len(messages)} messages, skipping compression but allowing reset")
+            # 1. Get session_id for file organization
+            session_id = "unknown"
+            # Try to get from ALU client
+            if hasattr(self.alu, "_client") and hasattr(self.alu._client, "session_id"):
+                session_id = self.alu._client.session_id
+
+            # 2. Archive and Reset
+            archive_path = await self.mmu.archive_and_reset(session_id)
+
+            if archive_path:
+                logger.info(f"🗄️ Memory compaction successful: Context archived to {archive_path}")
                 return True
-            
-            # Keep recent messages, summarize older ones
-            keep_count = self.mmu.config.keep_recent_messages
-            older = messages[:-keep_count]
-            recent = messages[-keep_count:]
-            
-            # Generate summary using MMU's summarizer
-            summary = self.mmu._summarize_messages(older)
-            
-            # Create summary message
-            from nimbus.core.memory.context import Message
-            summary_msg = Message(
-                role="system",
-                content=f"[Context Summary - {len(older)} messages compressed]\n{summary}",
-                meta={"compressed": True, "original_count": len(older)}
+
+            # Fallback: If archiving failed (e.g. no messages), just return True to allow reset
+            logger.warning(
+                "Memory archiving skipped (no messages?), but proceeding with cycle reset"
             )
-            
-            # Replace messages in frame
-            frame.messages = [summary_msg] + recent
-            
-            logger.info(
-                f"MMU compaction: {len(older)} messages → 1 summary, "
-                f"kept {len(recent)} recent"
-            )
-            
             return True
-            
+
         except Exception as e:
             logger.error(f"MMU compaction failed: {e}")
             return False
@@ -1345,7 +1284,7 @@ class VCPU:
         """Reset execution state for a new run."""
         # Reset centralized state
         self._state.reset()
-        
+
         # Reset extracted components
         self._doom_detector.reset()
         self._error_registry.reset()
@@ -1353,27 +1292,28 @@ class VCPU:
     async def _prepare_goal_for_pinning(self, goal: str) -> str:
         """
         Prepare goal for pinning.
-        
+
         If goal is short enough, use as-is.
         If too long, use LLM to summarize while preserving language.
-        
+
         Args:
             goal: The original user goal
-            
+
         Returns:
             Goal suitable for pinning (original or summarized)
         """
         if len(goal) <= self.config.goal_max_length:
             return goal
-        
+
         # Goal is too long, summarize with LLM
         from nimbus.core.logging import get_logger
+
         logger = get_logger("kernel.vcpu")
-        
+
         try:
             # Detect user's language for the prompt
-            has_chinese = any('\u4e00' <= c <= '\u9fff' for c in goal)
-            
+            has_chinese = any("\u4e00" <= c <= "\u9fff" for c in goal)
+
             if has_chinese:
                 prompt = f"""请用一句话总结用户的核心请求（保持中文，不超过100字）：
 
@@ -1388,25 +1328,25 @@ Original:
 {goal[:1000]}...
 
 One sentence summary:"""
-            
+
             # Use LLM to summarize
             messages = [{"role": "user", "content": prompt}]
             response = await self._alu.complete(messages, tools=[])
-            
+
             if response.content:
                 summary = response.content.strip()
                 # Ensure summary is actually shorter
                 if len(summary) < len(goal):
                     logger.info(f"Goal summarized: {len(goal)} → {len(summary)} chars")
                     return summary
-            
+
             # Fallback: truncate
             logger.warning("Goal summarization failed, using truncation")
-            return goal[:self.config.goal_max_length] + "..."
-            
+            return goal[: self.config.goal_max_length] + "..."
+
         except Exception as e:
             logger.error(f"Goal summarization error: {e}")
-            return goal[:self.config.goal_max_length] + "..."
+            return goal[: self.config.goal_max_length] + "..."
 
     async def _generate_llm_failure_response(
         self,
@@ -1420,11 +1360,13 @@ One sentence summary:"""
             recent_errors = []
             for msg in self.mmu.assemble_context()[-6:]:  # Last few messages
                 content = msg.get("content", "")
-                if isinstance(content, str) and ("error" in content.lower() or "failed" in content.lower()):
+                if isinstance(content, str) and (
+                    "error" in content.lower() or "failed" in content.lower()
+                ):
                     recent_errors.append(content[:200])
-            
+
             error_context = "\n".join(recent_errors[-3:]) if recent_errors else fault.message
-            
+
             # Create a focused prompt for the LLM
             prompt = f"""You tried to help the user with this task but encountered repeated failures.
 
@@ -1444,41 +1386,43 @@ Be conversational and helpful, not robotic. Don't use bullet points or formattin
             # Call LLM without tools to get a simple text response
             response = await self.alu.chat(
                 [{"role": "user", "content": prompt}],
-                tools=None  # No tools, just generate text
+                tools=None,  # No tools, just generate text
             )
-            
+
             if response.content:
                 return response.content.strip()
             else:
                 # Fallback to template if LLM returns empty
                 return self._generate_graceful_failure_report(goal, fault, iterations)
-                
+
         except Exception as e:
             # If LLM call fails, use template fallback
             from nimbus.core.logging import get_logger
+
             logger = get_logger("kernel.vcpu")
             logger.warning(f"Failed to generate LLM failure response: {e}")
             return self._generate_graceful_failure_report(goal, fault, iterations)
 
     def _generate_graceful_failure_report(
-        self, 
-        goal: str, 
+        self,
+        goal: str,
         fault: Fault,
         iterations: int,
     ) -> str:
         """Generate a natural, conversational failure report."""
-        
+
         # Extract key info from fault context
         context = fault.context or {}
-        tool_name = context.get("tool", "")
-        
+        context.get("tool", "")
+
         # Check for common error patterns and generate natural responses
         error_msg = fault.message.lower()
-        
+
         # File not found
         if "not found" in error_msg or "no such file" in error_msg:
             # Try to extract filename from the error
             import re
+
             file_match = re.search(r'[\'"]?([^\'"]+\.\w+)[\'"]?', fault.message)
             filename = file_match.group(1) if file_match else "the file"
             return (
@@ -1486,42 +1430,42 @@ Be conversational and helpful, not robotic. Don't use bullet points or formattin
                 f"The file might not exist, or the path could be incorrect. "
                 f"Would you like me to search for similar files?"
             )
-        
+
         # Permission denied
         if "permission" in error_msg or "access denied" in error_msg:
             return (
-                f"I don't have permission to access that resource. "
-                f"You may need to check the file permissions or run with elevated privileges."
+                "I don't have permission to access that resource. "
+                "You may need to check the file permissions or run with elevated privileges."
             )
-        
+
         # Timeout
         if fault.code == "TIMEOUT":
             return (
-                f"The operation took too long and timed out. "
-                f"This might be because the resource is slow or unavailable. "
-                f"Would you like me to try a different approach?"
+                "The operation took too long and timed out. "
+                "This might be because the resource is slow or unavailable. "
+                "Would you like me to try a different approach?"
             )
-        
+
         # Doom loop (repeated failures)
         if fault.code == "DOOM_LOOP":
             # Try to give context-specific advice
             if "Read" in str(context.get("tool", "")):
                 return (
-                    f"I tried to read the file multiple times but it doesn't seem to exist. "
-                    f"Would you like me to list the files in that directory to help find the right one?"
+                    "I tried to read the file multiple times but it doesn't seem to exist. "
+                    "Would you like me to list the files in that directory to help find the right one?"
                 )
             elif "Edit" in str(context.get("tool", "")):
                 return (
-                    f"I couldn't make the edit - the text I was looking for might have changed. "
-                    f"Would you like me to show you the current file content?"
+                    "I couldn't make the edit - the text I was looking for might have changed. "
+                    "Would you like me to show you the current file content?"
                 )
             else:
                 return (
-                    f"I tried this operation several times without success. "
-                    f"The approach I was using doesn't seem to be working. "
-                    f"Could you provide more details or suggest an alternative approach?"
+                    "I tried this operation several times without success. "
+                    "The approach I was using doesn't seem to be working. "
+                    "Could you provide more details or suggest an alternative approach?"
                 )
-        
+
         # Generic fallback - still conversational
         return (
             f"I ran into some trouble completing this task. "
@@ -1535,11 +1479,13 @@ Be conversational and helpful, not robotic. Don't use bullet points or formattin
             return
 
         if self.gate.events:
-            self.gate.events.emit(Event(
-                type=event_type,  # type: ignore
-                pid=self.gate.pid,
-                data=data
-            ))
+            self.gate.events.emit(
+                Event(
+                    type=event_type,  # type: ignore
+                    pid=self.gate.pid,
+                    data=data,
+                )
+            )
 
     # =========================================================================
     # State Accessors (delegating to ExecutionState)
@@ -1568,88 +1514,88 @@ Be conversational and helpful, not robotic. Don't use bullet points or formattin
             "mmu_state": self.mmu.get_state(),
             "doom_loop_count": self._doom_detector.loop_count,
         }
-    
+
     # =========================================================================
     # Legacy Compatibility Properties (accessing _state internally)
     # These will be removed in a future version.
     # =========================================================================
-    
+
     @property
     def _iteration(self) -> int:
         return self._state.iteration
-    
+
     @_iteration.setter
     def _iteration(self, value: int) -> None:
         self._state.iteration = value
-    
+
     @property
     def _consecutive_thoughts(self) -> int:
         return self._state.consecutive_thoughts
-    
+
     @_consecutive_thoughts.setter
     def _consecutive_thoughts(self, value: int) -> None:
         self._state.consecutive_thoughts = value
-    
+
     @property
     def _is_running(self) -> bool:
         return self._state.is_running
-    
+
     @_is_running.setter
     def _is_running(self, value: bool) -> None:
         self._state.is_running = value
-    
+
     @property
     def _is_done(self) -> bool:
         return self._state.is_done
-    
+
     @_is_done.setter
     def _is_done(self, value: bool) -> None:
         self._state.is_done = value
-    
+
     @property
     def _final_result(self) -> Optional[ToolResult]:
         return self._state.final_result
-    
+
     @_final_result.setter
     def _final_result(self, value: Optional[ToolResult]) -> None:
         self._state.final_result = value
-    
+
     @property
     def _compaction_count(self) -> int:
         return self._state.compaction_count
-    
+
     @_compaction_count.setter
     def _compaction_count(self, value: int) -> None:
         self._state.compaction_count = value
-    
+
     @property
     def _consecutive_errors(self) -> int:
         return self._state.consecutive_errors
-    
+
     @_consecutive_errors.setter
     def _consecutive_errors(self, value: int) -> None:
         self._state.consecutive_errors = value
-    
+
     @property
     def _consecutive_empty_responses(self) -> int:
         return self._state.consecutive_empty_responses
-    
+
     @_consecutive_empty_responses.setter
     def _consecutive_empty_responses(self, value: int) -> None:
         self._state.consecutive_empty_responses = value
-    
+
     @property
     def _tool_failure_counts(self) -> Dict[str, int]:
         return self._state.tool_failure_counts
-    
+
     @_tool_failure_counts.setter
     def _tool_failure_counts(self, value: Dict[str, int]) -> None:
         self._state.tool_failure_counts = value
-    
+
     @property
     def _doom_loop_count(self) -> int:
         return self._doom_detector.loop_count
-    
+
     @property
     def _recent_tool_calls(self) -> List[Tuple[str, str]]:
         return self._doom_detector.recent_calls
@@ -1657,21 +1603,20 @@ Be conversational and helpful, not robotic. Don't use bullet points or formattin
     def _dump_context_to_file(self, messages: List[Dict[str, Any]], iteration: int) -> None:
         """
         Dump full context to a JSON file for debugging.
-        
+
         Enabled by setting NIMBUS_DUMP_CONTEXT environment variable.
         Files are written to .logs/context/ directory.
         """
         import json
-        import os
         from datetime import datetime
         from pathlib import Path
-        
+
         dump_dir = Path(".logs/context")
         dump_dir.mkdir(parents=True, exist_ok=True)
-        
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = dump_dir / f"context_{timestamp}_iter{iteration:03d}.json"
-        
+
         # Prepare dump data
         dump_data = {
             "timestamp": datetime.now().isoformat(),
@@ -1685,10 +1630,11 @@ Be conversational and helpful, not robotic. Don't use bullet points or formattin
                 "stack_depth": self.mmu.stack_depth,
             },
         }
-        
+
         with open(filename, "w", encoding="utf-8") as f:
             json.dump(dump_data, f, ensure_ascii=False, indent=2)
-        
+
         from nimbus.core.logging import get_logger
+
         logger = get_logger("kernel.vcpu")
         logger.info(f"📝 Context dumped to {filename}")

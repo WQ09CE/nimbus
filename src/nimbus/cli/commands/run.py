@@ -10,11 +10,11 @@ Usage:
 """
 
 import asyncio
-import sys
 from pathlib import Path
 from typing import Optional
 
 import typer
+
 
 def run_command(
     instruction: str = typer.Argument(
@@ -23,12 +23,14 @@ def run_command(
     ),
     model: str = typer.Option(
         "anthropic/claude-sonnet-4-20250514",
-        "--model", "-m",
+        "--model",
+        "-m",
         help="Model to use (provider/model format)",
     ),
     workspace: Optional[Path] = typer.Option(
         None,
-        "--workspace", "-w",
+        "--workspace",
+        "-w",
         help="Working directory (defaults to current directory)",
     ),
     max_iterations: int = typer.Option(
@@ -38,7 +40,8 @@ def run_command(
     ),
     verbose: bool = typer.Option(
         False,
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         help="Enable verbose output",
     ),
     json_output: bool = typer.Option(
@@ -49,10 +52,10 @@ def run_command(
 ) -> None:
     """
     Execute a single task in one-shot mode.
-    
+
     This command creates an agent, runs the task, and exits.
     Designed for automation and benchmarking (e.g., Terminal-Bench).
-    
+
     Examples:
         nimbus run "list all Python files"
         nimbus run --model openai/gpt-4 "fix the syntax error"
@@ -61,37 +64,39 @@ def run_command(
     import json
     import logging
     from datetime import datetime
-    
+
     # Setup logging
     if verbose:
         logging.basicConfig(level=logging.DEBUG)
     else:
         logging.basicConfig(level=logging.WARNING)
-    
+
     # Resolve workspace
     work_dir = workspace or Path.cwd()
     work_dir = work_dir.resolve()
-    
+
     if not work_dir.exists():
         typer.echo(f"Error: Workspace does not exist: {work_dir}", err=True)
         raise typer.Exit(1)
-    
-    typer.echo(f"🚀 Nimbus Run Mode", err=True)
+
+    typer.echo("🚀 Nimbus Run Mode", err=True)
     typer.echo(f"   Model: {model}", err=True)
     typer.echo(f"   Workspace: {work_dir}", err=True)
     typer.echo(f"   Max iterations: {max_iterations}", err=True)
     typer.echo(f"   Task: {instruction[:100]}{'...' if len(instruction) > 100 else ''}", err=True)
     typer.echo("", err=True)
-    
+
     # Run the task
-    result = asyncio.run(_run_task(
-        instruction=instruction,
-        model=model,
-        workspace=work_dir,
-        max_iterations=max_iterations,
-        verbose=verbose,
-    ))
-    
+    result = asyncio.run(
+        _run_task(
+            instruction=instruction,
+            model=model,
+            workspace=work_dir,
+            max_iterations=max_iterations,
+            verbose=verbose,
+        )
+    )
+
     if json_output:
         output = {
             "status": result["status"],
@@ -121,17 +126,17 @@ async def _run_task(
 ) -> dict:
     """Run a single task asynchronously."""
     import os
-    
+
     # Change to workspace directory
     original_dir = os.getcwd()
     os.chdir(workspace)
-    
+
     try:
         # Import here to avoid circular imports
-        from nimbus.agentos import AgentOS, AgentOSConfig
         from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+        from nimbus.agentos import AgentOS, AgentOSConfig
         from nimbus.core.runtime.vcpu import VCPUConfig
-        
+
         # Create LLM adapter using pi-ai HTTP service
         pi_url = os.environ.get("PI_AI_URL", "http://localhost:3031")
         pi_config = PiLLMConfig(
@@ -139,10 +144,10 @@ async def _run_task(
             model=model,
         )
         llm = PiLLMAdapter(pi_config)
-        
+
         # Start the adapter
         await llm.start()
-        
+
         try:
             # Create AgentOS config with max_iterations
             vcpu_config = VCPUConfig(max_iterations=max_iterations)
@@ -150,26 +155,28 @@ async def _run_task(
                 vcpu_config=vcpu_config,
                 workspace_info=f"Workspace: {workspace}",
             )
-            
+
             # Create agent with default tools
             from nimbus.tools import register_default_tools
+
             agent = AgentOS(llm_client=llm, config=config)
             register_default_tools(agent, workspace=workspace)
-            
+
             # Run the task
             result = await agent.run(instruction)
-            
+
             return {
                 "status": result.status,
                 "output": result.output,
                 "error": str(result.fault) if result.fault else None,
-                "iterations": getattr(agent, '_iterations', 0),
+                "iterations": getattr(agent, "_iterations", 0),
             }
         finally:
             await llm.stop()
-        
+
     except Exception as e:
         import traceback
+
         return {
             "status": "ERROR",
             "error": str(e),

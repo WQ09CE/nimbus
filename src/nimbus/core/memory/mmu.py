@@ -41,17 +41,17 @@ Context Stack 提炼策略:
 3. 只有有价值的结论被合并到父 frame
 """
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Literal, Optional, Set
 
 from nimbus.core.memory.context import (
+    Message,
     PinnedContext,
     StackFrame,
-    Message,
     create_root_frame,
-    create_sub_frame,
 )
-
 
 # =============================================================================
 # Tool Call Value Markers (Simplified: keep/discard binary decision)
@@ -65,6 +65,7 @@ ToolCallValue = Literal["keep", "discard"]
 @dataclass
 class ToolCallMarker:
     """Tool call 的价值标记（简化版：二元决策）"""
+
     tool_call_id: str
     tool_name: str
     value: ToolCallValue  # "keep" or "discard"
@@ -87,9 +88,10 @@ class MMUConfig:
         auto_compact: 是否自动压缩上下文（建议关闭，保护 LLM 上下文完整性）
         remove_failed_tool_calls: 是否移除失败的 tool calls（释放 token 空间）
     """
-    max_context_tokens: int = 16000
-    pinned_budget: int = 2000
-    frame_budget: int = 8000
+
+    max_context_tokens: int = 200_000  # 200k tokens (Claude-3 standard)
+    pinned_budget: int = 4000  # Increased pinned budget
+    frame_budget: int = 190_000  # 95% for frames
     compress_threshold: float = 0.9  # Compress at 90% capacity
     keep_recent_messages: int = 10
     auto_extract_on_pop: bool = True  # Context Stack 提炼
@@ -104,7 +106,7 @@ class MMU:
 
     Manages the context window for a single process.
     Handles the call stack for SUB_CALL/RETURN operations.
-    
+
     **Context Stack 提炼功能**:
     - 自动检测失败的 tool calls
     - pop_frame 时提炼有价值内容
@@ -122,7 +124,7 @@ class MMU:
         mmu.push_frame("explore codebase")
         mmu.add_user_message("Find the auth module")
         # ... subprocess work (some tools fail, some succeed) ...
-        
+
         # pop_frame 自动提炼有价值内容
         result = mmu.pop_frame()  # 自动提取结论，丢弃失败的探索
 
@@ -149,10 +151,10 @@ class MMU:
 
         # Initialize with root frame
         self._stack.append(create_root_frame())
-        
+
         # Context Stack 提炼：Tool call 价值标记
         self._tool_markers: Dict[str, ToolCallMarker] = {}
-        
+
         # 每个 frame 的无价值 tool call IDs
         self._frame_discardable: Dict[str, Set[str]] = {}
 
@@ -199,19 +201,33 @@ class MMU:
         """
         if self._pinned is None:
             self._pinned = PinnedContext()
+
+        # Debug logging
+        from nimbus.core.logging import get_logger
+        logger = get_logger("memory.mmu")
+        logger.debug(f"Pinning user goal: {goal[:50]}...")
         
+        # Log existing anchors
+        for i, anchor in enumerate(self._pinned.custom_anchors):
+            logger.debug(f"Existing anchor [{i}]: {anchor[:50]}...")
+
         # Remove any existing goal anchor (identified by prefix)
         goal_prefix = "# Current Goal\n"
+        original_count = len(self._pinned.custom_anchors)
         self._pinned.custom_anchors = [
-            a for a in self._pinned.custom_anchors 
-            if not a.startswith(goal_prefix)
+            a for a in self._pinned.custom_anchors if not a.startswith(goal_prefix)
         ]
-        
+        removed = original_count - len(self._pinned.custom_anchors)
+        if removed > 0:
+            logger.debug(f"Removed {removed} old goal anchor(s)")
+        else:
+            logger.warning(f"No anchors removed! Prefix '{goal_prefix}' not found.")
+
         # Add new goal anchor
         self._pinned.custom_anchors.append(f"{goal_prefix}{goal}")
 
     # =========================================================================
-    # Stack Management (SUB_CALL / RETURN)
+    # Stack Management (Simplified: Single Frame)
     # =========================================================================
 
     @property
@@ -221,160 +237,13 @@ class MMU:
 
     @property
     def stack_depth(self) -> int:
-        """Get the current stack depth."""
-        return len(self._stack)
+        """Get the current stack depth (always 1 in flattened mode)."""
+        return 1
 
     @property
     def is_root_frame(self) -> bool:
-        """Check if currently in root frame."""
-        return len(self._stack) == 1
-
-    def push_frame(self, goal: str, meta: Optional[Dict[str, Any]] = None) -> str:
-        """
-        Push a new frame onto the stack (SUB_CALL).
-
-        Args:
-            goal: Goal for the new frame
-            meta: Additional metadata
-
-        Returns:
-            Frame ID of the new frame
-        """
-        parent_id = self.current_frame.frame_id
-        new_frame = create_sub_frame(parent_id, goal)
-        if meta:
-            new_frame.meta.update(meta)
-
-        # Suspend current frame
-        self.current_frame.state = "SUSPENDED"
-
-        # Push new frame
-        self._stack.append(new_frame)
-
-        return new_frame.frame_id
-
-    def pop_frame(
-        self,
-        result: Any = None,
-        extract_valuable: bool = True,
-    ) -> Optional[Any]:
-        """
-        Pop the current frame (RETURN) with Context Stack 提炼.
-
-        Args:
-            result: Result to pass back to parent frame (if None, auto-extract)
-            extract_valuable: 是否自动提取有价值内容（默认 True）
-
-        Returns:
-            The extracted/provided result, or None if at root frame
-            
-        Context Stack 提炼逻辑:
-        1. 如果 result 为 None 且 extract_valuable=True，自动提取有价值内容
-        2. 过滤被标记为 discard 的 tool calls
-        3. 只有结论和成功的操作被保留
-        """
-        if self.is_root_frame:
-            # Can't pop root frame
-            return None
-
-        frame = self._stack.pop()
-        frame_id = frame.frame_id
-        
-        # 如果没有提供 result，尝试自动提取
-        if result is None and extract_valuable and self.config.auto_extract_on_pop:
-            result = self._extract_valuable_content(frame)
-        
-        frame.complete(result)
-
-        # Resume parent frame
-        self.current_frame.state = "ACTIVE"
-
-        # 只添加精炼后的结果到父 frame
-        summary = self._format_frame_result(frame, result)
-        self.current_frame.add_assistant_message(summary)
-        
-        # 清理该 frame 的标记
-        if frame_id in self._frame_discardable:
-            del self._frame_discardable[frame_id]
-        
-        # 清理相关的 tool markers
-        markers_to_remove = [
-            tc_id for tc_id, marker in self._tool_markers.items()
-            if marker.tool_call_id in self._get_frame_tool_call_ids(frame)
-        ]
-        for tc_id in markers_to_remove:
-            del self._tool_markers[tc_id]
-
-        return result
-    
-    def _extract_valuable_content(self, frame: StackFrame) -> str:
-        """
-        从 frame 中提取有价值的内容。
-        
-        策略:
-        1. 过滤失败的 tool calls
-        2. 提取成功操作的结果
-        3. 提取助手的结论性陈述
-        """
-        valuable_parts = []
-        frame_id = frame.frame_id
-        discardable = self._frame_discardable.get(frame_id, set())
-        
-        # 收集有价值的 tool results
-        successful_tools = []
-        for msg in frame.messages:
-            if msg.role == "tool":
-                tool_call_id = msg.tool_call_id
-                # 检查是否被标记为无价值
-                if tool_call_id and tool_call_id not in discardable:
-                    content = msg.content if isinstance(msg.content, str) else ""
-                    # 检查是否是错误
-                    if not content.startswith("[Error]"):
-                        successful_tools.append({
-                            "name": msg.name,
-                            "result": content[:200] if len(content) > 200 else content
-                        })
-        
-        # 收集助手的结论
-        last_assistant_content = None
-        for msg in reversed(frame.messages):
-            if msg.role == "assistant" and not msg.tool_calls:
-                content = msg.content if isinstance(msg.content, str) else ""
-                if content:
-                    last_assistant_content = content
-                    break
-        
-        # 构建结果
-        if successful_tools:
-            tool_summary = "; ".join(
-                f"{t['name']}: {t['result'][:50]}..." 
-                for t in successful_tools[:3]  # 最多 3 个
-            )
-            valuable_parts.append(f"Successful operations: {tool_summary}")
-        
-        if last_assistant_content:
-            valuable_parts.append(f"Conclusion: {last_assistant_content[:300]}")
-        
-        if not valuable_parts:
-            return f"Completed task: {frame.goal}"
-        
-        return " | ".join(valuable_parts)
-    
-    def _format_frame_result(self, frame: StackFrame, result: Any) -> str:
-        """格式化 frame 结果为消息"""
-        return f"[Subtask completed] {frame.goal}\nResult: {result}"
-    
-    def _get_frame_tool_call_ids(self, frame: StackFrame) -> Set[str]:
-        """获取 frame 中所有的 tool call IDs"""
-        ids = set()
-        for msg in frame.messages:
-            if msg.tool_call_id:
-                ids.add(msg.tool_call_id)
-            if msg.tool_calls:
-                for tc in msg.tool_calls:
-                    if isinstance(tc, dict) and "id" in tc:
-                        ids.add(tc["id"])
-        return ids
+        """Check if currently in root frame (always True)."""
+        return True
 
     def get_frame(self, frame_id: str) -> Optional[StackFrame]:
         """Get a frame by ID."""
@@ -412,15 +281,15 @@ class MMU:
     def add_tool_result(self, tool_call_id: str, name: str, content: str) -> None:
         """Add a tool result to the current frame."""
         self.current_frame.add_tool_result(tool_call_id, name, content)
-        
+
         # 自动检测失败
         if self.config.auto_detect_failures:
             self._auto_detect_tool_failure(tool_call_id, name, content)
-    
+
     # =========================================================================
     # Context Stack 提炼 - Tool Call 标记
     # =========================================================================
-    
+
     def mark_tool_call(
         self,
         tool_call_id: str,
@@ -430,7 +299,7 @@ class MMU:
     ) -> None:
         """
         标记 tool call 的价值（简化版：二元决策）。
-        
+
         Args:
             tool_call_id: Tool call ID
             value: 价值标记 ("keep" or "discard")
@@ -444,7 +313,7 @@ class MMU:
             reason=reason,
         )
         self._tool_markers[tool_call_id] = marker
-        
+
         frame_id = self.current_frame.frame_id
         if value == "discard":
             # 添加到当前 frame 的 discardable 集合 (Legacy support)
@@ -468,7 +337,7 @@ class MMU:
                     found = True
                     if value == "discard":
                         msg.meta["discard"] = True
-                        
+
                         # 向前搜索对应的 assistant message
                         for j in range(i - 1, -1, -1):
                             prev = messages[j]
@@ -487,12 +356,12 @@ class MMU:
                     else:
                         msg.meta.pop("discard", None)
                         # 注意：暂不支持从 assistant message 中移除 discard 标记（复杂且少见）
-                    
-                    break # 只处理最新的一个匹配项
-            
+
+                    break  # 只处理最新的一个匹配项
+
             if found:
                 break
-    
+
     def mark_recent_tool_calls(
         self,
         value: ToolCallValue,
@@ -502,19 +371,19 @@ class MMU:
     ) -> int:
         """
         批量标记最近的 tool calls。
-        
+
         Args:
             value: 价值标记 ("keep" or "discard")
             count: 标记数量
             tool_names: 只标记这些工具（可选）
             reason: 标记原因
-        
+
         Returns:
             实际标记的数量
         """
         marked = 0
         tool_results = []
-        
+
         # 收集当前 frame 的 tool results
         for msg in reversed(self.current_frame.messages):
             if msg.role == "tool" and msg.tool_call_id:
@@ -522,23 +391,23 @@ class MMU:
                     tool_results.append((msg.tool_call_id, msg.name or ""))
                     if len(tool_results) >= count:
                         break
-        
+
         # 标记
         for tool_call_id, tool_name in tool_results:
             self.mark_tool_call(tool_call_id, value, reason, tool_name)
             marked += 1
-        
+
         return marked
-    
+
     def get_tool_markers(self) -> Dict[str, ToolCallMarker]:
         """获取所有 tool call 标记"""
         return self._tool_markers.copy()
-    
+
     def get_discardable_count(self) -> int:
         """获取当前 frame 中被标记为无价值的 tool call 数量"""
         frame_id = self.current_frame.frame_id
         return len(self._frame_discardable.get(frame_id, set()))
-    
+
     def _auto_detect_tool_failure(
         self,
         tool_call_id: str,
@@ -546,42 +415,30 @@ class MMU:
         content: str,
     ) -> bool:
         """
-        自动检测 tool call 是否失败（结构化检测，减少误判）。
-        
-        设计原则（per expert review）：
-        - 只检测明确的错误，避免关键词误判
-        - "not found" 等可能是正常结果（如 grep 空结果）
-        - 基于错误前缀和工具特定规则
-        
-        Returns:
-            是否检测到失败
+        自动检测 tool call 是否失败。
+
+        设计原则 (v2 Refactor):
+        - Explicit > Implicit: 只检测明确的错误标记，不进行内容猜测。
+        - 依赖 vCPU/Tool 层的异常捕获产生的明确错误前缀。
         """
-        # 1. 明确的错误前缀（最可靠）
+        # 1. 明确的错误前缀（由 vCPU 或工具层添加）
+        # 这是最可靠的信号：vCPU 捕获异常后会添加 [Error]
         if content.startswith("[Error]") or content.startswith("Error:"):
             self.mark_tool_call(tool_call_id, "discard", "error_prefix", tool_name)
             return True
-        
-        # 2. 工具特定的失败检测
-        if tool_name == "Read":
-            # Read 工具：文件不存在是明确失败
-            # [Fixed] 移除 loose check，防止误判源码内容（如 vcpu.py 包含 ENOENT 字符串）
-            # Read 工具抛出异常时会由 vcpu 添加 [Error] 前缀，已被上方逻辑捕获
-            pass
-        
-        if tool_name == "Bash":
-            # Bash 工具：检查是否有异常标记
-            if "Exception" in content or "Traceback" in content:
-                self.mark_tool_call(tool_call_id, "discard", "exception", tool_name)
-                return True
-        
-        # 3. 通用异常检测（保守）
-        if "Exception:" in content or "Traceback (most recent call last)" in content:
+
+        # 2. 结构化异常检测
+        # 检测 Python Traceback，这是明确的执行失败
+        if "Traceback (most recent call last):" in content:
             self.mark_tool_call(tool_call_id, "discard", "exception", tool_name)
             return True
-        
-        # 不再使用模糊的关键词检测，避免误判
+
+        # 移除所有基于关键词（如 ENOENT, No such file）的启发式检测。
+        # 理由：代码文件本身可能包含这些字符串，导致误判。
+        # 真正的"文件未找到"会由工具抛出 FileNotFoundError，被 vCPU 捕获并添加 [Error] 前缀。
+
         return False
-    
+
     def clear_markers(self) -> None:
         """清除所有标记"""
         self._tool_markers.clear()
@@ -590,44 +447,44 @@ class MMU:
     def rollback_incomplete_turn(self) -> int:
         """
         回滚未完成的对话轮次。
-        
+
         当用户中断任务时，需要移除：
         1. 最后一个 assistant 消息（如果有未完成的 tool calls）
         2. 对应的 tool result 消息
-        
+
         这样下一个用户消息不会和未完成的状态混在一起。
-        
+
         Returns:
             移除的消息数量
         """
         if not self._stack:
             return 0
-        
+
         frame = self.current_frame
         messages = frame._messages
-        
+
         if not messages:
             return 0
-        
+
         removed = 0
-        
+
         # 从后往前找，移除未完成的 turn
         # 一个完整的 turn: user → assistant (with tool_calls) → tool results → assistant (final)
         # 未完成的 turn: user → assistant (with tool_calls) → tool results (可能不完整)
-        
+
         while messages:
             last_msg = messages[-1]
-            
+
             # 如果最后是 user 消息，说明没有未完成的 turn
             if last_msg.role == "user":
                 break
-            
+
             # 如果是 tool 消息，移除它
             if last_msg.role == "tool":
                 messages.pop()
                 removed += 1
                 continue
-            
+
             # 如果是 assistant 消息
             if last_msg.role == "assistant":
                 # 如果有 tool_calls 但没有对应的 tool results，移除这个 assistant 消息
@@ -637,15 +494,16 @@ class MMU:
                     continue
                 # 如果是纯文本 assistant 消息，停止回滚
                 break
-            
+
             # 其他情况，停止
             break
-        
+
         if removed > 0:
             from nimbus.core.logging import get_logger
+
             logger = get_logger("memory.mmu")
             logger.info(f"🔙 Rolled back {removed} incomplete messages")
-        
+
         return removed
 
     # =========================================================================
@@ -697,16 +555,16 @@ class MMU:
             frame_messages = frame.to_context_messages()
             all_frame_messages.extend(frame_messages)
 
-        # 3. Context Stack 提炼：过滤失败的 tool calls（释放 token 空间）
-        # 只有 remove_failed_tool_calls=True 且调用者没有禁用时才过滤
-        if self.config.remove_failed_tool_calls and filter_discardable:
-            all_frame_messages = self._filter_discardable_messages(all_frame_messages)
+        # 3. Context Stack 提炼：Lazy Compaction 策略
+        # 默认保留所有历史（包括失败尝试），让 LLM 从错误中学习。
+        # 只有在 Token 预算紧张触发压缩时，才考虑过滤无价值消息。
 
         # Estimate tokens
         frame_tokens = sum(msg.token_estimate() for msg in all_frame_messages)
 
         # Debug: log token usage
         from nimbus.core.logging import get_logger
+
         logger = get_logger("memory.mmu")
         logger.debug(
             f"📊 Token budget: max={max_tokens}, pinned={token_count}, "
@@ -719,20 +577,31 @@ class MMU:
             for msg in all_frame_messages:
                 messages.append(msg.to_dict())
         else:
-            # Over budget - check if auto_compact is enabled
-            from nimbus.core.logging import get_logger
-            logger = get_logger("memory.mmu")
-            
+            # Over budget - Apply compaction strategies
+
+            # Strategy 1: First try filtering discardable messages (failed tools)
+            if self.config.remove_failed_tool_calls and filter_discardable:
+                logger.info("🧹 Compaction Level 1: Removing failed tool calls")
+                filtered_messages = self._filter_discardable_messages(all_frame_messages)
+                filtered_tokens = sum(msg.token_estimate() for msg in filtered_messages)
+
+                if filtered_tokens <= remaining_budget:
+                    for msg in filtered_messages:
+                        messages.append(msg.to_dict())
+                    return messages
+
+                # If still over budget, use filtered messages for next step
+                all_frame_messages = filtered_messages
+                frame_tokens = filtered_tokens
+
+            # Strategy 2: Compress frames (summarize older frames)
             if self.config.auto_compact:
-                # Auto-compact enabled: compress to fit
                 logger.warning(
-                    f"🗜️ Context auto-compress triggered: {frame_tokens} tokens > {remaining_budget} budget. "
-                    f"Keeping {self.config.keep_recent_messages} recent messages."
+                    f"🗜️ Compaction Level 2: Summarizing frames. {frame_tokens} tokens > {remaining_budget} budget."
                 )
                 messages.extend(self._compress_frames(remaining_budget))
             else:
-                # Auto-compact disabled: keep all messages, let LLM work with full context
-                # This may exceed budget but preserves context integrity
+                # Auto-compact disabled: keep all messages
                 logger.warning(
                     f"⚠️ Context exceeds budget: {frame_tokens} tokens > {remaining_budget} budget. "
                     f"Auto-compact disabled, keeping full context for LLM."
@@ -741,23 +610,23 @@ class MMU:
                     messages.append(msg.to_dict())
 
         return messages
-    
+
     def _filter_discardable_messages(
         self,
         messages: List[Message],
     ) -> List[Message]:
         """
         过滤被标记为无价值的消息。
-        
+
         策略:
         1. 移除被标记的 tool result 消息
         2. 从 assistant 消息中移除对应的 tool_calls
         """
         # 注意：不再依赖 discardable_ids 集合过滤，因为会导致 ID 冲突误删
         # 改用 Message.meta 标记进行精确过滤
-        
+
         filtered: List[Message] = []
-        
+
         for msg in messages:
             if msg.role == "tool":
                 # 跳过被标记的 tool results
@@ -766,29 +635,115 @@ class MMU:
                 filtered.append(msg)
             elif msg.role == "assistant" and msg.tool_calls:
                 discard_list = msg.meta.get("discard_tool_calls", [])
-                
+
                 if discard_list:
                     # 过滤 assistant 消息中的 tool_calls
                     filtered_calls = [
-                        tc for tc in msg.tool_calls
-                        if tc.get("id") not in discard_list
+                        tc for tc in msg.tool_calls if tc.get("id") not in discard_list
                     ]
-                    
+
                     # 如果还有 tool_calls 或有 content，保留消息
                     if filtered_calls or msg.content:
                         # 创建新消息，保留 meta
-                        filtered.append(Message(
-                            role=msg.role,
-                            content=msg.content,
-                            tool_calls=filtered_calls if filtered_calls else None,
-                            meta=msg.meta,
-                        ))
+                        filtered.append(
+                            Message(
+                                role=msg.role,
+                                content=msg.content,
+                                tool_calls=filtered_calls if filtered_calls else None,
+                                meta=msg.meta,
+                            )
+                        )
                 else:
                     filtered.append(msg)
             else:
                 filtered.append(msg)
-        
+
         return filtered
+
+    async def archive_and_reset(self, session_id: str) -> Optional[str]:
+        """
+        Archive current frame context to file and reset it.
+
+        This implements the "Infinite Context via Disk" strategy.
+        When context is full:
+        1. Write current messages to a file
+        2. Create a summary pointer
+        3. Clear current frame messages
+        4. Insert pointer as system message
+
+        Args:
+            session_id: Session ID for file organization
+
+        Returns:
+            Path to archive file if successful
+        """
+        from nimbus.core.logging import get_logger
+
+        logger = get_logger("memory.mmu")
+
+        if not self._stack:
+            return None
+
+        frame = self._stack[-1]
+        messages = frame.messages
+
+        if len(messages) == 0:
+            return None
+
+        # 1. Prepare archive path
+        # Use user home directory: ~/.nimbus/sessions/{session_id}/archive/
+        home = Path.home()
+        archive_dir = home / ".nimbus" / "sessions" / session_id / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"part_{timestamp}_{frame.frame_id[:8]}.md"
+        file_path = archive_dir / filename
+
+        # 2. Generate content
+        content = f"# Archive: {timestamp}\n\n"
+        content += f"## Goal: {frame.goal or 'Root'}\n\n"
+
+        for msg in messages:
+            role = msg.role.upper()
+            text = str(msg.content) if msg.content else ""
+            if msg.tool_calls:
+                text += f"\n[Tool Calls: {len(msg.tool_calls)}]"
+                for tc in msg.tool_calls:
+                    text += f"\n- {tc.get('function', {}).get('name', 'Unknown')}"
+
+            content += f"### {role}\n{text}\n\n"
+
+        # 3. Write to file
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            logger.info(f"🗄️ Archived {len(messages)} messages to {file_path}")
+        except Exception as e:
+            logger.error(f"Failed to archive memory: {e}")
+            return None
+
+        # 4. Reset Frame
+        # Create a pointer message
+        pointer_msg = Message(
+            role="system",
+            content=(
+                f"⚠️ [MEMORY ARCHIVED]\n"
+                f"Previous conversation history ({len(messages)} messages) has been archived to release memory.\n"
+                f"Archive Location: {file_path}\n"
+                f"Summary: The previous task steps have been saved. If you need to check details, use `Read` tool on the archive file."
+            ),
+            meta={"archived": True, "path": str(file_path)},
+        )
+
+        # Clear and set pointer
+        frame.messages = [pointer_msg]
+
+        # Also clear discardable markers for this frame as they refer to cleared messages
+        if frame.frame_id in self._frame_discardable:
+            del self._frame_discardable[frame.frame_id]
+
+        return str(file_path)
 
     def _compress_frames(self, budget: int) -> List[Dict[str, Any]]:
         """
@@ -809,7 +764,7 @@ class MMU:
 
         # Process frames from root to current
         for i, frame in enumerate(self._stack):
-            is_current = (i == len(self._stack) - 1)
+            is_current = i == len(self._stack) - 1
 
             if is_current:
                 # Keep recent messages from current frame
@@ -818,11 +773,13 @@ class MMU:
                     # Add summary of older messages
                     older = messages[:-keep_recent]
                     summary = self._summarize_messages(older)
-                    result.append(Message(
-                        role="system",
-                        content=f"[Earlier conversation summary]\n{summary}",
-                        meta={"compressed": True}
-                    ).to_dict())
+                    result.append(
+                        Message(
+                            role="system",
+                            content=f"[Earlier conversation summary]\n{summary}",
+                            meta={"compressed": True},
+                        ).to_dict()
+                    )
                     # Add recent messages
                     for msg in messages[-keep_recent:]:
                         result.append(msg.to_dict())
@@ -831,12 +788,18 @@ class MMU:
                         result.append(msg.to_dict())
             else:
                 # Summarize parent frames
-                summary = f"[Frame: {frame.goal}] (completed)" if frame.state == "COMPLETED" else f"[Frame: {frame.goal}] (suspended)"
-                result.append(Message(
-                    role="system",
-                    content=summary,
-                    meta={"compressed": True, "frame_id": frame.frame_id}
-                ).to_dict())
+                summary = (
+                    f"[Frame: {frame.goal}] (completed)"
+                    if frame.state == "COMPLETED"
+                    else f"[Frame: {frame.goal}] (suspended)"
+                )
+                result.append(
+                    Message(
+                        role="system",
+                        content=summary,
+                        meta={"compressed": True, "frame_id": frame.frame_id},
+                    ).to_dict()
+                )
 
         return result
 
@@ -846,7 +809,7 @@ class MMU:
 
         This is a placeholder - in production, you might use
         an LLM to create a proper summary.
-        
+
         IMPORTANT: Preserves user's language context to ensure LLM responds
         in the same language after compaction.
         """
@@ -855,7 +818,7 @@ class MMU:
 
         # Detect user's language from their messages
         user_language = self._detect_user_language(messages)
-        
+
         parts = []
         for msg in messages:
             role = msg.role
@@ -866,7 +829,7 @@ class MMU:
             parts.append(f"- [{role}] {content}")
 
         summary = "\n".join(parts[:5])  # Keep at most 5 summary items
-        
+
         # Add language context hint
         if user_language == "zh":
             return f"[用户使用中文交流，请用中文回复]\n{summary}"
@@ -876,33 +839,35 @@ class MMU:
             return f"[사용자가 한국어로 대화하고 있습니다. 한국어로 답변해주세요]\n{summary}"
         else:
             return summary
-    
+
     def _detect_user_language(self, messages: List[Message]) -> str:
         """
         Detect the primary language used by the user.
-        
+
         Returns: 'zh' for Chinese, 'ja' for Japanese, 'ko' for Korean, 'en' for others
         """
         import re
-        
+
         user_text = ""
         for msg in messages:
             if msg.role == "user":
                 content = msg.content if isinstance(msg.content, str) else str(msg.content)
                 user_text += content
-        
+
         if not user_text:
             return "en"
-        
+
         # Count character types
-        chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', user_text))
-        japanese_chars = len(re.findall(r'[\u3040-\u309f\u30a0-\u30ff]', user_text))  # Hiragana + Katakana
-        korean_chars = len(re.findall(r'[\uac00-\ud7af]', user_text))
+        chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", user_text))
+        japanese_chars = len(
+            re.findall(r"[\u3040-\u309f\u30a0-\u30ff]", user_text)
+        )  # Hiragana + Katakana
+        korean_chars = len(re.findall(r"[\uac00-\ud7af]", user_text))
         total_chars = len(user_text)
-        
+
         if total_chars == 0:
             return "en"
-        
+
         # If more than 10% of characters are CJK, detect as that language
         if chinese_chars / total_chars > 0.1:
             return "zh"
@@ -910,7 +875,7 @@ class MMU:
             return "ja"
         if korean_chars / total_chars > 0.1:
             return "ko"
-        
+
         return "en"
 
     # =========================================================================

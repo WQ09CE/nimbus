@@ -131,9 +131,7 @@ class Sandbox:
 
         # Check existence if required
         if must_exist and not resolved.exists():
-            raise FileNotFoundError(
-                f"Path does not exist: {resolved}"
-            )
+            raise FileNotFoundError(f"Path does not exist: {resolved}")
 
         return resolved
 

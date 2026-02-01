@@ -3,8 +3,8 @@
 import asyncio
 import logging
 import time
-from typing import List, Optional, Dict, Any, AsyncIterator
 from enum import IntEnum
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 
 class LogLevel(IntEnum):
@@ -30,26 +30,14 @@ class LogHub:
         self._buffer_size = buffer_size
         self._lock = asyncio.Lock()
 
-    def emit(
-        self,
-        level: str,
-        message: str,
-        logger_name: str = "",
-        **extra
-    ) -> None:
+    def emit(self, level: str, message: str, logger_name: str = "", **extra) -> None:
         """Send log to all subscribers."""
-        entry = {
-            "ts": time.time(),
-            "level": level,
-            "msg": message,
-            "logger": logger_name,
-            **extra
-        }
+        entry = {"ts": time.time(), "level": level, "msg": message, "logger": logger_name, **extra}
 
         # Add to buffer
         self._buffer.append(entry)
         if len(self._buffer) > self._buffer_size:
-            self._buffer = self._buffer[-self._buffer_size:]
+            self._buffer = self._buffer[-self._buffer_size :]
 
         # Send to all subscribers
         for queue in self._subscribers:
@@ -62,8 +50,7 @@ class LogHub:
         """Get recent logs."""
         min_level_num = getattr(LogLevel, min_level.upper(), LogLevel.INFO)
         filtered = [
-            e for e in self._buffer
-            if getattr(LogLevel, e["level"].upper(), 0) >= min_level_num
+            e for e in self._buffer if getattr(LogLevel, e["level"].upper(), 0) >= min_level_num
         ]
         return filtered[-count:]
 
@@ -117,7 +104,7 @@ def setup_log_hub_handler(hub: Optional[LogHub] = None) -> LogHubHandler:
     """Set up LogHub handler on root logger."""
     hub = hub or log_hub
     handler = LogHubHandler(hub)
-    handler.setFormatter(logging.Formatter('%(message)s'))
+    handler.setFormatter(logging.Formatter("%(message)s"))
 
     # Add to root logger
     root = logging.getLogger()

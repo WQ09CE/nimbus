@@ -17,7 +17,7 @@ def estimate_tokens(text: str) -> int:
         return 0
 
     # Count Chinese characters
-    chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+    chinese_chars = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
     other_chars = len(text) - chinese_chars
 
     # Chinese: ~1 token per 1.5 chars, Other: ~1 token per 3 chars

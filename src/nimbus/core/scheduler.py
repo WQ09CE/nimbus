@@ -50,7 +50,7 @@ VALID_TRANSITIONS: Dict[TaskState, List[TaskState]] = {
     "READY": ["RUNNING", "CANCELLED"],
     "RUNNING": ["SUCCEEDED", "FAILED", "CANCELLED"],
     "SUCCEEDED": [],  # Terminal state
-    "FAILED": [],     # Terminal state
+    "FAILED": [],  # Terminal state
     "CANCELLED": [],  # Terminal state
 }
 
@@ -69,6 +69,7 @@ def is_success_state(state: TaskState) -> bool:
 # Task Specification
 # =============================================================================
 
+
 @dataclass
 class TaskSpec:
     """
@@ -80,6 +81,7 @@ class TaskSpec:
         input: Input data for the task
         budget: Resource budget constraints (tokens, time, etc.)
     """
+
     goal: str
     process_role: str = ""
     input: Dict[str, Any] = field(default_factory=dict)
@@ -89,6 +91,7 @@ class TaskSpec:
 # =============================================================================
 # Task
 # =============================================================================
+
 
 @dataclass
 class Task:
@@ -106,6 +109,7 @@ class Task:
         started_at: Start timestamp (ms)
         finished_at: Completion timestamp (ms)
     """
+
     id: str
     spec: TaskSpec
     state: TaskState = "PENDING"
@@ -137,6 +141,7 @@ class Task:
 # DAG
 # =============================================================================
 
+
 @dataclass
 class DAG:
     """
@@ -148,6 +153,7 @@ class DAG:
         root_task_id: The root task that represents the overall goal
         created_at: Creation timestamp (ms)
     """
+
     id: str
     tasks: Dict[str, Task]
     root_task_id: str
@@ -170,6 +176,7 @@ class DAG:
 # Scheduler Configuration
 # =============================================================================
 
+
 @dataclass
 class SchedulerConfig:
     """
@@ -180,6 +187,7 @@ class SchedulerConfig:
         default_timeout: Default timeout for task execution (seconds)
         emit_events: Whether to emit lifecycle events
     """
+
     max_concurrent_tasks: int = 10
     default_timeout: float = 300.0
     emit_events: bool = True
@@ -188,6 +196,7 @@ class SchedulerConfig:
 # =============================================================================
 # Event Stream
 # =============================================================================
+
 
 class EventStream:
     """
@@ -234,6 +243,7 @@ TaskExecutor = Callable[[Task], Awaitable[ToolResult]]
 # =============================================================================
 # Scheduler
 # =============================================================================
+
 
 class Scheduler:
     """
@@ -347,8 +357,8 @@ class Scheduler:
                     domain="KERNEL",
                     code="SYSTEM_ERROR",
                     message=f"DAG not found: {dag_id}",
-                    retryable=False
-                )
+                    retryable=False,
+                ),
             )
 
         try:
@@ -359,7 +369,7 @@ class Scheduler:
                 if root_task and is_terminal_state(root_task.state):
                     return root_task.result or ToolResult(
                         status="OK" if is_success_state(root_task.state) else "ERROR",
-                        output="DAG completed"
+                        output="DAG completed",
                     )
 
                 # Get ready tasks
@@ -386,8 +396,8 @@ class Scheduler:
                     domain="KERNEL",
                     code="SYSTEM_ERROR",
                     message="DAG execution cancelled",
-                    retryable=True
-                )
+                    retryable=True,
+                ),
             )
 
     # =========================================================================
@@ -421,8 +431,7 @@ class Scheduler:
             if task.state == "PENDING":
                 # Check if all dependencies are satisfied
                 all_deps_succeeded = all(
-                    dag.tasks.get(dep_id) is not None
-                    and dag.tasks[dep_id].state == "SUCCEEDED"
+                    dag.tasks.get(dep_id) is not None and dag.tasks[dep_id].state == "SUCCEEDED"
                     for dep_id in task.depends_on
                 )
                 if all_deps_succeeded:
@@ -523,11 +532,8 @@ class Scheduler:
         task.result = ToolResult(
             status="CANCELLED",
             fault=Fault(
-                domain="KERNEL",
-                code="SYSTEM_ERROR",
-                message="Task was cancelled",
-                retryable=True
-            )
+                domain="KERNEL", code="SYSTEM_ERROR", message="Task was cancelled", retryable=True
+            ),
         )
 
         # Emit TASK_FINISHED event
@@ -675,9 +681,7 @@ class Scheduler:
         for task_id, task in dag.tasks.items():
             for dep_id in task.depends_on:
                 if dep_id not in dag.tasks:
-                    raise ValueError(
-                        f"Task {task_id} depends on non-existent task: {dep_id}"
-                    )
+                    raise ValueError(f"Task {task_id} depends on non-existent task: {dep_id}")
 
         # Check for cycles using topological sort
         visited: set = set()
@@ -730,8 +734,7 @@ class Scheduler:
                 async def run_task(t: Task) -> None:
                     try:
                         result = await asyncio.wait_for(
-                            executor(t),
-                            timeout=self.config.default_timeout
+                            executor(t), timeout=self.config.default_timeout
                         )
                         self.complete_task(dag.id, t.id, result)
                     except asyncio.TimeoutError:
@@ -744,9 +747,9 @@ class Scheduler:
                                     domain="RESOURCE",
                                     code="TIMEOUT",
                                     message=f"Task {t.id} timed out",
-                                    retryable=True
-                                )
-                            )
+                                    retryable=True,
+                                ),
+                            ),
                         )
                     except asyncio.CancelledError:
                         self.complete_task(
@@ -758,9 +761,9 @@ class Scheduler:
                                     domain="KERNEL",
                                     code="SYSTEM_ERROR",
                                     message="Task was cancelled",
-                                    retryable=True
-                                )
-                            )
+                                    retryable=True,
+                                ),
+                            ),
                         )
                     except Exception as e:
                         self.complete_task(
@@ -772,9 +775,9 @@ class Scheduler:
                                     domain="KERNEL",
                                     code="SYSTEM_ERROR",
                                     message=str(e),
-                                    retryable=False
-                                )
-                            )
+                                    retryable=False,
+                                ),
+                            ),
                         )
 
                 # Start task
@@ -784,8 +787,7 @@ class Scheduler:
         # Wait for at least one task to complete
         if self._running_tasks:
             done, _ = await asyncio.wait(
-                self._running_tasks.values(),
-                return_when=asyncio.FIRST_COMPLETED
+                self._running_tasks.values(), return_when=asyncio.FIRST_COMPLETED
             )
 
     def _cancel_downstream(self, dag: DAG, task_id: str) -> None:
@@ -811,8 +813,8 @@ class Scheduler:
                         domain="KERNEL",
                         code="SYSTEM_ERROR",
                         message=f"Dependency {task_id} failed",
-                        retryable=False
-                    )
+                        retryable=False,
+                    ),
                 )
 
                 # Emit event
@@ -835,8 +837,8 @@ class Scheduler:
                     domain="KERNEL",
                     code="SYSTEM_ERROR",
                     message="Root task not found",
-                    retryable=False
-                )
+                    retryable=False,
+                ),
             )
 
         if root_task.result:
@@ -851,8 +853,8 @@ class Scheduler:
                     domain="KERNEL",
                     code="SYSTEM_ERROR",
                     message=root_task.error or "Unknown error",
-                    retryable=False
-                )
+                    retryable=False,
+                ),
             )
         elif root_task.state == "CANCELLED":
             return ToolResult(
@@ -861,8 +863,8 @@ class Scheduler:
                     domain="KERNEL",
                     code="SYSTEM_ERROR",
                     message="DAG was cancelled",
-                    retryable=True
-                )
+                    retryable=True,
+                ),
             )
         else:
             return ToolResult(
@@ -871,8 +873,8 @@ class Scheduler:
                     domain="KERNEL",
                     code="SYSTEM_ERROR",
                     message=f"DAG incomplete, root task state: {root_task.state}",
-                    retryable=False
-                )
+                    retryable=False,
+                ),
             )
 
     def _emit_task_event(
@@ -885,22 +887,25 @@ class Scheduler:
         if not self.config.emit_events:
             return
 
-        self.events.emit(Event(
-            type=event_type,  # type: ignore
-            pid=dag_id,
-            data={
-                "dag_id": dag_id,
-                "task_id": task.id,
-                "task_state": task.state,
-                "task_goal": task.spec.goal,
-                "error": task.error,
-            }
-        ))
+        self.events.emit(
+            Event(
+                type=event_type,  # type: ignore
+                pid=dag_id,
+                data={
+                    "dag_id": dag_id,
+                    "task_id": task.id,
+                    "task_state": task.state,
+                    "task_goal": task.spec.goal,
+                    "error": task.error,
+                },
+            )
+        )
 
 
 # =============================================================================
 # Factory Functions
 # =============================================================================
+
 
 def create_dag(
     tasks: List[Task],

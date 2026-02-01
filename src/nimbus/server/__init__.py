@@ -9,8 +9,8 @@ This module provides:
 """
 
 from .app import create_app
-from .session import SessionManager
 from .permission import PermissionManager
+from .session import SessionManager
 from .sse import SSEHub
 
 __all__ = [

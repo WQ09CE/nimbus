@@ -8,9 +8,9 @@ This module provides:
 
 import asyncio
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
-from dataclasses import dataclass, field
 
 from .models import PermissionDecision
 
@@ -18,6 +18,7 @@ from .models import PermissionDecision
 @dataclass
 class PendingPermission:
     """A pending permission request waiting for user decision."""
+
     request_id: str
     session_id: str
     tool: str
@@ -44,15 +45,27 @@ class PermissionManager:
 
     # Tools that default to 'ask' permission
     DANGEROUS_TOOLS = {
-        "bash", "shell", "exec", "execute",
-        "write_file", "delete_file", "remove_file",
-        "rm", "rmdir", "mv", "move",
+        "bash",
+        "shell",
+        "exec",
+        "execute",
+        "write_file",
+        "delete_file",
+        "remove_file",
+        "rm",
+        "rmdir",
+        "mv",
+        "move",
     }
 
     # Tools that default to 'allow_always'
     SAFE_TOOLS = {
-        "read_file", "list_directory", "search",
-        "synthesize", "summarize", "analyze",
+        "read_file",
+        "list_directory",
+        "search",
+        "synthesize",
+        "summarize",
+        "analyze",
     }
 
     def __init__(self):
@@ -152,9 +165,7 @@ class PermissionManager:
         return False, request_id
 
     async def wait_for_permission(
-        self,
-        request_id: str,
-        timeout: float = 300.0
+        self, request_id: str, timeout: float = 300.0
     ) -> tuple[bool, PermissionDecision]:
         """
         Wait for a permission decision.
@@ -183,9 +194,7 @@ class PermissionManager:
                 self._pending.pop(request_id, None)
 
     async def resolve_permission(
-        self,
-        request_id: str,
-        decision: PermissionDecision
+        self, request_id: str, decision: PermissionDecision
     ) -> Optional[Dict[str, Any]]:
         """
         Resolve a pending permission request.
@@ -222,10 +231,7 @@ class PermissionManager:
                 "resolved_at": datetime.now(),
             }
 
-    def get_pending_requests(
-        self,
-        session_id: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+    def get_pending_requests(self, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Get all pending permission requests.
 
@@ -239,13 +245,15 @@ class PermissionManager:
         for pending in self._pending.values():
             if session_id and pending.session_id != session_id:
                 continue
-            requests.append({
-                "request_id": pending.request_id,
-                "session_id": pending.session_id,
-                "tool": pending.tool,
-                "args": pending.args,
-                "created_at": pending.created_at,
-            })
+            requests.append(
+                {
+                    "request_id": pending.request_id,
+                    "session_id": pending.session_id,
+                    "tool": pending.tool,
+                    "args": pending.args,
+                    "created_at": pending.created_at,
+                }
+            )
         return requests
 
     def cancel_pending(self, session_id: str) -> int:
@@ -321,6 +329,7 @@ class PermissionMiddleware:
             Tuple of (executed, result).
             executed is False if permission was denied.
         """
+
         # Define callback for SSE notification
         async def on_request(request_id: str, tool: str, args: Dict):
             if self.sse_hub:
@@ -331,13 +340,15 @@ class PermissionMiddleware:
                         "request_id": request_id,
                         "tool": tool,
                         "args": args,
-                    }
+                    },
                 )
 
         # Check permission
         allowed, request_id = await self.manager.check_permission(
-            session_id, tool, args,
-            on_permission_request=lambda rid, t, a: asyncio.create_task(on_request(rid, t, a))
+            session_id,
+            tool,
+            args,
+            on_permission_request=lambda rid, t, a: asyncio.create_task(on_request(rid, t, a)),
         )
 
         if allowed:

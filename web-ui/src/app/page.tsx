@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useChatStore } from "@/stores";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
+import { ChatList } from "@/components/chat/ChatList";
 import { DebugPanel } from "@/components/debug/DebugPanel";
 import { SessionPanel } from "@/components/session/SessionPanel";
 import { useAutoScroll, useScrollDetection } from "@/hooks/useAutoScroll";
@@ -161,43 +162,12 @@ export default function Home() {
         )}
 
         {/* Message list */}
-        <div className="space-y-6 max-w-4xl mx-auto">
-          {messages.map((msg) => (
-            <ChatMessage key={msg.id} message={msg} />
-          ))}
-
-          {/* Streaming message */}
-          {isStreaming && (
-            <>
-              {/* Real-time activity indicator (shown above message) */}
-              {currentActivity && (
-                <div className="flex items-center gap-3 text-gray-400 text-xs py-2 px-3 mb-2 bg-gray-900/30 rounded border border-gray-800/50">
-                  <span className="relative flex h-2 w-2">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
-                  </span>
-                  <span>{currentActivity}</span>
-                  {thinkingIteration !== null && thinkingIteration > 0 && (
-                    <span className="text-gray-600">
-                      (第 {thinkingIteration + 1} 轮)
-                    </span>
-                  )}
-                </div>
-              )}
-              
-              <ChatMessage
-                message={{
-                  id: "streaming",
-                  role: "assistant",
-                  content: streamingContent,
-                  toolCalls: streamingToolCalls.length > 0 ? streamingToolCalls : undefined,
-                  timestamp: Date.now(),
-                }}
-                isStreaming
-              />
-            </>
-          )}
-        </div>
+        <ChatList 
+            messages={messages}
+            isStreaming={isStreaming}
+            streamingContent={streamingContent}
+            streamingToolCalls={streamingToolCalls}
+        />
 
         <div ref={messagesEndRef} />
 
@@ -223,14 +193,34 @@ export default function Home() {
         )}
       </div>
 
+      {/* Working Indicator */}
+      {isStreaming && currentActivity && (
+        <div className="w-full px-6 pb-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
+           <div className="max-w-4xl mx-auto">
+             <div className="flex items-center gap-3 text-gray-400 text-xs py-2 px-3 bg-gray-900/80 rounded border border-gray-800/50 backdrop-blur-md shadow-lg border-l-4 border-l-blue-500">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                  </span>
+                  <span className="font-mono text-blue-300 font-medium tracking-wide">{currentActivity.toUpperCase()}</span>
+                  {thinkingIteration !== null && thinkingIteration > 0 && (
+                    <span className="text-gray-500 font-mono ml-auto">
+                      ITERATION {thinkingIteration + 1}
+                    </span>
+                  )}
+             </div>
+           </div>
+        </div>
+      )}
+
       {/* Input */}
       <ChatInput
         onSend={sendMessage}
         onInterrupt={interruptMessage}
-        disabled={isStreaming && !isInterrupting}
+        disabled={false} // Allow typing/queueing during streaming
         isStreaming={isStreaming}
         isInterrupting={isInterrupting}
-        placeholder="输入您的消息..."
+        placeholder={isStreaming ? "输入消息以排队..." : "输入您的消息..."}
       />
 
       {/* Debug Panel */}

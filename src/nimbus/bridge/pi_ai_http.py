@@ -11,16 +11,15 @@ Pi-AI HTTP Client
 
 Usage:
     client = PiAiHttpClient()
-    
+
     # 非流式调用
     result = await client.complete(messages, model="anthropic/claude-sonnet-4-20250514")
-    
+
     # 流式调用
     async for event in client.stream(messages):
         print(event)
 """
 
-import asyncio
 import json
 import logging
 import uuid
@@ -44,15 +43,17 @@ def _truncate(s: str, max_len: int = 200) -> str:
         return s
     return s[:max_len] + "..."
 
+
 # 默认配置
 DEFAULT_BASE_URL = "http://localhost:3031"
 DEFAULT_TIMEOUT = 120.0  # 秒
-DEFAULT_MODEL = "anthropic/claude-sonnet-4-20250514"
+DEFAULT_MODEL = "anthropic/claude-opus-4-5"
 
 
 @dataclass
 class Message:
     """消息"""
+
     role: str  # "system" | "user" | "assistant" | "tool"
     content: str | List[Dict[str, Any]]
     tool_call_id: Optional[str] = None
@@ -62,6 +63,7 @@ class Message:
 @dataclass
 class ToolCall:
     """工具调用"""
+
     id: str
     name: str
     arguments: Dict[str, Any]
@@ -70,6 +72,7 @@ class ToolCall:
 @dataclass
 class CompletionResult:
     """完成结果"""
+
     content: str
     tool_calls: List[ToolCall] = field(default_factory=list)
     model: str = ""
@@ -80,6 +83,7 @@ class CompletionResult:
 @dataclass
 class StreamEvent:
     """流式事件"""
+
     type: str  # "delta" | "tool_call" | "done" | "error"
     content: Optional[str] = None
     tool_call: Optional[ToolCall] = None
@@ -90,10 +94,10 @@ class StreamEvent:
 
 class PiAiHttpClient:
     """Pi-AI HTTP 客户端"""
-    
+
     # Class-level request counter for logging
     _request_counter: int = 0
-    
+
     def __init__(
         self,
         base_url: str = DEFAULT_BASE_URL,
@@ -107,34 +111,36 @@ class PiAiHttpClient:
         self._client: Optional[httpx.AsyncClient] = None
         # Session ID for logging - generate one if not provided
         self.session_id = session_id or f"sess_{uuid.uuid4().hex[:8]}"
-    
+
     async def __aenter__(self) -> "PiAiHttpClient":
         await self.start()
         return self
-    
+
     async def __aexit__(self, *args):
         await self.stop()
-    
+
     async def start(self):
         """启动客户端"""
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=self.timeout)
             from loguru import logger
+
             ts = _format_timestamp()
             logger.info(
                 f"[{ts}] [{self.session_id}] Pi-AI client started | "
                 f"url={self.base_url}, model={self.default_model}"
             )
-    
+
     async def stop(self):
         """停止客户端"""
         if self._client:
             await self._client.aclose()
             self._client = None
             from loguru import logger
+
             ts = _format_timestamp()
             logger.info(f"[{ts}] [{self.session_id}] Pi-AI client stopped")
-    
+
     async def health_check(self) -> bool:
         """健康检查"""
         try:
@@ -145,7 +151,7 @@ class PiAiHttpClient:
         except Exception as e:
             logger.warning(f"Health check failed: {e}")
             return False
-    
+
     async def list_models(self) -> List[Dict[str, str]]:
         """列出可用模型"""
         if self._client is None:
@@ -153,7 +159,7 @@ class PiAiHttpClient:
         resp = await self._client.get(f"{self.base_url}/v1/models")
         resp.raise_for_status()
         return resp.json().get("data", [])
-    
+
     def _build_request(
         self,
         messages: List[Message],
@@ -171,18 +177,18 @@ class PiAiHttpClient:
             if msg.name:
                 m["name"] = msg.name
             msg_list.append(m)
-        
+
         req = {
             "model": model or self.default_model,
             "messages": msg_list,
             "stream": stream,
         }
-        
+
         if tools:
             req["tools"] = tools
-        
+
         return req
-    
+
     async def complete(
         self,
         messages: List[Message],
@@ -192,15 +198,16 @@ class PiAiHttpClient:
         """非流式完成"""
         if self._client is None:
             await self.start()
-        
+
         # Increment request counter
         PiAiHttpClient._request_counter += 1
         req_id = PiAiHttpClient._request_counter
-        
+
         req = self._build_request(messages, model, tools, stream=False)
-        
+
         # Log request info
         from loguru import logger
+
         ts = _format_timestamp()
         msg_count = len(messages)
         tool_count = len(tools) if tools else 0
@@ -209,19 +216,19 @@ class PiAiHttpClient:
             f"[{ts}] [{self.session_id}] req#{req_id} → pi-ai | "
             f"messages={msg_count}, tools={tool_count}, last_role={last_role}"
         )
-        
+
         resp = await self._client.post(
             f"{self.base_url}/v1/chat/completions",
             json=req,
         )
         resp.raise_for_status()
         data = resp.json()
-        
+
         # Parse response
         choice = data.get("choices", [{}])[0]
         message = choice.get("message", {})
         finish_reason = choice.get("finish_reason", "stop")
-        
+
         # Enhanced logging
         ts = _format_timestamp()
         content_preview = message.get("content", "")
@@ -229,22 +236,22 @@ class PiAiHttpClient:
             content_preview = _truncate(content_preview, 100)
         tool_calls_raw = message.get("tool_calls", [])
         tool_names = [tc.get("function", {}).get("name", "?") for tc in tool_calls_raw]
-        
+
         # Detect if this is a return_result call
         is_final = "return_result" in tool_names
-        
+
         logger.info(
             f"[{ts}] [{self.session_id}] req#{req_id} ← pi-ai | "
             f"finish={finish_reason}, tools={tool_names or 'none'}, "
             f"content={repr(content_preview) if content_preview else 'none'}"
             f"{' [FINAL]' if is_final else ''}"
         )
-        
+
         # 解析响应
-        
+
         # 提取文本内容
         content = message.get("content", "")
-        
+
         # 提取工具调用
         tool_calls = []
         for tc in message.get("tool_calls", []):
@@ -255,12 +262,14 @@ class PiAiHttpClient:
                     args = json.loads(args)
                 except json.JSONDecodeError:
                     args = {}
-            tool_calls.append(ToolCall(
-                id=tc.get("id", ""),
-                name=func.get("name", ""),
-                arguments=args,
-            ))
-        
+            tool_calls.append(
+                ToolCall(
+                    id=tc.get("id", ""),
+                    name=func.get("name", ""),
+                    arguments=args,
+                )
+            )
+
         return CompletionResult(
             content=content,
             tool_calls=tool_calls,
@@ -268,7 +277,7 @@ class PiAiHttpClient:
             usage=data.get("usage", {}),
             finish_reason=choice.get("finish_reason", "stop"),
         )
-    
+
     async def stream(
         self,
         messages: List[Message],
@@ -278,15 +287,16 @@ class PiAiHttpClient:
         """流式完成"""
         if self._client is None:
             await self.start()
-        
+
         # Increment request counter
         PiAiHttpClient._request_counter += 1
         req_id = PiAiHttpClient._request_counter
-        
+
         req = self._build_request(messages, model, tools, stream=True)
-        
+
         # Log request info
         from loguru import logger
+
         ts = _format_timestamp()
         msg_count = len(messages)
         tool_count = len(tools) if tools else 0
@@ -294,18 +304,18 @@ class PiAiHttpClient:
             f"[{ts}] [{self.session_id}] req#{req_id} → pi-ai [STREAM] | "
             f"messages={msg_count}, tools={tool_count}"
         )
-        
+
         async with self._client.stream(
             "POST",
             f"{self.base_url}/v1/chat/completions",
             json=req,
         ) as resp:
             resp.raise_for_status()
-            
+
             async for line in resp.aiter_lines():
                 if not line:
                     continue
-                
+
                 # 解析 SSE
                 if line.startswith("event:"):
                     event_type = line[6:].strip()
@@ -314,7 +324,7 @@ class PiAiHttpClient:
                         data = json.loads(line[5:].strip())
                     except json.JSONDecodeError:
                         continue
-                    
+
                     # 根据事件类型处理
                     if event_type == "delta":
                         # 文本增量
@@ -323,7 +333,7 @@ class PiAiHttpClient:
                         content = delta.get("content", "")
                         if content:
                             yield StreamEvent(type="delta", content=content)
-                    
+
                     elif event_type == "tool_call":
                         # 工具调用
                         tc = data.get("tool_call", {})
@@ -342,19 +352,19 @@ class PiAiHttpClient:
                                 arguments=args,
                             ),
                         )
-                    
+
                     elif event_type == "done":
                         yield StreamEvent(
                             type="done",
                             finish_reason=data.get("finish_reason", "stop"),
                         )
-                    
+
                     elif event_type == "result":
                         yield StreamEvent(
                             type="result",
                             usage=data.get("usage", {}),
                         )
-                    
+
                     elif event_type == "error":
                         yield StreamEvent(
                             type="error",

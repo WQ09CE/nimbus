@@ -1,14 +1,14 @@
 """Checkpoint persistence for memory state."""
 
 import json
-import os
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 
 # Try to use aiofiles, fall back to sync if not available
 try:
     import aiofiles
+
     HAS_AIOFILES = True
 except ImportError:
     HAS_AIOFILES = False
@@ -42,10 +42,10 @@ class CheckpointManager:
         content = json.dumps(data, ensure_ascii=False, indent=2, default=self._json_default)
 
         if HAS_AIOFILES:
-            async with aiofiles.open(filepath, 'w', encoding='utf-8') as f:
+            async with aiofiles.open(filepath, "w", encoding="utf-8") as f:
                 await f.write(content)
         else:
-            with open(filepath, 'w', encoding='utf-8') as f:
+            with open(filepath, "w", encoding="utf-8") as f:
                 f.write(content)
 
         return str(filepath)
@@ -64,10 +64,10 @@ class CheckpointManager:
             return None
 
         if HAS_AIOFILES:
-            async with aiofiles.open(files[0], 'r', encoding='utf-8') as f:
+            async with aiofiles.open(files[0], "r", encoding="utf-8") as f:
                 content = await f.read()
         else:
-            with open(files[0], 'r', encoding='utf-8') as f:
+            with open(files[0], "r", encoding="utf-8") as f:
                 content = f.read()
 
         return json.loads(content)
@@ -125,6 +125,6 @@ class CheckpointManager:
         """JSON serialization helper for non-standard types."""
         if isinstance(obj, datetime):
             return obj.isoformat()
-        if hasattr(obj, '__dict__'):
+        if hasattr(obj, "__dict__"):
             return obj.__dict__
         return str(obj)

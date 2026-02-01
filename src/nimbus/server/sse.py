@@ -11,8 +11,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Set
-from weakref import WeakSet
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from .models import SSEEvent
 
@@ -20,6 +19,7 @@ from .models import SSEEvent
 @dataclass
 class SSEConnection:
     """Represents an active SSE connection."""
+
     session_id: str
     queue: asyncio.Queue
     created_at: datetime = field(default_factory=datetime.now)
@@ -107,19 +107,14 @@ class SSEHub:
             self._connections[session_id].append(connection)
 
         # Send connected event
-        await self._send_to_connection(
-            connection,
-            self.EVENT_CONNECTED,
-            {"session_id": session_id}
-        )
+        await self._send_to_connection(connection, self.EVENT_CONNECTED, {"session_id": session_id})
 
         try:
             while True:
                 try:
                     # Wait for event with timeout for connection check
                     event_str = await asyncio.wait_for(
-                        connection.queue.get(),
-                        timeout=self._heartbeat_interval + 5
+                        connection.queue.get(), timeout=self._heartbeat_interval + 5
                     )
 
                     if event_str is None:
@@ -131,8 +126,7 @@ class SSEHub:
                 except asyncio.TimeoutError:
                     # Send heartbeat if no events
                     heartbeat = self._format_sse(
-                        self.EVENT_HEARTBEAT,
-                        {"timestamp": datetime.now().isoformat()}
+                        self.EVENT_HEARTBEAT, {"timestamp": datetime.now().isoformat()}
                     )
                     yield heartbeat
 
@@ -141,18 +135,12 @@ class SSEHub:
             async with self._lock:
                 if session_id in self._connections:
                     self._connections[session_id] = [
-                        c for c in self._connections[session_id]
-                        if c is not connection
+                        c for c in self._connections[session_id] if c is not connection
                     ]
                     if not self._connections[session_id]:
                         del self._connections[session_id]
 
-    async def publish(
-        self,
-        session_id: str,
-        event_type: str,
-        data: Dict[str, Any]
-    ) -> int:
+    async def publish(self, session_id: str, event_type: str, data: Dict[str, Any]) -> int:
         """
         Publish an event to all subscribers of a session.
 
@@ -174,11 +162,7 @@ class SSEHub:
 
         return sent_count
 
-    async def broadcast(
-        self,
-        event_type: str,
-        data: Dict[str, Any]
-    ) -> int:
+    async def broadcast(self, event_type: str, data: Dict[str, Any]) -> int:
         """
         Broadcast an event to all connected sessions.
 
@@ -200,10 +184,7 @@ class SSEHub:
         return sent_count
 
     async def _send_to_connection(
-        self,
-        connection: SSEConnection,
-        event_type: str,
-        data: Dict[str, Any]
+        self, connection: SSEConnection, event_type: str, data: Dict[str, Any]
     ) -> None:
         """Send an event to a specific connection."""
         event_str = self._format_sse(event_type, data)
@@ -256,7 +237,7 @@ class SSEHub:
 
     async def close_session(self, session_id: str) -> None:
         """Close all connections for a session.
-        
+
         Args:
             session_id: Session to close.
         """
@@ -278,33 +259,21 @@ class SSEEventBuilder:
     @staticmethod
     def connected(session_id: str) -> SSEEvent:
         """Create connected event."""
-        return SSEEvent(
-            event=SSEHub.EVENT_CONNECTED,
-            data={"session_id": session_id}
-        )
+        return SSEEvent(event=SSEHub.EVENT_CONNECTED, data={"session_id": session_id})
 
     @staticmethod
     def message_start(message_id: str) -> SSEEvent:
         """Create message_start event."""
-        return SSEEvent(
-            event=SSEHub.EVENT_MESSAGE_START,
-            data={"message_id": message_id}
-        )
+        return SSEEvent(event=SSEHub.EVENT_MESSAGE_START, data={"message_id": message_id})
 
     @staticmethod
     def planning(status: str = "creating_plan") -> SSEEvent:
         """Create planning event."""
-        return SSEEvent(
-            event=SSEHub.EVENT_PLANNING,
-            data={"status": status}
-        )
+        return SSEEvent(event=SSEHub.EVENT_PLANNING, data={"status": status})
 
     @staticmethod
     def dag_created(
-        dag_id: str,
-        goal: str,
-        total_tasks: int,
-        nodes: Optional[List[Dict]] = None
+        dag_id: str, goal: str, total_tasks: int, nodes: Optional[List[Dict]] = None
     ) -> SSEEvent:
         """Create dag_created event."""
         return SSEEvent(
@@ -314,15 +283,11 @@ class SSEEventBuilder:
                 "goal": goal,
                 "total_tasks": total_tasks,
                 "nodes": nodes or [],
-            }
+            },
         )
 
     @staticmethod
-    def task_start(
-        task_id: str,
-        skill: str,
-        params: Dict[str, Any]
-    ) -> SSEEvent:
+    def task_start(task_id: str, skill: str, params: Dict[str, Any]) -> SSEEvent:
         """Create task_start event."""
         return SSEEvent(
             event=SSEHub.EVENT_TASK_START,
@@ -330,31 +295,21 @@ class SSEEventBuilder:
                 "task_id": task_id,
                 "skill": skill,
                 "params": params,
-            }
+            },
         )
 
     @staticmethod
     def tool_call(tool: str, args: Dict[str, Any]) -> SSEEvent:
         """Create tool_call event."""
-        return SSEEvent(
-            event=SSEHub.EVENT_TOOL_CALL,
-            data={"tool": tool, "args": args}
-        )
+        return SSEEvent(event=SSEHub.EVENT_TOOL_CALL, data={"tool": tool, "args": args})
 
     @staticmethod
     def tool_result(tool: str, result: Any) -> SSEEvent:
         """Create tool_result event."""
-        return SSEEvent(
-            event=SSEHub.EVENT_TOOL_RESULT,
-            data={"tool": tool, "result": result}
-        )
+        return SSEEvent(event=SSEHub.EVENT_TOOL_RESULT, data={"tool": tool, "result": result})
 
     @staticmethod
-    def task_done(
-        task_id: str,
-        result: Any,
-        duration_ms: int
-    ) -> SSEEvent:
+    def task_done(task_id: str, result: Any, duration_ms: int) -> SSEEvent:
         """Create task_done event."""
         return SSEEvent(
             event=SSEHub.EVENT_TASK_DONE,
@@ -362,23 +317,16 @@ class SSEEventBuilder:
                 "task_id": task_id,
                 "result": result,
                 "duration_ms": duration_ms,
-            }
+            },
         )
 
     @staticmethod
     def task_failed(task_id: str, error: str) -> SSEEvent:
         """Create task_failed event."""
-        return SSEEvent(
-            event=SSEHub.EVENT_TASK_FAILED,
-            data={"task_id": task_id, "error": error}
-        )
+        return SSEEvent(event=SSEHub.EVENT_TASK_FAILED, data={"task_id": task_id, "error": error})
 
     @staticmethod
-    def permission_request(
-        request_id: str,
-        tool: str,
-        args: Dict[str, Any]
-    ) -> SSEEvent:
+    def permission_request(request_id: str, tool: str, args: Dict[str, Any]) -> SSEEvent:
         """Create permission_request event."""
         return SSEEvent(
             event=SSEHub.EVENT_PERMISSION_REQUEST,
@@ -386,19 +334,13 @@ class SSEEventBuilder:
                 "request_id": request_id,
                 "tool": tool,
                 "args": args,
-            }
+            },
         )
 
     @staticmethod
-    def dag_complete(
-        dag_id: str,
-        stats: Dict[str, int]
-    ) -> SSEEvent:
+    def dag_complete(dag_id: str, stats: Dict[str, int]) -> SSEEvent:
         """Create dag_complete event."""
-        return SSEEvent(
-            event=SSEHub.EVENT_DAG_COMPLETE,
-            data={"dag_id": dag_id, "stats": stats}
-        )
+        return SSEEvent(event=SSEHub.EVENT_DAG_COMPLETE, data={"dag_id": dag_id, "stats": stats})
 
     @staticmethod
     def message(content: str, artifacts: Optional[List] = None) -> SSEEvent:
@@ -408,21 +350,17 @@ class SSEEventBuilder:
             data={
                 "content": content,
                 "artifacts": artifacts or [],
-            }
+            },
         )
 
     @staticmethod
     def error(code: str, message: str) -> SSEEvent:
         """Create error event."""
-        return SSEEvent(
-            event=SSEHub.EVENT_ERROR,
-            data={"code": code, "message": message}
-        )
+        return SSEEvent(event=SSEHub.EVENT_ERROR, data={"code": code, "message": message})
 
     @staticmethod
     def heartbeat() -> SSEEvent:
         """Create heartbeat event."""
         return SSEEvent(
-            event=SSEHub.EVENT_HEARTBEAT,
-            data={"timestamp": datetime.now().isoformat()}
+            event=SSEHub.EVENT_HEARTBEAT, data={"timestamp": datetime.now().isoformat()}
         )

@@ -10,10 +10,9 @@ Doom Loop Detector - 检测工具调用的无限循环
 - 可测试：纯逻辑，易于单元测试
 """
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
 import json
-
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
 # 默认阈值（来自 opencode）
 DEFAULT_DOOM_LOOP_THRESHOLD = 3
@@ -23,30 +22,26 @@ DEFAULT_DOOM_LOOP_THRESHOLD = 3
 class DoomLoopResult:
     """
     Doom Loop 检测结果
-    
+
     Attributes:
         is_loop: 是否检测到 doom loop
         consecutive_count: 连续相同调用次数
         tool_name: 触发 doom loop 的工具名（仅当 is_loop=True）
         guidance: 恢复指导文本（仅当 is_loop=True）
     """
+
     is_loop: bool
     consecutive_count: int
     tool_name: Optional[str] = None
     guidance: Optional[str] = None
-    
+
     @classmethod
     def ok(cls) -> "DoomLoopResult":
         """创建一个正常（非 doom loop）的结果"""
         return cls(is_loop=False, consecutive_count=0)
-    
+
     @classmethod
-    def detected(
-        cls, 
-        tool_name: str, 
-        count: int, 
-        guidance: str
-    ) -> "DoomLoopResult":
+    def detected(cls, tool_name: str, count: int, guidance: str) -> "DoomLoopResult":
         """创建一个检测到 doom loop 的结果"""
         return cls(
             is_loop=True,
@@ -59,17 +54,17 @@ class DoomLoopResult:
 class DoomLoopDetector:
     """
     Doom Loop 检测器
-    
+
     跟踪最近的工具调用，检测相同调用的连续重复。
-    
+
     Example:
         detector = DoomLoopDetector(threshold=3)
-        
+
         result = detector.check("Read", {"path": "foo.py"})
         if result.is_loop:
             print(f"Doom loop detected: {result.guidance}")
     """
-    
+
     # 工具特定的恢复指导
     GUIDANCE_MAP: Dict[str, str] = {
         "Edit": (
@@ -120,94 +115,97 @@ class DoomLoopDetector:
             "- Check if the path/directory is correct"
         ),
     }
-    
+
     def __init__(self, threshold: int = DEFAULT_DOOM_LOOP_THRESHOLD):
         """
         初始化检测器
-        
+
         Args:
             threshold: 触发 doom loop 的连续相同调用次数
         """
         self.threshold = threshold
         self._recent_calls: List[Tuple[str, str]] = []
         self._loop_count = 0  # 累计检测到的 doom loop 次数
-    
+
     def check(self, tool_name: str, args: Dict) -> DoomLoopResult:
         """
         检查是否进入 doom loop
-        
+
         Args:
             tool_name: 工具名称
             args: 工具参数
-            
+
         Returns:
             DoomLoopResult，包含是否检测到 doom loop 及相关信息
         """
         # 序列化参数以便比较
         args_json = json.dumps(args, sort_keys=True)
         current_call = (tool_name, args_json)
-        
+
         # 记录此次调用
         self._recent_calls.append(current_call)
-        
+
         # 保持窗口大小
         if len(self._recent_calls) > self.threshold:
-            self._recent_calls = self._recent_calls[-self.threshold:]
-        
+            self._recent_calls = self._recent_calls[-self.threshold :]
+
         # 检测 doom loop
         if len(self._recent_calls) == self.threshold:
             if all(call == current_call for call in self._recent_calls):
                 # 检测到 doom loop
                 self._loop_count += 1
                 self._recent_calls.clear()  # 清除以允许恢复
-                
+
                 guidance = self.get_guidance(tool_name)
                 return DoomLoopResult.detected(
                     tool_name=tool_name,
                     count=self.threshold,
                     guidance=guidance,
                 )
-        
+
         return DoomLoopResult.ok()
-    
+
     def get_guidance(self, tool_name: str) -> str:
         """
         获取工具特定的恢复指导
-        
+
         Args:
             tool_name: 工具名称
-            
+
         Returns:
             恢复指导文本
         """
-        return self.GUIDANCE_MAP.get(tool_name, (
-            f"GENERAL GUIDANCE:\n"
-            f"- The {tool_name} tool is failing with the same arguments\n"
-            f"- Review the error message from previous attempts\n"
-            f"- Try a different approach or different arguments\n"
-            f"- If stuck, call return_result to report the issue"
-        ))
-    
+        return self.GUIDANCE_MAP.get(
+            tool_name,
+            (
+                f"GENERAL GUIDANCE:\n"
+                f"- The {tool_name} tool is failing with the same arguments\n"
+                f"- Review the error message from previous attempts\n"
+                f"- Try a different approach or different arguments\n"
+                f"- If stuck, call return_result to report the issue"
+            ),
+        )
+
     def reset(self) -> None:
         """重置检测器状态"""
         self._recent_calls.clear()
         self._loop_count = 0
-    
+
     def on_different_tool(self) -> None:
         """
         当调用了不同的工具时调用
-        
+
         这会清除历史记录，因为不同工具的调用打破了连续性
         """
         if len(self._recent_calls) > 1:
             # 只保留最后一个调用
             self._recent_calls = self._recent_calls[-1:]
-    
+
     @property
     def loop_count(self) -> int:
         """累计检测到的 doom loop 次数"""
         return self._loop_count
-    
+
     @property
     def recent_calls(self) -> List[Tuple[str, str]]:
         """最近的调用记录（用于调试）"""

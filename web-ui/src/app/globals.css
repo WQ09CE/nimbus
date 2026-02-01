@@ -138,25 +138,214 @@ body {
   @apply relative mb-4;
 }
 
-.markdown-content .code-block {
-  @apply bg-black/70 border border-gray-600/50 rounded-lg p-4 overflow-x-auto text-sm relative backdrop-blur-sm;
+/* Code Blocks (Old style removed) */
+
+/* Code Blocks (Enhanced) */
+.code-block-wrapper {
+  @apply relative rounded-lg overflow-hidden border border-gray-700 bg-[#0d1117] my-6 shadow-lg;
 }
 
-.markdown-content .code-block::before {
-  content: attr(data-lang);
-  @apply absolute top-2 right-10 text-[10px] text-gray-400 uppercase font-mono bg-gray-800 px-2 py-1 rounded;
+.code-block-header {
+  @apply flex justify-between items-center px-4 py-2 bg-[#161b22] border-b border-gray-700 select-none;
+}
+
+.code-header-left {
+  @apply flex items-center gap-2;
+}
+
+.code-lang {
+  @apply text-xs font-mono font-medium text-gray-400 uppercase tracking-wider;
 }
 
 .copy-code-btn {
-  @apply absolute top-2 right-2 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded transition-all duration-200 cursor-pointer border border-gray-600;
+  @apply flex items-center gap-1.5 text-xs text-gray-400 hover:text-white transition-colors duration-200 cursor-pointer bg-transparent border-0 p-0;
 }
 
-.copy-code-btn:hover {
-  @apply bg-gray-600 transform scale-105;
+.copy-icon {
+  @apply text-sm;
+}
+
+.markdown-content .code-block {
+  @apply p-4 overflow-x-auto text-sm font-mono text-gray-300 bg-[#0d1117] m-0;
+  line-height: 1.5; /* Readable height for code */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+/* Specialized styling for ASCII diagrams */
+.is-diagram .code-block {
+  line-height: 1.15 !important; /* Tight height for connected lines */
+  /* Optimized stack for CJK alignment */
+  font-family: "Menlo", "Consolas", "Monaco", "Liberation Mono", "Noto Sans Mono CJK SC", "Microsoft YaHei Mono", "WenQuanYi Zen Hei Mono", "Courier New", monospace !important;
+  white-space: pre !important; /* No wrapping */
+}
+
+/* ============================================
+   ASCII Diagram Rendering - Enhanced & Robust
+   ============================================ */
+
+.ascii-diagram-container {
+  background: #0a0e1a;
+  min-width: fit-content;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.ascii-diagram-container .overflow-x-auto {
+  /* 确保容器不会压缩内容 */
+  min-width: fit-content;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #374151 #111827;
+}
+
+.ascii-diagram-container .overflow-x-auto::-webkit-scrollbar {
+  height: 6px;
+}
+
+.ascii-diagram-container .overflow-x-auto::-webkit-scrollbar-track {
+  background: #111827;
+}
+
+.ascii-diagram-container .overflow-x-auto::-webkit-scrollbar-thumb {
+  background: #374151;
+  border-radius: 3px;
+}
+
+.ascii-diagram-container .overflow-x-auto::-webkit-scrollbar-thumb:hover {
+  background: #4b5563;
+}
+
+/* Enhanced ASCII diagram styling */
+.ascii-diagram-enhanced {
+  /* 
+   * 优化的字体栈 - 支持中英文等宽显示
+   * Cascadia Code 和 Fira Code 对中英文混合有更好的支持
+   * 添加了 Noto Sans Mono CJK SC 等中文等宽字体
+   */
+  font-family: "Cascadia Code", "Fira Code", "SF Mono", Menlo, Monaco, "Noto Sans Mono CJK SC", "Source Han Sans CN", "Microsoft YaHei Mono", Consolas, "Liberation Mono", "Courier New", monospace !important;
+  
+  /* 
+   * 精确的字体设置 - 防止字符断裂，优化中文显示
+   */
+  font-size: 13px !important; /* 稍微缩小以改善对齐 */
+  line-height: 1.2 !important; /* 稍微增加行高以改善可读性 */
+  font-weight: 400 !important;
+  
+  /* 严格的间距控制 */
+  letter-spacing: 0 !important;
+  word-spacing: 0 !important;
+  white-space: pre !important;
+  tab-size: 4 !important;
+  
+  /* 禁用所有字体特性，确保字符不合并 */
+  font-variant: normal !important;
+  font-variant-ligatures: none !important;
+  font-feature-settings: "liga" 0, "calt" 0, "clig" 0, "dlig" 0, "hlig" 0 !important;
+  
+  /* 优化渲染 - 改为 optimizeSpeed 以避免字符变形 */
+  -webkit-font-smoothing: antialiased !important;
+  -moz-osx-font-smoothing: grayscale !important;
+  text-rendering: optimizeSpeed !important;
+  
+  /* 布局控制 */
+  overflow: visible !important;
+  width: fit-content !important;
+  min-width: fit-content !important;
+  max-width: none !important;
+  
+  /* 清除间距 */
+  margin: 0 !important;
+  padding: 0 !important;
+  
+  /* 视觉效果 */
+  color: #38bdf8 !important;
+  background: transparent !important;
+  
+  /* 防止文本换行和压缩 */
+  word-break: keep-all !important;
+  overflow-wrap: normal !important;
+  hyphens: none !important;
+  
+  /* 确保统一的字符宽度和方向性 */
+  unicode-bidi: normal !important;
+  direction: ltr !important;
+  font-stretch: normal !important;
+  font-style: normal !important;
+  
+  /* 确保块级显示 */
+  display: inline-block !important;
+}
+
+/* 保持旧版本兼容性 */
+.ascii-diagram {
+  font-family: "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
+  font-size: 14px !important;
+  line-height: 1.15 !important;
+  letter-spacing: 0 !important;
+  word-spacing: 0 !important;
+  white-space: pre !important;
+  tab-size: 4;
+  font-variant-ligatures: none !important;
+  font-feature-settings: "liga" 0, "calt" 0 !important;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  overflow: visible !important;
+  width: fit-content !important;
+  min-width: fit-content !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  color: #38bdf8;
+  background: transparent !important;
+  display: inline-block !important;
+}
+
+/* Selection styling for both versions */
+.ascii-diagram::selection,
+.ascii-diagram-enhanced::selection {
+  background: rgba(59, 130, 246, 0.3) !important;
+  color: inherit !important;
+}
+
+/* 确保容器内的文字不会被截断 */
+.ascii-diagram-container * {
+  text-overflow: clip !important;
+  overflow: visible !important;
+}
+
+/* 特殊处理中英文混合的ASCII图表 */
+@supports (font-feature-settings: "chws" 1) {
+  .ascii-diagram-enhanced {
+    /* 启用中文字符宽度调整（如果字体支持） */
+    font-feature-settings: "liga" 0, "calt" 0, "clig" 0, "dlig" 0, "hlig" 0, "chws" 1 !important;
+  }
+}
+
+/* 为不同操作系统优化字体选择 */
+@media screen and (-webkit-min-device-pixel-ratio: 2) {
+  /* 高DPI屏幕优化 */
+  .ascii-diagram-enhanced {
+    -webkit-font-smoothing: subpixel-antialiased !important;
+  }
+}
+
+/* macOS 特定优化 */
+@supports (-webkit-backdrop-filter: blur(1px)) {
+  .ascii-diagram-enhanced {
+    font-family: "SF Mono", "Cascadia Code", Menlo, Monaco, "Noto Sans Mono CJK SC", "Source Han Sans CN", Consolas, "Liberation Mono", "Courier New", monospace !important;
+  }
+}
+
+/* Windows 特定优化 */
+@media screen and (min-resolution: 120dpi) {
+  .ascii-diagram-enhanced {
+    font-family: "Cascadia Code", "Consolas", "Courier New", "Microsoft YaHei Mono", "Noto Sans Mono CJK SC", monospace !important;
+  }
 }
 
 .markdown-content .code-block code {
-  @apply text-gray-300 font-mono leading-relaxed;
+  @apply text-gray-300 bg-transparent p-0;
+  font-family: inherit;
 }
 
 .markdown-content .inline-code {

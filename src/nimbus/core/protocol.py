@@ -17,24 +17,23 @@ Design Principles:
 - Version field for future compatibility
 """
 
-import uuid
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
-
 
 # =============================================================================
 # 1. Action Instruction Set (ISA)
 # =============================================================================
 
 ActionKind = Literal[
-    "TOOL_CALL",        # Syscall: Execute external tool
-    "SUB_CALL",         # Control Flow: Push stack frame (spawn subprocess)
-    "RETURN",           # Control Flow: Pop stack frame (return result)
-    "THOUGHT",          # Internal: Chain-of-Thought / Logging
-    "POST_IPC",         # IPC: Publish reference to IPC bus
-    "REQUEST_REPLAN",   # Planner: Request DAG modification
-    "CANCEL",           # Control: Cancel operation
+    "TOOL_CALL",  # Syscall: Execute external tool
+    "SUB_CALL",  # Control Flow: Push stack frame (spawn subprocess)
+    "RETURN",  # Control Flow: Pop stack frame (return result)
+    "THOUGHT",  # Internal: Chain-of-Thought / Logging
+    "POST_IPC",  # IPC: Publish reference to IPC bus
+    "REQUEST_REPLAN",  # Planner: Request DAG modification
+    "CANCEL",  # Control: Cancel operation
 ]
 
 
@@ -64,6 +63,7 @@ class ActionIR:
         # Return result
         ActionIR(kind="RETURN", name="return", args={"result": "task completed"})
     """
+
     kind: ActionKind
     name: str = ""
     args: Dict[str, Any] = field(default_factory=dict)
@@ -92,6 +92,7 @@ class ArtifactRef:
         - workspace://path... : Workspace-relative path
         - file:///absolute/path : Absolute file path
     """
+
     kind: Literal["FILE", "BLOB", "JSON", "DIFF"]
     uri: str
     summary: str = ""
@@ -115,6 +116,7 @@ class ToolResult:
         cost: Resource cost breakdown (tokens, API calls, etc.)
         version: Protocol version for compatibility
     """
+
     status: ResultStatus = "OK"
     output: Any = None
     is_final: bool = False
@@ -134,25 +136,21 @@ FaultDomain = Literal["LLM", "TOOL", "KERNEL", "PERMISSION", "RESOURCE"]
 
 FaultCode = Literal[
     # LLM Domain
-    "ILL_INSTRUCTION",   # Decoder intercepted hallucination
-    "CTX_OVERFLOW",      # Context window exceeded
-    "BAD_FORMAT",        # Invalid output format
-    "RATE_LIMIT",        # API rate limit
-
+    "ILL_INSTRUCTION",  # Decoder intercepted hallucination
+    "CTX_OVERFLOW",  # Context window exceeded
+    "BAD_FORMAT",  # Invalid output format
+    "RATE_LIMIT",  # API rate limit
     # Tool Domain
-    "TOOL_NOT_FOUND",    # Tool does not exist
-    "TOOL_FAILURE",      # Runtime error in tool
-    "INVALID_ARGS",      # Invalid tool arguments
-
+    "TOOL_NOT_FOUND",  # Tool does not exist
+    "TOOL_FAILURE",  # Runtime error in tool
+    "INVALID_ARGS",  # Invalid tool arguments
     # Permission Domain
-    "PERMISSION_DENIED", # Gate rejected action
-
+    "PERMISSION_DENIED",  # Gate rejected action
     # Resource Domain
-    "TIMEOUT",           # Execution timed out
-    "BUDGET_EXCEEDED",   # Token/cost budget exceeded
-
+    "TIMEOUT",  # Execution timed out
+    "BUDGET_EXCEEDED",  # Token/cost budget exceeded
     # Kernel Domain
-    "SYSTEM_ERROR",      # Unexpected kernel panic
+    "SYSTEM_ERROR",  # Unexpected kernel panic
 ]
 
 
@@ -181,6 +179,7 @@ class Fault(Exception):
         Fault(domain="RESOURCE", code="TIMEOUT",
               message="Tool execution exceeded 60s", retryable=True)
     """
+
     domain: FaultDomain
     code: FaultCode
     message: str
@@ -201,25 +200,20 @@ class Fault(Exception):
 
 EventType = Literal[
     # Process Lifecycle
-    "PROC_SPAWNED",      # New process created
-    "PROC_FINISHED",     # Process completed
-
+    "PROC_SPAWNED",  # New process created
+    "PROC_FINISHED",  # Process completed
     # Task Lifecycle
-    "TASK_CREATED",      # Task added to scheduler
-    "TASK_ASSIGNED",     # Task assigned to process
-    "TASK_FINISHED",     # Task completed
-
+    "TASK_CREATED",  # Task added to scheduler
+    "TASK_ASSIGNED",  # Task assigned to process
+    "TASK_FINISHED",  # Task completed
     # Step Lifecycle
-    "STEP_STARTED",      # vCPU step began
-    "ACTION_EMITTED",    # ActionIR produced
-
+    "STEP_STARTED",  # vCPU step began
+    "ACTION_EMITTED",  # ActionIR produced
     # Tool Execution
-    "TOOL_STARTED",      # Tool execution began
-    "TOOL_FINISHED",     # Tool execution completed
-
+    "TOOL_STARTED",  # Tool execution began
+    "TOOL_FINISHED",  # Tool execution completed
     # Errors
-    "FAULT_RAISED",      # Fault occurred
-
+    "FAULT_RAISED",  # Fault occurred
     # Planner
     "REPLAN_REQUESTED",  # Replan requested
 ]
@@ -240,6 +234,7 @@ class Event:
         ts_ms: Timestamp in milliseconds
         version: Protocol version for compatibility
     """
+
     type: EventType
     pid: str
     data: Dict[str, Any] = field(default_factory=dict)
@@ -250,6 +245,7 @@ class Event:
 # =============================================================================
 # 5. IPC Message
 # =============================================================================
+
 
 @dataclass
 class IPCMessage:
@@ -268,6 +264,7 @@ class IPCMessage:
         meta: Additional metadata
         version: Protocol version for compatibility
     """
+
     channel: str
     key: str
     value_ref: str

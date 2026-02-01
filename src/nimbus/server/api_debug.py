@@ -7,14 +7,16 @@ Endpoints:
 - GET /debug/sessions/{id}/messages - Get all messages (raw)
 """
 
+from typing import Any, Dict, List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from typing import Any, Dict, List, Optional
 
 
 async def get_session_manager(request: Request):
     """Get session manager from app state."""
     return request.app.state.session_manager
+
 
 router = APIRouter(prefix="/debug", tags=["debug"])
 
@@ -52,24 +54,21 @@ async def get_context(
 ):
     """Get the full assembled context for a session."""
     agent_os = await session_manager.get_or_create_agent(session_id)
-    
-    if not agent_os or not hasattr(agent_os, '_vcpu') or not agent_os._vcpu:
+
+    if not agent_os or not hasattr(agent_os, "_vcpu") or not agent_os._vcpu:
         raise HTTPException(status_code=404, detail="Session or VCPU not found")
-    
+
     vcpu = agent_os._vcpu
     mmu = vcpu.mmu
-    
+
     # Assemble full context
     messages = mmu.assemble_context(filter_discardable=False)
-    
+
     # Estimate tokens
     pinned = mmu._pinned_context
     pinned_tokens = pinned.token_estimate() if pinned else 0
-    frame_tokens = sum(
-        sum(m.token_estimate() for m in frame._messages)
-        for frame in mmu._stack
-    )
-    
+    frame_tokens = sum(sum(m.token_estimate() for m in frame._messages) for frame in mmu._stack)
+
     return DebugContext(
         session_id=session_id,
         total_messages=len(messages),
@@ -87,13 +86,13 @@ async def get_state(
 ):
     """Get the VCPU state for a session."""
     agent_os = await session_manager.get_or_create_agent(session_id)
-    
-    if not agent_os or not hasattr(agent_os, '_vcpu') or not agent_os._vcpu:
+
+    if not agent_os or not hasattr(agent_os, "_vcpu") or not agent_os._vcpu:
         raise HTTPException(status_code=404, detail="Session or VCPU not found")
-    
+
     vcpu = agent_os._vcpu
     state = vcpu.get_state()
-    
+
     return DebugState(
         session_id=session_id,
         iteration=state.get("iteration", 0),
@@ -111,12 +110,12 @@ async def get_messages_raw(
 ):
     """Get raw messages from all frames."""
     agent_os = await session_manager.get_or_create_agent(session_id)
-    
-    if not agent_os or not hasattr(agent_os, '_vcpu') or not agent_os._vcpu:
+
+    if not agent_os or not hasattr(agent_os, "_vcpu") or not agent_os._vcpu:
         raise HTTPException(status_code=404, detail="Session or VCPU not found")
-    
+
     mmu = agent_os._vcpu.mmu
-    
+
     frames = []
     for i, frame in enumerate(mmu._stack):
         frame_data = {
@@ -127,7 +126,9 @@ async def get_messages_raw(
             "messages": [
                 {
                     "role": m.role,
-                    "content": m.content[:500] + "..." if m.content and len(m.content) > 500 else m.content,
+                    "content": m.content[:500] + "..."
+                    if m.content and len(m.content) > 500
+                    else m.content,
                     "tool_calls": m.tool_calls,
                     "tool_call_id": m.tool_call_id,
                     "name": m.name,
@@ -136,7 +137,7 @@ async def get_messages_raw(
             ],
         }
         frames.append(frame_data)
-    
+
     return {
         "session_id": session_id,
         "pinned_context": mmu._pinned_context.to_dict() if mmu._pinned_context else None,

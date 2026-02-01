@@ -61,6 +61,7 @@ interface ChatState {
   isStreaming: boolean;
   streamingContent: string;
   streamingToolCalls: ToolCall[];
+  messageQueue: string[]; // Queued user messages
 
   // Real-time progress indicators
   thinkingIteration: number | null;  // Current thinking iteration
@@ -90,6 +91,7 @@ const initialState = {
   isStreaming: false,
   streamingContent: "",
   streamingToolCalls: [],
+  messageQueue: [],
   thinkingIteration: null,
   currentActivity: null,
   lastHeartbeat: null,
@@ -131,7 +133,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   sendMessage: async (content: string) => {
-    const { session, messages } = get();
+    const { session, messages, isStreaming, messageQueue } = get();
+    
+    // Queue if streaming
+    if (isStreaming) {
+        set({ messageQueue: [...messageQueue, content] });
+        return;
+    }
     
     // Create session if needed
     let currentSession = session;
@@ -175,6 +183,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const toolCalls: ToolCall[] = [];
       const toolResults: ToolResult[] = [];
       let shouldContinue = true;
+      
+      // Throttling state
+      let lastUpdate = 0;
+      const UPDATE_INTERVAL = 50; // ms
 
       // Stream response
       for await (const event of streamChat(currentSession.id, content, abortController.signal)) {
@@ -200,6 +212,43 @@ export const useChatStore = create<ChatState>((set, get) => ({
               currentActivity: "开始执行任务...",
               lastHeartbeat: Date.now() 
             });
+            break;
+
+          case "step_start":
+            // New turn detected - commit previous content if any
+            if (assistantContent || toolCalls.length > 0) {
+              const stepMessage: Message = {
+                id: `assistant-${Date.now()}`,
+                role: "assistant",
+                content: assistantContent,
+                toolCalls: toolCalls.length > 0 ? [...toolCalls] : undefined,
+                toolResults: toolResults.length > 0 ? [...toolResults] : undefined,
+                timestamp: Date.now(),
+              };
+
+              set(state => ({
+                messages: [...state.messages, stepMessage],
+                streamingContent: "",
+                streamingToolCalls: [],
+              }));
+
+              // Reset accumulators
+              assistantContent = "";
+              toolCalls.length = 0;
+              toolResults.length = 0;
+              // Reset throttle
+              lastUpdate = 0;
+            }
+
+            // Update iteration info
+            if (data && typeof data === "object" && "iteration" in data) {
+                const iter = (data as any).iteration;
+                set({ 
+                  thinkingIteration: iter,
+                  currentActivity: `思考中 (第 ${iter} 轮)...`,
+                  lastHeartbeat: Date.now() 
+                });
+            }
             break;
 
           case "heartbeat":
@@ -229,23 +278,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
             break;
 
           case "message":
+            let newContent = "";
             if (typeof data === "string") {
-              assistantContent += data;
-              set({ 
-                streamingContent: assistantContent,
-                currentActivity: "生成回复中...",
-                lastHeartbeat: Date.now()
-              });
+              newContent = data;
             } else if (typeof data === "object" && data && "content" in data) {
-              const content = (data as { content?: unknown }).content;
-              if (typeof content === "string") {
-                assistantContent += content;
-                set({ 
-                  streamingContent: assistantContent,
-                  currentActivity: "生成回复中...",
-                  lastHeartbeat: Date.now()
-                });
+              const c = (data as { content?: unknown }).content;
+              if (typeof c === "string") {
+                newContent = c;
               }
+            }
+            
+            if (newContent) {
+                assistantContent += newContent;
+                const now = Date.now();
+                // Throttle updates to avoid flickering
+                if (now - lastUpdate > UPDATE_INTERVAL) {
+                    set({ 
+                        streamingContent: assistantContent,
+                        currentActivity: "生成回复中...",
+                        lastHeartbeat: now
+                    });
+                    lastUpdate = now;
+                }
             }
             break;
 
@@ -325,6 +379,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         streamAbortController: null,
         isInterrupting: false,
       });
+
+      // Process next message in queue
+      const { messageQueue: queue } = get();
+      if (queue.length > 0) {
+          const next = queue[0];
+          set({ messageQueue: queue.slice(1) });
+          // Use setTimeout to allow state update to propagate
+          setTimeout(() => get().sendMessage(next), 0);
+      }
     } catch (err) {
       // Handle user cancellation differently from errors
       if (err instanceof Error && err.name === 'AbortError') {

@@ -13,13 +13,13 @@ from nimbus.core.runtime.decoder import InstructionDecoder
 from nimbus.core.runtime.doom_loop import DoomLoopDetector, DoomLoopResult
 from nimbus.core.runtime.error_handler import ErrorHandlerRegistry, RecoveryAction
 from nimbus.core.runtime.execution_state import ExecutionState
-from nimbus.core.runtime.failure_reporter import FailureReporter, FailureContext
-from nimbus.core.runtime.vcpu import VCPU, VCPUConfig, StepResult, LLMClient
+from nimbus.core.runtime.failure_reporter import FailureContext, FailureReporter
+from nimbus.core.runtime.vcpu import VCPU, LLMClient, StepResult, VCPUConfig
 
 __all__ = [
     # Core
     "VCPU",
-    "VCPUConfig", 
+    "VCPUConfig",
     "StepResult",
     "LLMClient",
     "InstructionDecoder",

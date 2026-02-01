@@ -155,14 +155,17 @@ class MessageCache:
         # Update cache
         async with self._lock:
             if session_id in self._cache:
-                self._cache[session_id]["messages"].append({
-                    "role": role,
-                    "content": content,
-                })
+                self._cache[session_id]["messages"].append(
+                    {
+                        "role": role,
+                        "content": content,
+                    }
+                )
                 # Limit cache size (keep 2x max to reduce thrashing)
                 if len(self._cache[session_id]["messages"]) > self._max_messages * 2:
-                    self._cache[session_id]["messages"] = \
-                        self._cache[session_id]["messages"][-self._max_messages:]
+                    self._cache[session_id]["messages"] = self._cache[session_id]["messages"][
+                        -self._max_messages :
+                    ]
                 # Renew TTL
                 self._cache[session_id]["expires_at"] = datetime.now() + self._cache_ttl
 
@@ -189,10 +192,12 @@ class MessageCache:
             # Convert to simple format
             messages = []
             for msg in result:
-                messages.append({
-                    "role": msg.get("role"),
-                    "content": msg.get("content"),
-                })
+                messages.append(
+                    {
+                        "role": msg.get("role"),
+                        "content": msg.get("content"),
+                    }
+                )
             return messages
         except Exception as e:
             logger.error(f"Failed to load messages from storage: {e}")

@@ -338,9 +338,7 @@ class ToolDefinition:
         Returns:
             ToolDefinition instance.
         """
-        parameters = [
-            ToolParameter.from_dict(p) for p in data.get("parameters", [])
-        ]
+        parameters = [ToolParameter.from_dict(p) for p in data.get("parameters", [])]
 
         return cls(
             name=data["name"],
@@ -403,9 +401,7 @@ class ToolRegistry:
             ValueError: If the function is not decorated with @tool.
         """
         if not hasattr(func, "_tool_definition"):
-            raise ValueError(
-                f"Function '{func.__name__}' is not decorated with @tool"
-            )
+            raise ValueError(f"Function '{func.__name__}' is not decorated with @tool")
         definition: ToolDefinition = getattr(func, "_tool_definition")
         self.register(definition, func)
 
@@ -470,10 +466,7 @@ class ToolRegistry:
         Returns:
             List of dangerous tool names.
         """
-        return [
-            name for name, (defn, _) in self._tools.items()
-            if defn.dangerous
-        ]
+        return [name for name, (defn, _) in self._tools.items() if defn.dangerous]
 
     def get_definitions(self, format: str = "claude") -> List[Dict[str, Any]]:
         """Get all tool definitions in specified format.
@@ -607,6 +600,7 @@ def tool(
         >>> read_file._tool_definition.name
         'Read'
     """
+
     def decorator(func: F) -> F:
         # Create tool definition
         definition = ToolDefinition(

@@ -12,12 +12,12 @@ Features:
 
 import logging
 import sys
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Optional
-from datetime import datetime
-from dataclasses import dataclass, field
-from enum import Enum
-from contextvars import ContextVar
 
 from loguru import logger as _loguru_logger
 
@@ -45,10 +45,8 @@ class InterceptHandler(logging.Handler):
             name=record.name,
         ).opt(
             exception=record.exc_info,
-        ).log(
-            level,
-            f"{record.name}:{record.funcName}:{record.lineno} - {record.getMessage()}"
-        )
+        ).log(level, f"{record.name}:{record.funcName}:{record.lineno} - {record.getMessage()}")
+
 
 # Default configuration
 DEFAULT_LOG_DIR = "./.logs"
@@ -63,6 +61,7 @@ _trace_id: ContextVar[Optional[str]] = ContextVar("trace_id", default=None)
 
 class LogLevel(Enum):
     """Log level enumeration."""
+
     TRACE = "TRACE"
     DEBUG = "DEBUG"
     INFO = "INFO"
@@ -75,6 +74,7 @@ class LogLevel(Enum):
 @dataclass
 class LogEvent:
     """Structured log event for programmatic access."""
+
     event: str
     level: LogLevel
     timestamp: datetime = field(default_factory=datetime.now)
@@ -85,7 +85,7 @@ class LogEvent:
             "event": self.event,
             "level": self.level.value,
             "timestamp": self.timestamp.isoformat(),
-            **self.data
+            **self.data,
         }
 
 
@@ -132,10 +132,10 @@ def setup_logging(
         Path to the log file.
     """
     import os
-    
+
     # Remove default handler
     logger.remove()
-    
+
     # Check environment variable for console logging
     if console is None:
         env_console = os.environ.get("NIMBUS_LOG_CONSOLE", "true").lower()
@@ -145,8 +145,12 @@ def setup_logging(
     if intercept_stdlib:
         logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
         # Also intercept specific loggers used by kernel
-        for logger_name in ["nimbus.kernel.vcpu", "nimbus.kernel.scheduler",
-                           "nimbus.apps.code_agent", "nimbus.llm.gemini"]:
+        for logger_name in [
+            "nimbus.kernel.vcpu",
+            "nimbus.kernel.scheduler",
+            "nimbus.apps.code_agent",
+            "nimbus.llm.gemini",
+        ]:
             stdlib_logger = logging.getLogger(logger_name)
             stdlib_logger.handlers = [InterceptHandler()]
             stdlib_logger.propagate = False
@@ -163,14 +167,15 @@ def setup_logging(
 
     # Console handler (colored, human-readable) with agent context
     if console:
+
         def console_formatter(record):
             ctx = _format_context(record)
             ctx_part = f"<yellow>{ctx}</yellow>" if ctx else ""
             return (
                 "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
-                "<level>{level: <8}</level> | " +
-                ctx_part +
-                "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
+                "<level>{level: <8}</level> | "
+                + ctx_part
+                + "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
                 "<level>{message}</level>\n{exception}"
             )
 
@@ -186,9 +191,9 @@ def setup_logging(
     def file_formatter(record):
         ctx = _format_context(record)
         return (
-            "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | " +
-            (f"{ctx}" if ctx else "") +
-            "{name}:{function}:{line} | {message}\n{exception}"
+            "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | "
+            + (f"{ctx}" if ctx else "")
+            + "{name}:{function}:{line} | {message}\n{exception}"
         )
 
     logger.add(

@@ -11,7 +11,6 @@ Usage:
 
 import asyncio
 import os
-from pathlib import Path
 from typing import Optional
 
 import typer
@@ -52,9 +51,7 @@ async def _show_config_async(db_path: str) -> None:
 
         # Get all config from kv_store
         async with storage._get_connection() as db:
-            cursor = await db.execute(
-                "SELECT key, value FROM kv_store WHERE key LIKE 'config.%'"
-            )
+            cursor = await db.execute("SELECT key, value FROM kv_store WHERE key LIKE 'config.%'")
             rows = await cursor.fetchall()
             stored_config = {row["key"].replace("config.", ""): row["value"] for row in rows}
 
@@ -102,8 +99,7 @@ async def _get_config_async(db_path: str, key: str) -> None:
 
         async with storage._get_connection() as db:
             cursor = await db.execute(
-                "SELECT value FROM kv_store WHERE key = ?",
-                (f"config.{key}",)
+                "SELECT value FROM kv_store WHERE key = ?", (f"config.{key}",)
             )
             row = await cursor.fetchone()
 
@@ -147,7 +143,7 @@ async def _set_config_async(db_path: str, key: str, value: str) -> None:
                 INSERT OR REPLACE INTO kv_store (key, value, updated_at)
                 VALUES (?, ?, CURRENT_TIMESTAMP)
                 """,
-                (f"config.{key}", value)
+                (f"config.{key}", value),
             )
             await db.commit()
 

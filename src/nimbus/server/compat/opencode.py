@@ -267,7 +267,7 @@ async def create_session(
 
     # Get directory from query param or body, fallback to cwd
     workspace = directory or (data.directory if data else None) or os.getcwd()
-    title = (data.title if data else None) or f"Session"
+    title = (data.title if data else None) or "Session"
 
     session = await session_manager.create_session(
         name=title,

@@ -13,7 +13,6 @@ import os
 import signal
 import sys
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -42,6 +41,7 @@ def _get_default_db() -> str:
 
 def _setup_signal_handlers(shutdown_event: asyncio.Event) -> None:
     """Setup graceful shutdown signal handlers."""
+
     def signal_handler(sig: signal.Signals) -> None:
         console.print(f"\n[yellow]Received {sig.name}, shutting down gracefully...[/yellow]")
         shutdown_event.set()
@@ -68,8 +68,9 @@ async def _run_server(
 ) -> None:
     """Run the server asynchronously."""
     import uvicorn
+
     from nimbus.core.logging import setup_logging
-    
+
     # Setup file logging
     log_file = setup_logging(
         level=log_level.upper(),
@@ -86,7 +87,7 @@ async def _run_server(
     os.environ["NIMBUS_DB"] = db_path
     os.environ["NIMBUS_HOST"] = host
     os.environ["NIMBUS_PORT"] = str(port)
-    
+
     # If quiet mode, disable console logging in Nimbus
     if quiet:
         os.environ["NIMBUS_LOG_CONSOLE"] = "false"
@@ -187,7 +188,7 @@ def serve(
         actual_db = db if db is not None else _get_default_db()
 
         if not quiet:
-            console.print(f"[bold green]Starting Nimbus Server[/bold green]")
+            console.print("[bold green]Starting Nimbus Server[/bold green]")
             console.print(f"  Host: {actual_host}")
             console.print(f"  Port: {actual_port}")
             console.print(f"  Database: {actual_db}")
@@ -196,19 +197,23 @@ def serve(
             console.print(f"  Log Level: {log_level}")
             console.print()
             console.print(f"[dim]API docs: http://{actual_host}:{actual_port}/docs[/dim]")
-            console.print(f"[dim]Health check: http://{actual_host}:{actual_port}/api/v1/health[/dim]")
+            console.print(
+                f"[dim]Health check: http://{actual_host}:{actual_port}/api/v1/health[/dim]"
+            )
             console.print()
 
         try:
-            asyncio.run(_run_server(
-                host=actual_host,
-                port=actual_port,
-                db_path=actual_db,
-                reload=reload,
-                workers=workers,
-                quiet=quiet,
-                log_level=log_level,
-            ))
+            asyncio.run(
+                _run_server(
+                    host=actual_host,
+                    port=actual_port,
+                    db_path=actual_db,
+                    reload=reload,
+                    workers=workers,
+                    quiet=quiet,
+                    log_level=log_level,
+                )
+            )
         except KeyboardInterrupt:
             console.print("\n[yellow]Server stopped.[/yellow]")
         except Exception as e:

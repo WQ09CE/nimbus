@@ -24,15 +24,15 @@ async def write_file(
     """
     Write content to a file. Creates if doesn't exist, overwrites if does.
     Automatically creates parent directories.
-    
+
     Args:
         file_path: Path to file (relative or absolute)
         content: Content to write
         workspace: Workspace root for relative paths
-    
+
     Returns:
         Success message with byte count
-    
+
     Raises:
         SandboxError: If path escapes workspace
         PermissionError: If cannot write to path
@@ -41,9 +41,9 @@ async def write_file(
     path_obj = Path(file_path)
     if workspace is None:
         workspace = path_obj.parent if path_obj.is_absolute() else Path.cwd()
-    
+
     # Validate with sandbox (allow non-existing files)
-    sandbox = Sandbox(workspace)
+    Sandbox(workspace)
     try:
         # For write, we allow non-existing paths as long as they're within workspace
         if path_obj.is_absolute():
@@ -57,19 +57,19 @@ async def write_file(
             resolved_path = workspace / file_path
     except SandboxError:
         raise
-    
+
     try:
         # Create parent directories
         resolved_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Write file
-        with open(resolved_path, 'w', encoding='utf-8') as f:
+        with open(resolved_path, "w", encoding="utf-8") as f:
             f.write(content)
-        
-        bytes_count = len(content.encode('utf-8'))
-        
+
+        bytes_count = len(content.encode("utf-8"))
+
         return f"Successfully wrote {bytes_count} bytes to {file_path}"
-    
+
     except PermissionError:
         raise PermissionError(f"Permission denied: {file_path}")
     except Exception as e:

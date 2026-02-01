@@ -24,22 +24,23 @@ This module provides:
 __layer__ = 1  # Agent OS Layer
 __role__ = "MMU"  # Memory Management Unit
 
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Protocol, Union
-import uuid
 
-from ..utils.tokens import estimate_tokens
 from ..utils.checkpoint import CheckpointManager
+from ..utils.tokens import estimate_tokens
 
 
 class MemoryTier(Enum):
     """Memory tier classification."""
-    PINNED = "pinned"        # Never compressed
-    WORKING = "working"      # Current task state
-    EPISODIC = "episodic"    # Conversation history
-    SEMANTIC = "semantic"    # RAG cache
+
+    PINNED = "pinned"  # Never compressed
+    WORKING = "working"  # Current task state
+    EPISODIC = "episodic"  # Conversation history
+    SEMANTIC = "semantic"  # RAG cache
 
 
 @dataclass
@@ -48,14 +49,15 @@ class PinnedItem:
 
     Inspired by Letta's Block design with description and read_only fields.
     """
+
     id: str
-    type: str                    # "file_meta", "user_instruction", "key_entity"
+    type: str  # "file_meta", "user_instruction", "key_entity"
     content: str
-    priority: int = 0            # Higher priority = shown first
+    priority: int = 0  # Higher priority = shown first
     created_at: datetime = field(default_factory=datetime.now)
     # Letta-inspired fields
-    description: str = ""        # Description for Agent (what this memory is for)
-    read_only: bool = False      # If True, Agent cannot modify this item
+    description: str = ""  # Description for Agent (what this memory is for)
+    read_only: bool = False  # If True, Agent cannot modify this item
 
     def estimate_tokens(self) -> int:
         """Estimate token count for this item."""
@@ -65,6 +67,7 @@ class PinnedItem:
 @dataclass
 class Message:
     """Conversation message."""
+
     role: str  # "user" | "assistant" | "system"
     content: str
     timestamp: datetime = field(default_factory=datetime.now)
@@ -77,18 +80,20 @@ class Message:
 @dataclass
 class MemoryConfig:
     """Configuration for TieredMemoryManager."""
-    pinned_budget: int = 1000         # Pinned tier token budget
-    working_budget: int = 4000        # Working tier token budget
-    episodic_budget: int = 8000       # Episodic tier token budget
-    semantic_budget: int = 4000       # Semantic tier token budget
-    compression_threshold: int = 6    # Trigger compression after N turns
-    checkpoint_interval: int = 5      # Auto checkpoint every N turns
+
+    pinned_budget: int = 1000  # Pinned tier token budget
+    working_budget: int = 4000  # Working tier token budget
+    episodic_budget: int = 8000  # Episodic tier token budget
+    semantic_budget: int = 4000  # Semantic tier token budget
+    compression_threshold: int = 6  # Trigger compression after N turns
+    checkpoint_interval: int = 5  # Auto checkpoint every N turns
     checkpoint_path: str = "./.checkpoints"  # Checkpoint storage path
 
 
 @dataclass
 class MemoryStats:
     """Statistics for memory usage."""
+
     pinned_tokens: int
     working_tokens: int
     episodic_tokens: int
@@ -100,6 +105,7 @@ class MemoryStats:
 
 class LLMClientProtocol(Protocol):
     """Protocol for LLM client used in compression."""
+
     async def complete(self, prompt: str) -> str:
         """Generate completion for prompt."""
         ...
@@ -127,7 +133,7 @@ class TieredMemoryManager:
         self,
         config: Optional[MemoryConfig] = None,
         llm_client: Optional[LLMClientProtocol] = None,
-        session_id: str = "default"
+        session_id: str = "default",
     ):
         """Initialize tiered memory manager.
 
@@ -294,7 +300,7 @@ class TieredMemoryManager:
                 "description": item.description,
                 "read_only": item.read_only,
                 "token_count": item.estimate_tokens(),
-                "preview": item.content[:100] + "..." if len(item.content) > 100 else item.content
+                "preview": item.content[:100] + "..." if len(item.content) > 100 else item.content,
             }
             for item in self.get_pinned()
         ]
@@ -382,8 +388,8 @@ class TieredMemoryManager:
             return
 
         # Extract oldest N turns
-        to_compress = self.episodic[:self.config.compression_threshold]
-        self.episodic = self.episodic[self.config.compression_threshold:]
+        to_compress = self.episodic[: self.config.compression_threshold]
+        self.episodic = self.episodic[self.config.compression_threshold :]
 
         # Generate summary via LLM
         text = "\n".join(f"{m.role}: {m.content}" for m in to_compress)
@@ -481,7 +487,7 @@ class TieredMemoryManager:
 
         # 3. Episodic summaries (compressed history)
         if self.episodic_summaries:
-            parts.append(f"## 历史摘要\n" + "\n---\n".join(self.episodic_summaries[-3:]))
+            parts.append("## 历史摘要\n" + "\n---\n".join(self.episodic_summaries[-3:]))
 
         # 4. Recent episodic (recent conversation)
         if self.episodic:
@@ -513,17 +519,13 @@ class TieredMemoryManager:
                     "priority": p.priority,
                     "created_at": p.created_at.isoformat(),
                     "description": p.description,
-                    "read_only": p.read_only
+                    "read_only": p.read_only,
                 }
                 for p in self.pinned
             ],
             "working": self.working,
             "episodic": [
-                {
-                    "role": m.role,
-                    "content": m.content,
-                    "timestamp": m.timestamp.isoformat()
-                }
+                {"role": m.role, "content": m.content, "timestamp": m.timestamp.isoformat()}
                 for m in self.episodic
             ],
             "episodic_summaries": self.episodic_summaries,
@@ -553,7 +555,7 @@ class TieredMemoryManager:
                 priority=p.get("priority", 0),
                 created_at=datetime.fromisoformat(p["created_at"]),
                 description=p.get("description", ""),
-                read_only=p.get("read_only", False)
+                read_only=p.get("read_only", False),
             )
             for p in data.get("pinned", [])
         ]
@@ -566,7 +568,7 @@ class TieredMemoryManager:
             Message(
                 role=m["role"],
                 content=m["content"],
-                timestamp=datetime.fromisoformat(m["timestamp"])
+                timestamp=datetime.fromisoformat(m["timestamp"]),
             )
             for m in data.get("episodic", [])
         ]
@@ -590,8 +592,7 @@ class TieredMemoryManager:
         working_tokens = sum(estimate_tokens(str(v)) for v in self.working.values())
         episodic_tokens = self._estimate_episodic_tokens()
         semantic_tokens = sum(
-            sum(estimate_tokens(r) for r in results)
-            for results in self.semantic_cache.values()
+            sum(estimate_tokens(r) for r in results) for results in self.semantic_cache.values()
         )
 
         return MemoryStats(
@@ -601,7 +602,7 @@ class TieredMemoryManager:
             semantic_tokens=semantic_tokens,
             total_tokens=pinned_tokens + working_tokens + episodic_tokens + semantic_tokens,
             compression_count=self._compression_count,
-            turn_count=self._turn_count
+            turn_count=self._turn_count,
         )
 
     # =========================================================================
@@ -645,10 +646,7 @@ class TieredMemoryManager:
             and recent conversation history.
         """
         # Convert PinnedItem objects to simple key-value pairs
-        pinned_items = {
-            item.id: item.content
-            for item in self.pinned
-        }
+        pinned_items = {item.id: item.content for item in self.pinned}
 
         # Copy working context
         working_context = dict(self.working)
@@ -658,10 +656,7 @@ class TieredMemoryManager:
             recent_history: List[Dict[str, str]] = []
         else:
             recent_messages = self.episodic[-max_history:] if self.episodic else []
-            recent_history = [
-                {"role": msg.role, "content": msg.content}
-                for msg in recent_messages
-            ]
+            recent_history = [{"role": msg.role, "content": msg.content} for msg in recent_messages]
 
         # System info from working memory
         system_info: Dict[str, str] = {}
@@ -701,7 +696,7 @@ class SimpleMemory:
         self.history.append({"role": role, "content": content})
         # Trim if exceeds max_turns
         if len(self.history) > self.max_turns:
-            self.history = self.history[-self.max_turns:]
+            self.history = self.history[-self.max_turns :]
 
     def get_context(self, recent_count: int = 10) -> str:
         """Assemble context from pinned items and recent history.
@@ -786,10 +781,7 @@ class SimpleMemory:
             and recent conversation history.
         """
         # Convert pinned dict to snapshot format
-        pinned_items = {
-            filename: metadata
-            for filename, metadata in self.pinned.items()
-        }
+        pinned_items = {filename: metadata for filename, metadata in self.pinned.items()}
 
         # Working context (SimpleMemory doesn't have explicit working memory)
         working_context: Dict[str, Any] = {}
@@ -825,6 +817,7 @@ class SubagentContextSnapshot:
         recent_history: Recent conversation history (limited turns).
         system_info: System information like workspace path.
     """
+
     pinned_items: Dict[str, str]
     working_context: Dict[str, Any]
     recent_history: List[Dict[str, str]]
@@ -833,10 +826,10 @@ class SubagentContextSnapshot:
     def __post_init__(self) -> None:
         """Freeze the snapshot to prevent modifications."""
         # Convert mutable dicts to immutable copies
-        object.__setattr__(self, 'pinned_items', dict(self.pinned_items))
-        object.__setattr__(self, 'working_context', dict(self.working_context))
-        object.__setattr__(self, 'recent_history', list(self.recent_history))
-        object.__setattr__(self, 'system_info', dict(self.system_info))
+        object.__setattr__(self, "pinned_items", dict(self.pinned_items))
+        object.__setattr__(self, "working_context", dict(self.working_context))
+        object.__setattr__(self, "recent_history", list(self.recent_history))
+        object.__setattr__(self, "system_info", dict(self.system_info))
 
 
 class SubagentContext:
@@ -910,8 +903,7 @@ class SubagentContext:
         # System info
         if self._parent_snapshot.system_info:
             info_lines = [
-                f"- {key}: {value}"
-                for key, value in self._parent_snapshot.system_info.items()
+                f"- {key}: {value}" for key, value in self._parent_snapshot.system_info.items()
             ]
             if info_lines:
                 parts.append("## System Info\n" + "\n".join(info_lines))
@@ -919,16 +911,14 @@ class SubagentContext:
         # Pinned items (key information)
         if self._parent_snapshot.pinned_items:
             pinned_lines = [
-                f"- {key}: {value}"
-                for key, value in self._parent_snapshot.pinned_items.items()
+                f"- {key}: {value}" for key, value in self._parent_snapshot.pinned_items.items()
             ]
             parts.append("## Key Information (from parent)\n" + "\n".join(pinned_lines))
 
         # Working context (current task state)
         if self._parent_snapshot.working_context:
             working_lines = [
-                f"- {key}: {value}"
-                for key, value in self._parent_snapshot.working_context.items()
+                f"- {key}: {value}" for key, value in self._parent_snapshot.working_context.items()
             ]
             parts.append("## Parent Task State\n" + "\n".join(working_lines))
 
@@ -987,12 +977,14 @@ class SubagentContext:
             args: Arguments passed to the tool.
             result: Result returned by the tool.
         """
-        self._tool_calls.append({
-            "tool": tool_name,
-            "args": args,
-            "result_preview": str(result)[:200] if result else None,
-            "timestamp": datetime.now().isoformat(),
-        })
+        self._tool_calls.append(
+            {
+                "tool": tool_name,
+                "args": args,
+                "result_preview": str(result)[:200] if result else None,
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
 
     def get_summary(self) -> str:
         """Get execution summary to return to parent.

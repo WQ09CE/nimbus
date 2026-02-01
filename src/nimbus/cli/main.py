@@ -9,10 +9,11 @@ Usage:
     nimbus config show
 """
 
-import typer
 from typing import Optional
 
-from .commands import serve, session, config, acp
+import typer
+
+from .commands import acp, config, serve, session
 from .commands.run import run_command
 
 # Create main app
@@ -35,6 +36,7 @@ def version_callback(value: bool) -> None:
     """Print version and exit."""
     if value:
         from nimbus import __version__
+
         typer.echo(f"nimbus version {__version__}")
         raise typer.Exit()
 

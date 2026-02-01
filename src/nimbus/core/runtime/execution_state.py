@@ -12,52 +12,52 @@ Execution State - vCPU 执行状态管理
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
 
 @dataclass
 class ExecutionState:
     """
     vCPU 执行状态
-    
+
     集中管理所有执行相关的状态变量，解决状态爆炸问题。
-    
+
     Example:
         state = ExecutionState()
-        
+
         # 开始执行
         state.is_running = True
         state.iteration += 1
-        
+
         # 重置
         state.reset()
     """
-    
+
     # 迭代控制
     iteration: int = 0
     max_iterations: int = 50
-    
+
     # 执行状态
     is_running: bool = False
     is_done: bool = False
     final_result: Optional[Any] = None
-    
+
     # 连续计数器
     consecutive_thoughts: int = 0
     consecutive_errors: int = 0
     consecutive_empty_responses: int = 0
-    
+
     # Compaction 相关
     compaction_count: int = 0
     max_compactions: int = 10
-    
+
     # 工具失败跟踪
     tool_failure_counts: Dict[str, int] = field(default_factory=dict)
     max_tool_failures: int = 6
-    
+
     # 路径解析计数（用于文件查找恢复）
     path_not_found_count: int = 0
-    
+
     def reset(self) -> None:
         """重置所有状态到初始值"""
         self.iteration = 0
@@ -70,121 +70,118 @@ class ExecutionState:
         self.compaction_count = 0
         self.tool_failure_counts.clear()
         self.path_not_found_count = 0
-    
+
     def start_execution(self) -> None:
         """开始执行"""
         self.reset()
         self.is_running = True
-    
+
     def finish_execution(self, result: Any) -> None:
         """完成执行"""
         self.is_done = True
         self.is_running = False
         self.final_result = result
-    
+
     def increment_iteration(self) -> int:
         """
         增加迭代计数
-        
+
         Returns:
             新的迭代次数
         """
         self.iteration += 1
         return self.iteration
-    
+
     def should_compact(self) -> bool:
         """
         检查是否应该进行压缩
-        
+
         Returns:
             True 如果达到迭代限制且未超过最大压缩次数
         """
         return (
-            self.iteration >= self.max_iterations and
-            self.compaction_count < self.max_compactions
+            self.iteration >= self.max_iterations and self.compaction_count < self.max_compactions
         )
-    
+
     def record_compaction(self) -> int:
         """
         记录一次压缩
-        
+
         Returns:
             新的压缩次数
         """
         self.compaction_count += 1
         self.iteration = 0  # 重置迭代计数
         return self.compaction_count
-    
+
     def on_thought(self) -> int:
         """
         记录一次思考（无工具调用的响应）
-        
+
         Returns:
             连续思考次数
         """
         self.consecutive_thoughts += 1
         return self.consecutive_thoughts
-    
+
     def on_action(self) -> None:
         """记录一次动作（有工具调用），重置思考计数"""
         self.consecutive_thoughts = 0
-    
+
     def on_tool_success(self, tool_name: str) -> None:
         """
         记录工具成功
-        
+
         Args:
             tool_name: 工具名称
         """
         self.consecutive_errors = 0
         self.tool_failure_counts[tool_name] = 0
-    
+
     def on_tool_failure(self, tool_name: str) -> int:
         """
         记录工具失败
-        
+
         Args:
             tool_name: 工具名称
-            
+
         Returns:
             该工具的累计失败次数
         """
         self.consecutive_errors += 1
-        self.tool_failure_counts[tool_name] = (
-            self.tool_failure_counts.get(tool_name, 0) + 1
-        )
+        self.tool_failure_counts[tool_name] = self.tool_failure_counts.get(tool_name, 0) + 1
         return self.tool_failure_counts[tool_name]
-    
+
     def is_tool_failing_too_much(self, tool_name: str) -> bool:
         """
         检查工具是否失败过多
-        
+
         Args:
             tool_name: 工具名称
-            
+
         Returns:
             True 如果失败次数超过阈值
         """
         return self.tool_failure_counts.get(tool_name, 0) >= self.max_tool_failures
-    
+
     def on_empty_response(self) -> int:
         """
         记录空响应
-        
+
         Returns:
             连续空响应次数
         """
         self.consecutive_empty_responses += 1
         return self.consecutive_empty_responses
-    
+
     def on_valid_response(self) -> None:
         """记录有效响应，重置空响应计数"""
         self.consecutive_empty_responses = 0
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """
         转换为字典（用于序列化/调试）
-        
+
         Returns:
             状态字典
         """
@@ -202,7 +199,7 @@ class ExecutionState:
             "tool_failure_counts": dict(self.tool_failure_counts),
             "path_not_found_count": self.path_not_found_count,
         }
-    
+
     @classmethod
     def from_config(
         cls,
@@ -212,12 +209,12 @@ class ExecutionState:
     ) -> "ExecutionState":
         """
         从配置创建状态对象
-        
+
         Args:
             max_iterations: 最大迭代次数
             max_compactions: 最大压缩次数
             max_tool_failures: 单工具最大失败次数
-            
+
         Returns:
             配置好的 ExecutionState
         """

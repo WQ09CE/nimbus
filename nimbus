@@ -53,7 +53,7 @@ log_error() {
 
 check_port() {
     local port=$1
-    lsof -i :$port >/dev/null 2>&1
+    lsof -i :$port -sTCP:LISTEN >/dev/null 2>&1
 }
 
 wait_for_port() {
@@ -72,7 +72,18 @@ wait_for_port() {
 }
 
 get_pid_on_port() {
-    lsof -ti :$1 2>/dev/null | head -1
+    lsof -ti :$1 -sTCP:LISTEN 2>/dev/null | head -1
+}
+
+check_dependencies() {
+    local missing=0
+    for cmd in node npm npx uv lsof screen; do
+        if ! command -v $cmd &> /dev/null; then
+            log_error "Command '$cmd' not found. Please install it."
+            missing=1
+        fi
+    done
+    return $missing
 }
 
 # ============================================================================
@@ -115,8 +126,9 @@ start_nimbus() {
     
     # 启动服务 (使用 screen 完全脱离终端)
     # NIMBUS_DUMP_CONTEXT=1: 每次 LLM 调用前 dump context 到 .logs/context/
+    # --quiet: 禁用控制台日志，防止与文件日志重复（因为我们使用了 >> 重定向）
     echo -e "\n\n========== $(date '+%Y-%m-%d %H:%M:%S') nimbus starting ==========\n" >> "$LOG_DIR/nimbus.log"
-    screen -dmS nimbus-server bash -c "NIMBUS_DUMP_CONTEXT=1 uv run nimbus serve --port $NIMBUS_PORT >> '$LOG_DIR/nimbus.log' 2>&1"
+    screen -dmS nimbus-server bash -c "NIMBUS_DUMP_CONTEXT=1 uv run nimbus serve --port $NIMBUS_PORT --quiet >> '$LOG_DIR/nimbus.log' 2>&1"
     
     if wait_for_port $NIMBUS_PORT 15; then
         log_ok "nimbus started on :$NIMBUS_PORT"
@@ -141,6 +153,7 @@ start_webui() {
     fi
     
     # 启动服务 (使用 screen 完全脱离终端)
+    # 启用 Hot Reload 以支持开发体验
     echo -e "\n\n========== $(date '+%Y-%m-%d %H:%M:%S') web-ui starting ==========\n" >> "$LOG_DIR/webui.log"
     screen -dmS nimbus-webui bash -c "cd '$SCRIPT_DIR/web-ui' && npm run dev >> '$LOG_DIR/webui.log' 2>&1"
     
@@ -177,6 +190,8 @@ stop_service() {
 # ============================================================================
 
 cmd_start() {
+    check_dependencies || exit 1
+    
     echo ""
     echo "🚀 Starting Nimbus Stack..."
     echo "═══════════════════════════════════════"
@@ -190,18 +205,9 @@ cmd_start() {
     fi
     
     echo ""
-    echo "═══════════════════════════════════════"
     echo "✅ All services started!"
-    echo ""
-    echo "📡 Endpoints:"
-    echo "   • pi-ai:   http://localhost:$PI_AI_PORT"
-    echo "   • nimbus:  http://localhost:$NIMBUS_PORT"
-    if check_port $WEBUI_PORT; then
-        echo "   • web-ui:  http://localhost:$WEBUI_PORT"
-    fi
-    echo ""
-    echo "📁 Logs: $LOG_DIR/"
-    echo ""
+    
+    cmd_status
 }
 
 cmd_stop() {
@@ -289,6 +295,20 @@ cmd_restart() {
     cmd_start "$@"
 }
 
+cmd_reload_ui() {
+    echo ""
+    echo "🔄 Reloading Web-UI (for manual code changes)..."
+    echo "═══════════════════════════════════════"
+    
+    stop_service $WEBUI_PORT "web-ui"
+    sleep 1
+    start_webui
+    
+    echo ""
+    echo "✅ Web-UI reloaded"
+    cmd_status
+}
+
 cmd_help() {
     echo ""
     echo "Nimbus - AI Agent Framework"
@@ -299,6 +319,7 @@ cmd_help() {
     echo "  start [--no-ui]   Start all services (or without web-ui)"
     echo "  stop              Stop all services"
     echo "  restart           Restart all services"
+    echo "  reload-ui         Restart only web-ui (for manual code updates)"
     echo "  status            Show service status"
     echo "  logs [service]    View logs (pi-ai|nimbus|webui|all)"
     echo "  help              Show this help"
@@ -307,6 +328,9 @@ cmd_help() {
     echo "  PI_AI_PORT=$PI_AI_PORT"
     echo "  NIMBUS_PORT=$NIMBUS_PORT"
     echo "  WEBUI_PORT=$WEBUI_PORT"
+    echo ""
+    echo "Note: Hot reload is disabled to prevent chat interruption."
+    echo "      Use 'reload-ui' to manually apply code changes."
     echo ""
 }
 
@@ -323,6 +347,9 @@ case "${1:-help}" in
         ;;
     restart)
         cmd_restart "$2"
+        ;;
+    reload-ui|reload)
+        cmd_reload_ui
         ;;
     status|st)
         cmd_status

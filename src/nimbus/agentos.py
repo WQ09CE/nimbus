@@ -50,17 +50,21 @@ Usage:
 """
 
 import asyncio
-import sys
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional
 
 from loguru import logger
 
 if TYPE_CHECKING:
-    from pathlib import Path as PathType
+    pass
 
+from nimbus.core.compaction import (
+    CompactionConfig,
+    CompactionEngine,
+    DefaultCompactionLLM,
+)
 from nimbus.core.memory.context import PinnedContext
 from nimbus.core.memory.mmu import MMU, MMUConfig
 from nimbus.core.protocol import Event, Fault, ToolResult
@@ -73,17 +77,14 @@ from nimbus.core.scheduler import (
     SchedulerConfig,
     Task,
 )
+
+# Session and Compaction
+from nimbus.core.session import SessionManager
 from nimbus.os.gate import (
     KernelGate,
     SimpleEventStream,
 )
-# Session and Compaction
-from nimbus.core.session import SessionManager, InMemorySessionManager
-from nimbus.core.compaction import (
-    CompactionConfig,
-    CompactionEngine,
-    DefaultCompactionLLM,
-)
+from nimbus.tools.base import ToolDefinition, ToolRegistry
 
 # =============================================================================
 # AgentOS Configuration
@@ -114,14 +115,10 @@ class AgentOSConfig:
     vcpu_config: VCPUConfig = field(default_factory=VCPUConfig)
     scheduler_config: SchedulerConfig = field(default_factory=SchedulerConfig)
     mmu_config: MMUConfig = field(default_factory=MMUConfig)
+    # Kernel tools
+    kernel_tools: bool = True  # Auto-load kernel tools (Read, Write, Edit, Bash)
     # System prompt based on pi-coding-agent design
     system_rules: str = """You are an expert coding assistant. You help users by reading files, executing commands, editing code, and writing new files.
-
-Available tools:
-- Read: Read file contents (truncated to 2000 lines, use offset/limit for large files)
-- Write: Create or overwrite files (auto-creates directories)
-- Edit: Make surgical edits to files (old text must match exactly)
-- Bash: Execute bash commands (ls, grep, find, rg, git, pytest, etc.)
 
 Guidelines:
 - Use Bash for file operations like ls, grep, find, rg
@@ -131,15 +128,16 @@ Guidelines:
 - Be concise in your responses
 - Show file paths clearly when working with files
 - Respond in the SAME LANGUAGE as the user (Chinese → Chinese, English → English)
+- Use ASCII art for diagrams.
 
 Workflow:
 1. Read files to understand the code
 2. Edit/Write to make changes
-3. Call return_result with a summary when done
+3. Reply to the user when done. You do NOT need to call a special tool to finish.
 
 Rules:
 - Act immediately on clear instructions, don't ask for confirmation
-- After Edit/Write success, call return_result immediately (don't re-read to verify)
+- After Edit/Write success, just reply to the user (don't re-read to verify)
 - If a tool fails, try a different approach (don't retry with identical arguments)
 - Trust tool results - if Edit says success, the file IS modified"""
     workspace_info: str = ""
@@ -191,97 +189,6 @@ class Process:
 # =============================================================================
 
 
-class ToolRegistry:
-    """
-    Registry for tools available to the AgentOS.
-
-    This class manages tool registration and provides an executor
-    interface for the KernelGate.
-    """
-
-    def __init__(self) -> None:
-        self._tools: Dict[str, Callable] = {}
-        self._tool_defs: List[Dict[str, Any]] = []
-
-    def register(
-        self,
-        name: str,
-        func: Callable,
-        description: str = "",
-        parameters: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """
-        Register a tool.
-
-        Args:
-            name: Tool name
-            func: Tool function (sync or async)
-            description: Tool description
-            parameters: Tool parameters schema
-        """
-        self._tools[name] = func
-
-        # Build tool definition for LLM
-        tool_def = {
-            "type": "function",
-            "function": {
-                "name": name,
-                "description": description or f"Execute {name}",
-                "parameters": parameters or {"type": "object", "properties": {}},
-            },
-        }
-        self._tool_defs.append(tool_def)
-
-    def unregister(self, name: str) -> bool:
-        """Unregister a tool."""
-        if name in self._tools:
-            del self._tools[name]
-            self._tool_defs = [d for d in self._tool_defs if d["function"]["name"] != name]
-            return True
-        return False
-
-    def get(self, name: str) -> Optional[Callable]:
-        """Get a tool by name."""
-        return self._tools.get(name)
-
-    def list_tools(self) -> List[str]:
-        """List all registered tool names."""
-        return list(self._tools.keys())
-
-    def get_tool_definitions(self) -> List[Dict[str, Any]]:
-        """Get tool definitions for LLM."""
-        return self._tool_defs
-
-    async def execute(self, tool_name: str, args: Dict[str, Any]) -> Any:
-        """
-        Execute a tool.
-
-        Args:
-            tool_name: Name of the tool to execute
-            args: Tool arguments
-
-        Returns:
-            Tool execution result
-
-        Raises:
-            Fault: If tool not found or execution fails
-        """
-        func = self._tools.get(tool_name)
-        if func is None:
-            raise Fault(
-                domain="TOOL",
-                code="TOOL_NOT_FOUND",
-                message=f"Tool '{tool_name}' not found",
-                retryable=False,
-            )
-
-        # Execute (handle both sync and async)
-        if asyncio.iscoroutinefunction(func):
-            return await func(**args)
-        else:
-            return func(**args)
-
-
 # =============================================================================
 # AgentOS
 # =============================================================================
@@ -330,9 +237,88 @@ class AgentOS:
 
         # Tool registry
         self._tools = ToolRegistry()
+
+        # 1. Register Kernel Tools (Auto)
+        kernel_tools_desc = ""
+        if self.config.kernel_tools:
+            from nimbus.tools import BASH_TOOL, EDIT_TOOL, READ_TOOL, WRITE_TOOL
+            from nimbus.tools.base import ToolDefinition, ToolParameter
+
+            kernel_tools_list = [READ_TOOL, WRITE_TOOL, EDIT_TOOL, BASH_TOOL]
+            kernel_tools_desc = "Available tools:\n"
+
+            # Helper to parse legacy tool dicts (JSON Schema params)
+            def _parse_legacy_tool(data: Dict[str, Any]) -> ToolDefinition:
+                params = []
+                schema = data.get("parameters", {})
+                props = schema.get("properties", {})
+                required = schema.get("required", [])
+
+                for name, spec in props.items():
+                    params.append(
+                        ToolParameter(
+                            name=name,
+                            type=spec.get("type", "string"),
+                            description=spec.get("description", ""),
+                            required=(name in required),
+                        )
+                    )
+
+                return ToolDefinition(
+                    name=data["name"],
+                    description=data.get("description", ""),
+                    parameters=params,
+                )
+
+            for tool_data in kernel_tools_list:
+                try:
+                    def_obj = _parse_legacy_tool(tool_data)
+                    self._tools.register(def_obj, tool_data["function"])
+                    
+                    # Generate signature for prompt
+                    params = []
+                    for p in def_obj.parameters:
+                        p_str = p.name
+                        if not p.required:
+                            p_str += "?"
+                        params.append(p_str)
+                    
+                    sig = f"{def_obj.name}({', '.join(params)})"
+                    
+                    # Short description for prompt (truncate if too long)
+                    desc = def_obj.description.split(".")[0] + "."
+                    kernel_tools_desc += f"- {sig}: {desc}\n"
+                except ValueError:
+                    pass
+
+        # 2. Register User Tools
         if tools:
+            from nimbus.tools.base import ToolDefinition
+
             for name, func in tools.items():
-                self._tools.register(name, func)
+                try:
+                    if hasattr(func, "_tool_definition"):
+                        self._tools.register_decorated(func)
+                    else:
+                        # Fallback for plain functions
+                        definition = ToolDefinition(
+                            name=name,
+                            description=func.__doc__ or "No description",
+                            parameters=[],  # Schema inference omitted for brevity
+                        )
+                        self._tools.register(definition, func)
+                except ValueError:
+                    # Log warning but continue
+                    pass
+
+        # 3. Inject Kernel Tools into System Prompt
+        if kernel_tools_desc and "Available tools:" not in self.config.system_rules:
+            # Insert after the first paragraph
+            parts = self.config.system_rules.split("\n\n", 1)
+            if len(parts) > 1:
+                self.config.system_rules = parts[0] + "\n\n" + kernel_tools_desc + "\n" + parts[1]
+            else:
+                self.config.system_rules += "\n\n" + kernel_tools_desc
 
         # Scheduler
         self._scheduler = Scheduler(
@@ -348,7 +334,7 @@ class AgentOS:
 
         # Chat session tracking
         self._current_session_id: Optional[str] = None
-        
+
         # Session management (NEW)
         if self.config.enable_session and self.config.session_dir:
             self._session_mgr: Optional[SessionManager] = SessionManager(
@@ -356,7 +342,7 @@ class AgentOS:
             )
         else:
             self._session_mgr = None
-        
+
         # Compaction engine (NEW)
         self._compaction_engine = CompactionEngine(
             config=self.config.compaction_config,
@@ -434,13 +420,13 @@ class AgentOS:
             # Yield events based on actions
             for i, action in enumerate(result.actions):
                 action_kind = getattr(action, "kind", None)
-                
+
                 if action_kind == "TOOL_CALL":
                     # ActionIR uses 'name' and 'args', not 'tool_name' and 'tool_args'
                     tool_name = getattr(action, "name", "unknown")
                     tool_args = getattr(action, "args", {})
                     tool_id = getattr(action, "id", None)
-                    
+
                     yield {
                         "type": "tool_call",
                         "name": tool_name,
@@ -518,9 +504,9 @@ class AgentOS:
                 gate=gate,
                 mmu=mmu,
                 config=self.config.vcpu_config,
-                tools=self._tools.get_tool_definitions(),
+                tools=self._tools.get_definitions(format="openai"),
             )
-            
+
             # Set compaction callback
             vcpu.set_compaction_callback(
                 lambda sid=session_id, m=mmu: self._compaction_for_process(sid, m)
@@ -540,10 +526,11 @@ class AgentOS:
 
         # Reset VCPU state for new turn (but keep MMU history)
         process.vcpu._reset()
-        
+
         # Session persistence: 追加用户消息
         if self._session_mgr:
             from nimbus.core.memory.context import Message
+
             self._session_mgr.append_message(Message(role="user", content=message))
 
         # Execute one turn
@@ -554,10 +541,11 @@ class AgentOS:
             # Session persistence: 追加助手响应
             if self._session_mgr and result.output:
                 from nimbus.core.memory.context import Message
+
                 self._session_mgr.append_message(
                     Message(role="assistant", content=str(result.output))
                 )
-            
+
             # Check if compaction needed
             await self._check_compaction(process)
 
@@ -569,8 +557,9 @@ class AgentOS:
             return result
 
         except Exception as e:
-            import traceback
             import logging
+            import traceback
+
             logger = logging.getLogger(__name__)
             error_detail = traceback.format_exc()
             logger.error(f"❌ [AgentOS.chat] Exception in vcpu.execute: {e}")
@@ -596,55 +585,55 @@ class AgentOS:
             process = self._processes.pop(session_id)
             process.state = "COMPLETED"
             self._emit_event("PROC_FINISHED", session_id, {"reason": "session_ended"})
-    
+
     # =========================================================================
     # Session Management (NEW)
     # =========================================================================
-    
+
     def new_session(self, parent_session: Optional[str] = None) -> str:
         """
         创建新会话。
-        
+
         Args:
             parent_session: 可选的父会话路径
-        
+
         Returns:
             新会话 ID
         """
         if self._session_mgr:
             return self._session_mgr.new_session(parent_session)
         return f"ephemeral-{uuid.uuid4().hex[:8]}"
-    
+
     def load_session(self, session_file: Path) -> bool:
         """
         加载已有会话。
-        
+
         Args:
             session_file: 会话文件路径
-        
+
         Returns:
             是否成功加载
         """
         if not self._session_mgr:
             return False
         return self._session_mgr.load_session(session_file)
-    
+
     def get_session_stats(self) -> Optional[Dict[str, Any]]:
         """获取当前会话统计"""
         if self._session_mgr:
             return self._session_mgr.get_stats()
         return None
-    
+
     def list_recent_sessions(self, limit: int = 20) -> List[Dict[str, Any]]:
         """列出最近的会话"""
         if self._session_mgr:
             return self._session_mgr.list_recent_sessions(limit)
         return []
-    
+
     # =========================================================================
     # Compaction (NEW)
     # =========================================================================
-    
+
     async def compact(
         self,
         session_id: Optional[str] = None,
@@ -652,40 +641,39 @@ class AgentOS:
     ) -> Optional[Dict[str, Any]]:
         """
         手动触发 compaction。
-        
+
         Args:
             session_id: 要压缩的会话 ID（默认当前会话）
             custom_instructions: 自定义压缩指令
-        
+
         Returns:
             压缩结果或 None
         """
         target_session = session_id or self._current_session_id
         if not target_session:
             return None
-        
+
         process = self._processes.get(target_session)
         if not process or not process.mmu:
             return None
-        
+
         # 获取所有消息
-        from nimbus.core.memory.context import Message
         all_messages = []
         for frame in process.mmu._stack:
             for msg in frame.messages:
                 all_messages.append(msg)
-        
+
         # 执行压缩
         new_messages, result = await self._compaction_engine.compact(
             all_messages, custom_instructions
         )
-        
+
         if result.messages_removed > 0:
             # 更新 MMU（简化处理：清除并重新添加）
             process.mmu.clear()
             for msg in new_messages:
                 process.mmu.add_message(msg)
-            
+
             # 持久化压缩记录
             if self._session_mgr:
                 self._session_mgr.append_compaction(
@@ -694,13 +682,17 @@ class AgentOS:
                     tokens_before=result.tokens_before,
                     details=result.details,
                 )
-            
-            self._emit_event("COMPACTION", target_session, {
-                "tokens_before": result.tokens_before,
-                "tokens_after": result.tokens_after,
-                "messages_removed": result.messages_removed,
-            })
-        
+
+            self._emit_event(
+                "COMPACTION",
+                target_session,
+                {
+                    "tokens_before": result.tokens_before,
+                    "tokens_after": result.tokens_after,
+                    "messages_removed": result.messages_removed,
+                },
+            )
+
         return {
             "summary": result.summary,
             "tokens_before": result.tokens_before,
@@ -708,88 +700,70 @@ class AgentOS:
             "messages_removed": result.messages_removed,
             "compression_ratio": result.compression_ratio,
         }
-    
+
     async def _check_compaction(self, process: Process) -> None:
         """
         检查是否需要自动 compaction。
         """
         if not process.mmu:
             return
-        
+
         # 获取当前 token 使用量
         current_tokens = process.mmu.estimate_tokens()
         max_tokens = self.config.mmu_config.max_context_tokens
-        
+
         # 检查是否达到阈值
         if self._compaction_engine.should_compact(
             [msg for frame in process.mmu._stack for msg in frame.messages],
             max_tokens,
         ):
-            self._emit_event("AUTO_COMPACTION_START", process.pid, {
-                "tokens": current_tokens,
-                "max_tokens": max_tokens,
-            })
-            
+            self._emit_event(
+                "AUTO_COMPACTION_START",
+                process.pid,
+                {
+                    "tokens": current_tokens,
+                    "max_tokens": max_tokens,
+                },
+            )
+
             await self.compact(session_id=process.pid)
-            
+
             self._emit_event("AUTO_COMPACTION_END", process.pid, {})
 
     async def _compaction_for_process(self, pid: str, mmu: MMU) -> bool:
         """
         Perform compaction for a specific process.
-        
+
         This is called by vCPU when iteration limit is reached.
-        
+        Uses the "Infinite Context" strategy (archive to disk + reset).
+
         Args:
             pid: Process ID
             mmu: MMU instance for the process
-            
+
         Returns:
             True if compaction succeeded
         """
         try:
-            # Get all messages from MMU
-            messages = [msg for frame in mmu._stack for msg in frame.messages]
-            
-            if len(messages) < 10:
-                # Not enough messages to compact
-                return False
-            
-            # Use compaction engine
-            new_messages, result = await self._compaction_engine.compact(
-                messages=messages,
-                custom_instructions="Summarize the work done so far, focusing on progress and next steps.",
-            )
-            
-            if result and new_messages:
-                # Replace messages in root frame
-                if mmu._stack:
-                    mmu._stack[0].messages = new_messages
-                
-                # Record in session if available
-                if self._session_mgr:
-                    from nimbus.core.memory.context import Message
-                    self._session_mgr.append_compaction(
-                        Message(
-                            role="system",
-                            content=result.summary,
-                            meta={
-                                "tokens_before": result.tokens_before,
-                                "tokens_after": result.tokens_after,
-                                "compression_ratio": result.compression_ratio,
-                            }
-                        ),
-                        result.first_kept_entry_id,
-                    )
-                
+            # 1. Get session_id
+            session_id = "unknown"
+            # Try to get from LLM client
+            if hasattr(self._llm, "_client") and hasattr(self._llm._client, "session_id"):
+                session_id = self._llm._client.session_id
+
+            # 2. Archive and Reset
+            archive_path = await mmu.archive_and_reset(session_id)
+
+            if archive_path:
                 logger.info(
-                    f"[{pid}] Compaction: {result.tokens_before} → {result.tokens_after} tokens "
-                    f"({result.compression_ratio:.1%} reduction)"
+                    f"[{pid}] Memory compaction successful: Context archived to {archive_path}"
                 )
                 return True
-            
-            return False
-            
+
+            # Fallback
+            logger.warning(f"[{pid}] Memory archiving skipped (no messages?), but allowing reset")
+            return True
+
         except Exception as e:
             logger.error(f"[{pid}] Compaction failed: {e}")
             return False
@@ -852,13 +826,11 @@ class AgentOS:
             gate=gate,
             mmu=mmu,
             config=self.config.vcpu_config,
-            tools=self._tools.get_tool_definitions(),
+            tools=self._tools.get_definitions(format="openai"),
         )
-        
+
         # Set compaction callback
-        vcpu.set_compaction_callback(
-            lambda: self._compaction_for_process(pid, mmu)
-        )
+        vcpu.set_compaction_callback(lambda: self._compaction_for_process(pid, mmu))
 
         # Create process
         process = Process(
@@ -995,11 +967,26 @@ class AgentOS:
             description: Tool description
             parameters: Tool parameters schema
         """
-        self._tools.register(name, func, description, parameters)
+        # Support for simple registration
+
+        # Unregister if already exists (overwrite)
+        if name in self._tools:
+            self._tools.unregister(name)
+
+        if hasattr(func, "_tool_definition"):
+            self._tools.register_decorated(func)
+        else:
+            # Basic wrapper
+            definition = ToolDefinition(
+                name=name,
+                description=description or func.__doc__ or "",
+                parameters=[],  # TODO: Parse parameters if provided
+            )
+            self._tools.register(definition, func)
 
     def unregister_tool(self, name: str) -> bool:
         """Unregister a tool."""
-        return self._tools.unregister(name)
+        return bool(self._tools.unregister(name))
 
     def list_tools(self) -> List[str]:
         """List all registered tools."""
@@ -1195,6 +1182,7 @@ def create_agent_os(
     # Register default v2 native tools
     if register_defaults:
         from nimbus.tools import register_default_tools
+
         register_default_tools(os, workspace=workspace)
 
     return os

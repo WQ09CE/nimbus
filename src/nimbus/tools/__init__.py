@@ -13,7 +13,7 @@ For glob/grep functionality, use Bash:
 """
 
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Tuple
 
 # Base classes
 from nimbus.tools.base import (
@@ -25,15 +25,15 @@ from nimbus.tools.base import (
     register_tool,
     tool,
 )
-
-# Sandbox
-from nimbus.tools.sandbox import Sandbox, SandboxError
+from nimbus.tools.bash import bash_command
+from nimbus.tools.edit import edit_file
 
 # Core Tool functions (4 tools based on pi-coding-agent)
 from nimbus.tools.read import read_file
+
+# Sandbox
+from nimbus.tools.sandbox import Sandbox, SandboxError
 from nimbus.tools.write import write_file
-from nimbus.tools.edit import edit_file
-from nimbus.tools.bash import bash_command
 
 if TYPE_CHECKING:
     from nimbus.agentos import AgentOS
@@ -150,26 +150,6 @@ BASH_TOOL: Dict[str, Any] = {
     },
 }
 
-RETURN_RESULT_TOOL: Dict[str, Any] = {
-    "name": "return_result",
-    "description": "Return the final result when you have completed the task.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "result": {
-                "type": "string",
-                "description": "The final result to return to the user"
-            }
-        },
-        "required": ["result"]
-    }
-}
-
-
-async def return_result(result: str, **kwargs: Any) -> str:
-    """Return the final result. Control flow tool handled by decoder."""
-    return result
-
 
 # =============================================================================
 # Tool Collections
@@ -180,7 +160,6 @@ ALL_TOOLS: List[Dict[str, Any]] = [
     WRITE_TOOL,
     EDIT_TOOL,
     BASH_TOOL,
-    RETURN_RESULT_TOOL,
 ]
 
 TOOL_FUNCTIONS: Dict[str, Callable] = {
@@ -188,13 +167,13 @@ TOOL_FUNCTIONS: Dict[str, Callable] = {
     "Write": write_file,
     "Edit": edit_file,
     "Bash": bash_command,
-    "return_result": return_result,
 }
 
 
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
 
 def get_all_tools() -> List[Dict[str, Any]]:
     """Get all tool definitions."""
@@ -216,9 +195,11 @@ def get_tool_function(name: str) -> Callable | None:
 
 def create_workspace_wrapper(func: Callable, workspace: Path) -> Callable:
     """Create a wrapper that injects workspace into tool calls."""
+
     async def wrapper(**kwargs: Any) -> Any:
         kwargs["workspace"] = workspace
         return await func(**kwargs)
+
     return wrapper
 
 
@@ -228,12 +209,12 @@ def register_default_tools(
     tools: List[str] | None = None,
 ) -> List[str]:
     """Register default tools with AgentOS.
-    
+
     Args:
         os: AgentOS instance to register tools with.
         workspace: Workspace path for tool sandboxing.
         tools: Optional list of specific tool names to register.
-    
+
     Returns:
         List of registered tool names.
     """
@@ -268,10 +249,10 @@ def iterate_tools(
     workspace: Path | None = None,
 ) -> List[Tuple[str, Callable, str, Dict[str, Any]]]:
     """Iterate over tools with workspace injection.
-    
+
     Args:
         workspace: Workspace path for tool sandboxing.
-    
+
     Returns:
         List of (name, wrapped_func, description, parameters) tuples.
     """

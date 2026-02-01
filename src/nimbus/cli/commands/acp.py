@@ -123,7 +123,7 @@ def acp(
     )
 
     # Log startup info to stderr
-    console.print(f"[bold green]Starting Nimbus ACP Agent[/bold green]", highlight=False)
+    console.print("[bold green]Starting Nimbus ACP Agent[/bold green]", highlight=False)
     console.print(f"  Working directory: {resolved_cwd}", highlight=False)
     if model:
         console.print(f"  Model: {model}", highlight=False)

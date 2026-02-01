@@ -134,9 +134,7 @@ def format_finish(finish_reason: str = "stop") -> str:
 # =============================================================================
 
 
-def format_data_event(
-    subtype: str, data: Any, event_id: str = None, transient: bool = None
-) -> str:
+def format_data_event(subtype: str, data: Any, event_id: str = None, transient: bool = None) -> str:
     """Format custom data event. Type will be prefixed with 'data-'."""
     payload = {
         "type": f"data-{subtype}",

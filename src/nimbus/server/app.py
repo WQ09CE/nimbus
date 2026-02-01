@@ -9,7 +9,6 @@ This module provides:
 
 import logging
 import os
-import traceback
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -17,13 +16,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-logger = logging.getLogger(__name__)
-
-from .sse import SSEHub
-from .session import SessionManager
-from .permission import PermissionManager
-from .message_cache import MessageCache
 from .log_hub import log_hub, setup_log_hub_handler
+from .message_cache import MessageCache
+from .permission import PermissionManager
+from .sse import SSEHub
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -55,9 +53,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await sse_hub.start()
 
     permission_manager = PermissionManager()
-    
+
     # Use v2 session manager (AgentOS-based)
     from .session_v2 import SessionManagerV2
+
     session_manager = SessionManagerV2(storage, sse_hub, permission_manager)
 
     # Initialize message cache for conversation history
@@ -72,27 +71,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Initialize default AgentOS for /api/chat endpoint
     from pathlib import Path
-    from nimbus.agentos import AgentOS, AgentOSConfig, create_agent_os
+
     from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+    from nimbus.agentos import AgentOS, AgentOSConfig
     from nimbus.core.runtime.vcpu import VCPUConfig
-    
+
     pi_url = os.environ.get("PI_AI_URL", "http://localhost:3031")
-    model = os.environ.get("NIMBUS_MODEL", "anthropic/claude-sonnet-4-20250514")
-    
+    model = os.environ.get("NIMBUS_MODEL", "anthropic/claude-opus-4-5")
+
     pi_config = PiLLMConfig(base_url=pi_url, model=model)
     llm = PiLLMAdapter(pi_config)
     await llm.start()
-    
+
     vcpu_config = VCPUConfig(max_iterations=50)
     agent_config = AgentOSConfig(vcpu_config=vcpu_config)
-    
+
     agent_os = AgentOS(llm_client=llm, config=agent_config)
-    
+
     # Register default tools
     from nimbus.tools import register_default_tools
+
     workspace = Path.cwd()
     register_default_tools(agent_os, workspace=workspace)
-    
+
     logger.info(f"Initialized default AgentOS with model={model}, workspace={workspace}")
 
     # Store in app state
@@ -108,7 +109,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.llm = llm  # Keep reference to close on shutdown
 
     yield
-    
+
     # Cleanup LLM adapter
     await llm.stop()
 
@@ -116,6 +117,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await session_manager.close_all()
     await sse_hub.stop()
     await storage.close()
+
+    # Flush logs and remove handlers to prevent semaphore leaks (resource_tracker warning)
+    from nimbus.core.logging import logger as loguru_logger
+
+    loguru_logger.remove()
 
 
 def create_app() -> FastAPI:
@@ -162,35 +168,43 @@ def create_app() -> FastAPI:
 
     # Register routes
     from .api import router
+
     app.include_router(router, prefix="/api/v1")
 
     # Register OpenCode compatible routes (no prefix)
     from .compat import opencode_router
+
     app.include_router(opencode_router, tags=["opencode"])
 
     # Register AI SDK compatible routes (Vercel AI SDK Data Protocol)
     from .api_ai_sdk import router as ai_sdk_router
+
     app.include_router(ai_sdk_router, tags=["AI SDK"])
 
     # Register frontend logging routes
     from .api_logs import router as logs_router
+
     app.include_router(logs_router, tags=["Logs"])
 
     # Register debug routes (for inspecting agent state)
     from .api_debug import router as debug_router
+
     app.include_router(debug_router, tags=["Debug"])
 
     # Register Vibe Coding IDE compatible routes
-    from .api_vibe import router as vibe_router, models_router as vibe_models_router
+    from .api_vibe import models_router as vibe_models_router
+    from .api_vibe import router as vibe_router
+
     app.include_router(vibe_router, tags=["Vibe IDE"])
     app.include_router(vibe_models_router, tags=["Vibe IDE"])
 
     # Serve static chat UI
-    from fastapi.responses import FileResponse
     from pathlib import Path
-    
+
+    from fastapi.responses import FileResponse
+
     static_dir = Path(__file__).parent / "static"
-    
+
     @app.get("/chat")
     async def serve_chat_ui():
         """Serve the built-in chat UI."""

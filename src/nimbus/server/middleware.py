@@ -6,10 +6,10 @@ This module provides:
 - Error handling middleware
 """
 
-import time
 import logging
-from typing import Callable
+import time
 from datetime import datetime
+from typing import Callable
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -69,7 +69,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 "path": request.url.path,
                 "query": str(request.query_params),
                 "client": request.client.host if request.client else "unknown",
-            }
+            },
         )
 
         # Process request
@@ -94,7 +94,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 "path": request.url.path,
                 "status_code": response.status_code,
                 "duration_ms": duration_ms,
-            }
+            },
         )
 
         # Add timing header

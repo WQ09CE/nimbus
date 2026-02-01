@@ -12,11 +12,10 @@ Design Principles:
 - Each frame has its own message history (isolation)
 """
 
-import uuid
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
-
 
 # =============================================================================
 # Message Format
@@ -40,6 +39,7 @@ class Message:
         tool_calls: Optional list of tool calls (for assistant messages)
         meta: Additional metadata
     """
+
     role: MessageRole
     content: Any  # str or list of content blocks
     name: Optional[str] = None
@@ -64,21 +64,22 @@ class Message:
     def token_estimate(self) -> int:
         """
         Token estimate with language awareness.
-        
+
         Ratios (per expert review):
         - English: ~4 chars/token
         - Chinese: ~1.5-2 chars/token (more conservative: 1.5)
         - Code: ~3 chars/token (keywords, symbols)
         """
+
         def estimate_text(text: str) -> int:
             if not text:
                 return 0
             # Count Chinese characters
-            chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+            chinese_chars = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
             other_chars = len(text) - chinese_chars
             # Chinese: 1.5 chars/token, Other: 4 chars/token
             return int(chinese_chars / 1.5) + (other_chars // 4)
-        
+
         if isinstance(self.content, str):
             return estimate_text(self.content)
         elif isinstance(self.content, list):
@@ -93,6 +94,7 @@ class Message:
 # =============================================================================
 # Pinned Context
 # =============================================================================
+
 
 @dataclass
 class PinnedContext:
@@ -115,6 +117,7 @@ class PinnedContext:
         custom_anchors: User-defined pinned content
         version: Schema version
     """
+
     system_rules: str = ""
     workspace_info: str = ""
     capabilities: str = ""
@@ -142,13 +145,14 @@ class PinnedContext:
 
     def token_estimate(self) -> int:
         """Token estimate with language awareness."""
+
         def estimate_text(text: str) -> int:
             if not text:
                 return 0
-            chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+            chinese_chars = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
             other_chars = len(text) - chinese_chars
             return int(chinese_chars / 1.5) + (other_chars // 4)
-        
+
         total = estimate_text(self.system_rules)
         total += estimate_text(self.workspace_info)
         total += estimate_text(self.capabilities)
@@ -199,6 +203,7 @@ class StackFrame:
         created_at: Creation timestamp
         meta: Additional metadata
     """
+
     frame_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     goal: str = ""
     messages: List[Message] = field(default_factory=list)
@@ -233,20 +238,13 @@ class StackFrame:
             content: Optional text content from the assistant
             tool_calls: List of tool call objects in OpenAI format
         """
-        self.messages.append(Message(
-            role="assistant",
-            content=content,
-            tool_calls=tool_calls
-        ))
+        self.messages.append(Message(role="assistant", content=content, tool_calls=tool_calls))
 
     def add_tool_result(self, tool_call_id: str, name: str, content: str) -> None:
         """Add a tool result message."""
-        self.messages.append(Message(
-            role="tool",
-            content=content,
-            name=name,
-            tool_call_id=tool_call_id
-        ))
+        self.messages.append(
+            Message(role="tool", content=content, name=name, tool_call_id=tool_call_id)
+        )
 
     def token_estimate(self) -> int:
         """Estimate total tokens in this frame."""
@@ -270,11 +268,13 @@ class StackFrame:
         # Start with the goal as a user message if this is a sub-frame
         result = []
         if self.goal and self.parent_frame_id is not None:
-            result.append(Message(
-                role="user",
-                content=f"[Subtask] {self.goal}",
-                meta={"frame_id": self.frame_id, "is_goal": True}
-            ))
+            result.append(
+                Message(
+                    role="user",
+                    content=f"[Subtask] {self.goal}",
+                    meta={"frame_id": self.frame_id, "is_goal": True},
+                )
+            )
         result.extend(self.messages)
         return result
 
@@ -283,19 +283,12 @@ class StackFrame:
 # Factory Functions
 # =============================================================================
 
+
 def create_root_frame(goal: str = "") -> StackFrame:
     """Create the root frame (no parent)."""
-    return StackFrame(
-        goal=goal,
-        parent_frame_id=None,
-        meta={"is_root": True}
-    )
+    return StackFrame(goal=goal, parent_frame_id=None, meta={"is_root": True})
 
 
 def create_sub_frame(parent_frame_id: str, goal: str) -> StackFrame:
     """Create a sub-frame with parent reference."""
-    return StackFrame(
-        goal=goal,
-        parent_frame_id=parent_frame_id,
-        meta={"is_root": False}
-    )
+    return StackFrame(goal=goal, parent_frame_id=parent_frame_id, meta={"is_root": False})

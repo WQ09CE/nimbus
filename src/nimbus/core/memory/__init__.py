@@ -11,7 +11,7 @@ Key Components:
 - Context Stack 提炼: Tool call 价值标记和智能过滤
 """
 
-from nimbus.core.memory.context import PinnedContext, StackFrame, Message
+from nimbus.core.memory.context import Message, PinnedContext, StackFrame
 from nimbus.core.memory.mmu import MMU, MMUConfig, ToolCallMarker, ToolCallValue
 
 __all__ = [

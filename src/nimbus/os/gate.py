@@ -21,10 +21,10 @@ from typing import Any, Callable, Dict, List, Optional, Protocol
 
 from nimbus.core.protocol import (
     ActionIR,
-    ToolResult,
-    Fault,
-    Event,
     ArtifactRef,
+    Event,
+    Fault,
+    ToolResult,
 )
 
 
@@ -107,17 +107,21 @@ class KernelGate:
         timeout = timeout_sec or self.default_timeout
 
         # 1. Emit Start Event
-        self._emit_event("TOOL_STARTED", {
-            "action_id": action.id,
-            "tool": tool_name,
-            "args": action.args,
-            "args_keys": list(action.args.keys())
-        })
-        
+        self._emit_event(
+            "TOOL_STARTED",
+            {
+                "action_id": action.id,
+                "tool": tool_name,
+                "args": action.args,
+                "args_keys": list(action.args.keys()),
+            },
+        )
+
         from nimbus.core.logging import get_logger
+
         logger = get_logger("kernel.gate")
         logger.info(f"Executing tool '{tool_name}'...")
-        
+
         start_time = time.time_ns()
 
         # 2. Execution with Timeout
@@ -132,67 +136,71 @@ class KernelGate:
                     domain="KERNEL",
                     code="SYSTEM_ERROR",
                     message="No tool executor configured",
-                    retryable=False
+                    retryable=False,
                 )
 
             output = await asyncio.wait_for(
-                self.executor.execute(tool_name, action.args),
-                timeout=timeout
+                self.executor.execute(tool_name, action.args), timeout=timeout
             )
             status = "OK"
 
         except asyncio.TimeoutError:
             status = "TIMEOUT"
+            error_msg = f"Tool '{tool_name}' execution exceeded {timeout}s"
+            output = f"[Error] {error_msg}"
             fault = Fault(
                 domain="RESOURCE",
                 code="TIMEOUT",
-                message=f"Tool '{tool_name}' execution exceeded {timeout}s",
+                message=error_msg,
                 retryable=True,
-                context={"tool": tool_name, "timeout_sec": timeout}
+                context={"tool": tool_name, "timeout_sec": timeout},
             )
 
         except Fault as f:
             status = "ERROR"
+            output = f"[Error] {f.message}"
             fault = f
 
         except asyncio.CancelledError:
             status = "CANCELLED"
-            fault = Fault(
-                domain="KERNEL",
-                code="SYSTEM_ERROR",
-                message=f"Tool '{tool_name}' execution was cancelled",
-                retryable=True
-            )
+            error_msg = f"Tool '{tool_name}' execution was cancelled"
+            output = f"[Error] {error_msg}"
+            fault = Fault(domain="KERNEL", code="SYSTEM_ERROR", message=error_msg, retryable=True)
 
         except Exception as e:
             status = "ERROR"
-            output = str(e)
+            # Standardize error output
+            output = f"[Error] {str(e)}"
             fault = Fault(
                 domain="TOOL",
                 code="TOOL_FAILURE",
                 message=str(e),
                 retryable=True,
-                context={"tool": tool_name, "exception_type": type(e).__name__}
+                context={"tool": tool_name, "exception_type": type(e).__name__},
             )
 
         # 3. Result Packaging
         duration_ms = (time.time_ns() - start_time) // 1_000_000
-        
+
         status_emoji = "✅" if status == "OK" else "❌"
         if status == "OK":
             output_preview = str(output)
             if len(output_preview) > 200:
                 output_preview = output_preview[:200] + "..."
-            logger.info(f"{status_emoji} Tool '{tool_name}' finished in {duration_ms}ms | Output: {output_preview}")
+            logger.info(
+                f"{status_emoji} Tool '{tool_name}' finished in {duration_ms}ms | Output: {output_preview}"
+            )
         else:
-            logger.error(f"{status_emoji} Tool '{tool_name}' failed in {duration_ms}ms | Status: {status} | Error: {fault}")
+            logger.error(
+                f"{status_emoji} Tool '{tool_name}' failed in {duration_ms}ms | Status: {status} | Error: {fault}"
+            )
 
         result = ToolResult(
             status=status,
             output=output,
             fault=fault,
             artifacts=artifacts,
-            timing_ms={"total": duration_ms}
+            timing_ms={"total": duration_ms},
         )
 
         # 4. Emit Finish Event
@@ -204,15 +212,18 @@ class KernelGate:
                 "message": fault.message,
                 "retryable": fault.retryable,
             }
-        
-        self._emit_event("TOOL_FINISHED", {
-            "action_id": action.id,
-            "tool": tool_name,
-            "status": status,
-            "output": output,
-            "duration_ms": duration_ms,
-            "fault": fault_data,
-        })
+
+        self._emit_event(
+            "TOOL_FINISHED",
+            {
+                "action_id": action.id,
+                "tool": tool_name,
+                "status": status,
+                "output": output,
+                "duration_ms": duration_ms,
+                "fault": fault_data,
+            },
+        )
 
         return result
 
@@ -225,16 +236,19 @@ class KernelGate:
             data: Event data
         """
         if self.events:
-            self.events.emit(Event(
-                type=event_type,  # type: ignore
-                pid=self.pid,
-                data=data
-            ))
+            self.events.emit(
+                Event(
+                    type=event_type,  # type: ignore
+                    pid=self.pid,
+                    data=data,
+                )
+            )
 
 
 # =============================================================================
 # Simple implementation for testing
 # =============================================================================
+
 
 class SimpleEventStream:
     """Simple event stream that collects events and supports listeners."""

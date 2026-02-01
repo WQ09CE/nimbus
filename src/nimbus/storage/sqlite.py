@@ -130,12 +130,12 @@ class SQLiteStorage:
         """
         async with self._get_connection() as db:
             config_json = json.dumps(config_overrides) if config_overrides else None
-            model_config_json = json.dumps(model_config) if model_config else None
+            json.dumps(model_config) if model_config else None
 
             # We need to add model_config column if it doesn't exist
             # But for now let's store it in config_overrides if schema not updated
             # Or assume schema update. Let's check schema.sql or just use config_overrides
-            
+
             # Actually, let's merge it into config_overrides to avoid schema change for now
             if model_config:
                 if not config_overrides:
@@ -152,21 +152,21 @@ class SQLiteStorage:
             )
             await db.commit()
 
-            cursor = await db.execute(
-                "SELECT * FROM sessions WHERE id = ?", (session_id,)
-            )
+            cursor = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
             row = await cursor.fetchone()
-            
+
             # Unpack model_config from config_overrides for caller convenience
             result = self._row_to_dict(row)
             if result.get("config_overrides"):
                 overrides = json.loads(result["config_overrides"])
                 if "model_config" in overrides:
                     result["model_config"] = overrides["model_config"]
-            
+
             return result
 
-    async def get_session(self, session_id: str, include_deleted: bool = False) -> Optional[Dict[str, Any]]:
+    async def get_session(
+        self, session_id: str, include_deleted: bool = False
+    ) -> Optional[Dict[str, Any]]:
         """Get session by ID.
 
         Args:
@@ -178,9 +178,7 @@ class SQLiteStorage:
         """
         async with self._get_connection() as db:
             if include_deleted:
-                cursor = await db.execute(
-                    "SELECT * FROM sessions WHERE id = ?", (session_id,)
-                )
+                cursor = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
             else:
                 cursor = await db.execute(
                     "SELECT * FROM sessions WHERE id = ? AND status != 'deleted'", (session_id,)
@@ -194,7 +192,7 @@ class SQLiteStorage:
                     # Extract model_config for convenience
                     if "model_config" in result["config_overrides"]:
                         result["model_config"] = result["config_overrides"]["model_config"]
-                
+
                 if result.get("memory_state"):
                     result["memory_state"] = json.loads(result["memory_state"])
                 return result
@@ -218,9 +216,7 @@ class SQLiteStorage:
         """
         async with self._get_connection() as db:
             # Get total count
-            cursor = await db.execute(
-                "SELECT COUNT(*) FROM sessions WHERE status = ?", (status,)
-            )
+            cursor = await db.execute("SELECT COUNT(*) FROM sessions WHERE status = ?", (status,))
             row = await cursor.fetchone()
             total = row[0] if row else 0
 
@@ -333,9 +329,7 @@ class SQLiteStorage:
             )
             await db.commit()
 
-            cursor = await db.execute(
-                "SELECT * FROM messages WHERE id = ?", (message_id,)
-            )
+            cursor = await db.execute("SELECT * FROM messages WHERE id = ?", (message_id,))
             row = await cursor.fetchone()
             result = self._row_to_dict(row)
             if result.get("artifacts"):
@@ -389,9 +383,7 @@ class SQLiteStorage:
             Message dictionary, or None if not found.
         """
         async with self._get_connection() as db:
-            cursor = await db.execute(
-                "SELECT * FROM messages WHERE id = ?", (message_id,)
-            )
+            cursor = await db.execute("SELECT * FROM messages WHERE id = ?", (message_id,))
             row = await cursor.fetchone()
             if row:
                 result = self._row_to_dict(row)
@@ -439,9 +431,7 @@ class SQLiteStorage:
         """
         # Calculate statistics
         total = len(dag.nodes)
-        completed = sum(
-            1 for n in dag.nodes.values() if n.status == TaskStatus.COMPLETED
-        )
+        completed = sum(1 for n in dag.nodes.values() if n.status == TaskStatus.COMPLETED)
         failed = sum(1 for n in dag.nodes.values() if n.status == TaskStatus.FAILED)
 
         # Determine status
@@ -455,9 +445,7 @@ class SQLiteStorage:
         # Calculate duration if completed
         duration_ms = None
         if dag.is_completed():
-            started_times = [
-                n.started_at for n in dag.nodes.values() if n.started_at is not None
-            ]
+            started_times = [n.started_at for n in dag.nodes.values() if n.started_at is not None]
             finished_times = [
                 n.finished_at for n in dag.nodes.values() if n.finished_at is not None
             ]
@@ -498,9 +486,7 @@ class SQLiteStorage:
             TaskDAG instance, or None if not found.
         """
         async with self._get_connection() as db:
-            cursor = await db.execute(
-                "SELECT state FROM dags WHERE id = ?", (dag_id,)
-            )
+            cursor = await db.execute("SELECT state FROM dags WHERE id = ?", (dag_id,))
             row = await cursor.fetchone()
             if row:
                 return TaskDAG.from_dict(json.loads(row["state"]))
@@ -782,9 +768,7 @@ class SQLiteStorage:
             checkpoint_id: Checkpoint identifier.
         """
         async with self._get_connection() as db:
-            await db.execute(
-                "DELETE FROM memory_checkpoints WHERE id = ?", (checkpoint_id,)
-            )
+            await db.execute("DELETE FROM memory_checkpoints WHERE id = ?", (checkpoint_id,))
             await db.commit()
 
     async def prune_old_checkpoints(
@@ -869,9 +853,7 @@ class SQLiteStorage:
             tool: Tool name.
         """
         async with self._get_connection() as db:
-            await db.execute(
-                "DELETE FROM permission_rules WHERE tool = ?", (tool,)
-            )
+            await db.execute("DELETE FROM permission_rules WHERE tool = ?", (tool,))
             await db.commit()
 
     async def get_all_permission_rules(self) -> List[Dict[str, str]]:
@@ -1024,9 +1006,7 @@ class SQLiteStorage:
             Value string, or None if not found.
         """
         async with self._get_connection() as db:
-            cursor = await db.execute(
-                "SELECT value FROM kv_store WHERE key = ?", (key,)
-            )
+            cursor = await db.execute("SELECT value FROM kv_store WHERE key = ?", (key,))
             row = await cursor.fetchone()
             return row["value"] if row else None
 
@@ -1115,7 +1095,14 @@ class SQLiteStorage:
             stats = {}
 
             # Get table counts
-            tables = ["sessions", "messages", "dags", "memory_checkpoints", "permission_rules", "permission_requests"]
+            tables = [
+                "sessions",
+                "messages",
+                "dags",
+                "memory_checkpoints",
+                "permission_rules",
+                "permission_requests",
+            ]
             for table in tables:
                 cursor = await db.execute(f"SELECT COUNT(*) FROM {table}")
                 row = await cursor.fetchone()

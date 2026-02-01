@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from .log_hub import log_hub
@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 class LogEntry(BaseModel):
     """Single log entry from frontend."""
+
     level: str = "info"  # debug, info, warn, error
     message: str
     data: Optional[dict] = None
@@ -36,6 +37,7 @@ class LogEntry(BaseModel):
 
 class LogBatch(BaseModel):
     """Batch of log entries."""
+
     entries: List[LogEntry]
     source: str = "frontend"
 
@@ -55,7 +57,7 @@ async def receive_logs(batch: LogBatch):
             if entry.data:
                 log_line["data"] = entry.data
             f.write(json.dumps(log_line, ensure_ascii=False) + "\n")
-    
+
     logger.debug(f"Received {len(batch.entries)} log entries from {batch.source}")
     return {"status": "ok", "count": len(batch.entries)}
 
@@ -74,6 +76,7 @@ async def tail_logs(lines: int = 50):
 # ═══════════════════════════════════════════════════════════════════════════
 # Backend Log Streaming via WebSocket
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 @router.websocket("/ws/logs")
 async def logs_websocket(

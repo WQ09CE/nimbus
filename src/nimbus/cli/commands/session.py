@@ -81,6 +81,7 @@ async def _create_session_async(
 ) -> None:
     """Create a new session."""
     import uuid
+
     from nimbus.storage.sqlite import SQLiteStorage
 
     storage = SQLiteStorage(db_path)
@@ -96,7 +97,7 @@ async def _create_session_async(
             planner_type=planner_type,
         )
 
-        console.print(f"[green]Session created successfully![/green]")
+        console.print("[green]Session created successfully![/green]")
         console.print(f"  ID: [cyan]{session['id']}[/cyan]")
         if name:
             console.print(f"  Name: {name}")
@@ -158,7 +159,7 @@ async def _show_session_async(
 
         messages = await storage.get_messages(session_id, limit=100)
 
-        console.print(f"\n[bold]Session Details[/bold]")
+        console.print("\n[bold]Session Details[/bold]")
         console.print(f"  ID: [cyan]{session['id']}[/cyan]")
         console.print(f"  Name: {session.get('name') or '[dim]unnamed[/dim]'}")
         console.print(f"  Status: [yellow]{session['status']}[/yellow]")
@@ -170,10 +171,12 @@ async def _show_session_async(
         console.print(f"  Messages: {len(messages)}")
 
         if messages:
-            console.print(f"\n[bold]Recent Messages[/bold]")
+            console.print("\n[bold]Recent Messages[/bold]")
             for msg in messages[-5:]:  # Show last 5 messages
                 role_color = "green" if msg["role"] == "assistant" else "blue"
-                content = msg["content"][:100] + "..." if len(msg["content"]) > 100 else msg["content"]
+                content = (
+                    msg["content"][:100] + "..." if len(msg["content"]) > 100 else msg["content"]
+                )
                 console.print(f"  [{role_color}]{msg['role']}[/{role_color}]: {content}")
     finally:
         await storage.close()

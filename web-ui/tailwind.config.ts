@@ -10,6 +10,7 @@ const config: Config = {
     extend: {
       fontFamily: {
         mono: [
+          "var(--font-mono)",  // JetBrains Mono from next/font
           "ui-monospace",
           "SFMono-Regular",
           "Menlo",
