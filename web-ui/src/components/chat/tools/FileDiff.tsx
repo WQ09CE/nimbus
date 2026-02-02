@@ -107,10 +107,10 @@ export function FileDiff({ name, args, result, error, status }: FileDiffProps) {
           </div>
         )}
 
-        {/* Execution Result */}
+        {/* Execution Result - only show simple success message */}
         {status === "completed" && (
           <div className="p-2 bg-black/20 border-t border-gray-800 text-xs text-green-400 flex items-center gap-2">
-            <span>✅</span> {typeof result === 'string' ? result : 'Operation successful'}
+            <span>✅</span> {name === 'Edit' ? 'Successfully edited' : 'Successfully written'} {args.file_path || args.path || ''}
           </div>
         )}
         
