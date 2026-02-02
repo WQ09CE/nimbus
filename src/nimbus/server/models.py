@@ -129,10 +129,10 @@ class MessageResponse(BaseModel):
     """Response model for a message."""
 
     id: str
-    role: str  # user | assistant | system
+    role: str  # user | assistant | system | tool
     content: str
     created_at: datetime
-    artifacts: List[ArtifactResponse] = Field(default_factory=list)
+    artifacts: List[Any] = Field(default_factory=list)  # Flexible artifact format
     dag_id: Optional[str] = None
 
 

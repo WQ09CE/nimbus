@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Tuple
 
 from nimbus.core.memory.mmu import MMU
+from nimbus.core.persistence import SessionCheckpointModel
 from nimbus.core.protocol import ActionIR, Event, Fault, ToolResult
 from nimbus.core.runtime.decoder import InstructionDecoder
 from nimbus.core.runtime.doom_loop import DoomLoopDetector
@@ -259,6 +260,12 @@ class VCPU:
         # Legacy compatibility properties (will be removed in future)
         self._max_consecutive_empty = 5  # Stop after 5 consecutive empty responses
 
+    def request_pause(self) -> None:
+        """Request the vCPU to pause execution at the next safe point."""
+        self._state.interruption_requested = True
+        from nimbus.core.logging import get_logger
+        get_logger("kernel.vcpu").info("Interruption requested for next step.")
+
     # =========================================================================
     # Main Execution Loop
     # =========================================================================
@@ -290,6 +297,19 @@ class VCPU:
 
         try:
             while not self._is_done:
+                # Check interruption request
+                if self._state.interruption_requested:
+                    self._emit_event("INTERRUPTION_HANDLED", {"iteration": self._iteration})
+                    return ToolResult(
+                        status="CANCELLED",
+                        fault=Fault(
+                            domain="RUNTIME",
+                            code="INTERRUPTED",
+                            message="Execution interrupted by user request",
+                            retryable=True, # Can resume
+                        )
+                    )
+
                 # Check iteration limit - trigger compaction instead of stopping
                 if self._iteration >= self.config.max_iterations:
                     # Check if we've hit max compactions
@@ -422,6 +442,19 @@ class VCPU:
         Returns:
             StepResult with actions, results, and status
         """
+        # Check interruption request at step start
+        if self._state.interruption_requested:
+            self._emit_event("INTERRUPTION_HANDLED", {"iteration": self._state.iteration})
+            return StepResult(
+                is_final=True,
+                fault=Fault(
+                    domain="RUNTIME",
+                    code="INTERRUPTED",
+                    message="Execution interrupted by user request",
+                    retryable=True,
+                )
+            )
+
         self._iteration += 1
         step_result = StepResult()
         start_time = time.time_ns()
@@ -637,6 +670,53 @@ class VCPU:
 
         step_result.timing_ms["total"] = (time.time_ns() - start_time) // 1_000_000
         return step_result
+
+    # =========================================================================
+    # State Persistence
+    # =========================================================================
+
+    def create_checkpoint(
+        self, session_id: str, reason: str = "periodic"
+    ) -> SessionCheckpointModel:
+        """
+        Create a full session checkpoint (vCPU + MMU).
+
+        This captures the exact state of execution between steps.
+
+        Args:
+            session_id: Session ID
+            reason: Reason for checkpoint (periodic/interruption/error)
+
+        Returns:
+            SessionCheckpointModel (Pydantic model)
+        """
+        # Snapshot components
+        exec_snapshot = self._state.create_snapshot()
+        mem_snapshot = self.mmu.create_snapshot()
+
+        return SessionCheckpointModel(
+            session_id=session_id,
+            timestamp=time.time(),
+            step_index=self._state.iteration,
+            execution_state=exec_snapshot,
+            memory_snapshot=mem_snapshot,
+            reason=reason,
+            can_resume=not self._state.is_done,
+        )
+
+    def restore_from_checkpoint(self, checkpoint: SessionCheckpointModel) -> None:
+        """
+        Restore session state from checkpoint.
+
+        Args:
+            checkpoint: SessionCheckpointModel to restore from
+        """
+        # Restore components
+        self._state.restore_from_snapshot(checkpoint.execution_state)
+        self.mmu.restore_from_snapshot(checkpoint.memory_snapshot)
+
+        # Reset runtime flags that shouldn't be persisted or need reset
+        self._is_running = False  # Will be set to True when execute is called
 
     # =========================================================================
     # Action Handlers

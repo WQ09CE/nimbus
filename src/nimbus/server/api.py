@@ -215,15 +215,83 @@ async def get_session(
 @router.delete("/sessions/{session_id}", status_code=204)
 async def delete_session(
     session_id: str,
+    hard: bool = False,
     session_manager=Depends(get_session_manager),
+    storage=Depends(get_storage),
 ):
-    """Delete a session."""
+    """Delete a session.
+    
+    Args:
+        session_id: Session to delete
+        hard: If True, permanently delete from database. If False, soft delete (mark as deleted).
+    """
     session = await session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
     await session_manager.delete_session(session_id)
+    
+    # Hard delete if requested
+    if hard:
+        await storage.delete_session(session_id, hard_delete=True)
+    
     return None
+
+
+@router.post("/sessions/{session_id}/interrupt")
+async def interrupt_session(
+    session_id: str,
+    session_manager=Depends(get_session_manager),
+):
+    """
+    Interrupt a running session.
+    
+    This will:
+    1. Request the vCPU to pause at next step
+    2. Hibernate the session (save checkpoint to DB)
+    3. Return the checkpoint info
+    
+    Returns:
+        Interrupt status and checkpoint info
+    """
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    result = await session_manager.interrupt_session(session_id)
+    
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result.get("error", "Failed to interrupt"))
+    
+    return result
+
+
+@router.post("/sessions/{session_id}/resume")
+async def resume_session(
+    session_id: str,
+    session_manager=Depends(get_session_manager),
+):
+    """
+    Resume an interrupted session.
+    
+    This will:
+    1. Load checkpoint from DB
+    2. Restore vCPU state
+    3. Continue execution
+    
+    Returns:
+        Resume status
+    """
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    result = await session_manager.resume_session(session_id)
+    
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result.get("error", "Failed to resume"))
+    
+    return result
 
 
 # =============================================================================
@@ -576,3 +644,95 @@ async def list_mcp_servers():
     # TODO: Get actual MCP server status
     servers = []
     return MCPServerList(servers=servers)
+
+
+# =============================================================================
+# Filesystem APIs (for workspace selection)
+# =============================================================================
+
+
+@router.get("/fs/complete")
+async def complete_path(path: str = "", limit: int = 20):
+    """
+    Complete a filesystem path for workspace selection.
+    
+    Args:
+        path: Partial path to complete (supports ~ for home)
+        limit: Maximum number of results
+        
+    Returns:
+        List of matching directory paths
+    """
+    import os
+    from pathlib import Path
+    
+    # Expand ~ to home directory
+    if path.startswith("~"):
+        expanded = os.path.expanduser(path)
+    else:
+        expanded = path or "."
+    
+    try:
+        base_path = Path(expanded)
+        
+        # If path ends with /, list contents of that directory
+        # Otherwise, complete the last component
+        if path.endswith("/") or path == "" or path == "~":
+            search_dir = base_path
+            prefix = ""
+        else:
+            search_dir = base_path.parent
+            prefix = base_path.name.lower()
+        
+        if not search_dir.exists():
+            return {"path": path, "completions": [], "error": "Directory not found"}
+        
+        completions = []
+        try:
+            for item in search_dir.iterdir():
+                # Only show directories
+                if not item.is_dir():
+                    continue
+                
+                # Skip hidden directories unless user is explicitly looking for them
+                if item.name.startswith(".") and not prefix.startswith("."):
+                    continue
+                
+                # Match prefix
+                if prefix and not item.name.lower().startswith(prefix):
+                    continue
+                
+                # Build the completion path
+                if path.startswith("~"):
+                    home = os.path.expanduser("~")
+                    if str(item).startswith(home):
+                        completion = "~" + str(item)[len(home):]
+                    else:
+                        completion = str(item)
+                else:
+                    completion = str(item)
+                
+                completions.append({
+                    "path": completion,
+                    "name": item.name,
+                    "is_dir": True,
+                })
+                
+                if len(completions) >= limit:
+                    break
+                    
+        except PermissionError:
+            return {"path": path, "completions": [], "error": "Permission denied"}
+        
+        # Sort by name
+        completions.sort(key=lambda x: x["name"].lower())
+        
+        return {
+            "path": path,
+            "completions": completions,
+            "cwd": str(Path.cwd()),
+        }
+        
+    except Exception as e:
+        logger.error(f"Path completion error: {e}")
+        return {"path": path, "completions": [], "error": str(e)}

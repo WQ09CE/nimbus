@@ -105,6 +105,31 @@ CREATE TABLE IF NOT EXISTS memory_checkpoints (
 
 CREATE INDEX IF NOT EXISTS idx_memory_checkpoints_session ON memory_checkpoints(session_id, checkpoint_num DESC);
 
+-- =============================================================================
+-- Session Checkpoints (Full Session State for Resume/Hibernate)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS session_checkpoints (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    checkpoint_id TEXT NOT NULL,
+    timestamp REAL NOT NULL,
+    step_index INTEGER NOT NULL,
+    
+    -- State Data (Pydantic JSON)
+    execution_state TEXT NOT NULL,
+    memory_snapshot TEXT NOT NULL,
+    
+    -- Metadata
+    reason TEXT NOT NULL,
+    can_resume BOOLEAN NOT NULL DEFAULT 1,
+    recovery_hints TEXT,
+    schema_version INTEGER DEFAULT 1,
+
+    FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_checkpoints_session ON session_checkpoints(session_id, timestamp DESC);
 
 -- =============================================================================
 -- Permission Rules

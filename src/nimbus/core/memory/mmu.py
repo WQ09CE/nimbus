@@ -52,6 +52,12 @@ from nimbus.core.memory.context import (
     StackFrame,
     create_root_frame,
 )
+from nimbus.core.persistence import (
+    MemorySnapshotModel,
+    PinnedContextModel,
+    StackFrameModel,
+    MessageModel,
+)
 
 # =============================================================================
 # Tool Call Value Markers (Simplified: keep/discard binary decision)
@@ -914,6 +920,127 @@ class MMU:
             "total_messages": sum(len(f.messages) for f in self._stack),
             "estimated_tokens": self.estimate_tokens(),
         }
+
+    def create_snapshot(self) -> MemorySnapshotModel:
+        """Create a JSON-serializable snapshot of the MMU state."""
+        # Convert PinnedContext
+        pinned_model = None
+        if self._pinned:
+            pinned_model = PinnedContextModel(
+                system_rules=self._pinned.system_rules,
+                workspace_info=self._pinned.workspace_info,
+                capabilities=self._pinned.capabilities,
+                custom_anchors=self._pinned.custom_anchors,
+                version=self._pinned.version,
+            )
+
+        # Convert Stack
+        stack_models = []
+        for frame in self._stack:
+            msg_models = []
+            for msg in frame.messages:
+                msg_models.append(
+                    MessageModel(
+                        role=msg.role,
+                        content=msg.content,
+                        name=msg.name,
+                        tool_call_id=msg.tool_call_id,
+                        tool_calls=msg.tool_calls,
+                        meta=msg.meta,
+                    )
+                )
+
+            stack_models.append(
+                StackFrameModel(
+                    frame_id=frame.frame_id,
+                    goal=frame.goal,
+                    messages=msg_models,
+                    state=frame.state,
+                    parent_frame_id=frame.parent_frame_id,
+                    result=frame.result,
+                    created_at=frame.created_at,
+                    meta=frame.meta,
+                )
+            )
+
+        # Convert discardable (set -> list)
+        frame_discardable_list = {k: list(v) for k, v in self._frame_discardable.items()}
+
+        # Convert tool markers (ToolCallMarker objects -> dicts/models)
+        # Note: ToolCallMarker is a dataclass, need to convert or ensure it's handled
+        # For now assuming we can store as dict or rely on pydantic if registered
+        # But wait, ToolCallMarker is a dataclass in mmu.py. Pydantic handles dataclasses,
+        # but better to be explicit if we want pure JSON.
+        # Let's convert ToolCallMarker to dict explicitly.
+        tool_markers_dict = {}
+        for k, v in self._tool_markers.items():
+            if hasattr(v, "__dict__"):
+                tool_markers_dict[k] = v.__dict__
+            else:
+                tool_markers_dict[k] = v
+
+        return MemorySnapshotModel(
+            process_id=self.process_id,
+            pinned_context=pinned_model,
+            stack=stack_models,
+            tool_markers=tool_markers_dict,
+            frame_discardable=frame_discardable_list,
+        )
+
+    def restore_from_snapshot(self, snapshot: MemorySnapshotModel) -> None:
+        """Restore MMU state from a snapshot."""
+        self.process_id = snapshot.process_id
+
+        # Restore Pinned
+        if snapshot.pinned_context:
+            self._pinned = PinnedContext(
+                system_rules=snapshot.pinned_context.system_rules,
+                workspace_info=snapshot.pinned_context.workspace_info,
+                capabilities=snapshot.pinned_context.capabilities,
+                custom_anchors=snapshot.pinned_context.custom_anchors,
+                version=snapshot.pinned_context.version,
+            )
+        else:
+            self._pinned = None
+
+        # Restore Stack
+        self._stack = []
+        for frame_model in snapshot.stack:
+            messages = []
+            for msg_model in frame_model.messages:
+                messages.append(
+                    Message(
+                        role=msg_model.role,
+                        content=msg_model.content,
+                        name=msg_model.name,
+                        tool_call_id=msg_model.tool_call_id,
+                        tool_calls=msg_model.tool_calls,
+                        meta=msg_model.meta,
+                    )
+                )
+
+            frame = StackFrame(
+                frame_id=frame_model.frame_id,
+                goal=frame_model.goal,
+                messages=messages,
+                state=frame_model.state,
+                parent_frame_id=frame_model.parent_frame_id,
+                result=frame_model.result,
+                created_at=frame_model.created_at,
+                meta=frame_model.meta,
+            )
+            self._stack.append(frame)
+
+        # Restore markers
+        # Reconstruct ToolCallMarker objects
+        self._tool_markers = {}
+        for k, v in snapshot.tool_markers.items():
+            if isinstance(v, dict):
+                self._tool_markers[k] = ToolCallMarker(**v)
+            else:
+                self._tool_markers[k] = v
+
+        self._frame_discardable = {k: set(v) for k, v in snapshot.frame_discardable.items()}
 
     def clear(self) -> None:
         """Clear all state and reset to initial."""

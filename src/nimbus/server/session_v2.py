@@ -132,6 +132,15 @@ class SessionManagerV2:
             else:
                 llm_client = await self._get_shared_llm_client()
 
+        # Get workspace path from session
+        workspace_path = session.get("workspace_path")
+        workspace = None
+        if workspace_path:
+            from pathlib import Path
+            import os
+            workspace = Path(os.path.expanduser(workspace_path))
+            logger.info(f"📁 Using workspace: {workspace}")
+
         # Create AgentOS with default tools
         logger.info(f"🔧 Creating AgentOS for session {session_id}")
         agent_os = create_agent_os(
@@ -139,6 +148,7 @@ class SessionManagerV2:
             tools={},
             max_processes=5,
             default_timeout=300.0,
+            workspace=workspace,  # Pass workspace for tool sandboxing
             register_defaults=True,  # Auto-register default tools
         )
 
@@ -277,6 +287,9 @@ class SessionManagerV2:
             # Clear events for next turn
             agent_os.clear_events()
 
+            # Save assistant messages to storage
+            await self._save_conversation_to_storage(session_id, agent_os, message)
+
             # Emit completion
             await self._sse_hub.publish(
                 session_id,
@@ -297,6 +310,93 @@ class SessionManagerV2:
                 "error",
                 {"message": str(e)},
             )
+
+    async def _save_conversation_to_storage(
+        self, 
+        session_id: str, 
+        agent_os: AgentOS,
+        user_message: str
+    ):
+        """
+        Save conversation messages to storage after chat completion.
+        
+        This extracts messages from MMU and saves them to the database,
+        so they can be restored when the user refreshes the page.
+        """
+        import json
+        import uuid
+        
+        try:
+            # Get the active process to access MMU
+            pids = agent_os.list_processes()
+            if not pids:
+                logger.warning(f"No processes found for session {session_id}, cannot save messages")
+                return
+            
+            process = agent_os.get_process(pids[0])
+            if not process or not process.mmu:
+                logger.warning(f"No MMU found for session {session_id}")
+                return
+            
+            mmu = process.mmu
+            
+            # Get messages from the current frame
+            if not mmu._stack:
+                return
+                
+            frame = mmu.current_frame
+            messages = frame.messages
+            
+            # Find new messages (after the user message we just received)
+            # We need to save assistant messages and tool results
+            found_user_msg = False
+            messages_to_save = []
+            
+            for msg in messages:
+                # Skip until we find the user message we're responding to
+                if msg.role == "user" and msg.content == user_message:
+                    found_user_msg = True
+                    continue
+                
+                # After finding user message, save subsequent messages
+                if found_user_msg:
+                    messages_to_save.append(msg)
+            
+            # Save each message
+            for msg in messages_to_save:
+                msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+                
+                # Prepare content - handle tool_calls specially
+                content = msg.content or ""
+                artifacts = None
+                
+                # If this is an assistant message with tool calls, store them as artifacts
+                if msg.role == "assistant" and msg.tool_calls:
+                    artifacts = [{
+                        "type": "tool_calls",
+                        "tool_calls": msg.tool_calls
+                    }]
+                
+                # For tool results, include the tool name
+                if msg.role == "tool":
+                    artifacts = [{
+                        "type": "tool_result",
+                        "tool_call_id": msg.tool_call_id,
+                        "name": msg.name,
+                    }]
+                
+                await self._storage.add_message(
+                    message_id=msg_id,
+                    session_id=session_id,
+                    role=msg.role,
+                    content=content,
+                    artifacts=artifacts,
+                )
+            
+            logger.info(f"💾 Saved {len(messages_to_save)} messages for session {session_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save conversation to storage: {e}", exc_info=True)
 
     async def _emit_v2_event(self, session_id: str, event: Event):
         """Convert v2 Event to SSE event."""
@@ -326,6 +426,106 @@ class SessionManagerV2:
             sse_type,
             event.data,
         )
+
+    async def interrupt_session(self, session_id: str) -> Dict[str, Any]:
+        """
+        Interrupt a running session.
+        
+        This will:
+        1. Request the vCPU to pause at next step
+        2. Create a checkpoint and save to DB
+        
+        Returns:
+            Dict with success status and checkpoint info
+        """
+        async with self._lock:
+            agent_os = self._sessions.get(session_id)
+        
+        if not agent_os:
+            return {"success": False, "error": "Session not loaded"}
+        
+        try:
+            # Request interrupt on all active processes
+            interrupted_count = 0
+            for pid in agent_os.list_processes():
+                process = agent_os.get_process(pid)
+                if process and process.vcpu:
+                    process.vcpu.request_pause()
+                    interrupted_count += 1
+                    logger.info(f"🛑 Requested pause for process {pid} in session {session_id}")
+            
+            # Create and save checkpoint
+            checkpoint_info = None
+            for pid in agent_os.list_processes():
+                process = agent_os.get_process(pid)
+                if process and process.vcpu:
+                    checkpoint = process.vcpu.create_checkpoint(session_id, reason="interruption")
+                    await self._storage.save_session_checkpoint(checkpoint)
+                    checkpoint_info = {
+                        "step_index": checkpoint.step_index,
+                        "iteration": checkpoint.execution_state.iteration,
+                        "memory_messages": len(checkpoint.memory_snapshot.stack[0].messages) if checkpoint.memory_snapshot.stack else 0,
+                    }
+                    logger.info(f"💾 Saved checkpoint for session {session_id} at step {checkpoint.step_index}")
+                    break  # Only save first process for now
+            
+            return {
+                "success": True,
+                "session_id": session_id,
+                "interrupted_processes": interrupted_count,
+                "checkpoint": checkpoint_info,
+            }
+        except Exception as e:
+            logger.error(f"Failed to interrupt session {session_id}: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def resume_session(self, session_id: str) -> Dict[str, Any]:
+        """
+        Resume an interrupted session.
+        
+        This will:
+        1. Load checkpoint from DB
+        2. Restore vCPU state
+        
+        Returns:
+            Dict with success status and restored info
+        """
+        try:
+            # Load checkpoint
+            checkpoint = await self._storage.load_latest_session_checkpoint(session_id)
+            if not checkpoint:
+                return {"success": False, "error": "No checkpoint found"}
+            
+            # Get or create AgentOS
+            agent_os = await self.get_or_create_agent(session_id)
+            
+            # Check if we need to spawn a new process
+            pids = agent_os.list_processes()
+            if not pids:
+                # Spawn a resumed process
+                pid = agent_os.spawn(goal="Resumed Session", role="resumed")
+                process = agent_os.get_process(pid)
+                if process and process.vcpu:
+                    process.vcpu.restore_from_checkpoint(checkpoint)
+                    # Clear interruption flag
+                    process.vcpu._state.interruption_requested = False
+                    logger.info(f"🔄 Restored session {session_id} to step {checkpoint.step_index}")
+            else:
+                # Restore to existing process
+                process = agent_os.get_process(pids[0])
+                if process and process.vcpu:
+                    process.vcpu.restore_from_checkpoint(checkpoint)
+                    process.vcpu._state.interruption_requested = False
+            
+            return {
+                "success": True,
+                "session_id": session_id,
+                "restored_step": checkpoint.step_index,
+                "restored_iteration": checkpoint.execution_state.iteration,
+            }
+        except Exception as e:
+            logger.error(f"Failed to resume session {session_id}: {e}")
+            return {"success": False, "error": str(e)}
 
     async def save_session_state(self, session_id: str) -> None:
         """Save session state (v2 handles this internally)."""
