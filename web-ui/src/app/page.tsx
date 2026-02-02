@@ -5,7 +5,7 @@ import { useChatStore } from "@/stores";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatList } from "@/components/chat/ChatList";
-import { DebugPanel } from "@/components/debug/DebugPanel";
+
 import { SessionPanel } from "@/components/session/SessionPanel";
 import { useAutoScroll, useScrollDetection } from "@/hooks/useAutoScroll";
 
@@ -239,8 +239,7 @@ export default function Home() {
         placeholder={isStreaming ? "输入消息以排队..." : "输入您的消息..."}
       />
 
-      {/* Debug Panel */}
-      <DebugPanel />
+
 
       {/* Session Panel */}
       <SessionPanel 
