@@ -90,46 +90,6 @@ interface ChatState {
   reset: () => void;
 }
 
-/**
- * Merge tool result messages into their corresponding assistant messages
- * This creates a cleaner UI where tool calls and results are grouped together
- */
-function mergeToolResults(messages: Message[]): Message[] {
-  const result: Message[] = [];
-  let currentAssistant: Message | null = null;
-  
-  for (const msg of messages) {
-    if (msg.role === 'assistant') {
-      // If there's a pending assistant message, push it
-      if (currentAssistant) {
-        result.push(currentAssistant);
-      }
-      // Start tracking new assistant message
-      currentAssistant = { ...msg, toolResults: msg.toolResults || [] };
-    } else if (msg.toolResults && msg.toolResults.length > 0 && currentAssistant) {
-      // This is a tool result - merge into current assistant
-      currentAssistant.toolResults = [
-        ...(currentAssistant.toolResults || []),
-        ...msg.toolResults
-      ];
-    } else {
-      // User message or other
-      if (currentAssistant) {
-        result.push(currentAssistant);
-        currentAssistant = null;
-      }
-      result.push(msg);
-    }
-  }
-  
-  // Don't forget the last assistant message
-  if (currentAssistant) {
-    result.push(currentAssistant);
-  }
-  
-  return result;
-}
-
 const initialState = {
   session: null,
   messages: [],
@@ -220,8 +180,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Load messages from server
     try {
       const serverMessages = await getSessionMessages(session.id);
-      const messages: Message[] = serverMessages.map(m => {
-        // Extract tool calls from artifacts
+      
+      // First pass: extract all messages and build a map of tool results
+      const toolResultsMap = new Map<string, ToolResult>();
+      
+      for (const m of serverMessages) {
+        if (m.role === 'tool' && m.artifacts) {
+          for (const artifact of m.artifacts) {
+            if (artifact && typeof artifact === 'object') {
+              const art = artifact as Record<string, unknown>;
+              if (art.type === 'tool_result' && art.tool_call_id) {
+                toolResultsMap.set(String(art.tool_call_id), {
+                  id: String(art.tool_call_id),
+                  name: String(art.name || ''),
+                  result: m.content,
+                });
+              }
+            }
+          }
+        }
+      }
+      
+      // Second pass: build messages, skipping tool messages and merging results into assistant messages
+      const messages: Message[] = [];
+      
+      for (const m of serverMessages) {
+        // Skip tool messages - their content is merged into assistant messages
+        if (m.role === 'tool') continue;
+        
+        // Skip system messages that are just task completion markers
+        if (m.role === 'system' && m.content?.startsWith('✓ Task completed')) continue;
+        
         let toolCalls: ToolCall[] | undefined;
         let toolResults: ToolResult[] | undefined;
         
@@ -244,35 +233,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
                         : tc.function.arguments)
                     : {},
                 }));
-              }
-              
-              // Handle tool_result artifact (for tool messages)
-              if (art.type === 'tool_result') {
-                toolResults = [{
-                  id: String(art.tool_call_id || ''),
-                  name: String(art.name || ''),
-                  result: m.content,
-                }];
+                
+                // Match tool results from the map
+                toolResults = toolCalls
+                  .filter(tc => tc.id)
+                  .map(tc => toolResultsMap.get(tc.id!))
+                  .filter((r): r is ToolResult => r !== undefined);
               }
             }
           }
         }
         
-        return {
+        messages.push({
           id: m.id,
-          role: m.role === 'tool' ? 'assistant' : m.role, // Map tool to assistant for display
+          role: m.role as 'user' | 'assistant' | 'system',
           content: m.content,
           toolCalls,
-          toolResults: m.role === 'tool' ? toolResults : undefined,
+          toolResults: toolResults && toolResults.length > 0 ? toolResults : undefined,
           timestamp: new Date(m.created_at).getTime(),
-        };
-      });
+        });
+      }
       
-      // Merge tool results into their corresponding assistant messages
-      const mergedMessages = mergeToolResults(messages);
-      
-      set({ messages: mergedMessages, isLoading: false });
-      console.log(`[Store] Loaded ${mergedMessages.length} messages for session ${session.id}`);
+      set({ messages, isLoading: false });
+      console.log(`[Store] Loaded ${messages.length} messages for session ${session.id}`);
     } catch (err) {
       console.error("[Store] Failed to load messages:", err);
       set({ isLoading: false });
