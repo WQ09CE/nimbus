@@ -7,8 +7,11 @@ import {
   type Session,
   type ToolCall,
   type ToolResult,
+  type ServerMessage,
   createSession,
   streamChat,
+  getSessionMessages,
+  getSession,
 } from "@/lib/api";
 
 export interface Message {
@@ -75,14 +78,56 @@ interface ChatState {
   // UI state
   isLoading: boolean;
   error: string | null;
+  isCreatingSession: boolean;  // Prevent concurrent session creation
 
   // Actions
-  createNewSession: () => Promise<void>;
-  switchSession: (session: Session) => void;
+  createNewSession: (force?: boolean) => Promise<void>;
+  switchSession: (session: Session | null) => Promise<void>;
+  loadSession: (sessionId: string) => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
   interruptMessage: () => void;
   clearError: () => void;
   reset: () => void;
+}
+
+/**
+ * Merge tool result messages into their corresponding assistant messages
+ * This creates a cleaner UI where tool calls and results are grouped together
+ */
+function mergeToolResults(messages: Message[]): Message[] {
+  const result: Message[] = [];
+  let currentAssistant: Message | null = null;
+  
+  for (const msg of messages) {
+    if (msg.role === 'assistant') {
+      // If there's a pending assistant message, push it
+      if (currentAssistant) {
+        result.push(currentAssistant);
+      }
+      // Start tracking new assistant message
+      currentAssistant = { ...msg, toolResults: msg.toolResults || [] };
+    } else if (msg.toolResults && msg.toolResults.length > 0 && currentAssistant) {
+      // This is a tool result - merge into current assistant
+      currentAssistant.toolResults = [
+        ...(currentAssistant.toolResults || []),
+        ...msg.toolResults
+      ];
+    } else {
+      // User message or other
+      if (currentAssistant) {
+        result.push(currentAssistant);
+        currentAssistant = null;
+      }
+      result.push(msg);
+    }
+  }
+  
+  // Don't forget the last assistant message
+  if (currentAssistant) {
+    result.push(currentAssistant);
+  }
+  
+  return result;
 }
 
 const initialState = {
@@ -99,27 +144,62 @@ const initialState = {
   streamAbortController: null,
   isLoading: false,
   error: null,
+  isCreatingSession: false,
 };
 
 export const useChatStore = create<ChatState>((set, get) => ({
   ...initialState,
 
-  createNewSession: async () => {
+  createNewSession: async (force = false) => {
+    const { isCreatingSession, session } = get();
+    
+    // Prevent concurrent session creation
+    if (isCreatingSession) {
+      console.log("[Store] Session creation already in progress, skipping");
+      return;
+    }
+    
+    // Don't create if we already have a session (unless force=true from UI button)
+    if (session && !force) {
+      console.log("[Store] Session already exists:", session.id);
+      return;
+    }
+    
     try {
-      set({ isLoading: true, error: null });
-      const session = await createSession();
-      set({ session, messages: [], isLoading: false });
+      set({ isLoading: true, isCreatingSession: true, error: null });
+      const newSession = await createSession();
+      console.log("[Store] Session created:", newSession.id);
+      set({ session: newSession, messages: [], isLoading: false, isCreatingSession: false });
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : "Failed to create session",
         isLoading: false,
+        isCreatingSession: false,
       });
     }
   },
 
-  switchSession: (session: Session) => {
-    // Switch to an existing session
-    // Clear current messages - they will be loaded from server/cache
+  switchSession: async (session: Session | null) => {
+    // Handle null session (e.g., when deleting current session)
+    if (!session) {
+      set({
+        session: null,
+        messages: [],
+        isStreaming: false,
+        streamingContent: "",
+        streamingToolCalls: [],
+        thinkingIteration: null,
+        currentActivity: null,
+        error: null,
+        isLoading: false,
+      });
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("nimbus_session_id");
+      }
+      return;
+    }
+
+    // Switch to an existing session and load its messages
     set({
       session,
       messages: [],
@@ -129,11 +209,101 @@ export const useChatStore = create<ChatState>((set, get) => ({
       thinkingIteration: null,
       currentActivity: null,
       error: null,
+      isLoading: true,
     });
+
+    // Persist session ID to localStorage
+    if (typeof window !== "undefined") {
+      localStorage.setItem("nimbus_session_id", session.id);
+    }
+
+    // Load messages from server
+    try {
+      const serverMessages = await getSessionMessages(session.id);
+      const messages: Message[] = serverMessages.map(m => {
+        // Extract tool calls from artifacts
+        let toolCalls: ToolCall[] | undefined;
+        let toolResults: ToolResult[] | undefined;
+        
+        if (m.artifacts && Array.isArray(m.artifacts)) {
+          for (const artifact of m.artifacts) {
+            if (artifact && typeof artifact === 'object') {
+              const art = artifact as Record<string, unknown>;
+              
+              // Handle tool_calls artifact
+              if (art.type === 'tool_calls' && Array.isArray(art.tool_calls)) {
+                toolCalls = (art.tool_calls as Array<{
+                  id?: string;
+                  function?: { name?: string; arguments?: string };
+                }>).map(tc => ({
+                  id: tc.id || '',
+                  name: tc.function?.name || '',
+                  arguments: tc.function?.arguments 
+                    ? (typeof tc.function.arguments === 'string' 
+                        ? JSON.parse(tc.function.arguments) 
+                        : tc.function.arguments)
+                    : {},
+                }));
+              }
+              
+              // Handle tool_result artifact (for tool messages)
+              if (art.type === 'tool_result') {
+                toolResults = [{
+                  id: String(art.tool_call_id || ''),
+                  name: String(art.name || ''),
+                  result: m.content,
+                }];
+              }
+            }
+          }
+        }
+        
+        return {
+          id: m.id,
+          role: m.role === 'tool' ? 'assistant' : m.role, // Map tool to assistant for display
+          content: m.content,
+          toolCalls,
+          toolResults: m.role === 'tool' ? toolResults : undefined,
+          timestamp: new Date(m.created_at).getTime(),
+        };
+      });
+      
+      // Merge tool results into their corresponding assistant messages
+      const mergedMessages = mergeToolResults(messages);
+      
+      set({ messages: mergedMessages, isLoading: false });
+      console.log(`[Store] Loaded ${mergedMessages.length} messages for session ${session.id}`);
+    } catch (err) {
+      console.error("[Store] Failed to load messages:", err);
+      set({ isLoading: false });
+    }
+  },
+
+  loadSession: async (sessionId: string) => {
+    // Load a session by ID (used on page refresh)
+    try {
+      set({ isLoading: true });
+      const session = await getSession(sessionId);
+      if (session) {
+        await get().switchSession(session);
+      } else {
+        // Session not found, clear localStorage
+        if (typeof window !== "undefined") {
+          localStorage.removeItem("nimbus_session_id");
+        }
+        set({ isLoading: false });
+      }
+    } catch (err) {
+      console.error("[Store] Failed to load session:", err);
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("nimbus_session_id");
+      }
+      set({ isLoading: false });
+    }
   },
 
   sendMessage: async (content: string) => {
-    const { session, messages, isStreaming, messageQueue } = get();
+    const { session, messages, isStreaming, messageQueue, isCreatingSession } = get();
     
     // Queue if streaming
     if (isStreaming) {
@@ -141,18 +311,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return;
     }
     
-    // Create session if needed
-    let currentSession = session;
+    // Wait for session creation if in progress
+    if (isCreatingSession) {
+      console.log("[Store] Waiting for session creation...");
+      set({ messageQueue: [...messageQueue, content] });
+      return;
+    }
+    
+    // Must have a session to send messages
+    const currentSession = session;
     if (!currentSession) {
-      try {
-        currentSession = await createSession();
-        set({ session: currentSession });
-      } catch (err) {
-        set({
-          error: err instanceof Error ? err.message : "Failed to create session",
-        });
-        return;
-      }
+      console.error("[Store] No session available, cannot send message");
+      set({ error: "请先创建一个 Session" });
+      return;
     }
 
     // Add user message

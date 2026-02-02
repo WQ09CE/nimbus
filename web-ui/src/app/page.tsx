@@ -20,7 +20,9 @@ export default function Home() {
     currentActivity,
     error,
     isInterrupting,
+    isLoading,
     createNewSession,
+    loadSession,
     sendMessage,
     interruptMessage,
     clearError,
@@ -72,7 +74,13 @@ export default function Home() {
   // Initialize session on mount
   useEffect(() => {
     setMounted(true);
-    if (!session) {
+    
+    // Try to restore session from localStorage
+    const savedSessionId = localStorage.getItem("nimbus_session_id");
+    if (savedSessionId && !session) {
+      console.log("[Page] Restoring session:", savedSessionId);
+      loadSession(savedSessionId);
+    } else if (!session) {
       createNewSession();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -120,7 +128,7 @@ export default function Home() {
               Sessions
             </button>
             <button
-              onClick={createNewSession}
+              onClick={() => createNewSession(true)}
               className="text-xs bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-white transition-colors"
             >
               + New
@@ -148,8 +156,16 @@ export default function Home() {
           </div>
         )}
 
+        {/* Loading messages */}
+        {isLoading && (
+          <div className="flex flex-col items-center justify-center h-full text-center">
+            <div className="text-4xl mb-4 animate-pulse">☁️</div>
+            <p className="text-gray-500 text-sm">加载中...</p>
+          </div>
+        )}
+
         {/* Welcome */}
-        {messages.length === 0 && !isStreaming && (
+        {messages.length === 0 && !isStreaming && !isLoading && (
           <div className="flex flex-col items-center justify-center h-full text-center">
             <div className="text-4xl mb-4">☁️</div>
             <h2 className="text-xl font-semibold text-blue-400 mb-2">

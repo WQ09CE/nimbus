@@ -14,7 +14,7 @@ import aiosqlite
 
 from ..core.memory_legacy import MemoryConfig, Message, PinnedItem, TieredMemoryManager
 from ..core.types import TaskDAG, TaskStatus
-
+from ..core.persistence import SessionCheckpointModel
 
 class SQLiteStorage:
     """SQLite-based persistent storage for Nimbus sessions.
@@ -808,6 +808,100 @@ class SQLiteStorage:
                 await db.commit()
 
             return len(ids_to_delete)
+
+    # =========================================================================
+    # Session Checkpoint Operations (v2)
+    # =========================================================================
+
+    async def save_session_checkpoint(self, checkpoint: SessionCheckpointModel) -> str:
+        """Save a full session checkpoint (vCPU + MMU).
+        
+        Args:
+            checkpoint: The SessionCheckpointModel to save
+            
+        Returns:
+            Checkpoint ID (generated as uuid if not present)
+        """
+        import uuid
+        if not hasattr(checkpoint, "checkpoint_id") or not checkpoint.checkpoint_id:
+             checkpoint_id = str(uuid.uuid4())
+             # Hack: Model doesn't have checkpoint_id field but table does?
+             # Ah, SessionCheckpointModel from persistence.py doesn't seem to have 'checkpoint_id' field defined in the previous edit?
+             # Let's check persistence.py again.
+             pass
+        
+        # Checking SessionCheckpointModel definition in previous turn:
+        # class SessionCheckpointModel(BaseModel):
+        #     schema_version: int = 1
+        #     session_id: str
+        #     timestamp: float = Field(default_factory=time.time)
+        #     step_index: int 
+        #     execution_state: ExecutionStateModel
+        #     memory_snapshot: MemorySnapshotModel
+        #     reason: str = "periodic"
+        #     can_resume: bool = True
+        
+        # It is missing 'id' or 'checkpoint_id'. The table has 'id' (pk) and 'checkpoint_id'.
+        # We should use a unique ID for the PK, and maybe reuse it for checkpoint_id column 
+        # or add it to the model. 
+        # For now, let's generate an ID here.
+        
+        pk_id = f"ckpt_{checkpoint.session_id}_{checkpoint.step_index}_{int(checkpoint.timestamp)}"
+        
+        async with self._get_connection() as db:
+            await db.execute(
+                """
+                INSERT INTO session_checkpoints (
+                    id, session_id, checkpoint_id, timestamp, step_index,
+                    execution_state, memory_snapshot, reason, can_resume, schema_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    pk_id,
+                    checkpoint.session_id,
+                    pk_id, # Use same ID for now
+                    checkpoint.timestamp,
+                    checkpoint.step_index,
+                    checkpoint.execution_state.model_dump_json(),
+                    checkpoint.memory_snapshot.model_dump_json(),
+                    checkpoint.reason,
+                    checkpoint.can_resume,
+                    checkpoint.schema_version
+                )
+            )
+            await db.commit()
+        return pk_id
+
+    async def load_latest_session_checkpoint(self, session_id: str) -> Optional[SessionCheckpointModel]:
+        """Load the most recent checkpoint for a session."""
+        async with self._get_connection() as db:
+            cursor = await db.execute(
+                """
+                SELECT * FROM session_checkpoints
+                WHERE session_id = ?
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                (session_id,)
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return None
+                
+            r = self._row_to_dict(row)
+            
+            # Reconstruct model
+            # Note: We need to parse the JSON fields first
+            return SessionCheckpointModel(
+                schema_version=r["schema_version"],
+                session_id=r["session_id"],
+                timestamp=r["timestamp"],
+                step_index=r["step_index"],
+                execution_state=json.loads(r["execution_state"]),
+                memory_snapshot=json.loads(r["memory_snapshot"]),
+                reason=r["reason"],
+                can_resume=bool(r["can_resume"])
+            )
 
     # =========================================================================
     # Permission Operations

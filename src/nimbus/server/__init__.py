@@ -10,12 +10,12 @@ This module provides:
 
 from .app import create_app
 from .permission import PermissionManager
-from .session import SessionManager
+from .session_v2 import SessionManagerV2
 from .sse import SSEHub
 
 __all__ = [
     "create_app",
-    "SessionManager",
+    "SessionManagerV2",
     "PermissionManager",
     "SSEHub",
 ]

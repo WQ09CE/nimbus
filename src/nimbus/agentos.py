@@ -92,6 +92,12 @@ from nimbus.tools.base import ToolDefinition, ToolRegistry
 
 
 @dataclass
+class OSConfig:
+    """Configuration for AgentOS (alias for AgentOSConfig for backward compatibility)"""
+    workspace_root: str = "."
+    max_processes: int = 10
+
+@dataclass
 class AgentOSConfig:
     """
     Configuration for AgentOS.
@@ -787,6 +793,33 @@ class AgentOS:
 
         # Run DAG
         return await self._scheduler.run_dag(dag.id, executor)
+
+    def interrupt(self, session_id: Optional[str] = None) -> bool:
+        """
+        Interrupt a specific session or all sessions.
+
+        Args:
+            session_id: Session ID (which maps to PID in simple mode). 
+                       If None, interrupts all running processes.
+
+        Returns:
+            True if at least one process was signalled to interrupt.
+        """
+        signalled = False
+        
+        targets = []
+        if session_id:
+            targets.append(session_id)
+        else:
+            targets = list(self._processes.keys())
+            
+        for pid in targets:
+            process = self._processes.get(pid)
+            if process and process.state == "RUNNING" and process.vcpu:
+                process.vcpu.request_pause()
+                signalled = True
+                
+        return signalled
 
     # =========================================================================
     # Process Management

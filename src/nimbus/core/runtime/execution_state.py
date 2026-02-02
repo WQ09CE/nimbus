@@ -13,7 +13,7 @@ Execution State - vCPU 执行状态管理
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
-
+from nimbus.core.persistence import ExecutionStateModel
 
 @dataclass
 class ExecutionState:
@@ -57,6 +57,9 @@ class ExecutionState:
 
     # 路径解析计数（用于文件查找恢复）
     path_not_found_count: int = 0
+    
+    # 中断控制
+    interruption_requested: bool = False
 
     def reset(self) -> None:
         """重置所有状态到初始值"""
@@ -70,6 +73,7 @@ class ExecutionState:
         self.compaction_count = 0
         self.tool_failure_counts.clear()
         self.path_not_found_count = 0
+        self.interruption_requested = False
 
     def start_execution(self) -> None:
         """开始执行"""
@@ -223,3 +227,35 @@ class ExecutionState:
             max_compactions=max_compactions,
             max_tool_failures=max_tool_failures,
         )
+
+    def create_snapshot(self) -> ExecutionStateModel:
+        """Create a snapshot of the execution state."""
+        return ExecutionStateModel(
+            iteration=self.iteration,
+            max_iterations=self.max_iterations,
+            is_running=self.is_running,
+            is_done=self.is_done,
+            final_result=self.final_result,
+            consecutive_thoughts=self.consecutive_thoughts,
+            consecutive_errors=self.consecutive_errors,
+            consecutive_empty_responses=self.consecutive_empty_responses,
+            compaction_count=self.compaction_count,
+            max_compactions=self.max_compactions,
+            tool_failure_counts=dict(self.tool_failure_counts),
+            path_not_found_count=self.path_not_found_count,
+        )
+
+    def restore_from_snapshot(self, snapshot: ExecutionStateModel) -> None:
+        """Restore state from snapshot."""
+        self.iteration = snapshot.iteration
+        self.max_iterations = snapshot.max_iterations
+        self.is_running = snapshot.is_running
+        self.is_done = snapshot.is_done
+        self.final_result = snapshot.final_result
+        self.consecutive_thoughts = snapshot.consecutive_thoughts
+        self.consecutive_errors = snapshot.consecutive_errors
+        self.consecutive_empty_responses = snapshot.consecutive_empty_responses
+        self.compaction_count = snapshot.compaction_count
+        self.max_compactions = snapshot.max_compactions
+        self.tool_failure_counts = dict(snapshot.tool_failure_counts)
+        self.path_not_found_count = snapshot.path_not_found_count
