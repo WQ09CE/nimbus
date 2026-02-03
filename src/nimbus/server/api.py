@@ -220,7 +220,7 @@ async def delete_session(
     storage=Depends(get_storage),
 ):
     """Delete a session.
-    
+
     Args:
         session_id: Session to delete
         hard: If True, permanently delete from database. If False, soft delete (mark as deleted).
@@ -230,11 +230,11 @@ async def delete_session(
         raise HTTPException(status_code=404, detail="Session not found")
 
     await session_manager.delete_session(session_id)
-    
+
     # Hard delete if requested
     if hard:
         await storage.delete_session(session_id, hard_delete=True)
-    
+
     return None
 
 
@@ -245,24 +245,24 @@ async def interrupt_session(
 ):
     """
     Interrupt a running session.
-    
+
     This will:
     1. Request the vCPU to pause at next step
     2. Hibernate the session (save checkpoint to DB)
     3. Return the checkpoint info
-    
+
     Returns:
         Interrupt status and checkpoint info
     """
     session = await session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     result = await session_manager.interrupt_session(session_id)
-    
+
     if not result["success"]:
         raise HTTPException(status_code=400, detail=result.get("error", "Failed to interrupt"))
-    
+
     return result
 
 
@@ -273,24 +273,24 @@ async def resume_session(
 ):
     """
     Resume an interrupted session.
-    
+
     This will:
     1. Load checkpoint from DB
     2. Restore vCPU state
     3. Continue execution
-    
+
     Returns:
         Resume status
     """
     session = await session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     result = await session_manager.resume_session(session_id)
-    
+
     if not result["success"]:
         raise HTTPException(status_code=400, detail=result.get("error", "Failed to resume"))
-    
+
     return result
 
 
@@ -303,20 +303,20 @@ async def inject_message(
 ):
     """
     Inject a user message into a running session (Human-in-the-loop).
-    
+
     This allows steering the agent while it is executing tasks.
     The message will be processed at the start of the next Think-Act-Observe cycle.
-    
+
     Returns:
         Status object
     """
     session = await session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-        
+
     # Inject via SessionManager -> SessionPool -> vCPU
     success = await session_manager.inject_message(session_id, data.content)
-    
+
     if success:
         # NOTE: We do NOT save to storage here directly.
         # The vCPU will add it to MMU, and session_v2._save_conversation_to_storage
@@ -698,26 +698,26 @@ async def list_mcp_servers():
 async def complete_path(path: str = "", limit: int = 20):
     """
     Complete a filesystem path for workspace selection.
-    
+
     Args:
         path: Partial path to complete (supports ~ for home)
         limit: Maximum number of results
-        
+
     Returns:
         List of matching directory paths
     """
     import os
     from pathlib import Path
-    
+
     # Expand ~ to home directory
     if path.startswith("~"):
         expanded = os.path.expanduser(path)
     else:
         expanded = path or "."
-    
+
     try:
         base_path = Path(expanded)
-        
+
         # If path ends with /, list contents of that directory
         # Otherwise, complete the last component
         if path.endswith("/") or path == "" or path == "~":
@@ -726,25 +726,25 @@ async def complete_path(path: str = "", limit: int = 20):
         else:
             search_dir = base_path.parent
             prefix = base_path.name.lower()
-        
+
         if not search_dir.exists():
             return {"path": path, "completions": [], "error": "Directory not found"}
-        
+
         completions = []
         try:
             for item in search_dir.iterdir():
                 # Only show directories
                 if not item.is_dir():
                     continue
-                
+
                 # Skip hidden directories unless user is explicitly looking for them
                 if item.name.startswith(".") and not prefix.startswith("."):
                     continue
-                
+
                 # Match prefix
                 if prefix and not item.name.lower().startswith(prefix):
                     continue
-                
+
                 # Build the completion path
                 if path.startswith("~"):
                     home = os.path.expanduser("~")
@@ -754,28 +754,28 @@ async def complete_path(path: str = "", limit: int = 20):
                         completion = str(item)
                 else:
                     completion = str(item)
-                
+
                 completions.append({
                     "path": completion,
                     "name": item.name,
                     "is_dir": True,
                 })
-                
+
                 if len(completions) >= limit:
                     break
-                    
+
         except PermissionError:
             return {"path": path, "completions": [], "error": "Permission denied"}
-        
+
         # Sort by name
         completions.sort(key=lambda x: x["name"].lower())
-        
+
         return {
             "path": path,
             "completions": completions,
             "cwd": str(Path.cwd()),
         }
-        
+
     except Exception as e:
         logger.error(f"Path completion error: {e}")
         return {"path": path, "completions": [], "error": str(e)}

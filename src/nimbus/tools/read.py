@@ -22,7 +22,6 @@ import mimetypes
 from pathlib import Path
 from typing import Any, Optional
 
-from .sandbox import Sandbox, SandboxError
 from .utils import DEFAULT_MAX_BYTES, format_size, truncate_head
 
 

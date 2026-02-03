@@ -7,9 +7,10 @@ This replaces Pickle with a safe, schema-validated JSON format.
 Strictly follows "No Pickle" rule from Architecture Committee.
 """
 
-from typing import Any, Dict, List, Optional, Literal, Union
-from pydantic import BaseModel, Field
 import time
+from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import BaseModel, Field
 
 # =============================================================================
 # Core Data Models
@@ -73,11 +74,11 @@ class SessionCheckpointModel(BaseModel):
     session_id: str
     timestamp: float = Field(default_factory=time.time)
     step_index: int # The vCPU iteration count
-    
+
     # Core States
     execution_state: ExecutionStateModel
     memory_snapshot: MemorySnapshotModel
-    
+
     # Metadata
     reason: str = "periodic" # periodic, interruption, error
     can_resume: bool = True
