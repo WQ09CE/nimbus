@@ -530,6 +530,41 @@ class AgentOS:
             if hasattr(self._llm, "_client") and hasattr(self._llm._client, "session_id"):
                 session_id = self._llm._client.session_id
 
+            # Calculate dynamic summary budget based on pinned context budget
+            # Summary should take at most 30% of pinned budget to leave room for system rules
+            pinned_budget = mmu.config.pinned_budget  # e.g., 2000 tokens
+            summary_token_budget = int(pinned_budget * 0.3)  # e.g., 600 tokens
+            # Rough estimate: 1 token ≈ 2-3 Chinese chars, 4 English chars
+            summary_char_budget = summary_token_budget * 2  # Conservative for Chinese
+
+            async def compress_summary(text: str, max_chars: int) -> str:
+                """Use LLM to intelligently compress a summary that's too long."""
+                compress_prompt = (
+                    f"以下摘要过长，请精简到{max_chars}字符以内，保留最关键的信息：\n\n"
+                    f"{text}\n\n"
+                    f"要求：\n"
+                    f"1. 优先保留：用户提供的密码/密钥、关键代码、配置信息\n"
+                    f"2. 其次保留：当前任务状态、重要决策\n"
+                    f"3. 可省略：过程细节、已解决的问题\n"
+                    f"请直接输出精简后的摘要（不超过{max_chars}字符）："
+                )
+                try:
+                    response = await self._llm.chat(
+                        messages=[{"role": "user", "content": compress_prompt}],
+                        tools=None,
+                    )
+                    if response and response.content:
+                        return response.content[:max_chars]  # Final hard limit
+                except Exception as e:
+                    logger.warning(f"Summary compression failed: {e}")
+                # Fallback: simple truncation at sentence boundary
+                truncated = text[:max_chars]
+                for sep in ["。", ".", "\n"]:
+                    pos = truncated.rfind(sep)
+                    if pos > max_chars * 0.7:
+                        return truncated[: pos + 1] + "...[已压缩]"
+                return truncated + "...[已压缩]"
+
             # Create a summarizer that uses the LLM to generate a summary
             async def generate_summary(messages: list) -> str:
                 """Generate a summary of the conversation using LLM."""
@@ -548,6 +583,12 @@ class AgentOS:
                         for m in messages[-20:]  # Last 20 messages
                     )
 
+                    # Calculate target length based on whether we're merging
+                    target_chars = summary_char_budget
+                    if previous_summary:
+                        # When merging, be more aggressive about compression
+                        target_chars = int(summary_char_budget * 0.8)
+
                     # Include previous summary to prevent cascade loss
                     if previous_summary:
                         summary_prompt = (
@@ -555,7 +596,7 @@ class AgentOS:
                             f"【之前的摘要】\n{previous_summary[:1000]}\n\n"
                             f"【新对话内容】\n{context}\n\n"
                             "请保留之前摘要中的关键信息（特别是用户提供的密码、代码等），"
-                            "并添加新对话中的重要内容。用中文简洁回复（300字以内）："
+                            f"并添加新对话中的重要内容。用中文简洁回复（{target_chars}字以内）："
                         )
                     else:
                         summary_prompt = (
@@ -564,7 +605,7 @@ class AgentOS:
                             "2. 已完成的操作和结果\n"
                             "3. 当前任务状态\n\n"
                             f"对话内容：\n{context}\n\n"
-                            "请用中文简洁总结（200字以内）："
+                            f"请用中文简洁总结（{target_chars}字以内）："
                         )
 
                     # Use LLM.chat() to generate summary (not complete())
@@ -574,7 +615,18 @@ class AgentOS:
                     )
 
                     if response and response.content:
-                        return response.content
+                        summary = response.content
+
+                        # Smart budget check: if over budget, use LLM to re-compress
+                        if len(summary) > summary_char_budget:
+                            logger.warning(
+                                f"Summary ({len(summary)} chars) exceeds budget ({summary_char_budget} chars), "
+                                f"using LLM to compress..."
+                            )
+                            summary = await compress_summary(summary, summary_char_budget)
+                            logger.info(f"Summary compressed to {len(summary)} chars")
+
+                        return summary
                     return "Summary generation failed"
                 except Exception as e:
                     logger.warning(f"Summary generation failed: {e}")
