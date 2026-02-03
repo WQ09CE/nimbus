@@ -77,7 +77,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from nimbus.core.runtime.vcpu import VCPUConfig
 
     pi_url = os.environ.get("PI_AI_URL", "http://localhost:3031")
-    model = os.environ.get("NIMBUS_MODEL", "anthropic/claude-opus-4-5")
+    model = os.environ.get("NIMBUS_MODEL", "google/gemini-3-pro-high")
 
     pi_config = PiLLMConfig(base_url=pi_url, model=model)
     llm = PiLLMAdapter(pi_config)
