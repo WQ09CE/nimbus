@@ -130,6 +130,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ isLoading: true, isCreatingSession: true, error: null });
       const newSession = await createSession();
       console.log("[Store] Session created:", newSession.id);
+      
+      // Fix: Persist session ID immediately
+      if (typeof window !== "undefined") {
+        localStorage.setItem("nimbus_session_id", newSession.id);
+      }
+      
       set({ session: newSession, messages: [], isLoading: false, isCreatingSession: false });
     } catch (err) {
       set({
@@ -181,6 +187,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Load messages from server
     try {
       const serverMessages = await getSessionMessages(session.id);
+      console.log("[Store] Raw server messages:", serverMessages);
       
       // First pass: extract all messages and build a map of tool results
       const toolResultsMap = new Map<string, ToolResult>();
@@ -258,6 +265,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Sort messages by timestamp to ensure correct order
       messages.sort((a, b) => a.timestamp - b.timestamp);
       
+      console.log("[Store] Parsed messages:", messages);
       set({ messages, isLoading: false });
       console.log(`[Store] Loaded ${messages.length} messages for session ${session.id}`);
     } catch (err) {
