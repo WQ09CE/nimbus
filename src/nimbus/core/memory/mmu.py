@@ -44,7 +44,7 @@ Context Stack 提炼策略:
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Set, Callable, Awaitable
+from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Set
 
 from nimbus.core.memory.context import (
     Message,
@@ -54,9 +54,9 @@ from nimbus.core.memory.context import (
 )
 from nimbus.core.persistence import (
     MemorySnapshotModel,
+    MessageModel,
     PinnedContextModel,
     StackFrameModel,
-    MessageModel,
 )
 
 # =============================================================================
@@ -203,11 +203,11 @@ class MMU:
     def pin_user_goal(self, goal: str) -> None:
         """
         Pin the user's current goal to the top of context.
-        
+
         This ensures the goal is NEVER lost during compaction.
         The goal is stored as a special anchor that gets replaced
         (not accumulated) on each new execute() call.
-        
+
         Args:
             goal: The user's goal/request text
         """
@@ -216,9 +216,10 @@ class MMU:
 
         # Debug logging
         from nimbus.core.logging import get_logger
+
         logger = get_logger("memory.mmu")
         logger.debug(f"Pinning user goal: {goal[:50]}...")
-        
+
         # Log existing anchors
         for i, anchor in enumerate(self._pinned.custom_anchors):
             logger.debug(f"Existing anchor [{i}]: {anchor[:50]}...")
@@ -473,7 +474,7 @@ class MMU:
             return 0
 
         frame = self.current_frame
-        messages = frame._messages
+        messages = frame.messages
 
         if not messages:
             return 0
@@ -771,10 +772,11 @@ class MMU:
         new_messages.append(pointer_msg)
 
         # Create summary message if available
+        # Use 'assistant' role so LLM treats this as its own memory, not external instruction
         if summary_text:
             summary_msg = Message(
-                role="system",
-                content=f"## 📝 Execution Summary (Previous Context)\n{summary_text}",
+                role="assistant",
+                content=f"[Memory Recall] 根据我之前的对话记录，以下是关键信息摘要：\n\n{summary_text}",
                 meta={"summary": True},
             )
             new_messages.append(summary_msg)
@@ -1034,7 +1036,9 @@ class MMU:
             self._pinned = PinnedContext(
                 system_rules=snapshot.pinned_context.system_rules,
                 workspace_info=snapshot.pinned_context.workspace_info,
-                env_state=getattr(snapshot.pinned_context, "env_state", ""),  # Backward compatibility
+                env_state=getattr(
+                    snapshot.pinned_context, "env_state", ""
+                ),  # Backward compatibility
                 capabilities=snapshot.pinned_context.capabilities,
                 custom_anchors=snapshot.pinned_context.custom_anchors,
                 version=snapshot.pinned_context.version,

@@ -5,10 +5,7 @@ Provides:
 - Real-time backend log streaming via WebSocket
 """
 
-import json
 import logging
-from datetime import datetime
-from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
@@ -16,11 +13,12 @@ from pydantic import BaseModel
 
 from .log_hub import log_hub
 
-
-router = APIRouter() # No prefix here, will be included in main app with /api/v1 prefix
+router = APIRouter()  # No prefix here, will be included in main app with /api/v1 prefix
 
 # Dedicated logger for frontend logs
 frontend_logger = logging.getLogger("nimbus.frontend")
+logger = logging.getLogger(__name__)
+
 
 class LogEntry(BaseModel):
     """Single log entry from frontend."""
@@ -48,24 +46,27 @@ async def receive_logs(batch: LogBatch):
         # Convert frontend level to python log level
         lvl = entry.level.lower()
         log_func = frontend_logger.info
-        
-        if lvl == "debug": log_func = frontend_logger.debug
-        elif lvl == "warn" or lvl == "warning": log_func = frontend_logger.warning
-        elif lvl == "error": log_func = frontend_logger.error
-        
+
+        if lvl == "debug":
+            log_func = frontend_logger.debug
+        elif lvl == "warn" or lvl == "warning":
+            log_func = frontend_logger.warning
+        elif lvl == "error":
+            log_func = frontend_logger.error
+
         # Format: [UI] message (data)
         msg = f"[UI] {entry.message}"
         if entry.data:
             import json
+
             try:
                 msg += f" | data={json.dumps(entry.data)}"
-            except:
+            except (TypeError, ValueError):
                 msg += f" | data={str(entry.data)}"
-        
+
         log_func(msg)
 
     return {"status": "ok", "count": len(batch.entries)}
-
 
 
 # ═══════════════════════════════════════════════════════════════════════════

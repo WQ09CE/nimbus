@@ -136,8 +136,9 @@ class SessionManagerV2:
         workspace_path = session.get("workspace_path")
         workspace = None
         if workspace_path:
-            from pathlib import Path
             import os
+            from pathlib import Path
+
             workspace = Path(os.path.expanduser(workspace_path))
             logger.info(f"📁 Using workspace: {workspace}")
 
@@ -241,25 +242,27 @@ class SessionManagerV2:
             logger.info("[stream_chat] Calling agent_os.chat...")
             try:
                 result = await agent_os.chat(message, session_id=session_id)
-                
+
                 # SPECIAL HANDLING FOR INJECTION
-                if result.status == "OK" and result.output == "[Instruction appended to running task]":
-                     # This was an injection, not a full turn.
-                     # We must save the user message immediately because it's not in MMU yet.
-                     import uuid
-                     msg_id = f"msg_{uuid.uuid4().hex[:12]}"
-                     await self._storage.add_message(
+                if (
+                    result.status == "OK"
+                    and result.output == "[Instruction appended to running task]"
+                ):
+                    # This was an injection, not a full turn.
+                    # We must save the user message immediately because it's not in MMU yet.
+                    msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+                    await self._storage.add_message(
                         message_id=msg_id,
                         session_id=session_id,
                         role="user",
-                        content=f"[Intervention] {message}", # Mark as intervention
-                     )
-                     logger.info(f"💾 Saved injected message '{message[:20]}...' to storage")
-                     
-                     # Emit completion and exit
-                     await self._sse_hub.publish(session_id, "dag_complete", {"status": "OK"})
-                     await self._sse_hub.close_session(session_id)
-                     return
+                        content=f"[Intervention] {message}",  # Mark as intervention
+                    )
+                    logger.info(f"💾 Saved injected message '{message[:20]}...' to storage")
+
+                    # Emit completion and exit
+                    await self._sse_hub.publish(session_id, "dag_complete", {"status": "OK"})
+                    await self._sse_hub.close_session(session_id)
+                    return
 
                 if result.status == "ERROR":
                     logger.error(f"[stream_chat] Result Error: {result.fault}")
@@ -273,9 +276,11 @@ class SessionManagerV2:
                                 msg = proc.inbox.pop(0)
                                 logger.info(f"Draining pending injection: {msg}")
                                 if proc.role == "chat":
-                                     proc.mmu.add_user_message(msg)
+                                    proc.mmu.add_user_message(msg)
                                 else:
-                                     proc.mmu.add_user_message(f"[User Intervention] {msg} (Cancelled)")
+                                    proc.mmu.add_user_message(
+                                        f"[User Intervention] {msg} (Cancelled)"
+                                    )
                     except Exception as drain_err:
                         logger.warning(f"Failed to drain message queue: {drain_err}")
                 else:
@@ -284,18 +289,40 @@ class SessionManagerV2:
                 # User interrupted - cleanup incomplete state
                 logger.info(f"[stream_chat] Cancelled by user for session {session_id}")
 
-                # NEW: Save current progress before rollback
+                # Save current progress before rollback
                 # If the user cancels, we still want to keep what has been done so far.
                 try:
-                    if hasattr(agent_os, "_vcpu") and agent_os._vcpu:
-                        mmu = agent_os._vcpu.mmu
-                        # Before rolling back, save whatever state we have
+                    # Get MMU from the process (not from agent_os._vcpu which doesn't exist)
+                    process = agent_os.get_process(session_id)
+                    if process and process.mmu:
+                        # IMPORTANT: Save any pending messages in inbox that weren't processed yet
+                        # These are injected user messages that arrived during execution
+                        if process.inbox:
+                            logger.info(
+                                f"[stream_chat] Saving {len(process.inbox)} pending inbox messages..."
+                            )
+                            for pending_msg in process.inbox:
+                                msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+                                await self._storage.add_message(
+                                    message_id=msg_id,
+                                    session_id=session_id,
+                                    role="user",
+                                    content=pending_msg,
+                                )
+                            process.inbox.clear()  # Clear after saving
+
+                        # Save whatever state we have to database
                         logger.info("[stream_chat] Saving partial progress before interruption...")
                         await self._save_conversation_to_storage(session_id, agent_os, message)
-                        
-                        # Then rollback incomplete messages from MMU (e.g. pending tool calls)
-                        mmu.rollback_incomplete_turn()
-                        logger.info("[stream_chat] Rolled back incomplete turn")
+
+                        # NOTE: We intentionally do NOT rollback MMU here.
+                        # If user continues the conversation, they need the full context.
+                        # The saved messages in DB are for page refresh recovery.
+                        logger.info("[stream_chat] Progress saved (MMU preserved for continuation)")
+                    else:
+                        logger.warning(
+                            f"[stream_chat] No process/MMU found for session {session_id}, cannot save progress"
+                        )
                 except Exception as e:
                     logger.error(f"[stream_chat] Failed to save partial progress: {e}")
 
@@ -324,7 +351,8 @@ class SessionManagerV2:
                         {"content": chunk},
                     )
                     await asyncio.sleep(0.01)  # Small delay for smooth streaming
-            else:
+            elif not result.output and not (result.meta and result.meta.get("streamed")):
+                # Only warn if there's no output AND content wasn't streamed
                 logger.warning(f"[stream_chat] NO OUTPUT in result for session {session_id}")
 
             # Clear events for next turn
@@ -355,79 +383,70 @@ class SessionManagerV2:
             )
 
     async def _save_conversation_to_storage(
-        self, 
-        session_id: str, 
-        agent_os: AgentOS,
-        user_message: str
+        self, session_id: str, agent_os: AgentOS, user_message: str
     ):
         """
         Save conversation messages to storage after chat completion.
-        
+
         This extracts messages from MMU and saves them to the database,
         so they can be restored when the user refreshes the page.
         """
-        import json
-        import uuid
-        
+
         try:
-            # Get the active process to access MMU
-            pids = agent_os.list_processes()
-            if not pids:
-                logger.warning(f"No processes found for session {session_id}, cannot save messages")
-                return
-            
-            process = agent_os.get_process(pids[0])
+            # Get the process for this session to access MMU
+            process = agent_os.get_process(session_id)
             if not process or not process.mmu:
-                logger.warning(f"No MMU found for session {session_id}")
+                logger.warning(
+                    f"No process/MMU found for session {session_id}, cannot save messages"
+                )
                 return
-            
+
             mmu = process.mmu
-            
+
             # Get messages from the current frame
             if not mmu._stack:
                 return
-                
+
             frame = mmu.current_frame
             messages = frame.messages
-            
+
             # Find new messages (after the user message we just received)
             # We need to save assistant messages and tool results
             found_user_msg = False
             messages_to_save = []
-            
+
             for msg in messages:
                 # Skip until we find the user message we're responding to
                 if msg.role == "user" and msg.content == user_message:
                     found_user_msg = True
                     continue
-                
+
                 # After finding user message, save subsequent messages
                 if found_user_msg:
                     messages_to_save.append(msg)
-            
+
             # Save each message
             for msg in messages_to_save:
                 msg_id = f"msg_{uuid.uuid4().hex[:12]}"
-                
+
                 # Prepare content - handle tool_calls specially
                 content = msg.content or ""
                 artifacts = None
-                
+
                 # If this is an assistant message with tool calls, store them as artifacts
                 if msg.role == "assistant" and msg.tool_calls:
-                    artifacts = [{
-                        "type": "tool_calls",
-                        "tool_calls": msg.tool_calls
-                    }]
-                
+                    artifacts = [{"type": "tool_calls", "tool_calls": msg.tool_calls}]
+
                 # For tool results, include the tool name
                 if msg.role == "tool":
-                    artifacts = [{
-                        "type": "tool_result",
-                        "tool_call_id": msg.tool_call_id,
-                        "name": msg.name,
-                    }]
-                
+                    artifacts = [
+                        {
+                            "type": "tool_result",
+                            "tool_call_id": msg.tool_call_id,
+                            "name": msg.name,
+                        }
+                    ]
+
                 await self._storage.add_message(
                     message_id=msg_id,
                     session_id=session_id,
@@ -435,9 +454,9 @@ class SessionManagerV2:
                     content=content,
                     artifacts=artifacts,
                 )
-            
+
             logger.info(f"💾 Saved {len(messages_to_save)} messages for session {session_id}")
-            
+
         except Exception as e:
             logger.error(f"Failed to save conversation to storage: {e}", exc_info=True)
 
@@ -476,18 +495,18 @@ class SessionManagerV2:
         """
         async with self._lock:
             agent_os = self._sessions.get(session_id)
-        
+
         if not agent_os:
             return {"success": False, "error": "Session not loaded"}
-        
+
         try:
             # Request interrupt via AgentOS (Phase 2 Kernel)
             interrupted = agent_os.interrupt(session_id)
-            
+
             # Create and save checkpoint
             checkpoint_info = None
             # ... (checkpoint logic remains similar, but access via process)
-            
+
             return {
                 "success": True,
                 "session_id": session_id,
@@ -502,10 +521,10 @@ class SessionManagerV2:
         """Inject user message into running session."""
         async with self._lock:
             agent_os = self._sessions.get(session_id)
-            
+
         if not agent_os:
             return False
-            
+
         # Inject via AgentOS (Phase 1 Kernel)
         # Note: In chat mode, session_id IS the pid
         return agent_os.inject_message(session_id, content)

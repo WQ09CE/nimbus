@@ -265,6 +265,7 @@ class VCPU:
         """Request the vCPU to pause execution at the next safe point."""
         self._state.interruption_requested = True
         from nimbus.core.logging import get_logger
+
         get_logger("kernel.vcpu").info("Interruption requested for next step.")
 
     def inject_message(self, content: str) -> None:
@@ -273,10 +274,9 @@ class VCPU:
         """
         # NO-OP: Functionality moved to AgentOS.inject_message
         # This method is deprecated and will be removed in future versions.
-        # It's kept here just in case some legacy code calls it, 
+        # It's kept here just in case some legacy code calls it,
         # but it won't actually do anything in the new AgentOS loop.
         pass
-
 
     # =========================================================================
     # Main Execution Loop
@@ -318,8 +318,8 @@ class VCPU:
                             domain="RUNTIME",
                             code="INTERRUPTED",
                             message="Execution interrupted by user request",
-                            retryable=True, # Can resume
-                        )
+                            retryable=True,  # Can resume
+                        ),
                     )
 
                 # Check iteration limit - trigger compaction instead of stopping
@@ -411,12 +411,12 @@ class VCPU:
                     final_result = step_result.final_result or ToolResult(
                         status="OK", output="Task completed", is_final=True
                     )
-                    
+
                     # Add completion marker to history to prevent context bleeding
                     # This tells the LLM that the previous goal is DONE.
                     result_preview = str(final_result.output)[:100].replace("\n", " ")
                     self.mmu.add_system_message(f"✓ Task completed. Result: {result_preview}...")
-                    
+
                     return final_result
 
         except asyncio.CancelledError:
@@ -466,7 +466,7 @@ class VCPU:
                     code="INTERRUPTED",
                     message="Execution interrupted by user request",
                     retryable=True,
-                )
+                ),
             )
 
         self._iteration += 1
@@ -478,6 +478,31 @@ class VCPU:
         from nimbus.core.logging import get_logger
 
         logger = get_logger("kernel.vcpu")
+
+        # Check if memory needs compaction BEFORE assembling context
+        # Return a special Fault for AgentOS to handle
+        if self.mmu.needs_compression():
+            current_tokens = self.mmu.estimate_tokens()
+            threshold = int(
+                self.mmu.config.max_context_tokens * self.mmu.config.compress_threshold
+            )
+            logger.warning(
+                f"🧠 Context overflow: {current_tokens} tokens > {threshold} threshold"
+            )
+            return StepResult(
+                is_final=False,
+                fault=Fault(
+                    domain="MEMORY",
+                    code="CONTEXT_OVERFLOW",
+                    message=f"Context overflow: {current_tokens} tokens > {threshold} threshold",
+                    retryable=True,  # Can retry after compaction
+                    context={
+                        "current_tokens": current_tokens,
+                        "threshold": threshold,
+                        "max_tokens": self.mmu.config.max_context_tokens,
+                    },
+                ),
+            )
 
         try:
             # 1. THINK: Get LLM response

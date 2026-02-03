@@ -50,12 +50,15 @@ from nimbus.tools.base import ToolDefinition, ToolRegistry
 @dataclass
 class OSConfig:
     """Configuration for AgentOS (alias for AgentOSConfig for backward compatibility)"""
+
     workspace_root: str = "."
     max_processes: int = 10
+
 
 @dataclass
 class AgentOSConfig:
     """Configuration for AgentOS."""
+
     max_processes: int = 10
     default_timeout: float = 300.0
     vcpu_config: VCPUConfig = field(default_factory=VCPUConfig)
@@ -105,6 +108,7 @@ ProcessState = Literal["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]
 @dataclass
 class Process:
     """A process managed by AgentOS."""
+
     pid: str
     goal: str
     role: str = ""
@@ -174,14 +178,14 @@ class AgentOS:
                 try:
                     def_obj = _parse_legacy_tool(tool_data)
                     self._tools.register(def_obj, tool_data["function"])
-                    
+
                     params = []
                     for p in def_obj.parameters:
                         p_str = p.name
                         if not p.required:
                             p_str += "?"
                         params.append(p_str)
-                    
+
                     sig = f"{def_obj.name}({', '.join(params)})"
                     desc = def_obj.description.split(".")[0] + "."
                     kernel_tools_desc += f"- {sig}: {desc}\n"
@@ -261,11 +265,22 @@ class AgentOS:
         yield {"type": "planning", "content": "Starting execution..."}
 
         while True:
-            try:
-                result = await vcpu.step()
-            except Exception as e:
-                yield {"type": "error", "message": str(e)}
-                return
+            result = await vcpu.step()
+
+            # Handle CONTEXT_OVERFLOW fault - trigger compaction and retry
+            if result.fault and result.fault.code == "CONTEXT_OVERFLOW":
+                ctx = result.fault.context or {}
+                yield {
+                    "type": "compaction",
+                    "message": f"Context overflow ({ctx.get('current_tokens')} tokens), compacting...",
+                }
+                success = await self._compaction_for_process(pid, mmu)
+                if success:
+                    yield {"type": "compaction_done", "message": "Compaction complete"}
+                    continue  # Retry the step after compaction
+                else:
+                    yield {"type": "error", "message": "Compaction failed"}
+                    return
 
             for i, action in enumerate(result.actions):
                 action_kind = getattr(action, "kind", None)
@@ -355,33 +370,33 @@ class AgentOS:
 
         if is_existing_process and process.state == "RUNNING":
             from loguru import logger
+
             logger.info(f"Process {session_id} is busy. Converting chat to injection.")
             self.inject_message(process.pid, message)
-            
+
             if self._session_mgr:
                 from nimbus.core.memory.context import Message
+
                 self._session_mgr.append_message(Message(role="user", content=message))
-            
+
             return ToolResult(
-                status="OK", 
-                output="[Instruction appended to running task]", 
-                is_final=True
+                status="OK", output="[Instruction appended to running task]", is_final=True
             )
 
         process.vcpu._reset()
 
         if self._session_mgr:
             from nimbus.core.memory.context import Message
+
             self._session_mgr.append_message(Message(role="user", content=message))
-        
+
         self.inject_message(process.pid, message)
 
         if process.state != "RUNNING":
-             process.state = "RUNNING"
-             return await self._run_process(process)
-             
-        return ToolResult(status="OK", output="[Already Running]")
+            process.state = "RUNNING"
+            return await self._run_process(process)
 
+        return ToolResult(status="OK", output="[Already Running]")
 
     # =========================================================================
     # Process Management
@@ -515,7 +530,57 @@ class AgentOS:
             if hasattr(self._llm, "_client") and hasattr(self._llm._client, "session_id"):
                 session_id = self._llm._client.session_id
 
-            archive_path = await mmu.archive_and_reset(session_id)
+            # Create a summarizer that uses the LLM to generate a summary
+            async def generate_summary(messages: list) -> str:
+                """Generate a summary of the conversation using LLM."""
+                try:
+                    # Extract any previous summary from messages (to preserve cascade info)
+                    previous_summary = ""
+                    for m in messages:
+                        content = str(m.content) if m.content else ""
+                        if "[Memory Recall]" in content or "关键信息摘要" in content:
+                            previous_summary = content
+                            break
+
+                    # Build a prompt for summarization
+                    context = "\n".join(
+                        f"[{m.role.upper()}]: {str(m.content)[:500]}"
+                        for m in messages[-20:]  # Last 20 messages
+                    )
+
+                    # Include previous summary to prevent cascade loss
+                    if previous_summary:
+                        summary_prompt = (
+                            "请合并并更新以下信息摘要。\n\n"
+                            f"【之前的摘要】\n{previous_summary[:1000]}\n\n"
+                            f"【新对话内容】\n{context}\n\n"
+                            "请保留之前摘要中的关键信息（特别是用户提供的密码、代码等），"
+                            "并添加新对话中的重要内容。用中文简洁回复（300字以内）："
+                        )
+                    else:
+                        summary_prompt = (
+                            "请简洁总结以下对话的关键信息，包括：\n"
+                            "1. 用户提供的重要数据（如密码、代码、配置等）\n"
+                            "2. 已完成的操作和结果\n"
+                            "3. 当前任务状态\n\n"
+                            f"对话内容：\n{context}\n\n"
+                            "请用中文简洁总结（200字以内）："
+                        )
+
+                    # Use LLM.chat() to generate summary (not complete())
+                    response = await self._llm.chat(
+                        messages=[{"role": "user", "content": summary_prompt}],
+                        tools=None,  # No tools needed for summary
+                    )
+
+                    if response and response.content:
+                        return response.content
+                    return "Summary generation failed"
+                except Exception as e:
+                    logger.warning(f"Summary generation failed: {e}")
+                    return f"[Summary unavailable: {e}]"
+
+            archive_path = await mmu.archive_and_reset(session_id, summarizer=generate_summary)
 
             if archive_path:
                 logger.info(
@@ -540,27 +605,27 @@ class AgentOS:
 
     def interrupt(self, session_id: Optional[str] = None) -> bool:
         signalled = False
-        
+
         targets = []
         if session_id:
             targets.append(session_id)
         else:
             targets = list(self._processes.keys())
-            
+
         for pid in targets:
             process = self._processes.get(pid)
             if process and process.state == "RUNNING":
                 process.signals["interrupt"] = True
                 signalled = True
                 logger.info(f"[{pid}] Signal 'interrupt' set")
-                
+
         return signalled
 
     def inject_message(self, pid: str, message: str) -> bool:
         process = self._processes.get(pid)
         if not process:
             return False
-        
+
         process.inbox.append(message)
         logger.info(f"[{pid}] Message injected into inbox: {message[:50]}...")
         return True
@@ -573,24 +638,25 @@ class AgentOS:
             if not process.vcpu._is_running:
                 process.vcpu._reset()
                 process.vcpu._is_running = True
-                
+
                 if process.vcpu.config.pin_goal and process.role != "chat":
                     pinned_goal = await process.vcpu._prepare_goal_for_pinning(process.goal)
                     process.mmu.pin_user_goal(pinned_goal)
                     process.mmu.add_user_message(process.goal)
 
             final_result = None
-            
+
             while process.vcpu._is_running and not process.vcpu._is_done:
-                
                 if process.signals.get("interrupt"):
                     logger.info(f"[{process.pid}] Interrupted by signal")
                     process.state = "CANCELLED"
                     process.signals["interrupt"] = False
                     process.vcpu._is_done = True
                     return ToolResult(
-                        status="CANCELLED", 
-                        fault=Fault(domain="KERNEL", code="INTERRUPTED", message="Interrupted by user")
+                        status="CANCELLED",
+                        fault=Fault(
+                            domain="KERNEL", code="INTERRUPTED", message="Interrupted by user"
+                        ),
                     )
 
                 while process.inbox:
@@ -599,7 +665,7 @@ class AgentOS:
                         process.mmu.add_user_message(msg)
                     else:
                         process.mmu.add_user_message(f"[User Intervention] {msg}")
-                    
+
                     self._emit_event("USER_INTERVENTION", process.pid, {"content": msg})
                     logger.info(f"[{process.pid}] Processed inbox message: {msg[:50]}...")
 
@@ -607,20 +673,52 @@ class AgentOS:
 
                 step_result = await process.vcpu.step()
 
+                # Handle CONTEXT_OVERFLOW fault - trigger compaction and retry
+                if step_result.fault and step_result.fault.code == "CONTEXT_OVERFLOW":
+                    ctx = step_result.fault.context or {}
+                    logger.info(
+                        f"[{process.pid}] Context overflow ({ctx.get('current_tokens')} tokens), "
+                        f"triggering compaction..."
+                    )
+                    self._emit_event(
+                        "COMPACTION_TRIGGERED",
+                        process.pid,
+                        {"current_tokens": ctx.get("current_tokens"), "threshold": ctx.get("threshold")},
+                    )
+                    success = await self._compaction_for_process(process.pid, process.mmu)
+                    if success:
+                        logger.info(f"[{process.pid}] Compaction successful, retrying step...")
+                        continue  # Retry the step after compaction
+                    else:
+                        logger.error(f"[{process.pid}] Compaction failed")
+                        process.state = "FAILED"
+                        return ToolResult(
+                            status="ERROR",
+                            fault=Fault(
+                                domain="MEMORY",
+                                code="COMPACTION_FAILED",
+                                message="Context overflow but compaction failed",
+                            ),
+                        )
+
                 if step_result.fault and not step_result.fault.retryable:
                     process.state = "FAILED"
                     return ToolResult(status="ERROR", fault=step_result.fault)
 
                 if step_result.is_final:
                     if process.inbox:
-                        logger.info(f"[{process.pid}] New messages arrived during final step, extending execution...")
+                        logger.info(
+                            f"[{process.pid}] New messages arrived during final step, extending execution..."
+                        )
                         process.vcpu._is_done = False
                         continue
-                        
+
                     process.state = "SUCCEEDED"
-                    final_result = step_result.final_result or ToolResult(status="OK", output="Completed")
+                    final_result = step_result.final_result or ToolResult(
+                        status="OK", output="Completed"
+                    )
                     break
-                    
+
                 await asyncio.sleep(0)
 
             self._emit_event(

@@ -162,10 +162,12 @@ class KernelGate:
             fault = f
 
         except asyncio.CancelledError:
-            status = "CANCELLED"
-            error_msg = f"Tool '{tool_name}' execution was cancelled"
-            output = f"[Error] {error_msg}"
-            fault = Fault(domain="KERNEL", code="SYSTEM_ERROR", message=error_msg, retryable=True)
+            # Log the cancellation
+            duration_ms = (time.time_ns() - start_time) // 1_000_000
+            logger.info(f"🛑 Tool '{tool_name}' cancelled after {duration_ms}ms")
+            # Re-raise to propagate cancellation to the caller
+            # This ensures the entire task is cancelled, not just the tool
+            raise
 
         except Exception as e:
             status = "ERROR"
