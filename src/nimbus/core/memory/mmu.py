@@ -95,9 +95,9 @@ class MMUConfig:
         remove_failed_tool_calls: 是否移除失败的 tool calls（释放 token 空间）
     """
 
-    max_context_tokens: int = 200_000  # 200k tokens (Claude-3 standard)
-    pinned_budget: int = 4000  # Increased pinned budget
-    frame_budget: int = 190_000  # 95% for frames
+    max_context_tokens: int = 4000  # STRESS TEST MODE: 4k tokens
+    pinned_budget: int = 1000  # Reduced pinned budget
+    frame_budget: int = 2500  # Reduced frame budget
     compress_threshold: float = 0.9  # Compress at 90% capacity
     keep_recent_messages: int = 10
     auto_extract_on_pop: bool = True  # Context Stack 提炼
