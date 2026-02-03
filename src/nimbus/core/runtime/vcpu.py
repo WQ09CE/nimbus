@@ -241,7 +241,7 @@ class VCPU:
         self.mmu = mmu
         self.config = config or VCPUConfig()
         self.tools = tools or []
-        self._message_queue: List[str] = []  # User intervention queue
+        # self._message_queue removed in Phase 1 Refactor
 
         # Centralized execution state (refactored from 15+ instance variables)
         self._state = ExecutionState.from_config(
@@ -270,19 +270,12 @@ class VCPU:
     def inject_message(self, content: str) -> None:
         """
         Inject a user message into the running execution loop.
-        
-        This allows for human-in-the-loop steering. The message will be
-        processed at the start of the next Think-Act-Observe cycle.
         """
-        from nimbus.core.logging import get_logger
-        logger = get_logger("kernel.vcpu")
-        
-        # Add to internal queue
-        if not hasattr(self, "_message_queue"):
-            self._message_queue = []
-            
-        self._message_queue.append(content)
-        logger.info(f"📨 Message injected into vCPU queue: {content[:50]}...")
+        # NO-OP: Functionality moved to AgentOS.inject_message
+        # This method is deprecated and will be removed in future versions.
+        # It's kept here just in case some legacy code calls it, 
+        # but it won't actually do anything in the new AgentOS loop.
+        pass
 
 
     # =========================================================================
@@ -415,16 +408,6 @@ class VCPU:
 
                 # Check execution result
                 if step_result.is_final:
-                    # Check pending messages before finishing
-                    # If we have pending messages, we should continue processing them
-                    # instead of returning immediately.
-                    if self._message_queue:
-                        from nimbus.core.logging import get_logger
-                        get_logger("kernel.vcpu").info("📨 Pending messages detected at finish, extending execution...")
-                        self._is_done = False
-                        # Continue loop -> next step will consume message queue at start
-                        continue
-
                     final_result = step_result.final_result or ToolResult(
                         status="OK", output="Task completed", is_final=True
                     )
@@ -472,7 +455,8 @@ class VCPU:
         Returns:
             StepResult with actions, results, and status
         """
-        # Check interruption request at step start
+        # Check interruption request at step start (Legacy support for vCPU-driven interrupt)
+        # In Phase 1, AgentOS handles this before calling step(), but we keep this as safety net.
         if self._state.interruption_requested:
             self._emit_event("INTERRUPTION_HANDLED", {"iteration": self._state.iteration})
             return StepResult(
@@ -484,17 +468,6 @@ class VCPU:
                     retryable=True,
                 )
             )
-
-        # Check for injected messages (User Intervention) - Process before Thinking
-        if hasattr(self, "_message_queue") and self._message_queue:
-            while self._message_queue:
-                msg_content = self._message_queue.pop(0)
-                # Add as User message to guide the LLM
-                self.mmu.add_user_message(f"[User Intervention] {msg_content}")
-                self._emit_event("USER_INTERVENTION", {"content": msg_content})
-                
-                from nimbus.core.logging import get_logger
-                get_logger("kernel.vcpu").info(f"📨 Processing injected message in step: {msg_content[:50]}...")
 
         self._iteration += 1
         step_result = StepResult()

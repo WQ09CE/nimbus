@@ -3,50 +3,6 @@ Nimbus v2 AgentOS - The Top-Level Integration Layer
 
 AgentOS is the unified entry point for the Nimbus v2 system.
 It orchestrates all components: VCPU, MMU, Gate, Scheduler, Decoder.
-
-Architecture:
-    ┌─────────────────────────────────────────────────────────────┐
-    │                         AgentOS                              │
-    │  ┌──────────────────────────────────────────────────────┐   │
-    │  │                     Process Pool                       │   │
-    │  │   ┌─────────┐   ┌─────────┐   ┌─────────┐            │   │
-    │  │   │ Process │   │ Process │   │ Process │   ...      │   │
-    │  │   │  (VCPU) │   │  (VCPU) │   │  (VCPU) │            │   │
-    │  │   └─────────┘   └─────────┘   └─────────┘            │   │
-    │  └──────────────────────────────────────────────────────┘   │
-    │                            │                                  │
-    │  ┌──────────────────────────────────────────────────────┐   │
-    │  │                Component Factory                       │   │
-    │  │   Decoder | Gate | MMU | EventStream | IPCBus        │   │
-    │  └──────────────────────────────────────────────────────┘   │
-    │                            │                                  │
-    │  ┌──────────────────────────────────────────────────────┐   │
-    │  │                   Tool Registry                        │   │
-    │  │         { tool_name: callable, ... }                  │   │
-    │  └──────────────────────────────────────────────────────┘   │
-    └─────────────────────────────────────────────────────────────┘
-
-Key Responsibilities:
-1. Unified Entry Point: Simple API to run goals (run, run_dag)
-2. Component Orchestration: Create and wire all components
-3. Process Management: spawn, wait, kill subprocesses
-4. Tool Registration: Manage available tools
-5. Event Aggregation: Collect events from all components
-
-Usage:
-    # Create AgentOS
-    os = AgentOS(llm_client=my_llm, tools={"Read": read_fn, "Bash": bash_fn})
-
-    # Run a simple goal
-    result = await os.run("List all Python files in src/")
-
-    # Run a DAG
-    dag = create_linear_dag(["explore codebase", "find auth module"])
-    result = await os.run_dag(dag)
-
-    # Spawn subprocess
-    pid = os.spawn("explore_codebase", role="eye")
-    result = await os.wait(pid)
 """
 
 import asyncio
@@ -99,30 +55,14 @@ class OSConfig:
 
 @dataclass
 class AgentOSConfig:
-    """
-    Configuration for AgentOS.
-
-    Attributes:
-        max_processes: Maximum number of concurrent processes
-        default_timeout: Default timeout for task execution (seconds)
-        vcpu_config: Configuration for VCPUs
-        scheduler_config: Configuration for the scheduler
-        mmu_config: Configuration for MMUs
-        compaction_config: Configuration for context compaction
-        system_rules: System rules for pinned context
-        workspace_info: Workspace information for pinned context
-        capabilities: Capabilities description for pinned context
-        session_dir: Directory for session persistence (None = ephemeral)
-        enable_session: Whether to enable session persistence
-    """
-
+    """Configuration for AgentOS."""
     max_processes: int = 10
     default_timeout: float = 300.0
     vcpu_config: VCPUConfig = field(default_factory=VCPUConfig)
     scheduler_config: SchedulerConfig = field(default_factory=SchedulerConfig)
     mmu_config: MMUConfig = field(default_factory=MMUConfig)
     # Kernel tools
-    kernel_tools: bool = True  # Auto-load kernel tools (Read, Write, Edit, Bash)
+    kernel_tools: bool = True
     # System prompt based on pi-coding-agent design
     system_rules: str = """You are an expert coding assistant. You help users by reading files, executing commands, editing code, and writing new files.
 
@@ -164,21 +104,7 @@ ProcessState = Literal["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]
 
 @dataclass
 class Process:
-    """
-    A process managed by AgentOS.
-
-    Attributes:
-        pid: Unique process identifier
-        goal: The goal this process is working on
-        role: Process role (e.g., "eye", "body", "mind")
-        state: Current process state
-        vcpu: The VCPU executing this process
-        mmu: Memory management unit for this process
-        gate: Kernel gate for this process
-        result: Process result (if completed)
-        task: The asyncio task running this process
-    """
-
+    """A process managed by AgentOS."""
     pid: str
     goal: str
     role: str = ""
@@ -188,11 +114,8 @@ class Process:
     gate: Optional[KernelGate] = None
     result: Optional[ToolResult] = None
     task: Optional[asyncio.Task] = None
-
-
-# =============================================================================
-# Tool Executor
-# =============================================================================
+    inbox: List[str] = field(default_factory=list)
+    signals: Dict[str, bool] = field(default_factory=dict)
 
 
 # =============================================================================
@@ -201,28 +124,7 @@ class Process:
 
 
 class AgentOS:
-    """
-    Agent Operating System - The Top-Level Integration Layer.
-
-    AgentOS provides a unified interface for running agent tasks.
-    It manages processes, tools, and orchestrates all v2 components.
-
-    Example:
-        # Simple usage
-        os = AgentOS(llm_client=my_llm, tools={"Read": read_fn})
-        result = await os.run("Find all Python files")
-
-        # With configuration
-        config = AgentOSConfig(max_processes=5, default_timeout=60.0)
-        os = AgentOS(llm_client=my_llm, tools={}, config=config)
-
-        # Register tools after creation
-        os.register_tool("Bash", bash_fn, description="Execute shell commands")
-
-        # Run with DAG
-        dag = create_linear_dag(["step1", "step2", "step3"])
-        result = await os.run_dag(dag)
-    """
+    """Agent Operating System - The Top-Level Integration Layer."""
 
     def __init__(
         self,
@@ -230,14 +132,6 @@ class AgentOS:
         tools: Optional[Dict[str, Callable]] = None,
         config: Optional[AgentOSConfig] = None,
     ):
-        """
-        Initialize AgentOS.
-
-        Args:
-            llm_client: LLM client for vCPUs
-            tools: Initial tool registry {name: callable}
-            config: AgentOS configuration
-        """
         self._llm = llm_client
         self.config = config or AgentOSConfig()
 
@@ -253,7 +147,7 @@ class AgentOS:
             kernel_tools_list = [READ_TOOL, WRITE_TOOL, EDIT_TOOL, BASH_TOOL]
             kernel_tools_desc = "Available tools:\n"
 
-            # Helper to parse legacy tool dicts (JSON Schema params)
+            # Helper to parse legacy tool dicts
             def _parse_legacy_tool(data: Dict[str, Any]) -> ToolDefinition:
                 params = []
                 schema = data.get("parameters", {})
@@ -281,7 +175,6 @@ class AgentOS:
                     def_obj = _parse_legacy_tool(tool_data)
                     self._tools.register(def_obj, tool_data["function"])
                     
-                    # Generate signature for prompt
                     params = []
                     for p in def_obj.parameters:
                         p_str = p.name
@@ -290,8 +183,6 @@ class AgentOS:
                         params.append(p_str)
                     
                     sig = f"{def_obj.name}({', '.join(params)})"
-                    
-                    # Short description for prompt (truncate if too long)
                     desc = def_obj.description.split(".")[0] + "."
                     kernel_tools_desc += f"- {sig}: {desc}\n"
                 except ValueError:
@@ -306,42 +197,32 @@ class AgentOS:
                     if hasattr(func, "_tool_definition"):
                         self._tools.register_decorated(func)
                     else:
-                        # Fallback for plain functions
                         definition = ToolDefinition(
                             name=name,
                             description=func.__doc__ or "No description",
-                            parameters=[],  # Schema inference omitted for brevity
+                            parameters=[],
                         )
                         self._tools.register(definition, func)
                 except ValueError:
-                    # Log warning but continue
                     pass
 
         # 3. Inject Kernel Tools into System Prompt
         if kernel_tools_desc and "Available tools:" not in self.config.system_rules:
-            # Insert after the first paragraph
             parts = self.config.system_rules.split("\n\n", 1)
             if len(parts) > 1:
                 self.config.system_rules = parts[0] + "\n\n" + kernel_tools_desc + "\n" + parts[1]
             else:
                 self.config.system_rules += "\n\n" + kernel_tools_desc
 
-        # Scheduler
         self._scheduler = Scheduler(
             config=self.config.scheduler_config,
             events=EventStream(),
         )
 
-        # Process pool
         self._processes: Dict[str, Process] = {}
-
-        # Shared event stream for observability
         self._events = SimpleEventStream()
-
-        # Chat session tracking
         self._current_session_id: Optional[str] = None
 
-        # Session management (NEW)
         if self.config.enable_session and self.config.session_dir:
             self._session_mgr: Optional[SessionManager] = SessionManager(
                 session_dir=self.config.session_dir
@@ -349,7 +230,6 @@ class AgentOS:
         else:
             self._session_mgr = None
 
-        # Compaction engine (NEW)
         self._compaction_engine = CompactionEngine(
             config=self.config.compaction_config,
             llm=DefaultCompactionLLM(llm_client),
@@ -360,43 +240,10 @@ class AgentOS:
     # =========================================================================
 
     async def run(self, goal: str, role: str = "") -> ToolResult:
-        """
-        Execute a single goal.
-
-        This is the simplest entry point - just provide a goal string.
-
-        Args:
-            goal: The goal to achieve
-            role: Optional process role (e.g., "eye", "body")
-
-        Returns:
-            ToolResult with the final result or error
-        """
-        # Spawn a process
         pid = self.spawn(goal, role=role)
-
-        # Wait for completion
         return await self.wait(pid)
 
     async def run_stream(self, goal: str, role: str = ""):
-        """
-        Execute a goal and stream status updates.
-
-        Yields status dictionaries as the execution progresses.
-
-        Args:
-            goal: The goal to achieve
-            role: Optional process role
-
-        Yields:
-            dict: Status updates like:
-                {"type": "planning", "content": "..."}
-                {"type": "tool_call", "name": "...", "args": {...}}
-                {"type": "tool_result", "content": "..."}
-                {"type": "text", "content": "..."}
-                {"type": "done", "result": {...}}
-        """
-        # Spawn a process
         pid = self.spawn(goal, role=role)
         process = self._processes.get(pid)
         if not process:
@@ -406,16 +253,13 @@ class AgentOS:
         vcpu = process.vcpu
         mmu = process.mmu
 
-        # Add goal as user message (same as vcpu.execute does)
         if vcpu.config.pin_goal:
             pinned_goal = await vcpu._prepare_goal_for_pinning(goal)
             mmu.pin_user_goal(pinned_goal)
         mmu.add_user_message(goal)
 
-        # Yield planning event
         yield {"type": "planning", "content": "Starting execution..."}
 
-        # Run until done
         while True:
             try:
                 result = await vcpu.step()
@@ -423,12 +267,10 @@ class AgentOS:
                 yield {"type": "error", "message": str(e)}
                 return
 
-            # Yield events based on actions
             for i, action in enumerate(result.actions):
                 action_kind = getattr(action, "kind", None)
 
                 if action_kind == "TOOL_CALL":
-                    # ActionIR uses 'name' and 'args', not 'tool_name' and 'tool_args'
                     tool_name = getattr(action, "name", "unknown")
                     tool_args = getattr(action, "args", {})
                     tool_id = getattr(action, "id", None)
@@ -439,7 +281,6 @@ class AgentOS:
                         "args": tool_args,
                         "call_id": tool_id,
                     }
-                    # Get corresponding result if available
                     if i < len(result.results):
                         tool_result = result.results[i]
                         yield {
@@ -450,12 +291,10 @@ class AgentOS:
                             "content": getattr(tool_result, "output", str(tool_result)),
                         }
                 elif action_kind == "THOUGHT":
-                    # ActionIR thoughts have content in args
                     content = action.args.get("content", "") if action.args else ""
                     if content:
                         yield {"type": "text", "content": content}
                 elif action_kind == "RETURN":
-                    # Task complete - result is in args
                     result_value = action.args.get("result", "") if action.args else ""
                     yield {
                         "type": "done",
@@ -466,7 +305,6 @@ class AgentOS:
                     }
                     return
 
-            # Check for final result
             if result.is_final:
                 yield {
                     "type": "done",
@@ -479,25 +317,11 @@ class AgentOS:
                 return
 
     async def chat(self, message: str, session_id: str | None = None) -> ToolResult:
-        """
-        Multi-turn chat with persistent context.
-
-        This maintains conversation history across multiple calls.
-        Use this for interactive chat sessions.
-
-        Args:
-            message: User message
-            session_id: Optional session ID to resume. If None, creates new session.
-
-        Returns:
-            ToolResult with the response
-        """
-        # Get or create session process
+        is_existing_process = False
         if session_id and session_id in self._processes:
             process = self._processes[session_id]
+            is_existing_process = True
         else:
-            # Create new session process
-            # Use user-provided session_id if given, otherwise generate one
             if not session_id:
                 session_id = f"chat-{uuid.uuid4().hex[:8]}"
             mmu = self._create_mmu(session_id)
@@ -513,7 +337,6 @@ class AgentOS:
                 tools=self._tools.get_definitions(format="openai"),
             )
 
-            # Set compaction callback
             vcpu.set_compaction_callback(
                 lambda sid=session_id, m=mmu: self._compaction_for_process(sid, m)
             )
@@ -522,7 +345,7 @@ class AgentOS:
                 pid=session_id,
                 goal="Interactive chat session",
                 role="chat",
-                state="RUNNING",
+                state="PENDING",
                 vcpu=vcpu,
                 mmu=mmu,
                 gate=gate,
@@ -530,65 +353,52 @@ class AgentOS:
             self._processes[session_id] = process
             self._emit_event("PROC_SPAWNED", session_id, {"goal": "chat", "role": "chat"})
 
-        # Reset VCPU state for new turn (but keep MMU history)
-        process.vcpu._reset()
-
-        # Session persistence: 追加用户消息
-
-        # Session persistence: 追加用户消息
-        if self._session_mgr:
-            from nimbus.core.memory.context import Message
-
-            self._session_mgr.append_message(Message(role="user", content=message))
-
-        # Execute one turn
-        # Note: vcpu.execute will add the user message to MMU, so we don't add it here
-        try:
-            result = await process.vcpu.execute(message)
-
-            # Session persistence: 追加助手响应
-            if self._session_mgr and result.output:
+        if is_existing_process and process.state == "RUNNING":
+            from loguru import logger
+            logger.info(f"Process {session_id} is busy. Converting chat to injection.")
+            self.inject_message(process.pid, message)
+            
+            if self._session_mgr:
                 from nimbus.core.memory.context import Message
-
-                self._session_mgr.append_message(
-                    Message(role="assistant", content=str(result.output))
-                )
-
-            # Check if compaction needed
-            await self._check_compaction(process)
-
-            # Create a new result with session_id in output if needed
-            # We use a simple convention: if the result needs session tracking,
-            # we store session_id separately
-            self._current_session_id = session_id
-
-            return result
-
-        except Exception as e:
-            import logging
-            import traceback
-
-            logger = logging.getLogger(__name__)
-            error_detail = traceback.format_exc()
-            logger.error(f"❌ [AgentOS.chat] Exception in vcpu.execute: {e}")
-            logger.error(f"Traceback:\n{error_detail}")
+                self._session_mgr.append_message(Message(role="user", content=message))
+            
             return ToolResult(
-                status="ERROR",
-                fault=Fault(
-                    domain="KERNEL",
-                    code="SYSTEM_ERROR",
-                    message=str(e),
-                    retryable=False,
-                    context={"traceback": error_detail},
-                ),
+                status="OK", 
+                output="[Instruction appended to running task]", 
+                is_final=True
             )
 
+        process.vcpu._reset()
+
+        if self._session_mgr:
+            from nimbus.core.memory.context import Message
+            self._session_mgr.append_message(Message(role="user", content=message))
+        
+        self.inject_message(process.pid, message)
+
+        if process.state != "RUNNING":
+             process.state = "RUNNING"
+             return await self._run_process(process)
+             
+        return ToolResult(status="OK", output="[Already Running]")
+
+
+    # =========================================================================
+    # Process Management
+    # =========================================================================
+
+    def list_processes(self) -> List[str]:
+        """List all active process IDs."""
+        return list(self._processes.keys())
+
+    def get_process(self, pid: str) -> "Process | None":
+        """Get a process by ID."""
+        return self._processes.get(pid)
+
     def get_session(self, session_id: str) -> "Process | None":
-        """Get a chat session process by ID."""
         return self._processes.get(session_id)
 
     def end_session(self, session_id: str) -> None:
-        """End a chat session and cleanup resources."""
         if session_id in self._processes:
             process = self._processes.pop(session_id)
             process.state = "COMPLETED"
@@ -599,41 +409,21 @@ class AgentOS:
     # =========================================================================
 
     def new_session(self, parent_session: Optional[str] = None) -> str:
-        """
-        创建新会话。
-
-        Args:
-            parent_session: 可选的父会话路径
-
-        Returns:
-            新会话 ID
-        """
         if self._session_mgr:
             return self._session_mgr.new_session(parent_session)
         return f"ephemeral-{uuid.uuid4().hex[:8]}"
 
     def load_session(self, session_file: Path) -> bool:
-        """
-        加载已有会话。
-
-        Args:
-            session_file: 会话文件路径
-
-        Returns:
-            是否成功加载
-        """
         if not self._session_mgr:
             return False
         return self._session_mgr.load_session(session_file)
 
     def get_session_stats(self) -> Optional[Dict[str, Any]]:
-        """获取当前会话统计"""
         if self._session_mgr:
             return self._session_mgr.get_stats()
         return None
 
     def list_recent_sessions(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """列出最近的会话"""
         if self._session_mgr:
             return self._session_mgr.list_recent_sessions(limit)
         return []
@@ -647,16 +437,6 @@ class AgentOS:
         session_id: Optional[str] = None,
         custom_instructions: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """
-        手动触发 compaction。
-
-        Args:
-            session_id: 要压缩的会话 ID（默认当前会话）
-            custom_instructions: 自定义压缩指令
-
-        Returns:
-            压缩结果或 None
-        """
         target_session = session_id or self._current_session_id
         if not target_session:
             return None
@@ -665,24 +445,20 @@ class AgentOS:
         if not process or not process.mmu:
             return None
 
-        # 获取所有消息
         all_messages = []
         for frame in process.mmu._stack:
             for msg in frame.messages:
                 all_messages.append(msg)
 
-        # 执行压缩
         new_messages, result = await self._compaction_engine.compact(
             all_messages, custom_instructions
         )
 
         if result.messages_removed > 0:
-            # 更新 MMU（简化处理：清除并重新添加）
             process.mmu.clear()
             for msg in new_messages:
                 process.mmu.add_message(msg)
 
-            # 持久化压缩记录
             if self._session_mgr:
                 self._session_mgr.append_compaction(
                     summary=result.summary,
@@ -710,17 +486,12 @@ class AgentOS:
         }
 
     async def _check_compaction(self, process: Process) -> None:
-        """
-        检查是否需要自动 compaction。
-        """
         if not process.mmu:
             return
 
-        # 获取当前 token 使用量
         current_tokens = process.mmu.estimate_tokens()
         max_tokens = self.config.mmu_config.max_context_tokens
 
-        # 检查是否达到阈值
         if self._compaction_engine.should_compact(
             [msg for frame in process.mmu._stack for msg in frame.messages],
             max_tokens,
@@ -739,27 +510,11 @@ class AgentOS:
             self._emit_event("AUTO_COMPACTION_END", process.pid, {})
 
     async def _compaction_for_process(self, pid: str, mmu: MMU) -> bool:
-        """
-        Perform compaction for a specific process.
-
-        This is called by vCPU when iteration limit is reached.
-        Uses the "Infinite Context" strategy (archive to disk + reset).
-
-        Args:
-            pid: Process ID
-            mmu: MMU instance for the process
-
-        Returns:
-            True if compaction succeeded
-        """
         try:
-            # 1. Get session_id
             session_id = "unknown"
-            # Try to get from LLM client
             if hasattr(self._llm, "_client") and hasattr(self._llm._client, "session_id"):
                 session_id = self._llm._client.session_id
 
-            # 2. Archive and Reset
             archive_path = await mmu.archive_and_reset(session_id)
 
             if archive_path:
@@ -768,7 +523,6 @@ class AgentOS:
                 )
                 return True
 
-            # Fallback
             logger.warning(f"[{pid}] Memory archiving skipped (no messages?), but allowing reset")
             return True
 
@@ -777,36 +531,14 @@ class AgentOS:
             return False
 
     async def run_dag(self, dag: DAG) -> ToolResult:
-        """
-        Execute a DAG of tasks.
-
-        Args:
-            dag: The DAG to execute
-
-        Returns:
-            ToolResult from the root task
-        """
-        # Submit DAG to scheduler
         await self._scheduler.submit_dag(dag)
 
-        # Create executor function
         async def executor(task: Task) -> ToolResult:
             return await self.run(task.spec.goal, role=task.spec.process_role)
 
-        # Run DAG
         return await self._scheduler.run_dag(dag.id, executor)
 
     def interrupt(self, session_id: Optional[str] = None) -> bool:
-        """
-        Interrupt a specific session or all sessions.
-
-        Args:
-            session_id: Session ID (which maps to PID in simple mode). 
-                       If None, interrupts all running processes.
-
-        Returns:
-            True if at least one process was signalled to interrupt.
-        """
         signalled = False
         
         targets = []
@@ -817,170 +549,116 @@ class AgentOS:
             
         for pid in targets:
             process = self._processes.get(pid)
-            if process and process.state == "RUNNING" and process.vcpu:
-                process.vcpu.request_pause()
+            if process and process.state == "RUNNING":
+                process.signals["interrupt"] = True
                 signalled = True
+                logger.info(f"[{pid}] Signal 'interrupt' set")
                 
         return signalled
 
-    # =========================================================================
-    # Process Management
-    # =========================================================================
-
-    def spawn(self, goal: str, role: str = "") -> str:
-        """
-        Spawn a new process.
-
-        Creates a new process with its own VCPU, MMU, and Gate.
-        The process is started but not awaited.
-
-        Args:
-            goal: The goal for this process
-            role: Process role (e.g., "eye", "body", "mind")
-
-        Returns:
-            Process ID (pid)
-        """
-        # Check process limit
-        active_count = sum(1 for p in self._processes.values() if p.state == "RUNNING")
-        if active_count >= self.config.max_processes:
-            raise RuntimeError(f"Process limit reached: {self.config.max_processes}")
-
-        # Generate PID
-        pid = f"proc-{uuid.uuid4().hex[:8]}"
-
-        # Create components for this process
-        mmu = self._create_mmu(pid)
-        gate = self._create_gate(pid, role)
-        decoder = InstructionDecoder()
-
-        # Create VCPU
-        vcpu = VCPU(
-            alu=self._llm,
-            decoder=decoder,
-            gate=gate,
-            mmu=mmu,
-            config=self.config.vcpu_config,
-            tools=self._tools.get_definitions(format="openai"),
-        )
-
-        # Set compaction callback
-        vcpu.set_compaction_callback(lambda: self._compaction_for_process(pid, mmu))
-
-        # Create process
-        process = Process(
-            pid=pid,
-            goal=goal,
-            role=role,
-            state="PENDING",
-            vcpu=vcpu,
-            mmu=mmu,
-            gate=gate,
-        )
-
-        self._processes[pid] = process
-
-        # Emit spawn event
-        self._emit_event("PROC_SPAWNED", pid, {"goal": goal, "role": role})
-
-        return pid
-
-    async def wait(self, pid: str) -> ToolResult:
-        """
-        Wait for a process to complete.
-
-        If the process hasn't started yet, this will start it.
-
-        Args:
-            pid: Process ID to wait for
-
-        Returns:
-            ToolResult from the process
-        """
+    def inject_message(self, pid: str, message: str) -> bool:
         process = self._processes.get(pid)
         if not process:
-            return ToolResult(
+            return False
+        
+        process.inbox.append(message)
+        logger.info(f"[{pid}] Message injected into inbox: {message[:50]}...")
+        return True
+
+    async def _run_process(self, process: Process) -> ToolResult:
+        try:
+            if process.vcpu is None:
+                raise RuntimeError("Process has no VCPU")
+
+            if not process.vcpu._is_running:
+                process.vcpu._reset()
+                process.vcpu._is_running = True
+                
+                if process.vcpu.config.pin_goal and process.role != "chat":
+                    pinned_goal = await process.vcpu._prepare_goal_for_pinning(process.goal)
+                    process.mmu.pin_user_goal(pinned_goal)
+                    process.mmu.add_user_message(process.goal)
+
+            final_result = None
+            
+            while process.vcpu._is_running and not process.vcpu._is_done:
+                
+                if process.signals.get("interrupt"):
+                    logger.info(f"[{process.pid}] Interrupted by signal")
+                    process.state = "CANCELLED"
+                    process.signals["interrupt"] = False
+                    process.vcpu._is_done = True
+                    return ToolResult(
+                        status="CANCELLED", 
+                        fault=Fault(domain="KERNEL", code="INTERRUPTED", message="Interrupted by user")
+                    )
+
+                while process.inbox:
+                    msg = process.inbox.pop(0)
+                    if process.role == "chat":
+                        process.mmu.add_user_message(msg)
+                    else:
+                        process.mmu.add_user_message(f"[User Intervention] {msg}")
+                    
+                    self._emit_event("USER_INTERVENTION", process.pid, {"content": msg})
+                    logger.info(f"[{process.pid}] Processed inbox message: {msg[:50]}...")
+
+                await self._check_compaction(process)
+
+                step_result = await process.vcpu.step()
+
+                if step_result.fault and not step_result.fault.retryable:
+                    process.state = "FAILED"
+                    return ToolResult(status="ERROR", fault=step_result.fault)
+
+                if step_result.is_final:
+                    if process.inbox:
+                        logger.info(f"[{process.pid}] New messages arrived during final step, extending execution...")
+                        process.vcpu._is_done = False
+                        continue
+                        
+                    process.state = "SUCCEEDED"
+                    final_result = step_result.final_result or ToolResult(status="OK", output="Completed")
+                    break
+                    
+                await asyncio.sleep(0)
+
+            self._emit_event(
+                "PROC_FINISHED",
+                process.pid,
+                {
+                    "state": process.state,
+                    "status": final_result.status if final_result else "UNKNOWN",
+                },
+            )
+
+            return final_result or ToolResult(status="OK")
+
+        except asyncio.CancelledError:
+            process.state = "CANCELLED"
+            process.result = ToolResult(
+                status="CANCELLED",
+                fault=Fault(
+                    domain="KERNEL",
+                    code="SYSTEM_ERROR",
+                    message="Process was cancelled",
+                    retryable=True,
+                ),
+            )
+            raise
+
+        except Exception as e:
+            process.state = "FAILED"
+            process.result = ToolResult(
                 status="ERROR",
                 fault=Fault(
                     domain="KERNEL",
                     code="SYSTEM_ERROR",
-                    message=f"Process not found: {pid}",
+                    message=str(e),
                     retryable=False,
                 ),
             )
-
-        # Start if not yet running
-        if process.state == "PENDING":
-            process.state = "RUNNING"
-            process.task = asyncio.create_task(self._run_process(process))
-
-        # Wait for completion
-        if process.task:
-            try:
-                result: ToolResult = await process.task
-                return result
-            except asyncio.CancelledError:
-                return ToolResult(
-                    status="CANCELLED",
-                    fault=Fault(
-                        domain="KERNEL",
-                        code="SYSTEM_ERROR",
-                        message="Process was cancelled",
-                        retryable=True,
-                    ),
-                )
-
-        # Already completed
-        return process.result or ToolResult(status="OK", output="Process completed")
-
-    def kill(self, pid: str) -> bool:
-        """
-        Kill a process.
-
-        Args:
-            pid: Process ID to kill
-
-        Returns:
-            True if process was killed, False if not found or already completed
-        """
-        process = self._processes.get(pid)
-        if not process:
-            return False
-
-        if process.state in ("SUCCEEDED", "FAILED", "CANCELLED"):
-            return False
-
-        # Cancel the task
-        if process.task and not process.task.done():
-            process.task.cancel()
-
-        process.state = "CANCELLED"
-        process.result = ToolResult(
-            status="CANCELLED",
-            fault=Fault(
-                domain="KERNEL",
-                code="SYSTEM_ERROR",
-                message="Process was killed",
-                retryable=False,
-            ),
-        )
-
-        # Emit event
-        self._emit_event("PROC_FINISHED", pid, {"state": "CANCELLED"})
-
-        return True
-
-    def get_process(self, pid: str) -> Optional[Process]:
-        """Get a process by PID."""
-        return self._processes.get(pid)
-
-    def list_processes(self) -> List[str]:
-        """List all process IDs."""
-        return list(self._processes.keys())
-
-    def get_active_processes(self) -> List[str]:
-        """List all running process IDs."""
-        return [pid for pid, p in self._processes.items() if p.state == "RUNNING"]
+            return process.result
 
     # =========================================================================
     # Tool Management
@@ -1002,20 +680,16 @@ class AgentOS:
             description: Tool description
             parameters: Tool parameters schema
         """
-        # Support for simple registration
-
-        # Unregister if already exists (overwrite)
         if name in self._tools:
             self._tools.unregister(name)
 
         if hasattr(func, "_tool_definition"):
             self._tools.register_decorated(func)
         else:
-            # Basic wrapper
             definition = ToolDefinition(
                 name=name,
                 description=description or func.__doc__ or "",
-                parameters=[],  # TODO: Parse parameters if provided
+                parameters=[],
             )
             self._tools.register(definition, func)
 
@@ -1094,71 +768,6 @@ class AgentOS:
             event_stream=self._events,
             default_timeout=self.config.default_timeout,
         )
-
-    async def _run_process(self, process: Process) -> ToolResult:
-        """
-        Run a process to completion.
-
-        Args:
-            process: The process to run
-
-        Returns:
-            ToolResult from the process
-        """
-        try:
-            if process.vcpu is None:
-                raise RuntimeError("Process has no VCPU")
-
-            # Execute via VCPU
-            result = await process.vcpu.execute(process.goal)
-
-            # Update state
-            if result.status == "OK":
-                process.state = "SUCCEEDED"
-            elif result.status == "CANCELLED":
-                process.state = "CANCELLED"
-            else:
-                process.state = "FAILED"
-
-            process.result = result
-
-            # Emit event
-            self._emit_event(
-                "PROC_FINISHED",
-                process.pid,
-                {
-                    "state": process.state,
-                    "status": result.status,
-                },
-            )
-
-            return result
-
-        except asyncio.CancelledError:
-            process.state = "CANCELLED"
-            process.result = ToolResult(
-                status="CANCELLED",
-                fault=Fault(
-                    domain="KERNEL",
-                    code="SYSTEM_ERROR",
-                    message="Process was cancelled",
-                    retryable=True,
-                ),
-            )
-            raise
-
-        except Exception as e:
-            process.state = "FAILED"
-            process.result = ToolResult(
-                status="ERROR",
-                fault=Fault(
-                    domain="KERNEL",
-                    code="SYSTEM_ERROR",
-                    message=str(e),
-                    retryable=False,
-                ),
-            )
-            return process.result
 
     def _emit_event(self, event_type: str, pid: str, data: Dict[str, Any]) -> None:
         """Emit an event."""

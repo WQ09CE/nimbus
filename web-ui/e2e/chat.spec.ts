@@ -79,7 +79,7 @@ test.describe('Nimbus Chat', () => {
     const input = page.locator('textarea');
     
     // 1. Start long task
-    await input.fill('bash "for i in {1..20}; do echo $i; sleep 1; done"');
+    await input.fill('bash "sleep 20; echo done"');
     await input.press('Enter');
     
     // Wait for streaming to start (Stop button visible)
@@ -110,7 +110,7 @@ test.describe('Nimbus Chat', () => {
     
     // 5. Verify History
     // Initial command should be there
-    await expect(page.getByText('bash "for i in {1..20}; do echo $i; sleep 1; done"')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('bash "sleep 20; echo done"')).toBeVisible({ timeout: 10000 });
     
     // Injection should be there
     await expect(page.getByText('inject_test')).toBeVisible();

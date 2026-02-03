@@ -137,6 +137,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
       
       set({ session: newSession, messages: [], isLoading: false, isCreatingSession: false });
+
+      // Process queue if any messages arrived during creation
+      const { messageQueue } = get();
+      if (messageQueue.length > 0) {
+          console.log("[Store] Processing queued message after session creation");
+          const next = messageQueue[0];
+          set({ messageQueue: messageQueue.slice(1) });
+          setTimeout(() => get().sendMessage(next), 0);
+      }
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : "Failed to create session",
