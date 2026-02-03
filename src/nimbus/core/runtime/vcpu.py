@@ -38,9 +38,10 @@ from nimbus.core.persistence import SessionCheckpointModel
 from nimbus.core.protocol import ActionIR, Event, Fault, ToolResult
 from nimbus.core.runtime.decoder import InstructionDecoder
 from nimbus.core.runtime.doom_loop import DoomLoopDetector
-from nimbus.core.runtime.error_handler import ErrorHandlerRegistry, RecoveryAction
+from nimbus.core.runtime.error_handler import ErrorHandlerRegistry
 from nimbus.core.runtime.execution_state import ExecutionState
 from nimbus.core.runtime.failure_reporter import FailureReporter
+from nimbus.core.runtime.recovery_executor import RecoveryContext, RecoveryExecutor
 from nimbus.os.gate import KernelGate
 
 # =============================================================================
@@ -256,6 +257,10 @@ class VCPU:
         # Extracted components (single responsibility)
         self._doom_detector = DoomLoopDetector(threshold=DOOM_LOOP_THRESHOLD)
         self._error_registry = ErrorHandlerRegistry()
+        self._recovery_executor = RecoveryExecutor(
+            tool_executor=self.gate.syscall_tool,
+            error_registry=self._error_registry,
+        )
         self._failure_reporter = FailureReporter(alu)
 
         # Legacy compatibility properties (will be removed in future)
@@ -840,15 +845,11 @@ class VCPU:
         Returns:
             恢复后的 ToolResult，如果无法恢复则返回 None
         """
-        from nimbus.core.logging import get_logger
-
-        logger = get_logger("kernel.vcpu.error_handler")
         fault = result.fault
-
         if not fault:
             return None
 
-        # 使用 ErrorHandlerRegistry 处理错误
+        # 使用 ErrorHandlerRegistry 决定恢复策略
         recovery = await self._error_registry.handle_error(
             fault_message=fault.message,
             tool_name=action.name,
@@ -859,131 +860,13 @@ class VCPU:
         if recovery is None:
             return None
 
-        # 执行恢复动作
-        return await self._execute_recovery(action, result, recovery, logger)
-
-    async def _execute_recovery(
-        self,
-        original_action: ActionIR,
-        original_result: ToolResult,
-        recovery: RecoveryAction,
-        logger,
-    ) -> Optional[ToolResult]:
-        """
-        执行错误恢复动作。
-
-        Args:
-            original_action: 原始失败的 action
-            original_result: 原始失败的结果
-            recovery: 恢复动作
-            logger: 日志器
-
-        Returns:
-            恢复后的 ToolResult，或 None（让原始错误传播）
-        """
-        if recovery.action_type == "skip":
-            # 不干预
-            return None
-
-        if recovery.action_type == "inject_hint":
-            # 策略调整：不再隐藏错误，而是将 Hint 追加到错误消息后
-            if recovery.hint:
-                # 构造增强的输出：原始错误 + Hint
-                # Gate 已标准化错误输出（包含 [Error] 前缀），直接使用即可
-                error_msg = (
-                    str(original_result.output)
-                    if original_result.output
-                    else f"[Error] {original_result.fault.message}"
-                )
-                enhanced_output = f"{error_msg}\n\n{recovery.hint}"
-
-                logger.info(f"🔧 Enhancing error output with hint: {recovery.hint[:50]}...")
-
-                # 返回修改后的结果（Status 仍为 ERROR，但 Output 包含更有用的信息）
-                return ToolResult(
-                    status="ERROR",
-                    output=enhanced_output,
-                    fault=original_result.fault,
-                    # 不再设置 recovery_handled，让 caller 正常添加到 Memory
-                )
-            return None
-
-        if recovery.action_type == "auto_tool":
-            # 自动执行恢复工具
-            if recovery.auto_tool and recovery.auto_args:
-                logger.info(f"🔧 Auto-executing recovery tool: {recovery.auto_tool}")
-
-                # 创建恢复 action
-                recovery_action = ActionIR(
-                    kind="TOOL_CALL",
-                    name=recovery.auto_tool,
-                    id=f"recovery_{original_action.id}",
-                    args=recovery.auto_args,
-                    meta={"recovery_for": original_action.name},
-                )
-
-                # 执行恢复工具
-                recovery_result = await self.gate.syscall_tool(
-                    recovery_action, timeout_sec=self.config.default_timeout
-                )
-
-                # 组合错误消息、提示和恢复结果
-                error_msg = (
-                    str(original_result.output)
-                    if original_result.output
-                    else f"[Error] {original_result.fault.message}"
-                )
-                parts = [error_msg]
-
-                if recovery.hint:
-                    parts.append(f"(Hint: {recovery.hint})")
-
-                if recovery_result.output:
-                    parts.append(f"\n[Auto-Recovery Output]:\n{recovery_result.output}")
-
-                combined_message = "\n".join(parts)
-                logger.info("🔧 Enhancing error output with auto-recovery result")
-
-                return ToolResult(
-                    status="ERROR",
-                    output=combined_message,
-                    fault=original_result.fault,
-                    # 不再设置 recovery_handled，让 caller 正常添加到 Memory
-                )
-
-            return None
-
-        if recovery.action_type == "modify_args":
-            # 修改参数后重试
-            if recovery.modified_args:
-                logger.info(f"🔧 Retrying {original_action.name} with modified args")
-
-                # 创建修改后的 action
-                new_action = ActionIR(
-                    kind=original_action.kind,
-                    name=original_action.name,
-                    id=original_action.id,
-                    args={**original_action.args, **recovery.modified_args},
-                    meta={**(original_action.meta or {}), "modified_by_recovery": True},
-                )
-
-                # 重新执行
-                new_result = await self.gate.syscall_tool(
-                    new_action, timeout_sec=self.config.default_timeout
-                )
-
-                if new_result.status == "OK":
-                    # 成功！清除失败计数
-                    self._error_registry.clear_failure(original_action.name, original_action.args)
-
-                    # 添加说明
-                    if new_result.output:
-                        new_result.output = f"[Recovered with modified args]\n{new_result.output}"
-                    return new_result
-
-            return None  # 修改后仍然失败
-
-        return None
+        # 使用 RecoveryExecutor 执行恢复动作
+        ctx = RecoveryContext(
+            original_action=action,
+            original_result=result,
+            default_timeout=self.config.default_timeout,
+        )
+        return await self._recovery_executor.execute(recovery, ctx)
 
     async def _handle_empty_result(
         self, action: ActionIR, result: ToolResult
