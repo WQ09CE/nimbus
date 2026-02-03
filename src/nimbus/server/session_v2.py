@@ -263,18 +263,38 @@ class SessionManagerV2:
 
                 if result.status == "ERROR":
                     logger.error(f"[stream_chat] Result Error: {result.fault}")
+                elif result.status == "CANCELLED":
+                    logger.info("[stream_chat] Execution cancelled by interrupt request")
+                    # Manual Fix: Drain pending injection queue from vCPU to MMU so they are saved
+                    try:
+                        proc = agent_os.get_process(session_id)
+                        if proc and proc.vcpu and hasattr(proc.vcpu, "_message_queue"):
+                            while proc.vcpu._message_queue:
+                                msg = proc.vcpu._message_queue.pop(0)
+                                logger.info(f"Draining pending injection: {msg}")
+                                proc.vcpu.mmu.add_user_message(f"[User Intervention] {msg} (Cancelled)")
+                    except Exception as drain_err:
+                        logger.warning(f"Failed to drain message queue: {drain_err}")
                 else:
                     logger.info(f"[stream_chat] Completed with status: {result.status}")
             except asyncio.CancelledError:
                 # User interrupted - cleanup incomplete state
                 logger.info(f"[stream_chat] Cancelled by user for session {session_id}")
 
-                # Rollback incomplete messages from MMU
-                if hasattr(agent_os, "_vcpu") and agent_os._vcpu:
-                    mmu = agent_os._vcpu.mmu
-                    # Remove the last incomplete assistant message and any pending tool results
-                    mmu.rollback_incomplete_turn()
-                    logger.info("[stream_chat] Rolled back incomplete turn")
+                # NEW: Save current progress before rollback
+                # If the user cancels, we still want to keep what has been done so far.
+                try:
+                    if hasattr(agent_os, "_vcpu") and agent_os._vcpu:
+                        mmu = agent_os._vcpu.mmu
+                        # Before rolling back, save whatever state we have
+                        logger.info("[stream_chat] Saving partial progress before interruption...")
+                        await self._save_conversation_to_storage(session_id, agent_os, message)
+                        
+                        # Then rollback incomplete messages from MMU (e.g. pending tool calls)
+                        mmu.rollback_incomplete_turn()
+                        logger.info("[stream_chat] Rolled back incomplete turn")
+                except Exception as e:
+                    logger.error(f"[stream_chat] Failed to save partial progress: {e}")
 
                 # Re-raise to propagate cancellation
                 raise
@@ -374,7 +394,6 @@ class SessionManagerV2:
             
             for msg in messages:
                 # Skip until we find the user message we're responding to
-                # We relax the check to handle potential modifications or whitespace
                 if msg.role == "user" and msg.content == user_message:
                     found_user_msg = True
                     continue
