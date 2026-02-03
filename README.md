@@ -16,41 +16,67 @@
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      AgentOS                                │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │   vCPU      │  │    MMU      │  │       Gate          │  │
-│  │ Think-Act-  │  │ Context     │  │ Permission-isolated │  │
-│  │ Observe     │◄─┤ Stack       │  │ Tool Dispatch       │  │
-│  │ Loop        │  │ Management  │  │                     │  │
-│  └──────┬──────┘  └─────────────┘  └──────────┬──────────┘  │
-│         │                                      │            │
-│         ▼                                      ▼            │
-│  ┌─────────────┐                      ┌─────────────────┐   │
-│  │  Scheduler  │                      │     Tools       │   │
-│  │ DAG-based   │                      │ Read/Write/Edit │   │
-│  │ Parallel    │                      │ Bash/ReadArchive│   │
-│  └─────────────┘                      └─────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     HTTP Server                             │
-│  /api/v1/*  │  /session/*  │  /v1/chat/completions         │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                              AgentOS                                      │
+│  ┌────────────────────────────────────────────────────────────────────┐  │
+│  │                         vCPU (~1400 lines)                          │  │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                  │  │
+│  │  │   THINK     │→ │    ACT      │→ │   OBSERVE   │                  │  │
+│  │  │  (LLM Call) │  │ (Tool Exec) │  │  (Results)  │                  │  │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘                  │  │
+│  │         │                │                │                          │  │
+│  │         ▼                ▼                ▼                          │  │
+│  │  ┌─────────────────────────────────────────────────────────┐        │  │
+│  │  │              Extracted Components                        │        │  │
+│  │  │  ┌─────────────────┐  ┌─────────────────┐               │        │  │
+│  │  │  │RecoveryExecutor │  │CheckpointManager│               │        │  │
+│  │  │  │ (Error Recovery)│  │  (State Save)   │               │        │  │
+│  │  │  └─────────────────┘  └─────────────────┘               │        │  │
+│  │  │  ┌─────────────────┐  ┌─────────────────┐               │        │  │
+│  │  │  │ErrorHandlerReg. │  │EmptyResultHdlr. │               │        │  │
+│  │  │  │ (Recovery Plan) │  │ (No-match Case) │               │        │  │
+│  │  │  └─────────────────┘  └─────────────────┘               │        │  │
+│  │  └─────────────────────────────────────────────────────────┘        │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│                                    │                                      │
+│         ┌──────────────────────────┼──────────────────────────┐          │
+│         ▼                          ▼                          ▼          │
+│  ┌─────────────┐           ┌─────────────┐           ┌─────────────┐     │
+│  │    MMU      │           │    Gate     │           │  Scheduler  │     │
+│  │  Context    │           │ Permission- │           │  DAG-based  │     │
+│  │  + Summary  │           │  isolated   │           │  Parallel   │     │
+│  │  + Archive  │           │ Tool Access │           │  Execution  │     │
+│  └─────────────┘           └─────────────┘           └─────────────┘     │
+└──────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                            HTTP Server                                    │
+│     /api/v1/*     │     /session/*     │     /v1/chat/completions        │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Key Components
 
 | Component | File | Lines | Purpose |
 |-----------|------|-------|---------|
-| **AgentOS** | `agentos.py` | 1220 | Main orchestrator, process management |
-| **vCPU** | `core/runtime/vcpu.py` | 1540 | Think-Act-Observe execution loop |
-| **MMU** | `core/memory/mmu.py` | 910 | Context stack, memory management |
-| **Gate** | `os/gate.py` | 409 | Permission-isolated tool dispatch |
-| **Scheduler** | `core/scheduler.py` | 963 | DAG task scheduling, parallel execution |
-| **Decoder** | `core/runtime/decoder.py` | 202 | LLM response → ActionIR parsing |
-| **PiAdapter** | `adapters/pi_adapter.py` | 320 | pi-ai LLM integration |
+| **AgentOS** | `agentos.py` | ~900 | Main orchestrator, process management |
+| **vCPU** | `core/runtime/vcpu.py` | ~1400 | Think-Act-Observe execution loop |
+| **MMU** | `core/memory/mmu.py` | ~1100 | Context stack, memory management |
+| **Gate** | `os/gate.py` | ~400 | Permission-isolated tool dispatch |
+| **Scheduler** | `core/scheduler.py` | ~960 | DAG task scheduling, parallel execution |
+
+#### vCPU Runtime Components (Extracted for Maintainability)
+
+| Component | File | Lines | Purpose |
+|-----------|------|-------|---------|
+| **RecoveryExecutor** | `core/runtime/recovery_executor.py` | ~220 | Execute error recovery actions |
+| **ErrorHandlerRegistry** | `core/runtime/error_handler.py` | ~630 | Classify errors, decide recovery strategy |
+| **CheckpointManager** | `core/runtime/checkpoint_manager.py` | ~90 | Session state persistence |
+| **EmptyResultHandler** | `core/runtime/empty_result_handler.py` | ~120 | Handle Glob/Grep no-match cases |
+| **ExecutionState** | `core/runtime/execution_state.py` | ~260 | Centralized state management |
+| **DoomLoopDetector** | `core/runtime/doom_loop.py` | ~210 | Detect infinite loop patterns |
+| **Decoder** | `core/runtime/decoder.py` | ~200 | LLM response → ActionIR parsing |
 
 ## Project Structure
 
@@ -62,26 +88,42 @@ src/nimbus/
 ├── bridge/                 # External service bridges
 │   └── pi_ai_http.py       # pi-ai HTTP client
 ├── core/
-│   ├── runtime/
-│   │   ├── vcpu.py         # vCPU execution engine
-│   │   └── decoder.py      # Instruction decoder
+│   ├── runtime/            # vCPU runtime components
+│   │   ├── vcpu.py         # vCPU execution engine (~1400 lines)
+│   │   ├── decoder.py      # Instruction decoder
+│   │   ├── recovery_executor.py    # Error recovery execution
+│   │   ├── error_handler.py        # Error classification & strategy
+│   │   ├── checkpoint_manager.py   # State persistence
+│   │   ├── empty_result_handler.py # Glob/Grep no-match handling
+│   │   ├── execution_state.py      # Centralized state
+│   │   ├── doom_loop.py            # Loop detection
+│   │   └── failure_reporter.py     # User-friendly error reports
 │   ├── memory/
-│   │   ├── mmu.py          # Memory management unit
-│   │   └── context.py      # Context types
+│   │   ├── mmu.py          # Memory management unit (~1100 lines)
+│   │   └── context.py      # Context types (Message, Frame, etc.)
 │   ├── scheduler.py        # DAG scheduler
-│   ├── session.py          # Session management
-│   └── types.py            # Core data types
+│   ├── protocol.py         # ActionIR, ToolResult, Fault types
+│   ├── errors.py           # Custom exceptions
+│   └── persistence.py      # Checkpoint models
 ├── os/
 │   └── gate.py             # System call interface
 ├── server/                 # HTTP API server
 │   ├── app.py              # FastAPI app
 │   ├── api.py              # REST endpoints
+│   ├── session_v2.py       # Session management (v2)
 │   └── compat/opencode.py  # OpenCode compatibility
 ├── tools/                  # Built-in tools
 │   ├── read.py, edit.py, grep.py, sandbox.py
 │   └── ...
 └── cli/                    # Command-line interface
     └── main.py
+
+tests/
+├── core/
+│   └── test_vcpu_error_handling.py  # 20 error handling tests
+├── e2e_append_message.py            # Message ordering tests
+├── e2e_session_persistence.py       # Session persistence tests
+└── ...
 ```
 
 ## Quick Start
@@ -159,9 +201,33 @@ When the context window fills up (e.g., >200k tokens), the MMU performs a **"Dis
 2.  **Archive**: The full raw message history is written to a file (e.g., `~/.nimbus/sessions/<id>/archive/part_timestamp.md`).
 3.  **Reset**: The active memory is cleared and replaced with:
     *   A **Pointer** to the archive file.
-    *   The **Execution Summary** to maintain cognitive continuity.
+    *   The **Execution Summary** (as `assistant` role) to maintain cognitive continuity.
 
-**3. Tooling Safety Net:**
+**3. Smart Summary Budget (Prevents Unbounded Growth):**
+
+```
+summary_token_budget = pinned_budget × 30%
+summary_char_budget  = summary_token_budget × 2  (conservative for Chinese)
+```
+
+When merging summaries across compaction cycles:
+- First attempt: LLM generates summary with soft limit in prompt
+- If over budget: LLM re-compresses with explicit prioritization:
+  1. **Priority 1**: User-provided secrets (passwords, keys, configs)
+  2. **Priority 2**: Current task state, key decisions
+  3. **Priority 3**: Process details (can be omitted)
+
+This prevents the cascade growth problem where summaries grow unbounded with each compaction.
+
+**4. Message Ordering Safety:**
+
+When user injects a message during tool execution, MMU ensures valid OpenAI API message ordering:
+- If pending tool calls exist (assistant has `tool_calls` but no `tool` results yet)
+- MMU auto-inserts synthetic tool results before user message
+- Prevents: `assistant[tool_calls] → user → tool` (invalid)
+- Ensures: `assistant[tool_calls] → tool → user` (valid)
+
+**5. Tooling Safety Net:**
 If the Agent needs to recall specific details from the deep past, it can use the `ReadArchive` tool to access historical files referenced by the pointers.
 
 ### Process Roles (Permission Isolation)
