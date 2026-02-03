@@ -553,7 +553,8 @@ class TestEmptyResultHandling:
         )
 
         # Set max tool failures low for testing
-        vcpu._max_tool_failures = 3
+        vcpu._state.max_tool_failures = 3
+        vcpu._empty_result_handler._max_tool_failures = 3
 
         result = await vcpu.execute("Find files")
 

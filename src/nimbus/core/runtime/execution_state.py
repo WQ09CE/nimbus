@@ -13,7 +13,9 @@ Execution State - vCPU 执行状态管理
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
+
 from nimbus.core.persistence import ExecutionStateModel
+
 
 @dataclass
 class ExecutionState:
@@ -57,7 +59,7 @@ class ExecutionState:
 
     # 路径解析计数（用于文件查找恢复）
     path_not_found_count: int = 0
-    
+
     # 中断控制
     interruption_requested: bool = False
 

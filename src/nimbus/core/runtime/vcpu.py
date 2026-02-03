@@ -36,8 +36,10 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol
 from nimbus.core.memory.mmu import MMU
 from nimbus.core.persistence import SessionCheckpointModel
 from nimbus.core.protocol import ActionIR, Event, Fault, ToolResult
+from nimbus.core.runtime.checkpoint_manager import CheckpointManager
 from nimbus.core.runtime.decoder import InstructionDecoder
 from nimbus.core.runtime.doom_loop import DoomLoopDetector
+from nimbus.core.runtime.empty_result_handler import EmptyResultHandler
 from nimbus.core.runtime.error_handler import ErrorHandlerRegistry
 from nimbus.core.runtime.execution_state import ExecutionState
 from nimbus.core.runtime.failure_reporter import FailureReporter
@@ -262,6 +264,12 @@ class VCPU:
             error_registry=self._error_registry,
         )
         self._failure_reporter = FailureReporter(alu)
+        self._checkpoint_manager = CheckpointManager(self._state, self.mmu)
+        self._empty_result_handler = EmptyResultHandler(
+            state=self._state,
+            error_registry=self._error_registry,
+            max_tool_failures=self._state.max_tool_failures,
+        )
 
         # Legacy compatibility properties (will be removed in future)
         self._max_consecutive_empty = 5  # Stop after 5 consecutive empty responses
@@ -734,19 +742,7 @@ class VCPU:
         Returns:
             SessionCheckpointModel (Pydantic model)
         """
-        # Snapshot components
-        exec_snapshot = self._state.create_snapshot()
-        mem_snapshot = self.mmu.create_snapshot()
-
-        return SessionCheckpointModel(
-            session_id=session_id,
-            timestamp=time.time(),
-            step_index=self._state.iteration,
-            execution_state=exec_snapshot,
-            memory_snapshot=mem_snapshot,
-            reason=reason,
-            can_resume=not self._state.is_done,
-        )
+        return self._checkpoint_manager.create(session_id, reason)
 
     def restore_from_checkpoint(self, checkpoint: SessionCheckpointModel) -> None:
         """
@@ -755,12 +751,7 @@ class VCPU:
         Args:
             checkpoint: SessionCheckpointModel to restore from
         """
-        # Restore components
-        self._state.restore_from_snapshot(checkpoint.execution_state)
-        self.mmu.restore_from_snapshot(checkpoint.memory_snapshot)
-
-        # Reset runtime flags that shouldn't be persisted or need reset
-        self._state.is_running = False  # Will be set to True when execute is called
+        self._checkpoint_manager.restore(checkpoint)
 
     # =========================================================================
     # Action Handlers
@@ -874,68 +865,23 @@ class VCPU:
         """
         处理"成功但无结果"的情况（如 Glob/Grep 无匹配）。
 
-        这些情况 status=OK，但 LLM 可能会陷入重复尝试。
-        我们使用 ErrorHandlerRegistry 来提供智能恢复提示。
-
-        如果同一工具失败次数过多，直接返回错误终止。
-
-        Args:
-            action: 执行的 action
-            result: 工具执行结果
-
-        Returns:
-            如果需要覆盖原结果，返回新的 ToolResult；否则返回 None
+        Delegates to EmptyResultHandler for basic handling,
+        then performs recovery actions if needed.
         """
         from nimbus.core.logging import get_logger
 
         logger = get_logger("kernel.vcpu.error_handler")
 
-        # 检查是否是"无结果"的情况
-        output = str(result.output) if result.output else ""
+        # Use EmptyResultHandler for basic checks and hard stop
+        hard_stop = self._empty_result_handler.handle(action, result)
+        if hard_stop:
+            return hard_stop
 
-        is_no_match = action.name in ("Glob", "Grep") and (
-            "no match" in output.lower() or "matched nothing" in output.lower()
-        )
-
-        if not is_no_match:
-            # 有结果，清除失败计数
-            self._error_registry.clear_failure(action.name, action.args)
-            self._state.tool_failure_counts[action.name] = 0  # Reset tool-level count
+        # If not a no-match situation, we're done
+        if not self._empty_result_handler.is_no_match(action, result):
             return None
 
-        # 记录工具级别的失败（不管参数如何）
-        self._state.tool_failure_counts[action.name] = self._state.tool_failure_counts.get(action.name, 0) + 1
-        tool_failures = self._state.tool_failure_counts[action.name]
-
-        logger.debug(f"🔧 {action.name} no-match count: {tool_failures}/{self._max_tool_failures}")
-
-        # 如果同一工具失败过多次，强制终止
-        if tool_failures >= self._max_tool_failures:
-            logger.warning(f"🛑 {action.name} failed {tool_failures} times, forcing termination")
-
-            # 返回一个错误，强制 LLM 改变策略
-            return ToolResult(
-                status="ERROR",
-                output=(
-                    f"[HARD STOP] {action.name} has returned no matches {tool_failures} times.\n\n"
-                    f"The files you're searching for DO NOT EXIST in this workspace.\n"
-                    f"Stop searching and work with what's available.\n\n"
-                    f"REQUIRED ACTION: Call return_result now to report:\n"
-                    f"1. What you were trying to find\n"
-                    f"2. What you actually found/accomplished\n"
-                    f"3. Any obstacles encountered\n\n"
-                    f"DO NOT call {action.name} again."
-                ),
-                is_final=False,
-                fault=Fault(
-                    domain="RUNTIME",
-                    code="EXCESSIVE_FAILURES",
-                    message=f"{action.name} returned no matches {tool_failures} consecutive times",
-                    retryable=False,
-                ),
-            )
-
-        # 使用 error handler 处理
+        # Use error handler for recovery
         recovery = await self._error_registry.handle_error(
             fault_message="No matches found",
             tool_name=action.name,
@@ -944,38 +890,41 @@ class VCPU:
         )
 
         if recovery and recovery.action_type == "auto_tool":
-            # 自动执行恢复工具
             if recovery.auto_tool and recovery.auto_args:
-                logger.info(f"🔧 Auto-executing recovery for no-match: {recovery.auto_tool}")
-
-                recovery_action = ActionIR(
-                    kind="TOOL_CALL",
-                    name=recovery.auto_tool,
-                    id=f"recovery_{action.id}",
-                    args=recovery.auto_args,
-                    meta={"recovery_for": action.name},
-                )
-
-                recovery_result = await self.gate.syscall_tool(
-                    recovery_action, timeout_sec=self.config.default_timeout
-                )
-
-                # 组合提示和结果
-                combined = ""
-                if recovery.hint:
-                    combined += recovery.hint + "\n\n"
-                if recovery_result.output:
-                    combined += str(recovery_result.output)
-
-                if combined:
-                    self.mmu.add_system_message(combined)
-                    logger.info(f"🔧 Recovery hint injected for {action.name}")
+                await self._execute_auto_recovery(action, recovery, logger)
 
         elif recovery and recovery.action_type == "inject_hint" and recovery.hint:
             self.mmu.add_system_message(recovery.hint)
             logger.info(f"🔧 Hint injected for no-match: {recovery.hint[:80]}...")
 
-        return None  # 继续使用原始结果
+        return None
+
+    async def _execute_auto_recovery(self, action: ActionIR, recovery, logger) -> None:
+        """Execute auto-recovery tool and inject results."""
+        logger.info(f"🔧 Auto-executing recovery for no-match: {recovery.auto_tool}")
+
+        recovery_action = ActionIR(
+            kind="TOOL_CALL",
+            name=recovery.auto_tool,
+            id=f"recovery_{action.id}",
+            args=recovery.auto_args,
+            meta={"recovery_for": action.name},
+        )
+
+        recovery_result = await self.gate.syscall_tool(
+            recovery_action, timeout_sec=self.config.default_timeout
+        )
+
+        # Combine hint and result
+        combined = ""
+        if recovery.hint:
+            combined += recovery.hint + "\n\n"
+        if recovery_result.output:
+            combined += str(recovery_result.output)
+
+        if combined:
+            self.mmu.add_system_message(combined)
+            logger.info(f"🔧 Recovery hint injected for {action.name}")
 
     async def _handle_tool_call(self, action: ActionIR) -> ToolResult:
         """
@@ -1357,123 +1306,15 @@ One sentence summary:"""
         iterations: int,
     ) -> str:
         """Let LLM generate a natural response about the failure."""
-        try:
-            # Build context about what happened
-            recent_errors = []
-            for msg in self.mmu.assemble_context()[-6:]:  # Last few messages
-                content = msg.get("content", "")
-                if isinstance(content, str) and (
-                    "error" in content.lower() or "failed" in content.lower()
-                ):
-                    recent_errors.append(content[:200])
+        from nimbus.core.runtime.failure_reporter import FailureContext
 
-            error_context = "\n".join(recent_errors[-3:]) if recent_errors else fault.message
-
-            # Create a focused prompt for the LLM
-            prompt = f"""You tried to help the user with this task but encountered repeated failures.
-
-User's request: {goal}
-
-What went wrong: {fault.message}
-
-Error details: {error_context}
-
-Generate a brief, friendly response (2-3 sentences) that:
-1. Acknowledges what you tried to do
-2. Explains why it didn't work (in simple terms)
-3. Optionally suggests what the user could try or ask for instead
-
-Be conversational and helpful, not robotic. Don't use bullet points or formatting."""
-
-            # Call LLM without tools to get a simple text response
-            response = await self.alu.chat(
-                [{"role": "user", "content": prompt}],
-                tools=None,  # No tools, just generate text
-            )
-
-            if response.content:
-                return response.content.strip()
-            else:
-                # Fallback to template if LLM returns empty
-                return self._generate_graceful_failure_report(goal, fault, iterations)
-
-        except Exception as e:
-            # If LLM call fails, use template fallback
-            from nimbus.core.logging import get_logger
-
-            logger = get_logger("kernel.vcpu")
-            logger.warning(f"Failed to generate LLM failure response: {e}")
-            return self._generate_graceful_failure_report(goal, fault, iterations)
-
-    def _generate_graceful_failure_report(
-        self,
-        goal: str,
-        fault: Fault,
-        iterations: int,
-    ) -> str:
-        """Generate a natural, conversational failure report."""
-
-        # Extract key info from fault context
-        context = fault.context or {}
-        context.get("tool", "")
-
-        # Check for common error patterns and generate natural responses
-        error_msg = fault.message.lower()
-
-        # File not found
-        if "not found" in error_msg or "no such file" in error_msg:
-            # Try to extract filename from the error
-            import re
-
-            file_match = re.search(r'[\'"]?([^\'"]+\.\w+)[\'"]?', fault.message)
-            filename = file_match.group(1) if file_match else "the file"
-            return (
-                f"I couldn't find `{filename}`. "
-                f"The file might not exist, or the path could be incorrect. "
-                f"Would you like me to search for similar files?"
-            )
-
-        # Permission denied
-        if "permission" in error_msg or "access denied" in error_msg:
-            return (
-                "I don't have permission to access that resource. "
-                "You may need to check the file permissions or run with elevated privileges."
-            )
-
-        # Timeout
-        if fault.code == "TIMEOUT":
-            return (
-                "The operation took too long and timed out. "
-                "This might be because the resource is slow or unavailable. "
-                "Would you like me to try a different approach?"
-            )
-
-        # Doom loop (repeated failures)
-        if fault.code == "DOOM_LOOP":
-            # Try to give context-specific advice
-            if "Read" in str(context.get("tool", "")):
-                return (
-                    "I tried to read the file multiple times but it doesn't seem to exist. "
-                    "Would you like me to list the files in that directory to help find the right one?"
-                )
-            elif "Edit" in str(context.get("tool", "")):
-                return (
-                    "I couldn't make the edit - the text I was looking for might have changed. "
-                    "Would you like me to show you the current file content?"
-                )
-            else:
-                return (
-                    "I tried this operation several times without success. "
-                    "The approach I was using doesn't seem to be working. "
-                    "Could you provide more details or suggest an alternative approach?"
-                )
-
-        # Generic fallback - still conversational
-        return (
-            f"I ran into some trouble completing this task. "
-            f"Error: {fault.message}. "
-            f"Let me know if you'd like me to try a different approach."
+        ctx = FailureContext(
+            goal=goal,
+            fault_code=fault.code,
+            fault_message=fault.message,
+            iterations=iterations,
         )
+        return await self._failure_reporter.generate_report(ctx)
 
     def _emit_event(self, event_type: str, data: Dict[str, Any]) -> None:
         """Emit an event if event emission is enabled."""
@@ -1510,12 +1351,9 @@ Be conversational and helpful, not robotic. Don't use bullet points or formattin
 
     def get_state(self) -> Dict[str, Any]:
         """Get vCPU state for debugging/checkpointing."""
-        return {
-            **self._state.to_dict(),
-            "stack_depth": self.mmu.stack_depth,
-            "mmu_state": self.mmu.get_state(),
-            "doom_loop_count": self._doom_detector.loop_count,
-        }
+        state = self._checkpoint_manager.get_state_dict()
+        state["doom_loop_count"] = self._doom_detector.loop_count
+        return state
 
     def _dump_context_to_file(self, messages: List[Dict[str, Any]], iteration: int) -> None:
         """
