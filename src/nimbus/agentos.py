@@ -687,9 +687,9 @@ class AgentOS:
             if process.vcpu is None:
                 raise RuntimeError("Process has no VCPU")
 
-            if not process.vcpu._is_running:
+            if not process.vcpu._state.is_running:
                 process.vcpu._reset()
-                process.vcpu._is_running = True
+                process.vcpu._state.is_running = True
 
                 if process.vcpu.config.pin_goal and process.role != "chat":
                     pinned_goal = await process.vcpu._prepare_goal_for_pinning(process.goal)
@@ -698,12 +698,12 @@ class AgentOS:
 
             final_result = None
 
-            while process.vcpu._is_running and not process.vcpu._is_done:
+            while process.vcpu._state.is_running and not process.vcpu._state.is_done:
                 if process.signals.get("interrupt"):
                     logger.info(f"[{process.pid}] Interrupted by signal")
                     process.state = "CANCELLED"
                     process.signals["interrupt"] = False
-                    process.vcpu._is_done = True
+                    process.vcpu._state.is_done = True
                     return ToolResult(
                         status="CANCELLED",
                         fault=Fault(
@@ -762,7 +762,7 @@ class AgentOS:
                         logger.info(
                             f"[{process.pid}] New messages arrived during final step, extending execution..."
                         )
-                        process.vcpu._is_done = False
+                        process.vcpu._state.is_done = False
                         continue
 
                     process.state = "SUCCEEDED"
