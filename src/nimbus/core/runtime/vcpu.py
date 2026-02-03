@@ -31,7 +31,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol
 
 from nimbus.core.memory.mmu import MMU
 from nimbus.core.persistence import SessionCheckpointModel
@@ -296,7 +296,7 @@ class VCPU:
         """
         # Initialize execution state
         self._reset()
-        self._is_running = True
+        self._state.is_running = True
 
         # Pin goal to ensure it survives compaction
         if self.config.pin_goal:
@@ -308,10 +308,10 @@ class VCPU:
         self._emit_event("STEP_STARTED", {"goal": goal, "iteration": 0})
 
         try:
-            while not self._is_done:
+            while not self._state.is_done:
                 # Check interruption request
                 if self._state.interruption_requested:
-                    self._emit_event("INTERRUPTION_HANDLED", {"iteration": self._iteration})
+                    self._emit_event("INTERRUPTION_HANDLED", {"iteration": self._state.iteration})
                     return ToolResult(
                         status="CANCELLED",
                         fault=Fault(
@@ -323,9 +323,9 @@ class VCPU:
                     )
 
                 # Check iteration limit - trigger compaction instead of stopping
-                if self._iteration >= self.config.max_iterations:
+                if self._state.iteration >= self.config.max_iterations:
                     # Check if we've hit max compactions
-                    if self._compaction_count >= self.config.max_compactions:
+                    if self._state.compaction_count >= self.config.max_compactions:
                         fault = Fault(
                             domain="RESOURCE",
                             code="BUDGET_EXCEEDED",
@@ -333,7 +333,7 @@ class VCPU:
                             retryable=False,
                             context={
                                 "max_iterations": self.config.max_iterations,
-                                "compactions": self._compaction_count,
+                                "compactions": self._state.compaction_count,
                             },
                         )
                         return ToolResult(status="ERROR", fault=fault)
@@ -346,10 +346,10 @@ class VCPU:
                             from nimbus.core.logging import get_logger
 
                             get_logger("kernel.vcpu").info(
-                                f"🗜️ Compaction #{self._compaction_count} complete, "
-                                f"resetting iteration counter (was {self._iteration})"
+                                f"🗜️ Compaction #{self._state.compaction_count} complete, "
+                                f"resetting iteration counter (was {self._state.iteration})"
                             )
-                            self._iteration = 0
+                            self._state.iteration = 0
                             continue
 
                     # Compaction disabled or failed - stop
@@ -366,7 +366,7 @@ class VCPU:
                 step_result = await self.step()
 
                 if step_result.fault:
-                    self._consecutive_errors += 1
+                    self._state.consecutive_errors += 1
 
                     # Graceful termination conditions (checked BEFORE retryable check):
                     # - Too many consecutive errors (any type)
@@ -374,7 +374,7 @@ class VCPU:
                     # - Too many total doom loops
                     # - Empty response loop (LLM stuck/confused)
                     should_graceful_terminate = (
-                        self._consecutive_errors >= 5
+                        self._state.consecutive_errors >= 5
                         or self._doom_loop_count
                         >= 1  # First doom loop triggers graceful termination
                         or step_result.fault.code == "DOOM_LOOP"
@@ -386,7 +386,7 @@ class VCPU:
                         graceful_response = await self._generate_llm_failure_response(
                             goal=goal,
                             fault=step_result.fault,
-                            iterations=self._iteration,
+                            iterations=self._state.iteration,
                         )
                         return ToolResult(
                             status="OK",  # Report as OK with explanation, not ERROR
@@ -404,7 +404,7 @@ class VCPU:
                     )
                 else:
                     # Reset consecutive error counter on success
-                    self._consecutive_errors = 0
+                    self._state.consecutive_errors = 0
 
                 # Check execution result
                 if step_result.is_final:
@@ -441,7 +441,7 @@ class VCPU:
                 ),
             )
         finally:
-            self._is_running = False
+            self._state.is_running = False
 
         # Should not reach here
         return ToolResult(status="OK", output="Execution completed", is_final=True)
@@ -469,11 +469,11 @@ class VCPU:
                 ),
             )
 
-        self._iteration += 1
+        self._state.iteration += 1
         step_result = StepResult()
         start_time = time.time_ns()
 
-        self._emit_event("STEP_STARTED", {"iteration": self._iteration})
+        self._emit_event("STEP_STARTED", {"iteration": self._state.iteration})
 
         from nimbus.core.logging import get_logger
 
@@ -506,7 +506,7 @@ class VCPU:
 
         try:
             # 1. THINK: Get LLM response
-            logger.info(f"Thinking... (Iteration {self._iteration})")
+            logger.info(f"Thinking... (Iteration {self._state.iteration})")
             think_start = time.time_ns()
             messages = self.mmu.assemble_context()
 
@@ -514,7 +514,7 @@ class VCPU:
             import os
 
             if os.environ.get("NIMBUS_DUMP_CONTEXT"):
-                self._dump_context_to_file(messages, self._iteration)
+                self._dump_context_to_file(messages, self._state.iteration)
 
             # Enhanced logging: Show context summary
             msg_count = len(messages)
@@ -560,9 +560,9 @@ class VCPU:
             # Enhanced logging: Show full response details
             if tool_calls_count == 0 and not response.content:
                 # Empty response - this is suspicious!
-                self._consecutive_empty_responses += 1
+                self._state.consecutive_empty_responses += 1
                 logger.warning(
-                    f"⚠️ EMPTY RESPONSE #{self._consecutive_empty_responses} from LLM (Iteration {self._iteration}) "
+                    f"⚠️ EMPTY RESPONSE #{self._state.consecutive_empty_responses} from LLM (Iteration {self._state.iteration}) "
                     f"- no content, no tool calls!"
                 )
                 logger.warning(
@@ -570,26 +570,26 @@ class VCPU:
                 )
 
                 # Check if we've hit too many consecutive empty responses
-                if self._consecutive_empty_responses >= self._max_consecutive_empty:
+                if self._state.consecutive_empty_responses >= self._max_consecutive_empty:
                     logger.error(
-                        f"🛑 STOPPING: {self._consecutive_empty_responses} consecutive empty responses. "
+                        f"🛑 STOPPING: {self._state.consecutive_empty_responses} consecutive empty responses. "
                         f"LLM appears to be stuck or confused."
                     )
                     step_result.fault = Fault(
                         domain="RUNTIME",
                         code="EMPTY_RESPONSE_LOOP",
-                        message=f"LLM returned {self._consecutive_empty_responses} consecutive empty responses",
+                        message=f"LLM returned {self._state.consecutive_empty_responses} consecutive empty responses",
                         retryable=False,
                         context={
-                            "consecutive_empty": self._consecutive_empty_responses,
-                            "iteration": self._iteration,
+                            "consecutive_empty": self._state.consecutive_empty_responses,
+                            "iteration": self._state.iteration,
                         },
                     )
                     step_result.timing_ms["total"] = (time.time_ns() - start_time) // 1_000_000
                     return step_result
             else:
                 # Reset counter on non-empty response
-                self._consecutive_empty_responses = 0
+                self._state.consecutive_empty_responses = 0
                 logger.info(
                     f"Thought complete ({think_duration}ms) | Tool Calls: {tool_calls_count} | Content: {content_preview or '(no content)'}"
                 )
@@ -688,7 +688,7 @@ class VCPU:
                 if result.is_final:
                     step_result.is_final = True
                     step_result.final_result = result
-                    self._is_done = True
+                    self._state.is_done = True
                     break
 
                 # Check for non-retryable fault
@@ -755,7 +755,7 @@ class VCPU:
         self.mmu.restore_from_snapshot(checkpoint.memory_snapshot)
 
         # Reset runtime flags that shouldn't be persisted or need reset
-        self._is_running = False  # Will be set to True when execute is called
+        self._state.is_running = False  # Will be set to True when execute is called
 
     # =========================================================================
     # Action Handlers
@@ -1017,12 +1017,12 @@ class VCPU:
         if not is_no_match:
             # 有结果，清除失败计数
             self._error_registry.clear_failure(action.name, action.args)
-            self._tool_failure_counts[action.name] = 0  # Reset tool-level count
+            self._state.tool_failure_counts[action.name] = 0  # Reset tool-level count
             return None
 
         # 记录工具级别的失败（不管参数如何）
-        self._tool_failure_counts[action.name] = self._tool_failure_counts.get(action.name, 0) + 1
-        tool_failures = self._tool_failure_counts[action.name]
+        self._state.tool_failure_counts[action.name] = self._state.tool_failure_counts.get(action.name, 0) + 1
+        tool_failures = self._state.tool_failure_counts[action.name]
 
         logger.debug(f"🔧 {action.name} no-match count: {tool_failures}/{self._max_tool_failures}")
 
@@ -1279,7 +1279,7 @@ class VCPU:
         Cancels the current execution and returns with cancelled status.
         """
         reason = action.args.get("reason", "Cancelled by agent")
-        self._is_done = True
+        self._state.is_done = True
 
         return ToolResult(
             status="CANCELLED",
@@ -1316,13 +1316,13 @@ class VCPU:
         Returns:
             True if compaction succeeded
         """
-        self._compaction_count += 1
+        self._state.compaction_count += 1
 
         self._emit_event(
             "COMPACTION_START",
             {
-                "iteration": self._iteration,
-                "compaction_count": self._compaction_count,
+                "iteration": self._state.iteration,
+                "compaction_count": self._state.compaction_count,
             },
         )
 
@@ -1338,7 +1338,7 @@ class VCPU:
                 "COMPACTION_END",
                 {
                     "success": success,
-                    "compaction_count": self._compaction_count,
+                    "compaction_count": self._state.compaction_count,
                 },
             )
 
@@ -1634,91 +1634,6 @@ Be conversational and helpful, not robotic. Don't use bullet points or formattin
             "doom_loop_count": self._doom_detector.loop_count,
         }
 
-    # =========================================================================
-    # Legacy Compatibility Properties (accessing _state internally)
-    # These will be removed in a future version.
-    # =========================================================================
-
-    @property
-    def _iteration(self) -> int:
-        return self._state.iteration
-
-    @_iteration.setter
-    def _iteration(self, value: int) -> None:
-        self._state.iteration = value
-
-    @property
-    def _consecutive_thoughts(self) -> int:
-        return self._state.consecutive_thoughts
-
-    @_consecutive_thoughts.setter
-    def _consecutive_thoughts(self, value: int) -> None:
-        self._state.consecutive_thoughts = value
-
-    @property
-    def _is_running(self) -> bool:
-        return self._state.is_running
-
-    @_is_running.setter
-    def _is_running(self, value: bool) -> None:
-        self._state.is_running = value
-
-    @property
-    def _is_done(self) -> bool:
-        return self._state.is_done
-
-    @_is_done.setter
-    def _is_done(self, value: bool) -> None:
-        self._state.is_done = value
-
-    @property
-    def _final_result(self) -> Optional[ToolResult]:
-        return self._state.final_result
-
-    @_final_result.setter
-    def _final_result(self, value: Optional[ToolResult]) -> None:
-        self._state.final_result = value
-
-    @property
-    def _compaction_count(self) -> int:
-        return self._state.compaction_count
-
-    @_compaction_count.setter
-    def _compaction_count(self, value: int) -> None:
-        self._state.compaction_count = value
-
-    @property
-    def _consecutive_errors(self) -> int:
-        return self._state.consecutive_errors
-
-    @_consecutive_errors.setter
-    def _consecutive_errors(self, value: int) -> None:
-        self._state.consecutive_errors = value
-
-    @property
-    def _consecutive_empty_responses(self) -> int:
-        return self._state.consecutive_empty_responses
-
-    @_consecutive_empty_responses.setter
-    def _consecutive_empty_responses(self, value: int) -> None:
-        self._state.consecutive_empty_responses = value
-
-    @property
-    def _tool_failure_counts(self) -> Dict[str, int]:
-        return self._state.tool_failure_counts
-
-    @_tool_failure_counts.setter
-    def _tool_failure_counts(self, value: Dict[str, int]) -> None:
-        self._state.tool_failure_counts = value
-
-    @property
-    def _doom_loop_count(self) -> int:
-        return self._doom_detector.loop_count
-
-    @property
-    def _recent_tool_calls(self) -> List[Tuple[str, str]]:
-        return self._doom_detector.recent_calls
-
     def _dump_context_to_file(self, messages: List[Dict[str, Any]], iteration: int) -> None:
         """
         Dump full context to a JSON file for debugging.
@@ -1743,9 +1658,9 @@ Be conversational and helpful, not robotic. Don't use bullet points or formattin
             "message_count": len(messages),
             "messages": messages,
             "state": {
-                "consecutive_thoughts": self._consecutive_thoughts,
-                "is_running": self._is_running,
-                "is_done": self._is_done,
+                "consecutive_thoughts": self._state.consecutive_thoughts,
+                "is_running": self._state.is_running,
+                "is_done": self._state.is_done,
                 "stack_depth": self.mmu.stack_depth,
             },
         }
