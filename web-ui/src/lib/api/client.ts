@@ -5,6 +5,8 @@
  * Uses /api/v1/* endpoints with SSE streaming
  */
 
+import { logger } from "../logger";
+
 const getApiBase = () => {
   if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
   if (typeof window !== "undefined") {
@@ -27,6 +29,10 @@ export class ApiError extends Error {
   }
 }
 
+function generateRequestId() {
+  return Math.random().toString(36).substring(2, 10);
+}
+
 /**
  * Base fetch wrapper with error handling.
  */
@@ -35,12 +41,16 @@ export async function apiFetch<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${API_BASE}${endpoint}`;
-  console.log("[API]", options.method || "GET", url);
+  const reqId = generateRequestId();
+  const method = options.method || "GET";
+  
+  logger.info(`[API] ${method} ${url} (req_id=${reqId})`);
 
   const response = await fetch(url, {
     ...options,
     headers: {
       "Content-Type": "application/json",
+      "X-Request-ID": reqId,
       ...options.headers,
     },
   });
@@ -49,11 +59,13 @@ export async function apiFetch<T>(
     const error = await response.json().catch(() => ({
       detail: "Unknown error",
     }));
-    console.error("[API] Error:", error);
+    logger.error(`[API] Error ${response.status}: ${error.detail} (req_id=${reqId})`);
     throw new ApiError(response.status, error.detail || "Request failed");
   }
 
   const text = await response.text();
+  logger.debug(`[API] Response ${response.status} (req_id=${reqId})`, text.length > 100 ? text.slice(0, 100) + '...' : text);
+  
   if (!text) return {} as T;
 
   return JSON.parse(text) as T;
@@ -93,22 +105,31 @@ export function apiDelete<T>(endpoint: string): Promise<T> {
  */
 export async function* apiStream(
   endpoint: string,
-  data: unknown,
-  signal?: AbortSignal
+  data?: unknown,
+  signal?: AbortSignal,
+  method: string = "POST"
 ): AsyncGenerator<{ type: string; data: unknown }> {
   const url = `${API_BASE}${endpoint}`;
-  console.log("[API] Stream:", url);
+  const reqId = generateRequestId();
+  logger.info(`[API] Stream ${method} ${url} (req_id=${reqId})`);
 
-  const response = await fetch(url, {
-    method: "POST",
+  const fetchOptions: RequestInit = {
+    method,
     headers: {
       "Content-Type": "application/json",
+      "X-Request-ID": reqId,
     },
-    body: JSON.stringify(data),
-    signal,  // Pass abort signal to fetch
-  });
+    signal,
+  };
+
+  if (data !== undefined && method !== "GET" && method !== "HEAD") {
+    fetchOptions.body = JSON.stringify(data);
+  }
+
+  const response = await fetch(url, fetchOptions);
 
   if (!response.ok) {
+    logger.error(`[API] Stream Error ${response.status} (req_id=${reqId})`);
     throw new ApiError(response.status, "Stream request failed");
   }
 
@@ -124,12 +145,11 @@ export async function* apiStream(
     while (true) {
       const { done, value } = await reader.read();
       if (done) {
-        console.log("[API] Stream done");
+        logger.info(`[API] Stream done (req_id=${reqId})`);
         break;
       }
 
       const chunk = decoder.decode(value, { stream: true });
-      // console.log("[API] Chunk:", chunk);
       buffer += chunk;
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
@@ -143,7 +163,7 @@ export async function* apiStream(
           currentEvent = line.slice(7).trim();
         } else if (line.startsWith("data: ")) {
           const dataStr = line.slice(6);
-          console.log(`[API] Event: ${currentEvent}`, dataStr.slice(0, 50));
+          logger.debug(`[API] Event: ${currentEvent} (req_id=${reqId})`, dataStr.slice(0, 50));
           try {
             const data = JSON.parse(dataStr);
             yield { type: currentEvent, data };

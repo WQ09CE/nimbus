@@ -16,15 +16,11 @@ from pydantic import BaseModel
 
 from .log_hub import log_hub
 
-router = APIRouter(tags=["Logs"])
 
-# Log file path
-LOG_DIR = Path(".logs/frontend")
-LOG_DIR.mkdir(parents=True, exist_ok=True)
-LOG_FILE = LOG_DIR / "frontend.log"
+router = APIRouter() # No prefix here, will be included in main app with /api/v1 prefix
 
-logger = logging.getLogger(__name__)
-
+# Dedicated logger for frontend logs
+frontend_logger = logging.getLogger("nimbus.frontend")
 
 class LogEntry(BaseModel):
     """Single log entry from frontend."""
@@ -42,35 +38,34 @@ class LogBatch(BaseModel):
     source: str = "frontend"
 
 
-@router.post("/api/logs")
+@router.post("/logs")
 async def receive_logs(batch: LogBatch):
-    """Receive and store frontend logs."""
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        for entry in batch.entries:
-            ts = entry.timestamp or datetime.now().isoformat()
-            log_line = {
-                "timestamp": ts,
-                "source": batch.source,
-                "level": entry.level,
-                "message": entry.message,
-            }
-            if entry.data:
-                log_line["data"] = entry.data
-            f.write(json.dumps(log_line, ensure_ascii=False) + "\n")
+    """
+    Receive logs from frontend and write to main server log.
+    POST /api/v1/logs
+    """
+    for entry in batch.entries:
+        # Convert frontend level to python log level
+        lvl = entry.level.lower()
+        log_func = frontend_logger.info
+        
+        if lvl == "debug": log_func = frontend_logger.debug
+        elif lvl == "warn" or lvl == "warning": log_func = frontend_logger.warning
+        elif lvl == "error": log_func = frontend_logger.error
+        
+        # Format: [UI] message (data)
+        msg = f"[UI] {entry.message}"
+        if entry.data:
+            import json
+            try:
+                msg += f" | data={json.dumps(entry.data)}"
+            except:
+                msg += f" | data={str(entry.data)}"
+        
+        log_func(msg)
 
-    logger.debug(f"Received {len(batch.entries)} log entries from {batch.source}")
     return {"status": "ok", "count": len(batch.entries)}
 
-
-@router.get("/api/logs/tail")
-async def tail_logs(lines: int = 50):
-    """Get the last N lines of frontend logs."""
-    if not LOG_FILE.exists():
-        return {"lines": []}
-
-    with open(LOG_FILE, "r", encoding="utf-8") as f:
-        all_lines = f.readlines()
-        return {"lines": all_lines[-lines:]}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

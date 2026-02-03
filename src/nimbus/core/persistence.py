@@ -28,6 +28,7 @@ class PinnedContextModel(BaseModel):
     """Pydantic model for PinnedContext"""
     system_rules: str = ""
     workspace_info: str = ""
+    env_state: str = ""
     capabilities: str = ""
     custom_anchors: List[str] = Field(default_factory=list)
     version: str = "1.0"

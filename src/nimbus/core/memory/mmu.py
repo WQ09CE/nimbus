@@ -44,7 +44,7 @@ Context Stack 提炼策略:
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Set
+from typing import Any, Dict, List, Literal, Optional, Set, Callable, Awaitable
 
 from nimbus.core.memory.context import (
     Message,
@@ -187,6 +187,12 @@ class MMU:
         if self._pinned is None:
             self._pinned = PinnedContext()
         self._pinned.workspace_info = info
+
+    def update_env_state(self, state: str) -> None:
+        """Update environment state in pinned context."""
+        if self._pinned is None:
+            self._pinned = PinnedContext()
+        self._pinned.update_env_state(state)
 
     def update_capabilities(self, caps: str) -> None:
         """Update capabilities in pinned context."""
@@ -666,19 +672,25 @@ class MMU:
 
         return filtered
 
-    async def archive_and_reset(self, session_id: str) -> Optional[str]:
+    async def archive_and_reset(
+        self,
+        session_id: str,
+        summarizer: Optional[Callable[[List[Message]], Awaitable[str]]] = None,
+    ) -> Optional[str]:
         """
         Archive current frame context to file and reset it.
 
-        This implements the "Infinite Context via Disk" strategy.
+        This implements the "Hybrid Memory Architecture" strategy.
         When context is full:
-        1. Write current messages to a file
-        2. Create a summary pointer
-        3. Clear current frame messages
-        4. Insert pointer as system message
+        1. Generate an Execution Summary (using current model)
+        2. Write current messages to a file
+        3. Create a summary pointer
+        4. Clear current frame messages
+        5. Insert pointer + summary as system messages
 
         Args:
             session_id: Session ID for file organization
+            summarizer: Async callback to generate summary from messages
 
         Returns:
             Path to archive file if successful
@@ -696,7 +708,18 @@ class MMU:
         if len(messages) == 0:
             return None
 
-        # 1. Prepare archive path
+        # 1. Generate Summary (Rolling Summary)
+        summary_text = ""
+        if summarizer:
+            try:
+                logger.info("🧠 Generating rolling summary for archive...")
+                # Pass recent messages to summarizer
+                summary_text = await summarizer(messages)
+            except Exception as e:
+                logger.error(f"Failed to generate summary: {e}")
+                summary_text = "Summary generation failed."
+
+        # 2. Prepare archive path
         # Use user home directory: ~/.nimbus/sessions/{session_id}/archive/
         home = Path.home()
         archive_dir = home / ".nimbus" / "sessions" / session_id / "archive"
@@ -706,9 +729,11 @@ class MMU:
         filename = f"part_{timestamp}_{frame.frame_id[:8]}.md"
         file_path = archive_dir / filename
 
-        # 2. Generate content
+        # 3. Generate content
         content = f"# Archive: {timestamp}\n\n"
         content += f"## Goal: {frame.goal or 'Root'}\n\n"
+        if summary_text:
+            content += f"## Execution Summary\n{summary_text}\n\n"
 
         for msg in messages:
             role = msg.role.upper()
@@ -720,7 +745,7 @@ class MMU:
 
             content += f"### {role}\n{text}\n\n"
 
-        # 3. Write to file
+        # 4. Write to file
         try:
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
@@ -729,7 +754,9 @@ class MMU:
             logger.error(f"Failed to archive memory: {e}")
             return None
 
-        # 4. Reset Frame
+        # 5. Reset Frame
+        new_messages = []
+
         # Create a pointer message
         pointer_msg = Message(
             role="system",
@@ -737,13 +764,23 @@ class MMU:
                 f"⚠️ [MEMORY ARCHIVED]\n"
                 f"Previous conversation history ({len(messages)} messages) has been archived to release memory.\n"
                 f"Archive Location: {file_path}\n"
-                f"Summary: The previous task steps have been saved. If you need to check details, use `Read` tool on the archive file."
+                f"Use `Read` tool if you need to check specific details from history."
             ),
             meta={"archived": True, "path": str(file_path)},
         )
+        new_messages.append(pointer_msg)
 
-        # Clear and set pointer
-        frame.messages = [pointer_msg]
+        # Create summary message if available
+        if summary_text:
+            summary_msg = Message(
+                role="system",
+                content=f"## 📝 Execution Summary (Previous Context)\n{summary_text}",
+                meta={"summary": True},
+            )
+            new_messages.append(summary_msg)
+
+        # Clear and set new messages
+        frame.messages = new_messages
 
         # Also clear discardable markers for this frame as they refer to cleared messages
         if frame.frame_id in self._frame_discardable:
@@ -929,6 +966,7 @@ class MMU:
             pinned_model = PinnedContextModel(
                 system_rules=self._pinned.system_rules,
                 workspace_info=self._pinned.workspace_info,
+                env_state=self._pinned.env_state,
                 capabilities=self._pinned.capabilities,
                 custom_anchors=self._pinned.custom_anchors,
                 version=self._pinned.version,
@@ -996,6 +1034,7 @@ class MMU:
             self._pinned = PinnedContext(
                 system_rules=snapshot.pinned_context.system_rules,
                 workspace_info=snapshot.pinned_context.workspace_info,
+                env_state=getattr(snapshot.pinned_context, "env_state", ""),  # Backward compatibility
                 capabilities=snapshot.pinned_context.capabilities,
                 custom_anchors=snapshot.pinned_context.custom_anchors,
                 version=snapshot.pinned_context.version,

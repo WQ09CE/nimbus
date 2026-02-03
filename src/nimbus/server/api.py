@@ -294,6 +294,49 @@ async def resume_session(
     return result
 
 
+@router.post("/sessions/{session_id}/inject")
+async def inject_message(
+    session_id: str,
+    data: ChatRequest,
+    session_manager=Depends(get_session_manager),
+    storage=Depends(get_storage),
+):
+    """
+    Inject a user message into a running session (Human-in-the-loop).
+    
+    This allows steering the agent while it is executing tasks.
+    The message will be processed at the start of the next Think-Act-Observe cycle.
+    
+    Returns:
+        Status object
+    """
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    # Inject via SessionManager -> SessionPool -> vCPU
+    success = await session_manager.inject_message(session_id, data.content)
+    
+    if success:
+        # NOTE: We do NOT save to storage here directly.
+        # The vCPU will add it to MMU, and session_v2._save_conversation_to_storage
+        # will persist it along with the assistant's response and tool executions.
+        # This ensures the history strictly reflects what the vCPU actually processed.
+        return {"status": "injected", "message": "Message injected into execution loop"}
+    else:
+        # Fallback: If session is not running, we MUST save it manually
+        # because the vCPU won't pick it up dynamically.
+        import uuid
+        message_id = f"msg_{uuid.uuid4().hex[:12]}"
+        await storage.add_message(
+            message_id=message_id,
+            session_id=session_id,
+            role="user",
+            content=f"[Intervention] {data.content}",
+        )
+        return {"status": "queued", "message": "Session not active, message saved to history"}
+
+
 # =============================================================================
 # Chat APIs
 # =============================================================================

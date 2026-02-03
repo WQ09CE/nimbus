@@ -534,6 +534,8 @@ class AgentOS:
         process.vcpu._reset()
 
         # Session persistence: 追加用户消息
+
+        # Session persistence: 追加用户消息
         if self._session_mgr:
             from nimbus.core.memory.context import Message
 

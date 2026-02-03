@@ -3,7 +3,7 @@
  * POST /api/v1/sessions/{id}/chat - Send message and stream response
  */
 
-import { apiStream } from "./client";
+import { apiPost, apiStream } from "./client";
 
 export interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -52,6 +52,19 @@ export type ChatEventType =
 export interface ChatEvent {
   type: ChatEventType;
   data: unknown;
+}
+
+/**
+ * Inject message into running session
+ */
+export async function injectMessage(
+  sessionId: string, 
+  content: string
+): Promise<void> {
+  const endpoint = `/api/v1/sessions/${sessionId}/inject`;
+  const request: ChatRequest = { content };
+  
+  await apiPost(endpoint, request);
 }
 
 /**

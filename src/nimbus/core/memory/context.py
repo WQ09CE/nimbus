@@ -120,6 +120,7 @@ class PinnedContext:
 
     system_rules: str = ""
     workspace_info: str = ""
+    env_state: str = ""  # Dynamic environment state (e.g. key vars, paths)
     capabilities: str = ""
     custom_anchors: List[str] = field(default_factory=list)
     version: str = "1.0"
@@ -133,6 +134,9 @@ class PinnedContext:
 
         if self.workspace_info:
             parts.append(f"# Workspace\n{self.workspace_info}")
+
+        if self.env_state:
+            parts.append(f"# Environment State\n{self.env_state}")
 
         if self.capabilities:
             parts.append(f"# Capabilities\n{self.capabilities}")
@@ -155,6 +159,7 @@ class PinnedContext:
 
         total = estimate_text(self.system_rules)
         total += estimate_text(self.workspace_info)
+        total += estimate_text(self.env_state)
         total += estimate_text(self.capabilities)
         for anchor in self.custom_anchors:
             total += estimate_text(anchor)
@@ -167,6 +172,10 @@ class PinnedContext:
     def update_workspace(self, info: str) -> None:
         """Update workspace information."""
         self.workspace_info = info
+
+    def update_env_state(self, state: str) -> None:
+        """Update environment state."""
+        self.env_state = state
 
     def update_capabilities(self, caps: str) -> None:
         """Update capabilities description."""

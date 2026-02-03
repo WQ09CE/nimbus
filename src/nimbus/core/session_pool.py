@@ -176,6 +176,36 @@ class SessionInstance:
         # matching session_id or just interrupt all:
         return self.agent_os.interrupt()
 
+    async def inject_message(self, content: str) -> bool:
+        """
+        Inject a user message into the running session for human-in-the-loop steering.
+        """
+        if not self.is_active or not self.agent_os:
+            return False
+            
+        await self.touch()
+        
+        # Find active process (Assume 1 main process for now)
+        active_processes = self.agent_os.get_active_processes()
+        
+        target_pid = None
+        if active_processes:
+            target_pid = active_processes[0]
+        elif self.agent_os.list_processes():
+            target_pid = self.agent_os.list_processes()[0]
+            
+        if not target_pid:
+             logger.warning(f"No process found for session {self.config.session_id} to inject message")
+             return False
+             
+        process = self.agent_os.get_process(target_pid)
+        if process and process.vcpu:
+            process.vcpu.inject_message(content)
+            return True
+            
+        return False
+
+
 class SessionPool:
     """
     Manages a pool of SessionInstances.
@@ -244,3 +274,11 @@ class SessionPool:
                      if await instance.hibernate():
                          count += 1
         return count
+
+    async def inject_message(self, session_id: str, content: str) -> bool:
+        """Inject message into a running session."""
+        async with self._lock:
+            instance = self._sessions.get(session_id)
+            if instance and instance.is_active:
+                return await instance.inject_message(content)
+        return False

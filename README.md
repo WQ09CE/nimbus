@@ -29,7 +29,7 @@
 │  ┌─────────────┐                      ┌─────────────────┐   │
 │  │  Scheduler  │                      │     Tools       │   │
 │  │ DAG-based   │                      │ Read/Write/Edit │   │
-│  │ Parallel    │                      │ Glob/Grep/Bash  │   │
+│  │ Parallel    │                      │ Bash/ReadArchive│   │
 │  └─────────────┘                      └─────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
                               │
@@ -141,36 +141,36 @@ pytest tests/ -v -m "not slow"
 └─────────────────────────────────────────┘
 ```
 
-### Context Stack (MMU)
+### Memory Management (MMU)
 
-The MMU manages a hierarchical context stack with automatic refinement:
+The MMU implements a **Hybrid Memory Architecture** designed for infinite session duration:
 
-```python
-# Push a new frame for exploration
-mmu.push_frame("explore codebase")
-
-# Tool calls happen...
-# Some succeed, some fail
-
-# Pop frame - automatically filters failed explorations
-result = mmu.pop_frame()  # Only valuable conclusions retained
-```
-
-**Memory Tiers:**
+**1. Memory Tiers:**
 
 | Tier | Purpose | Behavior |
 |------|---------|----------|
-| **Pinned** | System prompt, workspace info | Never compressed |
-| **Stack** | Conversation history | Auto-compressed on overflow |
-| **Frame** | Current task context | Refined on pop |
+| **Pinned** | System rules, Workspace info, **Env State** | Never compressed, always visible |
+| **Stack** | Conversation history | Auto-archived to disk when full |
+| **Frame** | Current task context | Refined on pop (removes noise) |
+
+**2. Infinite Context Strategy (Rolling Summary):**
+When the context window fills up (e.g., >200k tokens), the MMU performs a **"Distill & Archive"** operation:
+1.  **Distill**: An LLM generates an *Execution Summary* of the current context (Goals, Completed Steps, Next Actions).
+2.  **Archive**: The full raw message history is written to a file (e.g., `~/.nimbus/sessions/<id>/archive/part_timestamp.md`).
+3.  **Reset**: The active memory is cleared and replaced with:
+    *   A **Pointer** to the archive file.
+    *   The **Execution Summary** to maintain cognitive continuity.
+
+**3. Tooling Safety Net:**
+If the Agent needs to recall specific details from the deep past, it can use the `ReadArchive` tool to access historical files referenced by the pointers.
 
 ### Process Roles (Permission Isolation)
 
 | Role | Allowed Tools | Use Case |
 |------|---------------|----------|
-| `eye` | Read, Glob, Grep | Code exploration |
-| `body` | Read, Write, Edit, Bash | Implementation |
-| `mind` | Read, Write, Glob, Grep | Architecture design |
+| `eye` | Read, ReadArchive, Glob, Grep | Code exploration |
+| `body` | Read, ReadArchive, Write, Edit, Bash | Implementation |
+| `mind` | Read, ReadArchive, Glob, Grep | Architecture design |
 | `tongue` | Read, Glob, Bash | Testing |
 | `nose` | Read, Glob, Grep | Code review |
 

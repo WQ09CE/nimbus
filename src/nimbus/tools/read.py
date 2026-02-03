@@ -61,16 +61,14 @@ async def read_file(
     # Resolve path
     path_obj = Path(file_path)
     if workspace is None:
-        workspace = path_obj.parent if path_obj.is_absolute() else Path.cwd()
+        workspace = Path.cwd()
 
-    # Validate with sandbox
-    sandbox = Sandbox(workspace)
-    try:
-        resolved_path = sandbox.validate(file_path)
-    except SandboxError:
-        raise
-    except FileNotFoundError:
-        raise FileNotFoundError(f"File not found: {file_path}")
+    # YOLO Mode: Direct resolution without sandbox constraints
+    # If path is relative, resolve against workspace. If absolute, use as is.
+    if path_obj.is_absolute():
+        resolved_path = path_obj.resolve()
+    else:
+        resolved_path = (workspace / path_obj).resolve()
 
     if not resolved_path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")

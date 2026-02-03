@@ -10,6 +10,7 @@ import {
   type ServerMessage,
   createSession,
   streamChat,
+  injectMessage, // New import
   getSessionMessages,
   getSession,
 } from "@/lib/api";
@@ -247,12 +248,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         messages.push({
           id: m.id,
           role: m.role as 'user' | 'assistant' | 'system',
-          content: m.content,
+          content: m.content || "", // Ensure content is never null
           toolCalls,
           toolResults: toolResults && toolResults.length > 0 ? toolResults : undefined,
-          timestamp: new Date(m.created_at).getTime(),
+          timestamp: !isNaN(new Date(m.created_at).getTime()) ? new Date(m.created_at).getTime() : Date.now(),
         });
       }
+      
+      // Sort messages by timestamp to ensure correct order
+      messages.sort((a, b) => a.timestamp - b.timestamp);
       
       set({ messages, isLoading: false });
       console.log(`[Store] Loaded ${messages.length} messages for session ${session.id}`);
@@ -288,9 +292,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sendMessage: async (content: string) => {
     const { session, messages, isStreaming, messageQueue, isCreatingSession } = get();
     
-    // Queue if streaming
-    if (isStreaming) {
-        set({ messageQueue: [...messageQueue, content] });
+    // Handle streaming case: Inject message instead of queuing
+    if (isStreaming && session) {
+        // Optimistically add to UI
+        const userMessage: Message = {
+          id: `user-inject-${Date.now()}`,
+          role: "user",
+          content: `[追加指令] ${content}`,
+          timestamp: Date.now(),
+        };
+        
+        set({ 
+            messages: [...messages, userMessage],
+            // Don't change streaming state, just append message
+        });
+        
+        try {
+            await injectMessage(session.id, content);
+            console.log(`[Store] Injected message into session ${session.id}`);
+        } catch (err) {
+            console.error("[Store] Failed to inject message:", err);
+            // Maybe show a toast or error status?
+            // For now, keep it simple
+        }
         return;
     }
     

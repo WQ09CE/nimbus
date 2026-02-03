@@ -241,6 +241,26 @@ class SessionManagerV2:
             logger.info("[stream_chat] Calling agent_os.chat...")
             try:
                 result = await agent_os.chat(message, session_id=session_id)
+                
+                # SPECIAL HANDLING FOR INJECTION
+                if result.status == "OK" and result.output == "[Instruction appended to running task]":
+                     # This was an injection, not a full turn.
+                     # We must save the user message immediately because it's not in MMU yet.
+                     import uuid
+                     msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+                     await self._storage.add_message(
+                        message_id=msg_id,
+                        session_id=session_id,
+                        role="user",
+                        content=f"[Intervention] {message}", # Mark as intervention
+                     )
+                     logger.info(f"💾 Saved injected message '{message[:20]}...' to storage")
+                     
+                     # Emit completion and exit
+                     await self._sse_hub.publish(session_id, "dag_complete", {"status": "OK"})
+                     await self._sse_hub.close_session(session_id)
+                     return
+
                 if result.status == "ERROR":
                     logger.error(f"[stream_chat] Result Error: {result.fault}")
                 else:
@@ -354,6 +374,7 @@ class SessionManagerV2:
             
             for msg in messages:
                 # Skip until we find the user message we're responding to
+                # We relax the check to handle potential modifications or whitespace
                 if msg.role == "user" and msg.content == user_message:
                     found_user_msg = True
                     continue
@@ -526,6 +547,30 @@ class SessionManagerV2:
         except Exception as e:
             logger.error(f"Failed to resume session {session_id}: {e}")
             return {"success": False, "error": str(e)}
+
+    async def inject_message(self, session_id: str, content: str) -> bool:
+        """Inject user message into running session."""
+        async with self._lock:
+            agent_os = self._sessions.get(session_id)
+            
+        if not agent_os:
+            return False
+            
+        # Find active process
+        pids = agent_os.get_active_processes()
+        if not pids:
+            # Try listing all processes (maybe it's paused/thinking but active)
+            pids = agent_os.list_processes()
+            if not pids:
+                return False
+            
+        process = agent_os.get_process(pids[0])
+        if process and process.vcpu:
+            process.vcpu.inject_message(content)
+            logger.info(f"💉 Injected message into session {session_id}")
+            return True
+            
+        return False
 
     async def save_session_state(self, session_id: str) -> None:
         """Save session state (v2 handles this internally)."""
