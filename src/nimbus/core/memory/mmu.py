@@ -274,8 +274,59 @@ class MMU:
         self.current_frame.add_message(message)
 
     def add_user_message(self, content: str) -> None:
-        """Add a user message to the current frame."""
+        """
+        Add a user message to the current frame.
+
+        Safety check: If there are pending tool calls (assistant message with tool_calls
+        but no corresponding tool results), we add synthetic tool results first to
+        maintain valid message ordering for OpenAI API.
+
+        OpenAI API requires: after an assistant message with tool_calls, the next
+        message(s) MUST be tool results. User messages cannot appear in between.
+        """
+        # Check for pending tool calls and get their details
+        pending_tool_calls = self._get_pending_tool_calls_with_names()
+
+        if pending_tool_calls:
+            # Add synthetic tool results for pending calls
+            from nimbus.core.logging import get_logger
+            logger = get_logger("memory.mmu")
+            logger.warning(
+                f"⚠️ User message injected while {len(pending_tool_calls)} tool calls pending. "
+                f"Adding synthetic tool results to maintain message order."
+            )
+
+            for tc_id, tc_name in pending_tool_calls.items():
+                self.current_frame.add_tool_result(
+                    tool_call_id=tc_id,
+                    name=tc_name,
+                    content="[Operation interrupted by user input]",
+                )
+
         self.current_frame.add_user_message(content)
+
+    def _get_pending_tool_calls_with_names(self) -> Dict[str, str]:
+        """
+        Get dict of tool call IDs → names that have been issued but not yet responded to.
+
+        Returns:
+            Dict mapping tool_call_id to tool name
+        """
+        pending: Dict[str, str] = {}
+
+        for msg in self.current_frame.messages:
+            if msg.role == "assistant" and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    tc_id = tc.get("id") or tc.get("tool_call_id")
+                    tc_name = tc.get("function", {}).get("name", "unknown")
+                    if tc_id:
+                        pending[tc_id] = tc_name
+            elif msg.role == "tool":
+                tc_id = msg.tool_call_id
+                if tc_id and tc_id in pending:
+                    del pending[tc_id]
+
+        return pending
 
     def add_assistant_message(self, content: str) -> None:
         """Add an assistant message to the current frame."""
