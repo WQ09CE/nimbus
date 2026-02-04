@@ -8,11 +8,11 @@ Key Components:
 - PinnedContext: Immutable system anchors (always at the top)
 - StackFrame: Call stack frames for subprocess management
 - MMU: Memory Management Unit (context assembly)
-- Context Stack 提炼: Tool call 价值标记和智能过滤
 """
 
 from nimbus.core.memory.context import Message, PinnedContext, StackFrame
-from nimbus.core.memory.mmu import MMU, MMUConfig, ToolCallMarker, ToolCallValue
+from nimbus.core.memory.mmu import MMU, MMUConfig
+from nimbus.core.memory.state_manager import StateManager
 
 __all__ = [
     "PinnedContext",
@@ -20,6 +20,5 @@ __all__ = [
     "Message",
     "MMU",
     "MMUConfig",
-    "ToolCallMarker",
-    "ToolCallValue",
+    "StateManager",
 ]

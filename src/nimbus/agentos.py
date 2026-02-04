@@ -596,7 +596,12 @@ class AgentOS:
                             f"【之前的摘要】\n{previous_summary[:1000]}\n\n"
                             f"【新对话内容】\n{context}\n\n"
                             "请保留之前摘要中的关键信息（特别是用户提供的密码、代码等），"
-                            f"并添加新对话中的重要内容。用中文简洁回复（{target_chars}字以内）："
+                            f"并添加新对话中的重要内容。用中文简洁回复（{target_chars}字以内）。\n\n"
+                            "**OUTPUT FORMAT**:\n"
+                            "If any major milestone was completed in this turn (e.g. 'Read file X', 'Executed tool Y'), output it as:\n"
+                            "NEW_MILESTONES: [Milestone 1], [Milestone 2]\n\n"
+                            "Then output the summary:\n"
+                            "SUMMARY: [Your summary content here]"
                         )
                     else:
                         summary_prompt = (
@@ -605,7 +610,12 @@ class AgentOS:
                             "2. 已完成的操作和结果\n"
                             "3. 当前任务状态\n\n"
                             f"对话内容：\n{context}\n\n"
-                            f"请用中文简洁总结（{target_chars}字以内）："
+                            f"请用中文简洁总结（{target_chars}字以内）。\n\n"
+                            "**OUTPUT FORMAT**:\n"
+                            "If any major milestone was completed in this turn, output it as:\n"
+                            "NEW_MILESTONES: [Milestone 1]\n\n"
+                            "Then output the summary:\n"
+                            "SUMMARY: [Your summary content here]"
                         )
 
                     # Use LLM.chat() to generate summary (not complete())
@@ -615,7 +625,26 @@ class AgentOS:
                     )
 
                     if response and response.content:
-                        summary = response.content
+                        # Parse response for milestones
+                        content = response.content
+                        milestones = []
+                        summary = content
+
+                        if "NEW_MILESTONES:" in content and "SUMMARY:" in content:
+                            try:
+                                parts = content.split("SUMMARY:", 1)
+                                milestone_part = parts[0].replace("NEW_MILESTONES:", "").strip()
+                                summary = parts[1].strip()
+
+                                if milestone_part and milestone_part.lower() != "none":
+                                    milestones = [m.strip() for m in milestone_part.split(",") if m.strip()]
+                            except Exception:
+                                pass # Fallback to raw content if parsing fails
+
+                        # Register milestones with MMU
+                        if milestones:
+                            mmu.add_milestones(milestones)
+                            logger.info(f"🚩 Registered milestones: {milestones}")
 
                         # Smart budget check: if over budget, use LLM to re-compress
                         if len(summary) > summary_char_budget:

@@ -12,8 +12,10 @@ from typing import Any, Dict, Tuple
 # Constants
 # =============================================================================
 
-DEFAULT_MAX_LINES = 2000
-DEFAULT_MAX_BYTES = 50 * 1024  # 50KB
+# Optimized for Agent Context Window (approx 3000 tokens)
+# Prevents "read -> overflow -> compact -> forget" cycle
+DEFAULT_MAX_LINES = 300
+DEFAULT_MAX_BYTES = 12 * 1024  # 12KB
 
 
 # =============================================================================

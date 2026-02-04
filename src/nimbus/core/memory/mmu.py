@@ -31,9 +31,7 @@ Design Principles (Simplified):
 """
 
 from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Literal
+from typing import Any, Dict, List, Optional
 
 from nimbus.core.memory.context import (
     Message,
@@ -41,6 +39,7 @@ from nimbus.core.memory.context import (
     StackFrame,
     create_root_frame,
 )
+from nimbus.core.memory.state_manager import StateManager
 from nimbus.core.persistence import (
     MemorySnapshotModel,
     MessageModel,
@@ -83,6 +82,9 @@ class MMU:
         # Global Summary
         self._global_summary: str = ""
 
+        # Project State Monitor (Deterministic)
+        self._state_manager = StateManager()
+
     # =========================================================================
     # Pinned Context Management (The Anchor)
     # =========================================================================
@@ -96,7 +98,7 @@ class MMU:
                 if anchor.startswith("# Current Goal"):
                     original_goal = anchor
                     break
-        
+
         if original_goal:
             self._global_summary = f"{original_goal}\n\n[Execution Progress Summary]:\n{new_summary}"
         else:
@@ -144,14 +146,14 @@ class MMU:
         """Add completed milestones to persistent context."""
         if not self._pinned:
             self._pinned = PinnedContext()
-            
+
         anchor_prefix = "# ✅ Milestones\n"
         existing_idx = -1
         for i, anchor in enumerate(self._pinned.custom_anchors):
             if anchor.startswith(anchor_prefix):
                 existing_idx = i
                 break
-                
+
         new_items = ""
         for m in milestones:
              new_items += f"- [x] {m}\n"
@@ -184,7 +186,7 @@ class MMU:
         )
         self._stack.append(new_frame)
         return new_frame.frame_id
-        
+
     def pop_frame(self) -> Optional[StackFrame]:
         """Pop the current frame (no complex distillation)."""
         if len(self._stack) > 1:
@@ -244,10 +246,16 @@ class MMU:
     ) -> None:
         self.current_frame.add_assistant_with_tool_calls(content, tool_calls)
 
-    def add_tool_result(self, tool_call_id: str, name: str, content: str) -> None:
+    def add_tool_result(self, tool_call_id: str, name: str, content: str, tool_args: dict = None) -> None:
         self.current_frame.add_tool_result(tool_call_id, name, content)
+
+        # 1. Auto-detect explicit failures (Error Recovery)
         if self.config.auto_detect_failures:
             self._auto_detect_tool_failure(tool_call_id, content)
+
+        # 2. Update Project State (Deterministic Anti-Drift)
+        if tool_args:
+            self._state_manager.update(name, tool_args, content)
 
     # =========================================================================
     # Tool Call Marking (Simplified)
@@ -292,7 +300,7 @@ class MMU:
         marked = 0
         current_idx = len(self.current_frame.messages) - 1
         messages = self.current_frame.messages
-        
+
         while current_idx >= 0 and marked < count:
             msg = messages[current_idx]
             if msg.role == "tool" and msg.tool_call_id:
@@ -318,27 +326,49 @@ class MMU:
         filter_discardable: bool = True,
     ) -> List[Dict[str, Any]]:
         """
-        Assemble the context, applying the Smart Drop strategy if over budget.
+        Assemble the full context for LLM.
+
+        This method combines:
+        1. Pinned context (system message)
+        2. **Project State Monitor** (Deterministic state)
+        3. Global Summary (LLM Summary + Task Stack)
+        4. Stack frames (Execution History)
+
+        The result is a list of messages ready for LLM API.
         """
         max_tokens = max_tokens or self.config.max_context_tokens
         messages: List[Dict[str, Any]] = []
         token_count = 0
 
-        # 1. The Anchor (Pinned Context) - Must have
+        # 1. Add pinned context (always first)
         if self._pinned:
             pinned_msg = self._pinned.to_system_message()
             token_count += pinned_msg.token_estimate()
             messages.append(pinned_msg.to_dict())
 
-        # 2. Global Summary (If available)
+        # 2. Add Project State Monitor (Deterministic Anchor)
+        # This is high-priority context that overrides LLM hallucinations
+        project_state = self._state_manager.render()
+        if project_state:
+            state_msg = Message(
+                role="system",
+                content=project_state,
+                meta={"type": "project_state"}
+            )
+            state_tokens = state_msg.token_estimate()
+            if token_count + state_tokens < max_tokens:
+                messages.append(state_msg.to_dict())
+                token_count += state_tokens
+
+        # 3. Add Global Summary (If available)
         if self._global_summary:
             # Build Task Stack visualization
             task_stack_view = "📋 [Mission Control]\n-------------------\n"
-            
+
             # Main Goal (Root Frame)
             root_goal = self._stack[0].goal or "Main Task"
             task_stack_view += f"🎯 Main Goal: {root_goal}\n-------------------\n"
-            
+
             # Completed Milestones
             if self._pinned:
                 for anchor in self._pinned.custom_anchors:
@@ -348,18 +378,18 @@ class MMU:
                         if milestones_content:
                             task_stack_view += "✅ Completed Milestones:\n" + milestones_content + "\n-------------------\n"
                         break
-            
+
             # Execution Path (Frames)
             task_stack_view += "📍 Execution Path:\n"
             for i, frame in enumerate(self._stack):
                 marker = "(Current Focus)" if i == len(self._stack) - 1 else ""
                 goal_preview = frame.goal[:50] + "..." if len(frame.goal) > 50 else frame.goal
                 task_stack_view += f"  {i+1}. [{frame.frame_id[:6]}] {goal_preview} {marker}\n"
-            
+
             task_stack_view += "-------------------\n"
-            
+
             full_summary_content = f"{task_stack_view}\n{self._global_summary}"
-            
+
             summary_msg = Message(role="system", content=full_summary_content, meta={"type": "global_summary"})
             summary_tokens = summary_msg.token_estimate()
             if token_count + summary_tokens < max_tokens:
@@ -367,26 +397,26 @@ class MMU:
                 token_count += summary_tokens
 
         remaining_budget = max_tokens - token_count
-        
+
         # 3. The Stream (Execution History)
         stream_messages = []
         for frame in self._stack:
             stream_messages.extend(frame.to_context_messages())
-            
+
         stream_tokens = sum(m.token_estimate() for m in stream_messages)
-        
+
         if stream_tokens <= remaining_budget:
             # All good, return full stream
             for m in stream_messages:
                 messages.append(m.to_dict())
         else:
             # Over budget: Apply Smart Drop
-            
+
             # Drop Strategy 1: Remove discarded/failed tools
             if self.config.remove_failed_tool_calls:
                 stream_messages = self._filter_discarded(stream_messages)
                 stream_tokens = sum(m.token_estimate() for m in stream_messages)
-            
+
             if stream_tokens <= remaining_budget:
                 for m in stream_messages:
                     messages.append(m.to_dict())
@@ -395,17 +425,17 @@ class MMU:
             # Drop Strategy 2: Keep recent, summarize old (Simplified implementation: simple truncation for now)
             # In a full implementation, we would call CompactionEngine here.
             # For now, we keep the last N messages and maybe a placeholder for the rest.
-            
+
             keep_count = self.config.keep_recent_messages
             if len(stream_messages) > keep_count:
                 kept_messages = stream_messages[-keep_count:]
-                
+
                 # Add a truncation marker/summary
                 messages.append({
                     "role": "system",
-                    "content": f"[... Earlier history truncated to fit context window ...]",
+                    "content": "[... Earlier history truncated to fit context window ...]",
                 })
-                
+
                 for m in kept_messages:
                     messages.append(m.to_dict())
             else:
@@ -421,7 +451,7 @@ class MMU:
         for msg in messages:
             if msg.role == "tool" and msg.meta.get("discard"):
                 continue
-            
+
             if msg.role == "assistant" and msg.tool_calls:
                 discard_ids = msg.meta.get("discard_tool_calls", [])
                 if discard_ids:
@@ -437,7 +467,7 @@ class MMU:
                         )
                         filtered.append(new_msg)
                     continue # Message handled
-            
+
             filtered.append(msg)
         return filtered
 
@@ -450,6 +480,12 @@ class MMU:
         if self._pinned: total += self._pinned.token_estimate()
         for frame in self._stack: total += frame.token_estimate()
         return total
+
+    def needs_compression(self) -> bool:
+        """Check if context needs compression."""
+        current = self.estimate_tokens()
+        threshold = int(self.config.max_context_tokens * self.config.compress_threshold)
+        return current > threshold
 
     def rollback_incomplete_turn(self) -> int:
         """Rollback pending tool calls if interrupted."""
@@ -475,7 +511,7 @@ class MMU:
             "total_messages": sum(len(f.messages) for f in self._stack),
             "tokens": self.estimate_tokens(),
         }
-    
+
     # Snapshot logic remains similar but simplified structure
     def create_snapshot(self) -> MemorySnapshotModel:
         # Convert Stack
@@ -493,7 +529,7 @@ class MMU:
                 state=frame.state, parent_frame_id=frame.parent_frame_id,
                 result=frame.result, created_at=frame.created_at, meta=frame.meta,
             ))
-            
+
         pinned_model = None
         if self._pinned:
              pinned_model = PinnedContextModel(
@@ -524,7 +560,7 @@ class MMU:
                 custom_anchors=snapshot.pinned_context.custom_anchors,
                 version=snapshot.pinned_context.version,
             )
-        
+
         self._stack = []
         for frame_model in snapshot.stack:
             messages = [
@@ -554,7 +590,7 @@ class MMU:
 
         frame = self.current_frame
         keep_count = self.config.keep_recent_messages
-        
+
         # If we have fewer messages than we want to keep, we can't compact by truncation.
         # But we might still be over budget due to huge messages.
         # For simplicity, we only truncate by count here.
@@ -563,24 +599,24 @@ class MMU:
             # This implies the messages are huge. We should probably clear more or warn.
             # For now, let's keep it safe and do nothing, relying on assemble_context smart drop.
             # But we must return a value to signal "attempted".
-            return None 
+            return None
 
         # Keep tail
         kept_messages = frame.messages[-keep_count:]
         removed_count = len(frame.messages) - keep_count
-        
+
         # Reset frame messages
         frame.messages = kept_messages
-        
+
         # Insert a marker (system message) to indicate truncation
         # This helps the LLM know there's a gap
         frame.messages.insert(0, Message(
-            role="system", 
+            role="system",
             content=f"[System: Memory compacted. {removed_count} older messages were archived.]",
             meta={"compaction_marker": True}
         ))
-        
+
         # Update discard markers (clear them as they likely referred to old messages)
         # In our simplified design, markers are on messages, so they are gone with the messages.
-        
+
         return "memory_truncated_in_live_buffer"

@@ -388,7 +388,7 @@ class VCPU:
                     # - Empty response loop (LLM stuck/confused)
                     should_graceful_terminate = (
                         self._state.consecutive_errors >= 5
-                        or self._doom_loop_count
+                        or self._state.doom_loop_count
                         >= 1  # First doom loop triggers graceful termination
                         or step_result.fault.code == "DOOM_LOOP"
                         or step_result.fault.code == "EMPTY_RESPONSE_LOOP"  # LLM stuck
@@ -1239,6 +1239,100 @@ class VCPU:
         # Reset extracted components
         self._doom_detector.reset()
         self._error_registry.reset()
+
+    async def _generate_llm_failure_response(
+        self, goal: str, fault: Fault, iterations: int
+    ) -> str:
+        """
+        Generate a natural language response explaining why the task failed.
+
+        This is used for "graceful termination" where we want the LLM to explain
+        the situation to the user, rather than just throwing a raw error code.
+
+        Args:
+            goal: The original user goal
+            fault: The fault that caused the failure
+            iterations: Number of iterations performed
+
+        Returns:
+            A user-friendly explanation of the failure
+        """
+        try:
+            # Construct a prompt for the LLM
+            prompt = f"""
+I was attempting to complete the following task:
+"{goal}"
+
+However, I encountered a persistent issue and had to stop after {iterations} steps.
+The technical error is: {fault.code} - {fault.message}
+
+Please generate a polite and helpful response to the user explaining:
+1. What I tried to do
+2. Why I couldn't complete it (explain the error simply)
+3. What they might try next (if applicable)
+
+Keep it concise and professional.
+"""
+            messages = [{"role": "user", "content": prompt}]
+            # Use a fresh context for this generation to avoid pollution from the failed run
+            response = await self.alu.chat(messages, tools=[])
+            return response.content or f"Task failed: {fault.message}"
+
+        except Exception:
+            # Fallback if LLM generation fails
+            return f"I encountered an error while processing your request: {fault.message}. Please try again or rephrase your request."
+
+    async def _dump_context_to_file(self, messages: List[Dict[str, Any]], iteration: int) -> None:
+        """Dump current context messages to a JSON file for debugging."""
+        try:
+            from datetime import datetime
+            from pathlib import Path
+
+            log_dir = Path(".logs/context")
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = log_dir / f"context_{timestamp}_iter{iteration:03d}.json"
+
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(messages, f, indent=2, ensure_ascii=False)
+
+            from nimbus.core.logging import get_logger
+
+            logger = get_logger("kernel.vcpu")
+            logger.info(f"📝 Context dumped to {filename}")
+
+        except Exception as e:
+            from nimbus.core.logging import get_logger
+
+            logger = get_logger("kernel.vcpu")
+            logger.error(f"Failed to dump context: {e}")
+
+    def _emit_event(self, event_type: str, data: Dict[str, Any]) -> None:
+        """
+        Emit a lifecycle event.
+
+        Events are used for:
+        - Observability (logging)
+        - External hooks (UI updates)
+        - Debugging
+        """
+        if event_type == "STEP_STARTED":
+            # Don't log step start if disabled
+            if not self.config.emit_step_events:
+                return
+
+        # Emit to gate (which handles broadcasting)
+        # Note: In v1, VCPU emitted directly. In v2, we route via Gate/AgentOS.
+        # Here we just use the gate's event stream if available.
+        if hasattr(self.gate, "event_stream") and self.gate.event_stream:
+            self.gate.event_stream.emit(
+                Event(
+                    type=event_type,
+                    pid=self.gate.pid,
+                    data=data,
+                )
+            )
 
     async def _prepare_goal_for_pinning(self, goal: str) -> str:
         """

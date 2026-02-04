@@ -22,7 +22,7 @@ import mimetypes
 from pathlib import Path
 from typing import Any, Optional
 
-from .utils import DEFAULT_MAX_BYTES, format_size, truncate_head
+from .utils import DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, format_size, truncate_head
 
 
 async def read_file(
@@ -107,6 +107,24 @@ async def _read_text(
     file_path: Path, offset: Optional[int], limit: Optional[int], original_path: str
 ) -> str:
     """Read text file with optional offset/limit."""
+    # Check file size first
+    try:
+        file_size = file_path.stat().st_size
+    except Exception as e:
+        raise OSError(f"Failed to stat file: {str(e)}")
+
+    # If file is "small" (< 1MB), read fully for accurate line counts (legacy behavior)
+    if file_size < 1024 * 1024:
+        return await _read_small_text(file_path, offset, limit, original_path)
+
+    # Large file optimization
+    return await _read_large_text(file_path, offset, limit, original_path, file_size)
+
+
+async def _read_small_text(
+    file_path: Path, offset: Optional[int], limit: Optional[int], original_path: str
+) -> str:
+    """Read small text file fully into memory."""
     try:
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
@@ -170,5 +188,128 @@ async def _read_text(
         output_text += (
             f"\n\n[{remaining} more lines in file. Use offset={next_offset} to continue.]"
         )
+
+    return output_text
+
+
+async def _read_large_text(
+    file_path: Path,
+    offset: Optional[int],
+    limit: Optional[int],
+    original_path: str,
+    file_size: int,
+) -> str:
+    """Read large text file line-by-line to avoid OOM."""
+    # Apply offset (1-indexed → 0-indexed)
+    start_line = (offset - 1) if offset else 0
+    start_line = max(0, start_line)
+
+    lines_read = []
+    lines_skipped = 0
+    bytes_read = 0
+
+    # Limits
+    max_lines = limit if limit is not None else DEFAULT_MAX_LINES
+    # Cap limit to default if not specified or too huge
+    if limit is None or limit > DEFAULT_MAX_LINES:
+        max_lines = DEFAULT_MAX_LINES
+
+    truncated_by_bytes = False
+    truncated_by_lines = False
+
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            # Skip lines
+            for _ in range(start_line):
+                if not f.readline():
+                    # End of file reached during skip
+                    raise ValueError(f"Offset {offset} is beyond end of file")
+                lines_skipped += 1
+
+            # Read requested lines
+            while len(lines_read) < max_lines:
+                line = f.readline()
+                if not line:
+                    break
+
+                line_bytes = len(line.encode("utf-8"))
+
+                # Check byte limit
+                if bytes_read + line_bytes > DEFAULT_MAX_BYTES:
+                    # If it's the very first line, return special error
+                    if len(lines_read) == 0:
+                        first_line_size = format_size(line_bytes)
+                        max_size = format_size(DEFAULT_MAX_BYTES)
+                        return (
+                            f"[Line {start_line + 1} is {first_line_size}, exceeds {max_size} limit. "
+                            f"Use bash: sed -n '{start_line + 1}p' {Path(original_path).name} | head -c {DEFAULT_MAX_BYTES}]"
+                        )
+
+                    truncated_by_bytes = True
+                    break
+
+                lines_read.append(line.rstrip("\n")) # strip for display, add back later?
+                # Wait, original implementation kept newlines?
+                # lines = content.split("\n") removes them from the list elements if using split
+                # But then join adds them back.
+                # readline() keeps \n.
+                # If we use .rstrip("\n"), we lose it.
+                # Let's keep consistent with _read_small_text which splits by \n
+                # content.split("\n") -> ["line1", "line2", ...] (no \n at end of strings)
+                # So we should strip \n here.
+
+                bytes_read += line_bytes
+
+            # Check if there is more content (for truncation flags)
+            # Try reading one more byte/line to check eof
+            if not truncated_by_bytes and len(lines_read) == max_lines:
+                if f.read(1):
+                    truncated_by_lines = True
+
+    except UnicodeDecodeError:
+        raise ValueError(f"File is not valid UTF-8 text: {original_path}")
+    except Exception as e:
+        if "Offset" in str(e):
+            raise
+        raise OSError(f"Failed to read file: {str(e)}")
+
+    output_text = "\n".join(lines_read)
+
+    # Add large file warning/hint
+    end_line_display = start_line + len(lines_read)
+    next_offset = end_line_display + 1
+
+    size_str = format_size(file_size)
+    max_size_str = format_size(DEFAULT_MAX_BYTES)
+
+    hint = f"\n\n[File is large ({size_str}). Showing lines {start_line + 1}-{end_line_display}"
+
+    if truncated_by_bytes:
+        hint += f" (truncated at {max_size_str} limit)"
+    elif truncated_by_lines:
+        hint += f" (limit {max_lines} lines)"
+    elif limit is not None:
+        hint += f" (user limit {limit})"
+    else:
+        hint += " (end of file)"
+
+    if truncated_by_bytes or truncated_by_lines:
+        hint += f". Use offset={next_offset} to read more.]"
+    else:
+        # We don't know if there are more lines unless we counted them all or hit EOF
+        # If we hit EOF (loop ended naturally and not truncated), we are done.
+        # But wait, lines_read < max_lines means we hit EOF.
+        # So we only need hint if truncated.
+        pass
+
+    if truncated_by_bytes or truncated_by_lines:
+        output_text += hint
+    elif len(lines_read) < max_lines and limit is not None:
+         # User set a limit, and we read less than limit -> EOF reached.
+         # Or user set a limit, and we read exactly limit -> Maybe more?
+         pass
+
+    # For large files, we might not know total_lines without scanning.
+    # We omit "of {total_lines}" to save time.
 
     return output_text

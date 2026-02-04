@@ -155,7 +155,7 @@ start_webui() {
     # 启动服务 (使用 screen 完全脱离终端)
     # 启用 Hot Reload 以支持开发体验
     echo -e "\n\n========== $(date '+%Y-%m-%d %H:%M:%S') web-ui starting ==========\n" >> "$LOG_DIR/webui.log"
-    screen -dmS nimbus-webui bash -c "cd '$SCRIPT_DIR/web-ui' && npm run dev >> '$LOG_DIR/webui.log' 2>&1"
+    screen -dmS nimbus-webui bash -c "cd '$SCRIPT_DIR/web-ui' && npm run dev -- -p $WEBUI_PORT >> '$LOG_DIR/webui.log' 2>&1"
     
     if wait_for_port $WEBUI_PORT 20; then
         log_ok "web-ui started on :$WEBUI_PORT"
