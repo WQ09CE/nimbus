@@ -500,14 +500,14 @@ class VCPU:
                 self.mmu.config.max_context_tokens * self.mmu.config.compress_threshold
             )
             logger.warning(
-                f"🧠 Context overflow: {current_tokens} tokens > {threshold} threshold"
+                f"🧠 Context overflow: {current_tokens} tokens exceeds threshold ({threshold}/{self.mmu.config.max_context_tokens})"
             )
             return StepResult(
                 is_final=False,
                 fault=Fault(
                     domain="MEMORY",
                     code="CONTEXT_OVERFLOW",
-                    message=f"Context overflow: {current_tokens} tokens > {threshold} threshold",
+                    message=f"Context overflow: {current_tokens} tokens exceeds threshold ({threshold}/{self.mmu.config.max_context_tokens}). Compaction required.",
                     retryable=True,  # Can retry after compaction
                     context={
                         "current_tokens": current_tokens,

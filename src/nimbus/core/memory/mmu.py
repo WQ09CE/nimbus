@@ -65,7 +65,7 @@ class MMUConfig:
 class MMU:
     """
     Memory Management Unit.
-    
+
     Implements the "Anchor & Stream" strategy for context management.
     """
 
@@ -579,44 +579,81 @@ class MMU:
 
     async def archive_and_reset(self, session_id: str, summarizer=None) -> Optional[str]:
         """
-        Simplified compaction: Truncate history, keeping only the most recent messages.
-        
-        This satisfies the vCPU's compaction requirement by physically removing 
-        old messages from the stack frame. In the "Smart Drop" design, this is 
-        equivalent to a "Hard Cut" when the buffer is full.
+        Perform in-memory compaction: Summarize history + Truncate.
+        No file I/O involved.
         """
-        if not self._stack:
-            return None
-
+        if not self._stack: return None
         frame = self.current_frame
-        keep_count = self.config.keep_recent_messages
+        messages = frame.messages
+        if not messages: return None
 
-        # If we have fewer messages than we want to keep, we can't compact by truncation.
-        # But we might still be over budget due to huge messages.
-        # For simplicity, we only truncate by count here.
-        if len(frame.messages) <= keep_count:
-            # If we are here, it means needs_compression() is True, but we don't have many messages.
-            # This implies the messages are huge. We should probably clear more or warn.
-            # For now, let's keep it safe and do nothing, relying on assemble_context smart drop.
-            # But we must return a value to signal "attempted".
+        # 1. Identify what fits in budget (Bottom-up)
+        # We want to keep as much recent history as possible within frame_budget
+        budget = self.config.frame_budget
+        current_tokens = 0
+        cut_index = 0
+
+        # Scan backwards to find the cut point
+        # kept_messages = messages[cut_index:]
+        for i in range(len(messages) - 1, -1, -1):
+            msg = messages[i]
+            tokens = msg.token_estimate()
+
+            if current_tokens + tokens > budget:
+                cut_index = i + 1
+                break
+
+            current_tokens += tokens
+
+            # Optimization: Don't keep more than N messages even if budget allows
+            # This prevents context from getting too long with tiny messages
+            if len(messages) - i >= self.config.keep_recent_messages * 2:
+                 cut_index = i
+                 break
+
+        # If we are keeping everything but still triggered compaction (likely due to Pinned Context size),
+        # we must force cut something to make progress.
+        if cut_index == 0 and self.needs_compression():
+             # Force cut oldest 20%
+             cut_index = max(1, int(len(messages) * 0.2))
+
+        # 2. Split
+        messages_to_archive = messages[:cut_index]
+        messages_to_keep = messages[cut_index:]
+
+        if not messages_to_archive:
             return None
 
-        # Keep tail
-        kept_messages = frame.messages[-keep_count:]
-        removed_count = len(frame.messages) - keep_count
+        # 3. Summarize (Crucial: Update Global Summary)
+        if summarizer:
+            # We provide the full context to the summarizer so it can capture the transition
+            try:
+                summary_text = await summarizer(messages)
+                if summary_text:
+                    self.update_global_summary(summary_text)
+            except Exception as e:
+                # Log but continue (don't fail compaction)
+                from nimbus.core.logging import get_logger
+                get_logger("memory.mmu").error(f"Summarization failed: {e}")
 
-        # Reset frame messages
-        frame.messages = kept_messages
+        # 4. Apply Truncation
+        frame.messages = messages_to_keep
 
-        # Insert a marker (system message) to indicate truncation
-        # This helps the LLM know there's a gap
+        # Insert marker
         frame.messages.insert(0, Message(
             role="system",
-            content=f"[System: Memory compacted. {removed_count} older messages were archived.]",
+            content=f"[System: Memory compacted. {len(messages_to_archive)} older messages were summarized and archived.]",
             meta={"compaction_marker": True}
         ))
 
-        # Update discard markers (clear them as they likely referred to old messages)
-        # In our simplified design, markers are on messages, so they are gone with the messages.
+        # Clear markers
+        self.clear_markers()
 
-        return "memory_truncated_in_live_buffer"
+        return "memory_compacted"
+
+    def clear(self) -> None:
+        """Clear all state and reset to initial."""
+        self._pinned = None
+        self._stack = [create_root_frame()]
+        self._global_summary = ""
+        self._state_manager = StateManager()
