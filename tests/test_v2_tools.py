@@ -3,23 +3,22 @@
 These tests verify that the v2 tools work correctly.
 """
 
-import pytest
-import tempfile
 import os
+import tempfile
 from pathlib import Path
 
+import pytest
+
 from nimbus.tools import (
-    read_file,
     bash_command,
-    write_file,
     edit_file,
     get_all_tools,
     get_tool,
     get_tool_function,
-    register_default_tools,
     iterate_tools,
-    ALL_TOOLS,
-    TOOL_FUNCTIONS,
+    read_file,
+    register_default_tools,
+    write_file,
 )
 
 
@@ -94,7 +93,7 @@ class TestBashTool:
         with pytest.raises(asyncio.TimeoutError):
             # Use 1 second timeout - 0.5s may be too fast for process startup
             await bash_command("sleep 10", timeout=1.0, workspace=Path.cwd())
-    
+
     @pytest.mark.asyncio
     async def test_bash_glob_via_find(self):
         """Test glob functionality via bash find command."""
@@ -103,22 +102,22 @@ class TestBashTool:
             (workspace / "file1.py").write_text("")
             (workspace / "file2.py").write_text("")
             (workspace / "file3.txt").write_text("")
-            
+
             result = await bash_command("find . -name '*.py'", workspace=workspace)
-            
+
             assert "file1.py" in result
             assert "file2.py" in result
             assert "file3.txt" not in result
-    
+
     @pytest.mark.asyncio
     async def test_bash_grep_via_grep(self):
         """Test grep functionality via bash grep command."""
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
             (workspace / "test.txt").write_text("line with foo\nline without\n")
-            
+
             result = await bash_command("grep 'foo' test.txt", workspace=workspace)
-            
+
             assert "foo" in result
 
 
@@ -191,7 +190,7 @@ class TestEditTool:
                     new_text="def replaced():",
                     workspace=workspace,
                 )
-    
+
     @pytest.mark.asyncio
     async def test_edit_backward_compat(self):
         """Test backward compatibility with old_string/new_string."""

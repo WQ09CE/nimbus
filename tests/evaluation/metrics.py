@@ -14,11 +14,9 @@ This module provides metrics classes for measuring agent capabilities:
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Set, Optional, Tuple
-from collections import Counter
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from nimbus.core.types import TaskDAG, TaskNode
-
+from nimbus.core.types import TaskDAG
 
 # =============================================================================
 # Base Metrics Class

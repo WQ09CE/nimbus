@@ -3,7 +3,8 @@
 This module provides helper functions that use the APIClient.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List
+
 from .client import APIClient
 
 

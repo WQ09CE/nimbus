@@ -31,7 +31,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-
 # Check for httpx
 try:
     import httpx
@@ -571,7 +570,7 @@ class RulePlannerE2ETest:
             print(f"  Average fast path time: {avg_fast_path_ms:.0f}ms")
         print(f"  Total time: {total_time_ms:.0f}ms")
 
-        print(f"\n[Overall]")
+        print("\n[Overall]")
         print(f"  Total: {len(self.results)} tests, {passed} passed, {failed} failed")
 
         if failed == 0:

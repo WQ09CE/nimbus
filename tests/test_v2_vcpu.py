@@ -8,17 +8,16 @@ These tests verify the core execution engine functionality:
 - Memory (MMU) integration
 """
 
-import pytest
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
-from dataclasses import dataclass, field
 
-from nimbus.core.protocol import ActionIR, ToolResult, Fault
-from nimbus.core.runtime.decoder import InstructionDecoder
-from nimbus.core.runtime.vcpu import VCPU, VCPUConfig, StepResult
-from nimbus.os.gate import KernelGate, SimpleEventStream
-from nimbus.core.memory.mmu import MMU, MMUConfig
+import pytest
+
 from nimbus.core.memory.context import PinnedContext
-
+from nimbus.core.memory.mmu import MMU, MMUConfig
+from nimbus.core.runtime.decoder import InstructionDecoder
+from nimbus.core.runtime.vcpu import VCPU, VCPUConfig
+from nimbus.os.gate import KernelGate, SimpleEventStream
 
 # =============================================================================
 # Mock LLM Client
@@ -365,9 +364,9 @@ class TestVCPULimits:
                         function=MockFunction(name="return_result", arguments='{"result": "All done after compaction!"}')
                     )]
                 ))
-        
+
         llm = MockLLMClient(responses=responses)
-        
+
         # Set low max_iterations to trigger compaction quickly
         config = VCPUConfig(
             max_iterations=5,
@@ -375,7 +374,7 @@ class TestVCPULimits:
             compact_on_limit=True,
             max_compactions=3,
         )
-        
+
         vcpu = VCPU(
             alu=llm,
             decoder=decoder,
@@ -383,13 +382,13 @@ class TestVCPULimits:
             mmu=mmu,
             config=config
         )
-        
+
         result = await vcpu.execute("Read many files")
-        
+
         # Should succeed (not BUDGET_EXCEEDED) because compaction allowed continuation
         assert result.status == "OK"
         assert "All done" in result.output
-        
+
         # Should have triggered at least one compaction (iteration reset from 5 back to 0)
         # We ran 12+ iterations with max_iterations=5, so at least 2 compactions
         assert vcpu._compaction_count >= 1
@@ -407,9 +406,9 @@ class TestVCPULimits:
             )
             for i in range(100)
         ]
-        
+
         llm = MockLLMClient(responses=responses)
-        
+
         # Set very low limits to quickly hit max_compactions
         config = VCPUConfig(
             max_iterations=3,
@@ -417,7 +416,7 @@ class TestVCPULimits:
             compact_on_limit=True,
             max_compactions=2,  # Only allow 2 compactions
         )
-        
+
         vcpu = VCPU(
             alu=llm,
             decoder=decoder,
@@ -425,9 +424,9 @@ class TestVCPULimits:
             mmu=mmu,
             config=config
         )
-        
+
         result = await vcpu.execute("Endless task")
-        
+
         # Should fail with BUDGET_EXCEEDED after max_compactions reached
         assert result.status == "ERROR"
         assert result.fault is not None

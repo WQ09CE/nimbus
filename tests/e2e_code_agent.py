@@ -25,7 +25,6 @@ sys.path.insert(0, str(project_root / "src"))
 
 from nimbus.apps import CodeAgent
 
-
 # Configure logging
 log_level = os.environ.get("NIMBUS_LOG_LEVEL", "INFO")
 logging.basicConfig(

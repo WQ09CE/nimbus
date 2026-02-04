@@ -12,25 +12,23 @@ Tests cover:
 """
 
 import asyncio
-import pytest
-from typing import Any, Dict, List
+from typing import Dict, List
 
+import pytest
+
+from nimbus.core.protocol import Fault, ToolResult
 from nimbus.core.scheduler import (
     DAG,
-    Task,
-    TaskSpec,
-    TaskState,
+    EventStream,
     Scheduler,
     SchedulerConfig,
-    EventStream,
+    Task,
+    TaskSpec,
     create_dag,
     create_linear_dag,
-    is_terminal_state,
     is_success_state,
-    VALID_TRANSITIONS,
+    is_terminal_state,
 )
-from nimbus.core.protocol import Event, Fault, ToolResult
-
 
 # =============================================================================
 # Test Fixtures

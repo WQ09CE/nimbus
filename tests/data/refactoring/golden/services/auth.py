@@ -3,7 +3,8 @@
 This module provides authentication-related functionality using the APIClient.
 """
 
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
+
 from ..core.client import APIClient
 
 

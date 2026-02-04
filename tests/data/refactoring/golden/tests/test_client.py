@@ -4,6 +4,7 @@ These tests verify that the APIClient.new_api() method works correctly.
 """
 
 import pytest
+
 from ..core.client import APIClient
 
 

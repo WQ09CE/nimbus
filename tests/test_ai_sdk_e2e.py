@@ -4,9 +4,10 @@ Tests the /api/chat endpoint with multi-turn conversations.
 """
 
 import asyncio
-import httpx
 import json
 import sys
+
+import httpx
 
 NIMBUS_API = "http://localhost:4096"
 

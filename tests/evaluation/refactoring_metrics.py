@@ -10,11 +10,11 @@ Metrics:
 - tests_pass: Whether tests pass after refactoring
 """
 
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import List, Dict, Any, Set, Optional, Tuple
 import difflib
 import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, Optional, Set
 
 
 @dataclass

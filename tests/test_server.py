@@ -7,13 +7,13 @@ This module tests:
 - API routes (basic structure)
 """
 
-import pytest
-import asyncio
-from datetime import datetime
-from typing import Dict, Any
 
 # Server modules use relative imports that work within the package
 import sys
+from datetime import datetime
+
+import pytest
+
 sys.path.insert(0, '.')
 
 
@@ -70,7 +70,7 @@ class TestServerModels:
 
     def test_chat_request(self):
         """Test ChatRequest model."""
-        from nimbus.server.models import ChatRequest, AttachmentCreate
+        from nimbus.server.models import AttachmentCreate, ChatRequest
 
         request = ChatRequest(
             content="Hello, world!",
@@ -84,7 +84,12 @@ class TestServerModels:
 
     def test_dag_response(self):
         """Test DAGResponse model."""
-        from nimbus.server.models import DAGResponse, DAGStatsResponse, TaskNodeResponse, TaskStatusEnum
+        from nimbus.server.models import (
+            DAGResponse,
+            DAGStatsResponse,
+            TaskNodeResponse,
+            TaskStatusEnum,
+        )
 
         stats = DAGStatsResponse(
             total=5,
@@ -114,7 +119,7 @@ class TestServerModels:
 
     def test_skill_response(self):
         """Test SkillResponse model."""
-        from nimbus.server.models import SkillResponse, SkillParameter
+        from nimbus.server.models import SkillParameter, SkillResponse
 
         skill = SkillResponse(
             name="synthesize",
@@ -152,8 +157,8 @@ class TestPermissionManager:
 
     def test_set_rule(self):
         """Test setting permission rules."""
-        from nimbus.server.permission import PermissionManager
         from nimbus.server.models import PermissionDecision
+        from nimbus.server.permission import PermissionManager
 
         manager = PermissionManager()
 
@@ -176,8 +181,8 @@ class TestPermissionManager:
 
     def test_unknown_tool_defaults_to_ask(self):
         """Test that unknown tools default to ASK."""
-        from nimbus.server.permission import PermissionManager
         from nimbus.server.models import PermissionDecision
+        from nimbus.server.permission import PermissionManager
 
         manager = PermissionManager()
 
@@ -321,6 +326,7 @@ class TestAPIRouter:
     def test_fastapi_app_creation(self):
         """Test FastAPI app can be created with router."""
         from fastapi import FastAPI
+
         from nimbus.server.api import router
 
         app = FastAPI()

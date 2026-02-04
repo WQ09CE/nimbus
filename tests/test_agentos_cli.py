@@ -34,17 +34,15 @@ import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
-from rich import box
-
 
 console = Console()
 
@@ -535,8 +533,9 @@ class AgentOSTestFramework:
                 return False
 
             try:
-                from nimbus.agentos import create_agent_os
                 from nimbus.llm import OpenRouterV2Client
+
+                from nimbus.agentos import create_agent_os
 
                 console.print(f"[dim]Using OpenRouter with model: {self.model}[/dim]")
                 self.llm = OpenRouterV2Client(api_key=api_key, model=self.model)
@@ -557,8 +556,9 @@ class AgentOSTestFramework:
                 return False
 
             try:
-                from nimbus.agentos import create_agent_os
                 from nimbus.llm import GeminiV2Client
+
+                from nimbus.agentos import create_agent_os
 
                 console.print(f"[dim]Using Gemini with model: {self.model}[/dim]")
                 self.llm = GeminiV2Client(api_key=api_key, model=self.model)

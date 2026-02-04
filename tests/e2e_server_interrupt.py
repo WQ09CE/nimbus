@@ -16,9 +16,10 @@ Prerequisites:
 
 import asyncio
 import json
-import pytest
-import httpx
 from typing import AsyncIterator
+
+import httpx
+import pytest
 
 # Server config
 BASE_URL = "http://127.0.0.1:4096/api/v1"
@@ -31,13 +32,13 @@ async def sse_stream(client: httpx.AsyncClient, url: str, json_data: dict) -> As
         response.raise_for_status()
         buffer = ""
         event_type = "message"
-        
+
         async for chunk in response.aiter_text():
             buffer += chunk
             while "\n\n" in buffer:
                 event_block, buffer = buffer.split("\n\n", 1)
                 lines = event_block.strip().split("\n")
-                
+
                 for line in lines:
                     if line.startswith("event:"):
                         event_type = line[6:].strip()
@@ -82,7 +83,7 @@ async def test_server_session_interrupt_resume(client, check_server):
     7. Verify task can continue
     """
     print("\n🚀 E2E Server Interrupt Test")
-    
+
     # --- Step 1: Create Session ---
     print("\n[Step 1] Creating session...")
     resp = await client.post("/sessions", json={
@@ -90,29 +91,29 @@ async def test_server_session_interrupt_resume(client, check_server):
         "workspace_path": ".",
     })
     assert resp.status_code == 201, f"Failed to create session: {resp.text}"
-    
+
     session = resp.json()
     session_id = session["id"]
     print(f"   ✓ Session created: {session_id}")
-    
+
     try:
         # --- Step 2: Start Task in Background ---
         print("\n[Step 2] Starting task...")
-        
+
         # Use a task that takes multiple steps
         task = "Count from 1 to 3. For each number, use Bash to run 'echo Number: X' where X is the current number. Do them one at a time."
-        
+
         # Start chat in background task so we can interrupt it
         events_received = []
         chat_task = None
-        
+
         async def run_chat():
             """Run chat and collect events."""
             try:
                 async for event in sse_stream(client, f"/sessions/{session_id}/chat", {"content": task}):
                     events_received.append(event)
                     print(f"   📩 Event: {event['type']}")
-                    
+
                     # Stop after receiving tool_result to ensure task is in progress
                     if event["type"] == "tool_result":
                         print("   → Task is executing, ready for interrupt")
@@ -122,10 +123,10 @@ async def test_server_session_interrupt_resume(client, check_server):
                 print("   → Stream closed (expected after interrupt)")
             except Exception as e:
                 print(f"   ⚠️ Chat error: {e}")
-        
+
         # Start chat task
         chat_task = asyncio.create_task(run_chat())
-        
+
         # Wait for task to start executing (at least one tool call)
         print("   Waiting for task to start...")
         for _ in range(30):  # Wait up to 30 seconds
@@ -136,28 +137,28 @@ async def test_server_session_interrupt_resume(client, check_server):
                 break
         else:
             print("   ⚠️ Timeout waiting for task to start")
-        
+
         # --- Step 3: Interrupt ---
         print("\n[Step 3] Interrupting session...")
         resp = await client.post(f"/sessions/{session_id}/interrupt")
-        
+
         if resp.status_code == 200:
             result = resp.json()
-            print(f"   ✓ Interrupt successful")
+            print("   ✓ Interrupt successful")
             print(f"      Processes interrupted: {result.get('interrupted_processes', 0)}")
             if result.get("checkpoint"):
                 cp = result["checkpoint"]
                 print(f"      Checkpoint: step={cp.get('step_index')}, messages={cp.get('memory_messages')}")
         else:
             print(f"   ⚠️ Interrupt returned: {resp.status_code} - {resp.text}")
-        
+
         # Cancel the chat task
         chat_task.cancel()
         try:
             await chat_task
         except asyncio.CancelledError:
             pass
-        
+
         # --- Step 4: Verify Session State ---
         print("\n[Step 4] Verifying session state...")
         resp = await client.get(f"/sessions/{session_id}")
@@ -165,22 +166,22 @@ async def test_server_session_interrupt_resume(client, check_server):
         session_info = resp.json()
         print(f"   Session status: {session_info['status']}")
         print(f"   Message count: {session_info.get('message_count', 0)}")
-        
+
         # --- Step 5: Resume ---
         print("\n[Step 5] Resuming session...")
         resp = await client.post(f"/sessions/{session_id}/resume")
-        
+
         if resp.status_code == 200:
             result = resp.json()
-            print(f"   ✓ Resume successful")
+            print("   ✓ Resume successful")
             print(f"      Restored step: {result.get('restored_step')}")
             print(f"      Restored iteration: {result.get('restored_iteration')}")
         else:
             print(f"   ⚠️ Resume returned: {resp.status_code} - {resp.text}")
-        
+
         # --- Step 6: Continue Execution ---
         print("\n[Step 6] Continuing execution...")
-        
+
         # Send another message to continue
         continue_events = []
         async for event in sse_stream(client, f"/sessions/{session_id}/chat", {"content": "Continue where you left off."}):
@@ -189,37 +190,37 @@ async def test_server_session_interrupt_resume(client, check_server):
             if event["type"] == "dag_complete":
                 print("   ✓ Task completed!")
                 break
-        
+
         # --- Summary ---
         print("\n📊 Summary:")
         print(f"   Initial events: {len(events_received)}")
         print(f"   Continue events: {len(continue_events)}")
         print(f"   Total events: {len(events_received) + len(continue_events)}")
-        
+
     finally:
         # Cleanup: Delete session
         print("\n[Cleanup] Deleting session...")
         await client.delete(f"/sessions/{session_id}")
         print("   ✓ Session deleted")
-    
+
     print("\n✅ E2E Server Interrupt Test Completed!")
 
 
-@pytest.mark.asyncio  
+@pytest.mark.asyncio
 async def test_server_interrupt_no_active_session(client, check_server):
     """Test interrupting a session with no active processes."""
     print("\n🧪 Test: Interrupt inactive session")
-    
+
     # Create session
     resp = await client.post("/sessions", json={"name": "Inactive Test"})
     assert resp.status_code == 201
     session_id = resp.json()["id"]
-    
+
     try:
         # Try to interrupt (should fail gracefully)
         resp = await client.post(f"/sessions/{session_id}/interrupt")
         print(f"   Interrupt response: {resp.status_code}")
-        
+
         # Should return error since no AgentOS is loaded
         if resp.status_code == 400:
             print("   ✓ Correctly rejected (session not loaded)")
@@ -228,7 +229,7 @@ async def test_server_interrupt_no_active_session(client, check_server):
             print(f"   ✓ Returned: {result}")
     finally:
         await client.delete(f"/sessions/{session_id}")
-    
+
     print("   ✓ Test passed")
 
 

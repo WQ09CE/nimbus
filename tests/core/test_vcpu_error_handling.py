@@ -17,22 +17,20 @@ Test Strategy:
 """
 
 import json
-import pytest
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
-from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+from nimbus.core.memory.mmu import MMU, MMUConfig
 from nimbus.core.protocol import ActionIR, Fault, ToolResult
 from nimbus.core.runtime.decoder import InstructionDecoder
-from nimbus.core.runtime.vcpu import VCPU, VCPUConfig
 from nimbus.core.runtime.error_handler import (
     ErrorHandlerRegistry,
     RecoveryAction,
     ToolErrorCode,
 )
-from nimbus.core.memory.mmu import MMU, MMUConfig
-from nimbus.os.gate import KernelGate
-
+from nimbus.core.runtime.vcpu import VCPU, VCPUConfig
 
 # =============================================================================
 # Test Fixtures and Mocks

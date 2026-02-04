@@ -1,6 +1,5 @@
 """Pytest configuration for nimbus tests."""
 
-import pytest
 
 
 def pytest_configure(config):

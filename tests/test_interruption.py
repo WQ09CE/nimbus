@@ -8,16 +8,16 @@ Verifies:
 """
 
 import asyncio
-import pytest
-import time
-from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
+from typing import Any, List, Optional
 
-from nimbus.core.runtime.vcpu import VCPU, VCPUConfig, LLMResponse
+import pytest
+
 from nimbus.core.memory.mmu import MMU, MMUConfig
-from nimbus.core.runtime.decoder import InstructionDecoder
-from nimbus.os.gate import KernelGate
 from nimbus.core.protocol import ToolResult
+from nimbus.core.runtime.decoder import InstructionDecoder
+from nimbus.core.runtime.vcpu import VCPU, LLMResponse, VCPUConfig
+from nimbus.os.gate import KernelGate
 
 # --- Mock Components ---
 
@@ -29,7 +29,7 @@ class SlowLLMClient:
         self.call_count += 1
         # Simulate thinking time
         await asyncio.sleep(0.1)
-        
+
         # Infinite loop behavior
         return MockResponse(
             content=f"Step {self.call_count}",
@@ -62,7 +62,7 @@ async def test_vcpu_graceful_interruption():
     mmu = MMU(MMUConfig())
     gate = MockGate(None) # type: ignore
     decoder = InstructionDecoder()
-    
+
     vcpu = VCPU(
         alu=llm,
         decoder=decoder,
@@ -70,31 +70,31 @@ async def test_vcpu_graceful_interruption():
         mmu=mmu,
         config=VCPUConfig(max_iterations=100)
     )
-    
+
     # 2. Start Execution in Background
     task = asyncio.create_task(vcpu.execute("Infinite task"))
-    
+
     # Let it run for a bit (reach step 2 or 3)
-    await asyncio.sleep(0.3) 
+    await asyncio.sleep(0.3)
     assert vcpu._state.is_running
     assert vcpu._state.iteration >= 1
-    
+
     # 3. Request Interruption
     print("\n--- Requesting Interruption ---")
     vcpu.request_pause()
     assert vcpu._state.interruption_requested
-    
+
     # 4. Wait for it to stop
     result = await task
-    
+
     # 5. Verify Interruption
     assert result.status == "CANCELLED"
     assert result.fault.code == "INTERRUPTED"
     assert not vcpu._state.is_running
     assert vcpu._state.interruption_requested
-    
+
     print(f"\n--- Interrupted at step {vcpu._state.iteration} ---")
-    
+
     # 6. Verify State is checkpoints-ready
     # We should be able to create a checkpoint here
     ckpt = vcpu.create_checkpoint("sess_int", reason="interrupted")

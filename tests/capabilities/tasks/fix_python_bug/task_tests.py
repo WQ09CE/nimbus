@@ -41,7 +41,7 @@ def test_other_functions_unchanged(workspace: Path):
     """Test that other functions still work."""
     sys.path.insert(0, str(workspace))
     try:
-        from calculator import add, subtract, multiply
+        from calculator import add, multiply, subtract
         assert add(2, 3) == 5
         assert subtract(5, 3) == 2
         assert multiply(3, 4) == 12

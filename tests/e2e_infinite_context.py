@@ -24,8 +24,8 @@ import json
 import os
 import sys
 import time
-from dataclasses import dataclass, field
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Optional
 
 try:
     import httpx
@@ -125,9 +125,9 @@ class InfiniteContextTester:
                             data = json.loads(current_data)
                         except:
                             data = {"raw": current_data}
-                        
+
                         events.append({"event": current_event, "data": data})
-                        
+
                         # Collect text from different event types
                         if current_event == "content.delta":
                             response_text += data.get("text", "")
@@ -139,14 +139,14 @@ class InfiniteContextTester:
                         elif current_event == "thinking":
                             # Also collect thinking content
                             response_text += data.get("content", "")
-                        
+
                         # Track compaction events (from AgentOS events)
                         if current_event == "compaction" or (
                             current_event == "heartbeat" and "compaction" in str(data).lower()
                         ):
                             self.compaction_count += 1
                             self.log(f"🗜️ Compaction triggered! (#{self.compaction_count})")
-                        
+
                         current_event = None
                         current_data = ""
 
@@ -165,7 +165,7 @@ class InfiniteContextTester:
         name = "Memory After Compaction"
         start_time = time.time()
         self.compaction_count = 0
-        
+
         self.log(f"\n{'='*60}")
         self.log(f"Test: {name}")
         self.log(f"{'='*60}")
@@ -182,18 +182,18 @@ class InfiniteContextTester:
         # Step 2: Fill context with file reads to trigger compaction
         files_to_read = [
             "src/nimbus/agentos.py",
-            "src/nimbus/core/runtime/vcpu.py", 
+            "src/nimbus/core/runtime/vcpu.py",
             "src/nimbus/core/memory/mmu.py",
             "src/nimbus/server/session_v2.py",
         ]
-        
+
         for i, filepath in enumerate(files_to_read):
             self.log(f"Step 2.{i+1}: Reading {filepath} to fill context...")
             resp, _ = await self.send_message(
                 f"请读取文件 {filepath} 并告诉我这个文件的主要用途（简要回答）"
             )
             self.log(f"Response: {resp[:150]}...")
-            
+
             if self.compaction_count > 0:
                 self.log(f"✅ Compaction triggered after reading {i+1} files!")
                 break
@@ -208,7 +208,7 @@ class InfiniteContextTester:
         # Check if secret is in response
         duration_ms = (time.time() - start_time) * 1000
         passed = secret in resp3 or "ZEBRA" in resp3.upper()
-        
+
         details = f"Secret: {secret}, Found in response: {passed}, Compactions: {self.compaction_count}"
         if not passed:
             details += f"\nActual response: {resp3}"
@@ -221,7 +221,7 @@ class InfiniteContextTester:
             compactions_triggered=self.compaction_count
         )
         self.results.append(result)
-        
+
         self.log(f"Result: {'PASS' if passed else 'FAIL'} - {details}")
         return result
 
@@ -253,17 +253,17 @@ class InfiniteContextTester:
         self.log("Step 2: Filling context to trigger compaction...")
         fill_messages = [
             "请读取 src/nimbus/core/memory/mmu.py 文件并简要说明",
-            "请读取 src/nimbus/core/memory/context.py 文件并简要说明", 
+            "请读取 src/nimbus/core/memory/context.py 文件并简要说明",
             "请读取 src/nimbus/agentos.py 文件的前100行",
         ]
-        
+
         for i, msg in enumerate(fill_messages):
             self.log(f"Step 2.{i+1}: {msg[:50]}...")
             resp, _ = await self.send_message(msg)
             self.log(f"Response: {resp[:100]}...")
-            
+
             if self.compaction_count > 0:
-                self.log(f"✅ Compaction triggered!")
+                self.log("✅ Compaction triggered!")
                 break
 
         # Step 3: Ask about earlier tool calls
@@ -292,7 +292,7 @@ class InfiniteContextTester:
             compactions_triggered=self.compaction_count
         )
         self.results.append(result)
-        
+
         self.log(f"Result: {'PASS' if passed else 'FAIL'} - {details}")
         return result
 
@@ -324,7 +324,7 @@ class InfiniteContextTester:
         self.log("Filling context for first compaction...")
         await self.send_message("读取 src/nimbus/agentos.py 并总结主要功能")
         await self.send_message("读取 src/nimbus/core/runtime/vcpu.py 并总结")
-        
+
         first_compaction = self.compaction_count
         self.log(f"After phase 1: {first_compaction} compactions")
 
@@ -349,7 +349,7 @@ class InfiniteContextTester:
         self.log(f"Response: {resp}")
 
         duration_ms = (time.time() - start_time) * 1000
-        
+
         has_first = "FIRST" in resp.upper() or "123" in resp
         has_second = "SECOND" in resp.upper() or "456" in resp
         passed = has_first and has_second
@@ -368,7 +368,7 @@ class InfiniteContextTester:
             compactions_triggered=self.compaction_count
         )
         self.results.append(result)
-        
+
         self.log(f"Result: {'PASS' if passed else 'FAIL'} - {details}")
         return result
 
@@ -417,7 +417,7 @@ class InfiniteContextTester:
         has_password = "9876" in resp
         has_api_key = "WXYZ" in resp.upper()
         has_port = "8888" in resp
-        
+
         passed = has_password and has_api_key and has_port
         found_count = sum([has_password, has_api_key, has_port])
 
@@ -433,7 +433,7 @@ class InfiniteContextTester:
             compactions_triggered=self.compaction_count
         )
         self.results.append(result)
-        
+
         self.log(f"Result: {'PASS' if passed else 'FAIL'} - {details}")
         return result
 
@@ -444,7 +444,7 @@ class InfiniteContextTester:
         print("Testing AI memory retention after context compaction")
         print("=" * 70)
         print(f"Server: {self.server_url}")
-        print(f"Token budget: 4000 (stress test mode)")
+        print("Token budget: 4000 (stress test mode)")
         print()
 
         if not await self.health_check():
@@ -463,19 +463,19 @@ class InfiniteContextTester:
             if not await self.create_session():
                 self.log("Failed to create session", "ERROR")
                 continue
-            
+
             try:
                 await test_func()
             except Exception as e:
                 self.log(f"Test failed with exception: {e}", "ERROR")
                 import traceback
                 traceback.print_exc()
-            
+
             await asyncio.sleep(1)
 
         # Print summary
         self.print_summary()
-        
+
         return all(r.passed for r in self.results)
 
     def print_summary(self):
@@ -483,10 +483,10 @@ class InfiniteContextTester:
         print("\n" + "=" * 70)
         print("TEST SUMMARY")
         print("=" * 70)
-        
+
         total_compactions = sum(r.compactions_triggered for r in self.results)
         passed = sum(1 for r in self.results if r.passed)
-        
+
         for r in self.results:
             status = "✅ PASS" if r.passed else "❌ FAIL"
             print(f"\n{status} - {r.name}")
@@ -497,7 +497,7 @@ class InfiniteContextTester:
         print("\n" + "-" * 70)
         print(f"Total: {len(self.results)} tests, {passed} passed, {len(self.results)-passed} failed")
         print(f"Total compactions triggered: {total_compactions}")
-        
+
         if passed == len(self.results):
             print("\n🎉 ALL TESTS PASSED - Infinite context working!")
         else:

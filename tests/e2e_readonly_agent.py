@@ -30,7 +30,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
-
 # Check for httpx
 try:
     import httpx

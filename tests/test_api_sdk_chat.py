@@ -6,9 +6,9 @@ API SDK Chat 端点完整测试
 
 import asyncio
 import json
-import httpx
-from typing import List, Dict, Any
+from typing import Any, Dict, List
 
+import httpx
 
 BASE_URL = "http://localhost:4096"
 SESSION_ID = "test_session_diag_001"
@@ -30,7 +30,7 @@ async def send_chat_message(
     }
 
     print(f"\n{'='*60}")
-    print(f"发送请求:")
+    print("发送请求:")
     print(f"  Session: {session_id}")
     print(f"  Messages ({len(messages)}):")
     for msg in messages:

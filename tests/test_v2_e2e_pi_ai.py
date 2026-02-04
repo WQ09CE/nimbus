@@ -21,18 +21,15 @@ Usage:
     pytest tests/test_v2_e2e_pi_ai.py -v -m "not slow"
 """
 
-import os
-import pytest
 import asyncio
+import os
 import tempfile
-from pathlib import Path
-from typing import Any, Dict, List
 
-from nimbus.bridge.pi_ai_http import PiAiHttpClient, Message
-from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+import pytest
+
 from nimbus import AgentOS
-from nimbus.tools import get_all_tools, TOOL_FUNCTIONS
-
+from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+from nimbus.bridge.pi_ai_http import Message, PiAiHttpClient
 
 # =============================================================================
 # Fixtures
@@ -125,9 +122,9 @@ class TestPiAiHttpClient:
         messages = [
             Message(role="user", content="Say 'hello world' and nothing else.")
         ]
-        
+
         result = await pi_client.complete(messages)
-        
+
         assert result is not None
         assert result.content is not None
         assert len(result.content) > 0
@@ -147,7 +144,7 @@ class TestPiLLMAdapter:
         # Default config
         adapter = PiLLMAdapter()
         assert adapter.config.base_url == "http://localhost:3031"
-        
+
         # Custom config
         config = PiLLMConfig(
             model="anthropic/claude-sonnet-4-20250514",
@@ -161,14 +158,14 @@ class TestPiLLMAdapter:
         """Test chat without tools."""
         adapter = PiLLMAdapter()
         await adapter.start()
-        
+
         try:
             messages = [
                 {"role": "user", "content": "What is 2 + 2? Reply with just the number."}
             ]
-            
+
             response = await adapter.chat(messages, tools=None)
-            
+
             assert response is not None
             assert response.content is not None
             assert "4" in response.content
@@ -181,20 +178,20 @@ class TestPiLLMAdapter:
         """Test chat with tool calling."""
         adapter = PiLLMAdapter()
         await adapter.start()
-        
+
         try:
             messages = [
                 {"role": "user", "content": "Read the file /etc/hostname and tell me what it contains."}
             ]
-            
+
             response = await adapter.chat(messages, tools=sample_tools)
-            
+
             assert response is not None
             # Should either have content or tool calls
             has_content = response.content is not None and len(response.content) > 0
             has_tool_calls = response.tool_calls is not None and len(response.tool_calls) > 0
             assert has_content or has_tool_calls
-            
+
             if response.tool_calls:
                 print(f"Tool calls: {response.tool_calls}")
                 # Should call Read tool
@@ -216,15 +213,15 @@ class TestPiLLMAdapter:
         """Test chat with system prompt."""
         adapter = PiLLMAdapter()
         await adapter.start()
-        
+
         try:
             messages = [
                 {"role": "system", "content": "You are a helpful assistant that only responds with single words."},
                 {"role": "user", "content": "What color is the sky on a clear day?"}
             ]
-            
+
             response = await adapter.chat(messages, tools=None)
-            
+
             assert response is not None
             assert response.content is not None
             # Should be a short response (single word or few words)
@@ -246,12 +243,12 @@ class TestAgentOSIntegration:
         """Create AgentOS with pi-ai adapter."""
         adapter = PiLLMAdapter()
         await adapter.start()
-        
+
         # Create AgentOS with default tools
         os = AgentOS(llm_client=adapter)
-        
+
         yield os
-        
+
         await adapter.stop()
 
     @pytest.mark.asyncio
@@ -259,7 +256,7 @@ class TestAgentOSIntegration:
     async def test_simple_question(self, agent_os):
         """Test simple Q&A without tool use."""
         result = await agent_os.run("What is the capital of France? Reply with just the city name.")
-        
+
         assert result.status == "OK"
         assert result.output is not None
         assert "Paris" in result.output
@@ -273,10 +270,10 @@ class TestAgentOSIntegration:
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
             f.write("Hello from test file!\nLine 2\nLine 3")
             temp_path = f.name
-        
+
         try:
             result = await agent_os.run(f"Read the file {temp_path} and tell me its contents.")
-            
+
             assert result.status == "OK"
             assert result.output is not None
             # Should contain file contents or reference to them
@@ -293,7 +290,7 @@ class TestAgentOSIntegration:
             "Use bash to find all Python files in the tests/ directory. "
             "Just tell me approximately how many there are."
         )
-        
+
         assert result.status == "OK"
         assert result.output is not None
         print(f"Result: {result.output}")
@@ -307,7 +304,7 @@ class TestAgentOSIntegration:
             "then read the first few lines of one of them. "
             "Summarize what you found."
         )
-        
+
         assert result.status == "OK"
         assert result.output is not None
         assert len(result.output) > 50  # Should have substantial output
@@ -327,7 +324,7 @@ class TestStress:
         """Test handling concurrent requests."""
         adapter = PiLLMAdapter()
         await adapter.start()
-        
+
         try:
             async def make_request(i: int):
                 messages = [
@@ -335,11 +332,11 @@ class TestStress:
                 ]
                 response = await adapter.chat(messages, tools=None)
                 return i, response.content
-            
+
             # Run 3 concurrent requests
             tasks = [make_request(i) for i in range(1, 4)]
             results = await asyncio.gather(*tasks)
-            
+
             assert len(results) == 3
             for i, content in results:
                 assert content is not None
@@ -355,19 +352,19 @@ class TestStress:
         """Test multi-turn conversation."""
         adapter = PiLLMAdapter()
         await adapter.start()
-        
+
         try:
             messages = []
-            
+
             # Turn 1
             messages.append({"role": "user", "content": "Remember the number 42."})
             response = await adapter.chat(messages, tools=None)
             messages.append({"role": "assistant", "content": response.content})
-            
+
             # Turn 2
             messages.append({"role": "user", "content": "What number did I ask you to remember?"})
             response = await adapter.chat(messages, tools=None)
-            
+
             assert "42" in response.content
             print(f"Final response: {response.content}")
         finally:
@@ -388,10 +385,10 @@ class TestErrorHandling:
         config = PiLLMConfig(base_url="http://localhost:9999")
         adapter = PiLLMAdapter(config=config)
         await adapter.start()
-        
+
         try:
             messages = [{"role": "user", "content": "Hello"}]
-            
+
             with pytest.raises(Exception):
                 await adapter.chat(messages, tools=None)
         finally:
@@ -403,10 +400,10 @@ class TestErrorHandling:
         config = PiLLMConfig(model="invalid/nonexistent-model")
         adapter = PiLLMAdapter(config=config)
         await adapter.start()
-        
+
         try:
             messages = [{"role": "user", "content": "Hello"}]
-            
+
             # Should either raise an error or return an error response
             try:
                 response = await adapter.chat(messages, tools=None)

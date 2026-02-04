@@ -1,9 +1,10 @@
 """Tests for nimbus.tools.sandbox module."""
 
-import pytest
-from pathlib import Path
-import tempfile
 import os
+import tempfile
+from pathlib import Path
+
+import pytest
 
 from nimbus.tools.sandbox import Sandbox, SandboxError
 

@@ -8,16 +8,15 @@ Tests that session state can be:
 """
 
 import asyncio
-import pytest
-from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from nimbus.agentos import AgentOS, AgentOSConfig
+import pytest
+
 from nimbus.core.memory.mmu import MMU, MMUConfig
-from nimbus.core.runtime.vcpu import VCPU, VCPUConfig
-from nimbus.core.runtime.decoder import InstructionDecoder
 from nimbus.core.protocol import ToolResult
+from nimbus.core.runtime.decoder import InstructionDecoder
+from nimbus.core.runtime.vcpu import VCPU, VCPUConfig
 from nimbus.storage.sqlite import SQLiteStorage
 
 
@@ -27,7 +26,7 @@ class MockLLMResponse:
     tool_calls: Optional[List[Any]] = None
 
 
-@dataclass 
+@dataclass
 class MockToolCall:
     id: str = "call_1"
     function: Any = None
@@ -140,7 +139,7 @@ class TestCheckpointBasic:
         iteration_before = vcpu._state.iteration
         messages_before = len(mmu.current_frame.messages)
 
-        print(f"\n=== Before Checkpoint ===")
+        print("\n=== Before Checkpoint ===")
         print(f"Iteration: {iteration_before}")
         print(f"Messages: {messages_before}")
         print(f"Is running: {vcpu._state.is_running}")
@@ -148,7 +147,7 @@ class TestCheckpointBasic:
         # Create checkpoint
         checkpoint = vcpu.create_checkpoint(session_id="test_session", reason="test")
 
-        print(f"\n=== Checkpoint Created ===")
+        print("\n=== Checkpoint Created ===")
         print(f"Session ID: {checkpoint.session_id}")
         print(f"Step Index: {checkpoint.step_index}")
         print(f"Reason: {checkpoint.reason}")
@@ -176,7 +175,7 @@ class TestCheckpointBasic:
         # Restore from checkpoint
         vcpu2.restore_from_checkpoint(checkpoint)
 
-        print(f"\n=== After Restore ===")
+        print("\n=== After Restore ===")
         print(f"Iteration: {vcpu2._state.iteration}")
         print(f"Messages: {len(mmu2.current_frame.messages)}")
         print(f"Is running: {vcpu2._state.is_running}")
@@ -242,7 +241,7 @@ class TestCheckpointBasic:
             assert restored_messages[i].role == role
             assert restored_messages[i].content == content
 
-        print(f"\n=== Conversation Restored ===")
+        print("\n=== Conversation Restored ===")
         for msg in restored_messages:
             print(f"  [{msg.role}]: {msg.content[:50]}...")
 
@@ -288,14 +287,14 @@ class TestCheckpointWithStorage:
         checkpoint = vcpu.create_checkpoint(session_id=session_id, reason="hibernate")
 
         checkpoint_id = await storage.save_session_checkpoint(checkpoint)
-        print(f"\n=== Checkpoint Saved ===")
+        print("\n=== Checkpoint Saved ===")
         print(f"Checkpoint ID: {checkpoint_id}")
 
         # Load checkpoint
         loaded = await storage.load_latest_session_checkpoint(session_id)
 
         assert loaded is not None
-        print(f"\n=== Checkpoint Loaded ===")
+        print("\n=== Checkpoint Loaded ===")
         print(f"Session ID: {loaded.session_id}")
         print(f"Step Index: {loaded.step_index}")
         print(f"Reason: {loaded.reason}")
@@ -383,7 +382,7 @@ class TestCheckpointEdgeCases:
         assert len(messages) == 2
         assert messages[1].tool_calls is not None
 
-        print(f"\n=== Mid-Execution Checkpoint Restored ===")
+        print("\n=== Mid-Execution Checkpoint Restored ===")
         print(f"Messages: {len(messages)}")
         print(f"Has pending tool calls: {messages[1].tool_calls is not None}")
 
@@ -438,7 +437,7 @@ class TestCheckpointEdgeCases:
         assert loaded.step_index == 10
         assert loaded.reason == "checkpoint_3"
 
-        print(f"\n=== Latest Checkpoint Loaded ===")
+        print("\n=== Latest Checkpoint Loaded ===")
         print(f"Step Index: {loaded.step_index} (expected 10)")
         print(f"Reason: {loaded.reason}")
 

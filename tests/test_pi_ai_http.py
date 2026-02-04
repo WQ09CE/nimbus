@@ -9,11 +9,13 @@
     pytest tests/test_pi_ai_http.py -v
 """
 
-import pytest
 import asyncio
+
+import pytest
+
 from nimbus.bridge.pi_ai_http import (
-    PiAiHttpClient,
     Message,
+    PiAiHttpClient,
 )
 
 
@@ -42,7 +44,7 @@ async def test_list_models(client):
     is_healthy = await client.health_check()
     if not is_healthy:
         pytest.skip("pi-ai server not running")
-    
+
     models = await client.list_models()
     assert isinstance(models, list)
     # 应该有一些模型
@@ -57,13 +59,13 @@ async def test_complete_simple(client):
     is_healthy = await client.health_check()
     if not is_healthy:
         pytest.skip("pi-ai server not running")
-    
+
     messages = [
         Message(role="user", content="Say 'hello' and nothing else"),
     ]
-    
+
     result = await client.complete(messages)
-    
+
     assert result.content is not None
     assert "hello" in result.content.lower()
     assert result.usage is not None
@@ -75,11 +77,11 @@ async def test_complete_with_tools(client):
     is_healthy = await client.health_check()
     if not is_healthy:
         pytest.skip("pi-ai server not running")
-    
+
     messages = [
         Message(role="user", content="What is 2+2? Use the calculator tool."),
     ]
-    
+
     tools = [{
         "type": "function",
         "function": {
@@ -97,9 +99,9 @@ async def test_complete_with_tools(client):
             }
         }
     }]
-    
+
     result = await client.complete(messages, tools=tools)
-    
+
     # 应该要么返回文本，要么调用工具
     assert result.content or result.tool_calls
 
@@ -110,18 +112,18 @@ async def test_stream_simple(client):
     is_healthy = await client.health_check()
     if not is_healthy:
         pytest.skip("pi-ai server not running")
-    
+
     messages = [
         Message(role="user", content="Count from 1 to 3"),
     ]
-    
+
     events = []
     async for event in client.stream(messages):
         events.append(event)
-    
+
     # 应该有一些事件
     assert len(events) > 0
-    
+
     # 应该有 delta 或 done 事件
     event_types = [e.type for e in events]
     assert "delta" in event_types or "done" in event_types

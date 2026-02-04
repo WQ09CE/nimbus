@@ -15,16 +15,14 @@ Usage:
     pytest tests/capabilities/test_agent_capabilities.py -v -m "not slow"
 """
 
-import pytest
 import asyncio
-import sys
 import importlib
 import time
-from pathlib import Path
-from typing import Optional
 from dataclasses import dataclass
-import yaml
+from pathlib import Path
 
+import pytest
+import yaml
 
 # =============================================================================
 # Task Configuration
@@ -49,7 +47,7 @@ class TaskConfig:
     category: str
     timeout_sec: float
     workspace_files: dict
-    
+
     @classmethod
     def load(cls, task_id: str) -> "TaskConfig":
         """Load task configuration from YAML."""
@@ -97,13 +95,14 @@ async def run_agent(workspace: Path, instruction: str, timeout_sec: float = 120.
         - duration_sec: float
     """
     import os as os_module
-    from nimbus.agentos import AgentOS, AgentOSConfig
+
     from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+    from nimbus.agentos import AgentOS, AgentOSConfig
     from nimbus.tools import register_default_tools
-    
+
     start = time.time()
     adapter = None
-    
+
     try:
         # Create LLM client via pi-ai
         llm_config = PiLLMConfig(
@@ -112,35 +111,35 @@ async def run_agent(workspace: Path, instruction: str, timeout_sec: float = 120.
         )
         adapter = PiLLMAdapter(config=llm_config)
         await adapter.start()
-        
+
         # Create config with workspace
         config = AgentOSConfig(
             default_timeout=timeout_sec,
             workspace_info=f"Workspace directory: {workspace}\nAll file operations should be relative to this directory.",
         )
-        
+
         # Change to workspace directory before running
         original_cwd = os_module.getcwd()
         os_module.chdir(workspace)
-        
+
         try:
             # Create agent
             agent = AgentOS(
                 llm_client=adapter,
                 config=config,
             )
-            
+
             # Register default tools with workspace
             register_default_tools(agent, workspace=workspace)
-            
+
             # Prepend workspace info to instruction
             full_instruction = f"Working directory: {workspace}\n\n{instruction}"
-            
+
             result = await asyncio.wait_for(
                 agent.run(full_instruction),
                 timeout=timeout_sec
             )
-            
+
             return {
                 "success": result.status == "OK",
                 "output": str(result.output) if result.output else "",
@@ -149,7 +148,7 @@ async def run_agent(workspace: Path, instruction: str, timeout_sec: float = 120.
             }
         finally:
             os_module.chdir(original_cwd)
-        
+
     except asyncio.TimeoutError:
         return {
             "success": False,
@@ -177,18 +176,18 @@ def run_task_tests(workspace: Path, task_id: str) -> tuple[int, int, list]:
     Returns (passed, failed, errors)
     """
     test_module_path = TASKS_DIR / task_id / "task_tests.py"
-    
+
     # Load the test module
     spec = importlib.util.spec_from_file_location(f"test_{task_id}", test_module_path)
     test_module = importlib.util.module_from_spec(spec)
-    
+
     passed = 0
     failed = 0
     errors = []
-    
+
     # Find and run all test functions
     spec.loader.exec_module(test_module)
-    
+
     for name in dir(test_module):
         if name.startswith("test_"):
             test_func = getattr(test_module, name)
@@ -201,7 +200,7 @@ def run_task_tests(workspace: Path, task_id: str) -> tuple[int, int, list]:
             except Exception as e:
                 failed += 1
                 errors.append(f"{name}: {type(e).__name__}: {e}")
-    
+
     return passed, failed, errors
 
 
@@ -211,84 +210,84 @@ def run_task_tests(workspace: Path, task_id: str) -> tuple[int, int, list]:
 
 class TestHelloWorld:
     """Test: Create a simple file."""
-    
+
     TASK_ID = "hello_world"
-    
+
     @pytest.mark.asyncio
     async def test_agent_creates_file(self, workspace):
         """Agent should create hello.txt with correct content."""
         task = TaskConfig.load(self.TASK_ID)
         setup_workspace(workspace, task)
-        
+
         # Run agent
         result = await run_agent(workspace, task.instruction, task.timeout_sec)
-        
+
         # Verify
         passed, failed, errors = run_task_tests(workspace, self.TASK_ID)
-        
+
         assert failed == 0, f"Task tests failed: {errors}"
         assert passed > 0, "No tests passed"
 
 
 class TestFixPythonBug:
     """Test: Fix a bug in Python code."""
-    
+
     TASK_ID = "fix_python_bug"
-    
+
     @pytest.mark.asyncio
     async def test_agent_fixes_bug(self, workspace):
         """Agent should fix the division by zero bug."""
         task = TaskConfig.load(self.TASK_ID)
         setup_workspace(workspace, task)
-        
+
         # Run agent
         result = await run_agent(workspace, task.instruction, task.timeout_sec)
-        
+
         # Verify
         passed, failed, errors = run_task_tests(workspace, self.TASK_ID)
-        
+
         assert failed == 0, f"Task tests failed: {errors}"
         assert passed >= 3, f"Expected at least 3 tests to pass, got {passed}"
 
 
 class TestImplementFunction:
     """Test: Implement a function from specification."""
-    
+
     TASK_ID = "implement_function"
-    
+
     @pytest.mark.asyncio
     async def test_agent_implements_fizzbuzz(self, workspace):
         """Agent should implement fizzbuzz correctly."""
         task = TaskConfig.load(self.TASK_ID)
         setup_workspace(workspace, task)
-        
+
         # Run agent
         result = await run_agent(workspace, task.instruction, task.timeout_sec)
-        
+
         # Verify
         passed, failed, errors = run_task_tests(workspace, self.TASK_ID)
-        
+
         assert failed == 0, f"Task tests failed: {errors}"
 
 
 @pytest.mark.slow
 class TestFindAndFixBug:
     """Test: Find and fix a subtle bug."""
-    
+
     TASK_ID = "find_and_fix_bug"
-    
+
     @pytest.mark.asyncio
     async def test_agent_fixes_binary_search(self, workspace):
         """Agent should find and fix the binary search bug."""
         task = TaskConfig.load(self.TASK_ID)
         setup_workspace(workspace, task)
-        
+
         # Run agent
         result = await run_agent(workspace, task.instruction, task.timeout_sec)
-        
+
         # Verify
         passed, failed, errors = run_task_tests(workspace, self.TASK_ID)
-        
+
         assert failed == 0, f"Task tests failed: {errors}"
 
 
@@ -299,29 +298,29 @@ class TestFindAndFixBug:
 @pytest.mark.slow
 class TestAllTasks:
     """Run all capability tasks and report results."""
-    
+
     @pytest.mark.asyncio
     async def test_run_all_tasks(self, tmp_path):
         """Run all tasks and generate a report."""
         results = []
-        
+
         for task_id in TASKS:
             workspace = tmp_path / task_id
             workspace.mkdir()
-            
+
             task = TaskConfig.load(task_id)
             setup_workspace(workspace, task)
-            
+
             # Run agent
             agent_result = await run_agent(
-                workspace, 
-                task.instruction, 
+                workspace,
+                task.instruction,
                 task.timeout_sec
             )
-            
+
             # Run tests
             passed, failed, errors = run_task_tests(workspace, task_id)
-            
+
             results.append({
                 "task_id": task_id,
                 "difficulty": task.difficulty,
@@ -332,33 +331,33 @@ class TestAllTasks:
                 "test_errors": errors,
                 "duration_sec": agent_result["duration_sec"],
             })
-        
+
         # Print report
         print("\n" + "=" * 60)
         print("CAPABILITY TEST REPORT")
         print("=" * 60)
-        
+
         total_passed = 0
         total_failed = 0
-        
+
         for r in results:
             status = "✅ PASS" if r["tests_failed"] == 0 else "❌ FAIL"
             print(f"\n{r['task_id']} [{r['difficulty']}]: {status}")
             print(f"  Tests: {r['tests_passed']} passed, {r['tests_failed']} failed")
             print(f"  Duration: {r['duration_sec']:.1f}s")
-            
+
             if r["test_errors"]:
                 for err in r["test_errors"]:
                     print(f"  Error: {err}")
-            
+
             if r["tests_failed"] == 0:
                 total_passed += 1
             else:
                 total_failed += 1
-        
+
         print("\n" + "=" * 60)
         print(f"TOTAL: {total_passed}/{len(TASKS)} tasks passed")
         print("=" * 60)
-        
+
         # Don't fail the test - just report
         # assert total_failed == 0, f"{total_failed} tasks failed"

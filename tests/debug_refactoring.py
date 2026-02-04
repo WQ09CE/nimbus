@@ -8,11 +8,10 @@ This script:
 """
 
 import asyncio
-import tempfile
 import shutil
-from pathlib import Path
 import sys
-import os
+import tempfile
+from pathlib import Path
 
 # Add project src to path
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -106,7 +105,7 @@ async def debug_refactoring():
         new_api_count = modified.count("new_api")
         old_api_still = modified.count("old_api")
 
-        print(f"\n>>> After modification:")
+        print("\n>>> After modification:")
         print(f"    'old_api' appears {old_api_still} times")
         print(f"    'new_api' appears {new_api_count} times")
 
@@ -120,7 +119,7 @@ async def debug_refactoring():
             success = True
         else:
             print("FAILED: Renaming incomplete or failed")
-            print(f"  - Expected: 'def new_api' present, 'def old_api' absent")
+            print("  - Expected: 'def new_api' present, 'def old_api' absent")
             print(f"  - Found: 'old_api' count={old_api_still}, 'new_api' count={new_api_count}")
             success = False
         print("=" * 60)

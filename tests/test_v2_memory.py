@@ -4,17 +4,15 @@ Tests for Nimbus v2 Memory Management Unit (MMU).
 Run with: pytest tests/test_v2_memory.py -v
 """
 
-import pytest
 
 from nimbus.core.memory import (
+    MMU,
+    Message,
+    MMUConfig,
     PinnedContext,
     StackFrame,
-    Message,
-    MMU,
-    MMUConfig,
 )
 from nimbus.core.memory.context import create_root_frame, create_sub_frame
-
 
 # =============================================================================
 # Message Tests
@@ -50,14 +48,14 @@ class TestMessage:
         msg = Message(role="user", content="a" * 100)
         # 100 chars / 4 = 25 tokens
         assert msg.token_estimate() == 25
-    
+
     def test_token_estimate_chinese(self):
         # 中文字符使用更保守的估算：1.5 chars/token
         msg = Message(role="user", content="你好世界")  # 4 Chinese chars
         # 4 chars / 1.5 ≈ 2.67 → int(2.67) = 2
         estimate = msg.token_estimate()
         assert estimate >= 2  # 中文应该估算更多 tokens
-    
+
     def test_token_estimate_mixed(self):
         # 混合中英文
         msg = Message(role="user", content="Hello 你好 World")  # 5 en + 2 zh + 5 en

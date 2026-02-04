@@ -6,11 +6,8 @@ endpoints that can be consumed by OpenCode TUI.
 NOTE: These tests require a running server and are temporarily disabled.
 """
 
-import json
-import pytest
 import httpx
-from typing import Dict, Any
-
+import pytest
 
 # 暂时跳过所有测试 - 需要运行中的服务器
 pytestmark = pytest.mark.skip(reason="OpenCode API tests require a running server - temporarily disabled")

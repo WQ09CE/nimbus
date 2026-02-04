@@ -8,13 +8,11 @@ Provides fixtures for:
 - Logging configuration
 """
 
-import pytest
-import tempfile
-import shutil
-import asyncio
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
+
+import pytest
 import yaml
 
 # Configure logging for tests
@@ -38,7 +36,7 @@ class TaskDefinition:
     category: str
     timeout_sec: float = 120.0
     workspace_files: dict = None  # Files to create in workspace
-    
+
     @classmethod
     def from_yaml(cls, path: Path) -> "TaskDefinition":
         """Load task from YAML file."""
@@ -54,7 +52,7 @@ class TaskDefinition:
         )
 
 
-@dataclass 
+@dataclass
 class TaskResult:
     """Result of running a task."""
     task_id: str

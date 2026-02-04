@@ -4,23 +4,21 @@ Tests for Nimbus v2 core components.
 Run with: pytest tests/test_v2_core.py -v
 """
 
-import pytest
 import asyncio
 from typing import Any, Dict
 
+import pytest
+
 from nimbus.core.protocol import (
     ActionIR,
-    ToolResult,
     Fault,
-    Event,
-    IPCMessage,
+    ToolResult,
 )
 from nimbus.core.runtime.decoder import InstructionDecoder
 from nimbus.os.gate import (
     KernelGate,
     SimpleEventStream,
 )
-
 
 # =============================================================================
 # Protocol Tests

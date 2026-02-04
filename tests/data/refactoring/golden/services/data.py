@@ -7,7 +7,7 @@ IMPORTANT: When refactoring APIClient.old_api() to new_api(), the old_api()
 function in this module should NOT be modified!
 """
 
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List
 
 
 def old_api(data: Dict[str, Any]) -> Dict[str, Any]:

@@ -5,16 +5,15 @@ Tests that user can append a message while agent is running,
 and the message is properly sequenced in the conversation.
 """
 
-import asyncio
-import pytest
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+import pytest
+
 from nimbus.core.memory.mmu import MMU, MMUConfig
-from nimbus.core.memory.context import Message
-from nimbus.core.protocol import ActionIR, ToolResult, Fault
-from nimbus.core.runtime.vcpu import VCPU, VCPUConfig
+from nimbus.core.protocol import ActionIR, ToolResult
 from nimbus.core.runtime.decoder import InstructionDecoder
+from nimbus.core.runtime.vcpu import VCPU, VCPUConfig
 
 
 @dataclass
@@ -143,7 +142,7 @@ class TestAppendMessage:
 
         # Should be: system, user, assistant (with tool_calls), tool, assistant, tool, ...
         print("Message roles:", roles)
-        
+
         # Verify basic structure
         assert roles[0] == "system"  # Pinned goal
         assert roles[1] == "user"  # Original request
@@ -172,7 +171,7 @@ class TestAppendMessage:
 
         # Simulate first step (LLM returns tool call)
         step1 = await vcpu.step()
-        
+
         # Now simulate user appending a message
         # This is what happens when user clicks "Append Message"
         mmu.add_user_message("Also do something else")
@@ -182,7 +181,7 @@ class TestAppendMessage:
 
         # Check message order
         context = mmu.assemble_context()
-        
+
         print("\n=== Message Order ===")
         for i, msg in enumerate(context):
             role = msg["role"]
@@ -208,7 +207,7 @@ class TestAppendMessage:
         """Test that message sequence is valid for OpenAI API."""
         llm = MockLLMClient()
         mmu = MMU(config=MMUConfig(max_context_tokens=10000))
-        
+
         # Simulate a typical conversation with tool calls
         mmu.add_user_message("Do something")
         mmu.add_assistant_with_tool_calls(
@@ -216,12 +215,12 @@ class TestAppendMessage:
             tool_calls=[{"id": "call_1", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}]
         )
         mmu.add_tool_result("call_1", "Bash", "output")
-        
+
         # Now add user message - this should be OK
         mmu.add_user_message("Thanks, now do something else")
-        
+
         context = mmu.assemble_context()
-        
+
         # Validate sequence
         is_valid, error = self._validate_message_sequence(context)
         assert is_valid, f"Invalid message sequence: {error}"
@@ -230,32 +229,32 @@ class TestAppendMessage:
     async def test_inject_during_pending_tool_calls(self):
         """Test behavior when injecting message while tool calls are pending."""
         mmu = MMU(config=MMUConfig(max_context_tokens=10000))
-        
+
         # Simulate: user sends request, assistant returns tool call
         mmu.add_user_message("Do something")
         mmu.add_assistant_with_tool_calls(
             content=None,
             tool_calls=[{"id": "call_1", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}]
         )
-        
+
         # User tries to append message BEFORE tool result is added
         # This is the problematic case
         mmu.add_user_message("Wait, also do this")
-        
+
         # Then tool result comes
         mmu.add_tool_result("call_1", "Bash", "output")
-        
+
         context = mmu.assemble_context()
-        
+
         print("\n=== Problematic Sequence ===")
         for i, msg in enumerate(context):
             role = msg["role"]
             content = str(msg.get("content", ""))[:50]
             print(f"  {i}: [{role}] {content}")
-        
+
         # Validate - should now pass with the fix
         is_valid, error = self._validate_message_sequence(context)
-        
+
         if not is_valid:
             pytest.fail(f"Message sequence invalid: {error}")
         else:
@@ -270,28 +269,28 @@ class TestAppendMessage:
         2. User message cannot appear between assistant+tool_calls and corresponding tool results
         """
         pending_tool_calls = set()
-        
+
         for i, msg in enumerate(messages):
             role = msg["role"]
-            
+
             if role == "assistant" and msg.get("tool_calls"):
                 # Track pending tool calls
                 for tc in msg["tool_calls"]:
                     tc_id = tc.get("id") or tc.get("tool_call_id")
                     if tc_id:
                         pending_tool_calls.add(tc_id)
-                        
+
             elif role == "tool":
                 # Tool result - should have corresponding pending call
                 tc_id = msg.get("tool_call_id")
                 if tc_id and tc_id in pending_tool_calls:
                     pending_tool_calls.remove(tc_id)
-                    
+
             elif role == "user":
                 # User message - should NOT appear while tool calls are pending
                 if pending_tool_calls:
                     return False, f"User message at position {i} while tool calls {pending_tool_calls} are pending"
-                    
+
         return True, ""
 
 

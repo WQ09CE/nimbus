@@ -14,7 +14,7 @@ def test_fizzbuzz_exists(workspace: Path):
     """Test that fizzbuzz.py exists with fizzbuzz function."""
     fizzbuzz_path = workspace / "fizzbuzz.py"
     assert fizzbuzz_path.exists(), "fizzbuzz.py does not exist"
-    
+
     sys.path.insert(0, str(workspace))
     try:
         from fizzbuzz import fizzbuzz
@@ -62,15 +62,15 @@ def test_fizzbuzz_edge_cases(workspace: Path):
     sys.path.insert(0, str(workspace))
     try:
         from fizzbuzz import fizzbuzz
-        
+
         # Empty case
-        assert fizzbuzz(0) == [], f"fizzbuzz(0) should be []"
-        
+        assert fizzbuzz(0) == [], "fizzbuzz(0) should be []"
+
         # Single element
-        assert fizzbuzz(1) == ["1"], f"fizzbuzz(1) should be ['1']"
-        
+        assert fizzbuzz(1) == ["1"], "fizzbuzz(1) should be ['1']"
+
         # Just Fizz
-        assert fizzbuzz(3) == ["1", "2", "Fizz"], f"fizzbuzz(3) failed"
+        assert fizzbuzz(3) == ["1", "2", "Fizz"], "fizzbuzz(3) failed"
     finally:
         sys.path.pop(0)
         if 'fizzbuzz' in sys.modules:
