@@ -37,6 +37,7 @@ from nimbus.core.memory.mmu import MMU
 from nimbus.core.persistence import SessionCheckpointModel
 from nimbus.core.protocol import ActionIR, Event, Fault, ToolResult
 from nimbus.core.runtime.checkpoint_manager import CheckpointManager
+from nimbus.core.runtime.tracer import TraceManager
 from nimbus.core.runtime.decoder import InstructionDecoder
 from nimbus.core.runtime.doom_loop import DoomLoopDetector
 from nimbus.core.runtime.empty_result_handler import EmptyResultHandler
@@ -158,6 +159,8 @@ class VCPUConfig:
     # Goal pinning
     pin_goal: bool = True  # Pin user goal to survive compaction
     goal_max_length: int = 500  # Summarize goal if longer than this
+    # Tracing
+    enable_tracing: bool = True  # Enable structural trace logs
 
 
 # =============================================================================
@@ -226,6 +229,7 @@ class VCPU:
         mmu: MMU,
         config: Optional[VCPUConfig] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        session_id: str = "default_session",
     ):
         """
         Initialize the vCPU.
@@ -237,6 +241,7 @@ class VCPU:
             mmu: Memory management unit for context
             config: vCPU configuration
             tools: Tool definitions for LLM
+            session_id: ID for tracing and persistence
         """
         self.alu = alu
         self.decoder = decoder
@@ -244,7 +249,11 @@ class VCPU:
         self.mmu = mmu
         self.config = config or VCPUConfig()
         self.tools = tools or []
+        self.session_id = session_id
         # self._message_queue removed in Phase 1 Refactor
+
+        # Tracing
+        self.tracer = TraceManager(session_id) if self.config.enable_tracing else None
 
         # Centralized execution state (refactored from 15+ instance variables)
         self._state = ExecutionState.from_config(
@@ -468,11 +477,15 @@ class VCPU:
         Returns:
             StepResult with actions, results, and status
         """
+        # Start Trace
+        if self.tracer:
+            self.tracer.start_step(self._state.iteration + 1)
+
         # Check interruption request at step start (Legacy support for vCPU-driven interrupt)
         # In Phase 1, AgentOS handles this before calling step(), but we keep this as safety net.
         if self._state.interruption_requested:
             self._emit_event("INTERRUPTION_HANDLED", {"iteration": self._state.iteration})
-            return StepResult(
+            res = StepResult(
                 is_final=True,
                 fault=Fault(
                     domain="RUNTIME",
@@ -481,6 +494,8 @@ class VCPU:
                     retryable=True,
                 ),
             )
+            if self.tracer: self.tracer.finish_step()
+            return res
 
         self._state.iteration += 1
         step_result = StepResult()
@@ -502,7 +517,7 @@ class VCPU:
             logger.warning(
                 f"🧠 Context overflow: {current_tokens} tokens exceeds threshold ({threshold}/{self.mmu.config.max_context_tokens})"
             )
-            return StepResult(
+            res = StepResult(
                 is_final=False,
                 fault=Fault(
                     domain="MEMORY",
@@ -516,12 +531,23 @@ class VCPU:
                     },
                 ),
             )
+            if self.tracer:
+                self.tracer.record_fault(res.fault)
+                self.tracer.finish_step()
+            return res
 
         try:
             # 1. THINK: Get LLM response
             logger.info(f"Thinking... (Iteration {self._state.iteration})")
             think_start = time.time_ns()
             messages = self.mmu.assemble_context()
+
+            # TRACE: Record Context
+            if self.tracer:
+                pinned_t = self.mmu.get_pinned().token_estimate() if self.mmu.get_pinned() else 0
+                # Rough estimate for frame tokens
+                frame_t = self.mmu.estimate_tokens() - pinned_t
+                self.tracer.record_context(messages, pinned_tokens=pinned_t, frame_tokens=frame_t)
 
             # Debug: Dump full context to file if NIMBUS_DUMP_CONTEXT is set
             import os
@@ -560,6 +586,11 @@ class VCPU:
                 self._emit_event("THINKING", {"content": chunk})
 
             response = await self.alu.chat(messages, tools=tools_to_pass, on_chunk=on_think_chunk)
+            
+            # TRACE: Record LLM Response
+            if self.tracer:
+                self.tracer.record_llm_response(response.content, response.tool_calls)
+
             think_duration = (time.time_ns() - think_start) // 1_000_000
             step_result.timing_ms["think"] = think_duration
 
@@ -599,6 +630,9 @@ class VCPU:
                         },
                     )
                     step_result.timing_ms["total"] = (time.time_ns() - start_time) // 1_000_000
+                    if self.tracer:
+                        self.tracer.record_fault(step_result.fault)
+                        self.tracer.finish_step()
                     return step_result
             else:
                 # Reset counter on non-empty response
@@ -627,9 +661,16 @@ class VCPU:
             except Fault as f:
                 step_result.fault = f
                 step_result.timing_ms["total"] = (time.time_ns() - start_time) // 1_000_000
+                if self.tracer:
+                    self.tracer.record_fault(f)
+                    self.tracer.finish_step()
                 return step_result
             step_result.actions = actions
             step_result.timing_ms["decode"] = (time.time_ns() - decode_start) // 1_000_000
+
+            # TRACE: Record Actions
+            if self.tracer:
+                self.tracer.record_actions(actions)
 
             # IMPORTANT: Add assistant message with tool_calls to memory BEFORE executing tools
             # This is required by OpenAI/OpenRouter API format:
@@ -710,6 +751,12 @@ class VCPU:
                     break
 
             step_result.timing_ms["execute"] = (time.time_ns() - exec_start) // 1_000_000
+            
+            # TRACE: Record Results
+            if self.tracer:
+                self.tracer.record_results(step_result.results)
+                if step_result.fault:
+                    self.tracer.record_fault(step_result.fault)
 
         except Exception as e:
             step_result.fault = Fault(
@@ -719,8 +766,15 @@ class VCPU:
                 retryable=False,
                 context={"exception_type": type(e).__name__},
             )
+            if self.tracer:
+                self.tracer.record_fault(step_result.fault)
 
         step_result.timing_ms["total"] = (time.time_ns() - start_time) // 1_000_000
+        
+        # TRACE: Finish Step
+        if self.tracer:
+            self.tracer.finish_step()
+            
         return step_result
 
     # =========================================================================

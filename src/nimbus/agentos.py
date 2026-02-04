@@ -267,8 +267,10 @@ class AgentOS:
             alu=self._llm,
             config=self.config.vcpu_config,
             decoder=decoder,
-            memory=mmu,
+            mmu=mmu,
             gate=gate,
+            tools=self._tools.get_definitions(format="openai"),
+            session_id=pid,
         )
 
         # Create process
@@ -397,6 +399,7 @@ class AgentOS:
                 mmu=mmu,
                 config=self.config.vcpu_config,
                 tools=self._tools.get_definitions(format="openai"),
+                session_id=session_id,
             )
 
             vcpu.set_compaction_callback(

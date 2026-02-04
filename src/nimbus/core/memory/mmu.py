@@ -617,6 +617,17 @@ class MMU:
              # Force cut oldest 20%
              cut_index = max(1, int(len(messages) * 0.2))
 
+        # SAFETY ADJUSTMENT: Avoid cutting in the middle of a tool-use turn
+        # Specifically, we must NOT start the retained history with a 'tool' message,
+        # because its corresponding 'assistant' call would be lost (archived).
+        while cut_index < len(messages):
+            if messages[cut_index].role == "tool":
+                # This is an orphaned tool result (assistant call was archived).
+                # We must archive this too.
+                cut_index += 1
+            else:
+                break
+
         # 2. Split
         messages_to_archive = messages[:cut_index]
         messages_to_keep = messages[cut_index:]
