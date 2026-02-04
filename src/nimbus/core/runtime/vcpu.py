@@ -155,7 +155,7 @@ class VCPUConfig:
     max_sub_call_depth: int = 10
     emit_step_events: bool = True
     compact_on_limit: bool = True  # NEW: Trigger compaction instead of stopping
-    max_compactions: int = 10  # NEW: Max compactions (10 x 50 = 500 iterations max)
+    max_compactions: int = 100  # NEW: Max compactions (increased for infinite context)
     # Goal pinning
     pin_goal: bool = True  # Pin user goal to survive compaction
     goal_max_length: int = 500  # Summarize goal if longer than this
