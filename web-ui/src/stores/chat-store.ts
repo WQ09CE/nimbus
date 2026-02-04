@@ -297,10 +297,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
         set({ isLoading: false });
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("[Store] Failed to load session:", err);
+      
+      // Only clear session if it's a 404 (Not Found)
+      // For network errors (backend restart), keep the ID so we can retry
       if (typeof window !== "undefined") {
-        localStorage.removeItem("nimbus_session_id");
+         // Check if error has status 404
+         if (err.status === 404) {
+             localStorage.removeItem("nimbus_session_id");
+         }
       }
       set({ isLoading: false });
     }
