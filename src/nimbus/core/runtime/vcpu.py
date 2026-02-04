@@ -1294,47 +1294,7 @@ class VCPU:
         self._doom_detector.reset()
         self._error_registry.reset()
 
-    async def _generate_llm_failure_response(
-        self, goal: str, fault: Fault, iterations: int
-    ) -> str:
-        """
-        Generate a natural language response explaining why the task failed.
 
-        This is used for "graceful termination" where we want the LLM to explain
-        the situation to the user, rather than just throwing a raw error code.
-
-        Args:
-            goal: The original user goal
-            fault: The fault that caused the failure
-            iterations: Number of iterations performed
-
-        Returns:
-            A user-friendly explanation of the failure
-        """
-        try:
-            # Construct a prompt for the LLM
-            prompt = f"""
-I was attempting to complete the following task:
-"{goal}"
-
-However, I encountered a persistent issue and had to stop after {iterations} steps.
-The technical error is: {fault.code} - {fault.message}
-
-Please generate a polite and helpful response to the user explaining:
-1. What I tried to do
-2. Why I couldn't complete it (explain the error simply)
-3. What they might try next (if applicable)
-
-Keep it concise and professional.
-"""
-            messages = [{"role": "user", "content": prompt}]
-            # Use a fresh context for this generation to avoid pollution from the failed run
-            response = await self.alu.chat(messages, tools=[])
-            return response.content or f"Task failed: {fault.message}"
-
-        except Exception:
-            # Fallback if LLM generation fails
-            return f"I encountered an error while processing your request: {fault.message}. Please try again or rephrase your request."
 
     async def _dump_context_to_file(self, messages: List[Dict[str, Any]], iteration: int) -> None:
         """Dump current context messages to a JSON file for debugging."""
@@ -1430,7 +1390,7 @@ One sentence summary:"""
 
             # Use LLM to summarize
             messages = [{"role": "user", "content": prompt}]
-            response = await self._alu.complete(messages, tools=[])
+            response = await self.alu.complete(messages, tools=[])
 
             if response.content:
                 summary = response.content.strip()

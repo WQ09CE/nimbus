@@ -84,6 +84,10 @@ class MMU:
 
         # Project State Monitor (Deterministic)
         self._state_manager = StateManager()
+        
+        # Viewport Management (Sliding Window)
+        # 0 means "follow latest". >0 means "scroll back N messages from end".
+        self._view_offset: int = 0
 
     # =========================================================================
     # Pinned Context Management (The Anchor)
@@ -92,17 +96,19 @@ class MMU:
     def update_global_summary(self, new_summary: str) -> None:
         """Update the global summary with goal reinforcement."""
         # Extract original goal from pinned context
-        original_goal = ""
+        goal_text = "Unknown Goal"
         if self._pinned:
             for anchor in self._pinned.custom_anchors:
                 if anchor.startswith("# Current Goal"):
-                    original_goal = anchor
+                    goal_text = anchor.replace("# Current Goal", "").strip()
                     break
 
-        if original_goal:
-            self._global_summary = f"{original_goal}\n\n[Execution Progress Summary]:\n{new_summary}"
-        else:
-            self._global_summary = new_summary
+        # Re-format specifically to fight recency bias
+        # Using H1/H2 headers to catch LLM attention and reinforce the original goal
+        self._global_summary = (
+            f"# 🎯 PRIMARY GOAL\n{goal_text}\n\n"
+            f"# 📝 EXECUTION STATUS\n{new_summary}"
+        )
 
     def set_pinned(self, pinned: PinnedContext) -> None:
         self._pinned = pinned
@@ -316,6 +322,33 @@ class MMU:
                 msg.meta.pop("discard", None)
                 msg.meta.pop("discard_tool_calls", None)
 
+    def scroll(self, direction: str, steps: int = 10) -> str:
+        """
+        Scroll the memory view window.
+        
+        Args:
+            direction: "up" (older) or "down" (newer)
+            steps: Number of messages to scroll
+            
+        Returns:
+            Status message describing the new view
+        """
+        # Calculate total available messages in stream
+        total_msgs = sum(len(f.messages) for f in self._stack)
+        
+        if direction == "up":
+            # Looking at older messages -> increase offset
+            self._view_offset += steps
+            if self._view_offset > total_msgs:
+                self._view_offset = total_msgs
+        elif direction == "down":
+            # Looking at newer messages -> decrease offset
+            self._view_offset -= steps
+            if self._view_offset < 0:
+                self._view_offset = 0
+                
+        return f"Scrolled {direction} {steps} steps. Current offset from latest: {self._view_offset}"
+
     # =========================================================================
     # Context Assembly (The "Smart Drop" Strategy)
     # =========================================================================
@@ -326,122 +359,177 @@ class MMU:
         filter_discardable: bool = True,
     ) -> List[Dict[str, Any]]:
         """
-        Assemble the full context for LLM.
-
-        This method combines:
-        1. Pinned context (system message)
-        2. **Project State Monitor** (Deterministic state)
-        3. Global Summary (LLM Summary + Task Stack)
-        4. Stack frames (Execution History)
-
-        The result is a list of messages ready for LLM API.
+        Assemble the full context with "Recent-Anchored Sliding Window".
+        
+        Structure:
+        1. Pinned Context (Goal/Rules)
+        2. [System: Historical View Indicator]
+        3. Historical Window (Controlled by ScrollHistory)
+        4. [System: Gap Indicator]
+        5. Hot Context (Recent messages, always visible)
         """
         max_tokens = max_tokens or self.config.max_context_tokens
         messages: List[Dict[str, Any]] = []
         token_count = 0
 
-        # 1. Add pinned context (always first)
+        # --- 1. Pinned Context ---
         if self._pinned:
             pinned_msg = self._pinned.to_system_message()
             token_count += pinned_msg.token_estimate()
             messages.append(pinned_msg.to_dict())
 
-        # 2. Add Project State Monitor (Deterministic Anchor)
-        # This is high-priority context that overrides LLM hallucinations
+        # Project State & Summary
         project_state = self._state_manager.render()
         if project_state:
-            state_msg = Message(
-                role="system",
-                content=project_state,
-                meta={"type": "project_state"}
-            )
-            state_tokens = state_msg.token_estimate()
-            if token_count + state_tokens < max_tokens:
-                messages.append(state_msg.to_dict())
-                token_count += state_tokens
+            state_msg = Message(role="system", content=project_state, meta={"type": "project_state"})
+            token_count += state_msg.token_estimate()
+            messages.append(state_msg.to_dict())
 
-        # 3. Add Global Summary (If available)
         if self._global_summary:
-            # Build Task Stack visualization
+            # Simplified summary assembly
             task_stack_view = "📋 [Mission Control]\n-------------------\n"
-
-            # Main Goal (Root Frame)
             root_goal = self._stack[0].goal or "Main Task"
             task_stack_view += f"🎯 Main Goal: {root_goal}\n-------------------\n"
-
-            # Completed Milestones
-            if self._pinned:
-                for anchor in self._pinned.custom_anchors:
-                    if anchor.startswith("# ✅ Milestones"):
-                        # Extract content after header
-                        milestones_content = anchor.replace("# ✅ Milestones\n", "").strip()
-                        if milestones_content:
-                            task_stack_view += "✅ Completed Milestones:\n" + milestones_content + "\n-------------------\n"
-                        break
-
-            # Execution Path (Frames)
-            task_stack_view += "📍 Execution Path:\n"
-            for i, frame in enumerate(self._stack):
-                marker = "(Current Focus)" if i == len(self._stack) - 1 else ""
-                goal_preview = frame.goal[:50] + "..." if len(frame.goal) > 50 else frame.goal
-                task_stack_view += f"  {i+1}. [{frame.frame_id[:6]}] {goal_preview} {marker}\n"
-
-            task_stack_view += "-------------------\n"
-
-            full_summary_content = f"{task_stack_view}\n{self._global_summary}"
-
-            summary_msg = Message(role="system", content=full_summary_content, meta={"type": "global_summary"})
-            summary_tokens = summary_msg.token_estimate()
-            if token_count + summary_tokens < max_tokens:
-                messages.append(summary_msg.to_dict())
-                token_count += summary_tokens
+            full_summary = f"{task_stack_view}\n{self._global_summary}"
+            summary_msg = Message(role="system", content=full_summary, meta={"type": "global_summary"})
+            token_count += summary_msg.token_estimate()
+            messages.append(summary_msg.to_dict())
 
         remaining_budget = max_tokens - token_count
+        if remaining_budget < 500:
+            # Emergency: Pinned context too large
+            return messages
 
-        # 3. The Stream (Execution History)
+        # --- Prepare Stream ---
         stream_messages = []
         for frame in self._stack:
             stream_messages.extend(frame.to_context_messages())
+        total_msgs = len(stream_messages)
 
-        stream_tokens = sum(m.token_estimate() for m in stream_messages)
+        # --- 2. Hot Context (Always Visible) ---
+        # Keep last N messages to ensure Agent knows current instruction
+        
+        HOT_COUNT = 5  # Keep last 5 messages always
+        hot_messages = []
+        hot_tokens = 0
+        
+        if total_msgs > 0:
+            # Initial slice index
+            hot_start_idx = max(0, total_msgs - HOT_COUNT)
+            
+            # SAFETY ADJUSTMENT: Ensure Hot Context doesn't start with 'tool' (orphaned result)
+            # We extend the hot context BACKWARDS to include the parent assistant call.
+            # This ensures we don't present a Tool Result without its Call.
+            while hot_start_idx > 0:
+                msg = stream_messages[hot_start_idx]
+                if msg.role == "tool":
+                    hot_start_idx -= 1
+                else:
+                    # Found a non-tool message (likely the assistant call or user)
+                    break
+            
+            hot_slice = stream_messages[hot_start_idx:]
+            
+            # Verify they fit in budget (at least half of remaining)
+            # Note: We process from end to start to ensure we keep the absolute latest
+            for m in reversed(hot_slice):
+                t = m.token_estimate()
+                if hot_tokens + t > remaining_budget * 0.5:
+                    break
+                hot_messages.insert(0, m)
+                hot_tokens += t
+                
+            # If we had to truncate hot_messages due to budget, we might have created 
+            # a NEW orphan problem at the beginning of hot_messages!
+            # So we must apply the same safety check again on the final hot_messages list.
+            while hot_messages and hot_messages[0].role == "tool":
+                 hot_messages.pop(0)
 
-        if stream_tokens <= remaining_budget:
-            # All good, return full stream
-            for m in stream_messages:
-                messages.append(m.to_dict())
-        else:
-            # Over budget: Apply Smart Drop
+        # Adjust remaining budget for History Window
+        history_budget = remaining_budget - hot_tokens
+        
+        # --- 3. Historical Window ---
+        # The window ends at: total - len(hot_messages)
+        # Note: We must use the ACTUAL length of hot_messages here, 
+        # because hot_start_idx might have overlapped with history window if we didn't account for it.
+        
+        history_stream_end = max(0, total_msgs - len(hot_messages))
+        
+        # Target end based on user scroll
+        # offset=0 means we want to see up to history_stream_end
+        # offset=10 means we want to see up to history_stream_end - 10
+        target_end = max(0, history_stream_end - self._view_offset)
+        
+        window_messages = []
+        window_tokens = 0
+        start_index = target_end
+        
+        # Scan backwards from target_end
+        for i in range(target_end - 1, -1, -1):
+            msg = stream_messages[i]
+            t = msg.token_estimate()
+            if window_tokens + t > history_budget:
+                break
+            window_tokens += t
+            window_messages.insert(0, msg)
+            start_index = i
 
-            # Drop Strategy 1: Remove discarded/failed tools
-            if self.config.remove_failed_tool_calls:
-                stream_messages = self._filter_discarded(stream_messages)
-                stream_tokens = sum(m.token_estimate() for m in stream_messages)
-
-            if stream_tokens <= remaining_budget:
-                for m in stream_messages:
-                    messages.append(m.to_dict())
-                return messages
-
-            # Drop Strategy 2: Keep recent, summarize old (Simplified implementation: simple truncation for now)
-            # In a full implementation, we would call CompactionEngine here.
-            # For now, we keep the last N messages and maybe a placeholder for the rest.
-
-            keep_count = self.config.keep_recent_messages
-            if len(stream_messages) > keep_count:
-                kept_messages = stream_messages[-keep_count:]
-
-                # Add a truncation marker/summary
-                messages.append({
-                    "role": "system",
-                    "content": "[... Earlier history truncated to fit context window ...]",
-                })
-
-                for m in kept_messages:
-                    messages.append(m.to_dict())
+        # SAFETY ADJUSTMENT 1: Start Integrity
+        # Avoid starting with a 'tool' message (orphaned result)
+        while start_index < target_end:
+            if stream_messages[start_index].role == "tool":
+                start_index += 1
+                if window_messages: window_messages.pop(0)
             else:
-                 # Even recent messages don't fit? This is bad. Just add what fits.
-                 for m in stream_messages:
-                     messages.append(m.to_dict())
+                break
+
+        # SAFETY ADJUSTMENT 2: End Integrity
+        # Avoid ending with an 'assistant' message that has tool_calls (orphaned call)
+        while target_end > start_index:
+            last_msg = stream_messages[target_end - 1]
+            if last_msg.role == "assistant" and last_msg.tool_calls:
+                target_end -= 1
+                if window_messages: window_messages.pop()
+            else:
+                break
+
+        # Re-sync view_messages if indices shifted (actually window_messages is already updated above)
+        # But let's just re-slice to be safe and consistent with indices
+        view_messages = stream_messages[start_index:target_end]
+            
+        # --- Assemble Final Sequence ---
+        
+        # Indicator: More history above?
+        if start_index > 0:
+            messages.append({
+                "role": "system",
+                "content": f"⬆️ [History: {start_index} older messages above. Use ScrollHistory('up') to view.]"
+            })
+            
+        for m in window_messages:
+            messages.append(m.to_dict())
+            
+        # Indicator: Gap between Window and Hot Context?
+        gap_size = history_stream_end - target_end
+        if gap_size > 0:
+            messages.append({
+                "role": "system",
+                "content": f"⬇️ [Gap: {gap_size} messages skipped. Use ScrollHistory('down') to view.]\n... (Scrolled History View) ..."
+            })
+        elif self._view_offset > 0:
+             # We are scrolling, but we managed to connect to hot context?
+             # Unlikely if offset > 0.
+             pass
+             
+        # Add Hot Context
+        if hot_messages:
+            if gap_size > 0 or start_index > 0:
+                 messages.append({
+                    "role": "system",
+                    "content": "👇 [Current Context (Recent Messages)]"
+                })
+            for m in hot_messages:
+                messages.append(m.to_dict())
 
         return messages
 
@@ -482,10 +570,16 @@ class MMU:
         return total
 
     def needs_compression(self) -> bool:
-        """Check if context needs compression."""
-        current = self.estimate_tokens()
-        threshold = int(self.config.max_context_tokens * self.config.compress_threshold)
-        return current > threshold
+        """
+        Check if context needs compression.
+        
+        With Sliding Window Memory (Phase 3), we theoretically NEVER need compression
+        because assemble_context() automatically slices the history to fit the window.
+        
+        However, we might still want to trigger summarization periodically.
+        For now, we return False to disable the old "Stop & Archive" flow.
+        """
+        return False
 
     def rollback_incomplete_turn(self) -> int:
         """Rollback pending tool calls if interrupted."""
@@ -647,17 +741,11 @@ class MMU:
                 from nimbus.core.logging import get_logger
                 get_logger("memory.mmu").error(f"Summarization failed: {e}")
 
-        # 4. Apply Truncation
-        frame.messages = messages_to_keep
-
-        # Insert marker
-        frame.messages.insert(0, Message(
-            role="system",
-            content=f"[System: Memory compacted. {len(messages_to_archive)} older messages were summarized and archived.]",
-            meta={"compaction_marker": True}
-        ))
-
-        # Clear markers
+        # 4. Apply Truncation -> DISABLED for Phase 3 Sliding Window
+        # We keep all messages in memory so the Agent can scroll back to them.
+        # frame.messages = messages_to_keep 
+        
+        # We just clear markers to reset tool state tracking
         self.clear_markers()
 
         return "memory_compacted"

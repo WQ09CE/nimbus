@@ -67,6 +67,7 @@ class KernelGate:
         tool_executor: ToolExecutor,
         event_stream: Optional[EventStream] = None,
         default_timeout: float = 60.0,
+        local_tools: Optional[Dict[str, Callable]] = None,
     ):
         """
         Initialize the Kernel Gate.
@@ -76,11 +77,13 @@ class KernelGate:
             tool_executor: Tool executor for running tools
             event_stream: Event stream for observability (optional)
             default_timeout: Default execution timeout in seconds
+            local_tools: Process-specific tools (in-memory)
         """
         self.pid = pid
         self.executor = tool_executor
         self.events = event_stream
         self.default_timeout = default_timeout
+        self.local_tools = local_tools or {}
 
     async def syscall_tool(
         self,
@@ -139,9 +142,19 @@ class KernelGate:
                     retryable=False,
                 )
 
-            output = await asyncio.wait_for(
-                self.executor.execute(tool_name, action.args), timeout=timeout
-            )
+            # Check local tools first (Process-specific)
+            if tool_name in self.local_tools:
+                func = self.local_tools[tool_name]
+                if asyncio.iscoroutinefunction(func):
+                    output = await asyncio.wait_for(func(**action.args), timeout=timeout)
+                else:
+                    # Run sync function in thread pool to avoid blocking loop
+                    output = await asyncio.to_thread(func, **action.args)
+            else:
+                # Fallback to global registry
+                output = await asyncio.wait_for(
+                    self.executor.execute(tool_name, action.args), timeout=timeout
+                )
             status = "OK"
 
         except asyncio.TimeoutError:

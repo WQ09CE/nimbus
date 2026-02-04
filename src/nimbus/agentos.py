@@ -41,6 +41,7 @@ from nimbus.os.gate import (
     SimpleEventStream,
 )
 from nimbus.tools.base import ToolDefinition, ToolRegistry
+from nimbus.tools.context_tools import SCROLL_HISTORY_DEF
 
 # =============================================================================
 # AgentOS Configuration
@@ -71,6 +72,7 @@ class AgentOSConfig:
 
 Guidelines:
 - ALWAYS respond in CHINESE (简体中文), regardless of the user's language.
+- Use ScrollHistory to view past messages if context is truncated (you will see markers like "⬆️ [History...]").
 - Use Bash for file operations like ls, grep, find, rg
 - Use Read to examine files before editing
 - Use Edit for precise changes (old text must match exactly)
@@ -259,8 +261,20 @@ class AgentOS:
 
         # Create process components
         mmu = self._create_mmu(pid)
-        gate = self._create_gate(pid, role)
+        
+        # Define local tools (closure capturing mmu)
+        async def scroll_history(direction: str, steps: int = 10) -> str:
+            return mmu.scroll(direction, steps)
+
+        gate = self._create_gate(pid, role, local_tools={"ScrollHistory": scroll_history})
         decoder = InstructionDecoder()
+
+        # Prepare tools list with ScrollHistory
+        tools_list = self._tools.get_definitions(format="openai")
+        tools_list.append({
+            "type": "function",
+            "function": SCROLL_HISTORY_DEF
+        })
 
         # Create VCPU
         vcpu = VCPU(
@@ -269,7 +283,7 @@ class AgentOS:
             decoder=decoder,
             mmu=mmu,
             gate=gate,
-            tools=self._tools.get_definitions(format="openai"),
+            tools=tools_list,
             session_id=pid,
         )
 
@@ -389,8 +403,19 @@ class AgentOS:
             if not session_id:
                 session_id = f"chat-{uuid.uuid4().hex[:8]}"
             mmu = self._create_mmu(session_id)
-            gate = self._create_gate(session_id, "chat")
+            # Define local tools (closure capturing mmu)
+            async def scroll_history(direction: str, steps: int = 10) -> str:
+                return mmu.scroll(direction, steps)
+            
+            gate = self._create_gate(session_id, "chat", local_tools={"ScrollHistory": scroll_history})
             decoder = InstructionDecoder()
+            
+            # Prepare tools list
+            tools_list = self._tools.get_definitions(format="openai")
+            tools_list.append({
+                "type": "function",
+                "function": SCROLL_HISTORY_DEF
+            })
 
             vcpu = VCPU(
                 alu=self._llm,
@@ -398,7 +423,7 @@ class AgentOS:
                 gate=gate,
                 mmu=mmu,
                 config=self.config.vcpu_config,
-                tools=self._tools.get_definitions(format="openai"),
+                tools=tools_list,
                 session_id=session_id,
             )
 
@@ -553,26 +578,32 @@ class AgentOS:
     async def _check_compaction(self, process: Process) -> None:
         if not process.mmu:
             return
+            
+        # V2 MMU (Infinite Context) handles memory internally via assemble_context slicing.
+        # We don't want external compaction to delete messages from the stack.
+        # So we disable this legacy check.
+        return
 
-        current_tokens = process.mmu.estimate_tokens()
-        max_tokens = self.config.mmu_config.max_context_tokens
+        # Legacy logic commented out:
+        # current_tokens = process.mmu.estimate_tokens()
+        # max_tokens = self.config.mmu_config.max_context_tokens
 
-        if self._compaction_engine.should_compact(
-            [msg for frame in process.mmu._stack for msg in frame.messages],
-            max_tokens,
-        ):
-            self._emit_event(
-                "AUTO_COMPACTION_START",
-                process.pid,
-                {
-                    "tokens": current_tokens,
-                    "max_tokens": max_tokens,
-                },
-            )
+        # if self._compaction_engine.should_compact(
+        #     [msg for frame in process.mmu._stack for msg in frame.messages],
+        #     max_tokens,
+        # ):
+        #     self._emit_event(
+        #         "AUTO_COMPACTION_START",
+        #         process.pid,
+        #         {
+        #             "tokens": current_tokens,
+        #             "max_tokens": max_tokens,
+        #         },
+        #     )
 
-            await self.compact(session_id=process.pid)
+        #     await self.compact(session_id=process.pid)
 
-            self._emit_event("AUTO_COMPACTION_END", process.pid, {})
+        #     self._emit_event("AUTO_COMPACTION_END", process.pid, {})
 
     async def _compaction_for_process(self, pid: str, mmu: MMU) -> bool:
         try:
@@ -642,29 +673,27 @@ class AgentOS:
                     # Include previous summary to prevent cascade loss
                     if previous_summary:
                         summary_prompt = (
-                            "请合并并更新以下信息摘要。\n\n"
+                            "请作为任务管理者，合并并更新以下执行摘要。\n\n"
                             f"【之前的摘要】\n{previous_summary[:1000]}\n\n"
-                            f"【新对话内容】\n{context}\n\n"
-                            "请保留之前摘要中的关键信息（特别是用户提供的密码、代码等），"
-                            f"并添加新对话中的重要内容。用中文简洁回复（{target_chars}字以内）。\n\n"
+                            f"【新进展】\n{context}\n\n"
+                            "**核心要求**：\n"
+                            "1. 必须保留所有关键技术细节（代码路径、配置值、密码）。\n"
+                            "2. 必须评估当前进度与最终目标的距离（防止任务漂移）。\n"
+                            f"请用中文回复（{target_chars}字以内）。\n\n"
                             "**OUTPUT FORMAT**:\n"
-                            "If any major milestone was completed in this turn (e.g. 'Read file X', 'Executed tool Y'), output it as:\n"
-                            "NEW_MILESTONES: [Milestone 1], [Milestone 2]\n\n"
-                            "Then output the summary:\n"
+                            "NEW_MILESTONES: [Milestone 1], [Milestone 2]\n"
                             "SUMMARY: [Your summary content here]"
                         )
                     else:
                         summary_prompt = (
-                            "请简洁总结以下对话的关键信息，包括：\n"
-                            "1. 用户提供的重要数据（如密码、代码、配置等）\n"
-                            "2. 已完成的操作和结果\n"
-                            "3. 当前任务状态\n\n"
-                            f"对话内容：\n{context}\n\n"
-                            f"请用中文简洁总结（{target_chars}字以内）。\n\n"
+                            "请作为任务管理者，总结当前执行状态。\n\n"
+                            f"【对话内容】\n{context}\n\n"
+                            "**核心要求**：\n"
+                            "1. 提取所有关键技术细节（代码路径、配置值、密码）。\n"
+                            "2. 明确下一步行动计划。\n"
+                            f"请用中文回复（{target_chars}字以内）。\n\n"
                             "**OUTPUT FORMAT**:\n"
-                            "If any major milestone was completed in this turn, output it as:\n"
-                            "NEW_MILESTONES: [Milestone 1]\n\n"
-                            "Then output the summary:\n"
+                            "NEW_MILESTONES: [Milestone 1]\n"
                             "SUMMARY: [Your summary content here]"
                         )
 
@@ -989,13 +1018,14 @@ class AgentOS:
 
         return mmu
 
-    def _create_gate(self, pid: str, role: str = "") -> KernelGate:
+    def _create_gate(self, pid: str, role: str = "", local_tools: Optional[Dict[str, Callable]] = None) -> KernelGate:
         """Create a KernelGate for a process."""
         return KernelGate(
             pid=pid,
             tool_executor=self._tools,
             event_stream=self._events,
             default_timeout=self.config.default_timeout,
+            local_tools=local_tools,
         )
 
     def _emit_event(self, event_type: str, pid: str, data: Dict[str, Any]) -> None:
