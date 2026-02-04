@@ -53,11 +53,11 @@ class MMUConfig:
     """
     Configuration for MMU.
     """
-    max_context_tokens: int = 8000
-    pinned_budget: int = 2000
-    frame_budget: int = 6000  # Combined budget for history
-    compress_threshold: float = 0.9
-    keep_recent_messages: int = 10
+    max_context_tokens: int = 100000  # Production ready: 100k context
+    pinned_budget: int = 10000        # Generous space for system rules & goals
+    frame_budget: int = 90000         # Massive history window
+    compress_threshold: float = 0.9   # Trigger sliding at 90k tokens
+    keep_recent_messages: int = 20    # Keep more recent context
     auto_detect_failures: bool = True
     remove_failed_tool_calls: bool = True
 
@@ -88,10 +88,17 @@ class MMU:
         # Viewport Management (Sliding Window)
         # 0 means "follow latest". >0 means "scroll back N messages from end".
         self._view_offset: int = 0
+        
+        # Clipboard (Short-term memory buffer)
+        self._clipboard: str = ""
 
     # =========================================================================
     # Pinned Context Management (The Anchor)
     # =========================================================================
+
+    def update_clipboard(self, content: str) -> None:
+        """Update the clipboard content (notes/scratchpad)."""
+        self._clipboard = content
 
     def update_global_summary(self, new_summary: str) -> None:
         """Update the global summary with goal reinforcement."""
@@ -394,6 +401,18 @@ class MMU:
             summary_msg = Message(role="system", content=full_summary, meta={"type": "global_summary"})
             token_count += summary_msg.token_estimate()
             messages.append(summary_msg.to_dict())
+
+        # --- Clipboard ---
+        if self._clipboard:
+            clip_msg = Message(
+                role="system",
+                content=f"📋 [Clipboard/Notes]:\n{self._clipboard}",
+                meta={"type": "clipboard"}
+            )
+            clip_tokens = clip_msg.token_estimate()
+            if token_count + clip_tokens < max_tokens:
+                messages.append(clip_msg.to_dict())
+                token_count += clip_tokens
 
         remaining_budget = max_tokens - token_count
         if remaining_budget < 500:
