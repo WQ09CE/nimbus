@@ -41,7 +41,7 @@ from nimbus.os.gate import (
     SimpleEventStream,
 )
 from nimbus.tools.base import ToolDefinition, ToolRegistry
-from nimbus.tools.context_tools import SCROLL_HISTORY_DEF
+from nimbus.tools.context_tools import SCROLL_HISTORY_DEF, COPY_TO_CLIPBOARD_DEF
 
 # =============================================================================
 # AgentOS Configuration
@@ -73,6 +73,7 @@ class AgentOSConfig:
 Guidelines:
 - ALWAYS respond in CHINESE (简体中文), regardless of the user's language.
 - Use ScrollHistory to view past messages if context is truncated (you will see markers like "⬆️ [History...]").
+- IMPORTANT: When viewing history, use CopyToClipboard to save important information (code snippets, requirements) to your persistent context. The history view is transient, but the clipboard is persistent.
 - Use Bash for file operations like ls, grep, find, rg
 - Use Read to examine files before editing
 - Use Edit for precise changes (old text must match exactly)
@@ -265,8 +266,15 @@ class AgentOS:
         # Define local tools (closure capturing mmu)
         async def scroll_history(direction: str, steps: int = 10) -> str:
             return mmu.scroll(direction, steps)
+            
+        async def copy_to_clipboard(content: str) -> str:
+            mmu.update_clipboard(content)
+            return "Content copied to clipboard. It will be visible in your context."
 
-        gate = self._create_gate(pid, role, local_tools={"ScrollHistory": scroll_history})
+        gate = self._create_gate(pid, role, local_tools={
+            "ScrollHistory": scroll_history,
+            "CopyToClipboard": copy_to_clipboard
+        })
         decoder = InstructionDecoder()
 
         # Prepare tools list with ScrollHistory
@@ -274,6 +282,10 @@ class AgentOS:
         tools_list.append({
             "type": "function",
             "function": SCROLL_HISTORY_DEF
+        })
+        tools_list.append({
+            "type": "function",
+            "function": COPY_TO_CLIPBOARD_DEF
         })
 
         # Create VCPU
@@ -406,8 +418,15 @@ class AgentOS:
             # Define local tools (closure capturing mmu)
             async def scroll_history(direction: str, steps: int = 10) -> str:
                 return mmu.scroll(direction, steps)
+                
+            async def copy_to_clipboard(content: str) -> str:
+                mmu.update_clipboard(content)
+                return "Content copied to clipboard."
             
-            gate = self._create_gate(session_id, "chat", local_tools={"ScrollHistory": scroll_history})
+            gate = self._create_gate(session_id, "chat", local_tools={
+                "ScrollHistory": scroll_history,
+                "CopyToClipboard": copy_to_clipboard
+            })
             decoder = InstructionDecoder()
             
             # Prepare tools list
@@ -415,6 +434,10 @@ class AgentOS:
             tools_list.append({
                 "type": "function",
                 "function": SCROLL_HISTORY_DEF
+            })
+            tools_list.append({
+                "type": "function",
+                "function": COPY_TO_CLIPBOARD_DEF
             })
 
             vcpu = VCPU(
@@ -497,6 +520,74 @@ class AgentOS:
     # =========================================================================
     # Session Management (NEW)
     # =========================================================================
+
+    def restore_session(self, session_id: str, checkpoint: Any) -> None:
+        """
+        Restore a session process from a checkpoint.
+
+        Args:
+            session_id: The session ID (used as PID)
+            checkpoint: The SessionCheckpointModel object
+        """
+        # Re-create components similar to chat() initialization
+        mmu = self._create_mmu(session_id)
+
+        # Local tools for scroll
+        async def scroll_history(direction: str, steps: int = 10) -> str:
+            return mmu.scroll(direction, steps)
+            
+        async def copy_to_clipboard(content: str) -> str:
+            mmu.update_clipboard(content)
+            return "Content copied to clipboard."
+
+        gate = self._create_gate(session_id, "chat", local_tools={
+            "ScrollHistory": scroll_history,
+            "CopyToClipboard": copy_to_clipboard
+        })
+        decoder = InstructionDecoder()
+
+        tools_list = self._tools.get_definitions(format="openai")
+        tools_list.append({
+            "type": "function",
+            "function": SCROLL_HISTORY_DEF
+        })
+        tools_list.append({
+            "type": "function",
+            "function": COPY_TO_CLIPBOARD_DEF
+        })
+
+        vcpu = VCPU(
+            alu=self._llm,
+            decoder=decoder,
+            gate=gate,
+            mmu=mmu,
+            config=self.config.vcpu_config,
+            tools=tools_list,
+            session_id=session_id,
+        )
+
+        vcpu.set_compaction_callback(
+            lambda sid=session_id, m=mmu: self._compaction_for_process(sid, m)
+        )
+
+        # Restore state
+        vcpu.restore_from_checkpoint(checkpoint)
+
+        # Register process
+        process = Process(
+            pid=session_id,
+            goal="Restored session",
+            role="chat",
+            state="PENDING",
+            vcpu=vcpu,
+            mmu=mmu,
+            gate=gate,
+        )
+        self._processes[session_id] = process
+
+        from nimbus.core.logging import get_logger
+        logger = get_logger("kernel.agentos")
+        logger.info(f"♻️ Restored process {session_id} from checkpoint")
 
     def new_session(self, parent_session: Optional[str] = None) -> str:
         if self._session_mgr:

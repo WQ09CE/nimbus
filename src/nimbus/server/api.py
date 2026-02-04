@@ -46,6 +46,8 @@ from .models import (
     SkillResponse,
     TaskNodeResponse,
     TaskStatusEnum,
+    # Logging
+    LogBatch,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,6 +83,37 @@ async def get_permission_manager(request: Request):
 # =============================================================================
 # Health & Config
 # =============================================================================
+
+
+# =============================================================================
+# Logging APIs
+# =============================================================================
+
+
+@router.post("/logs")
+async def receive_logs(batch: LogBatch):
+    """Receive logs from frontend."""
+    from nimbus.core.logging import get_logger
+
+    logger = get_logger(f"client.{batch.source}")
+    
+    for entry in batch.entries:
+        msg = f"[{entry.timestamp}] {entry.message}"
+        if entry.data:
+            msg += f" | data={entry.data}"
+            
+        if entry.level.lower() == "debug":
+            logger.debug(msg)
+        elif entry.level.lower() == "info":
+            logger.info(msg)
+        elif entry.level.lower() == "warn" or entry.level.lower() == "warning":
+            logger.warning(msg)
+        elif entry.level.lower() == "error":
+            logger.error(msg)
+        else:
+            logger.info(msg)
+            
+    return {"status": "ok"}
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -477,7 +510,9 @@ async def chat(
 @router.get("/sessions/{session_id}/messages", response_model=MessageList)
 async def get_messages(
     session_id: str,
-    limit: int = 50,
+    limit: int = 100,
+    offset: int = 0,
+    order: str = "ASC",
     storage=Depends(get_storage),
     session_manager=Depends(get_session_manager),
 ):
@@ -486,7 +521,9 @@ async def get_messages(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    messages = await storage.get_messages(session_id, limit=limit)
+    messages = await storage.get_messages(
+        session_id, limit=limit, offset=offset, order=order
+    )
 
     items = []
     for m in messages:

@@ -203,6 +203,27 @@ class SessionManagerV2:
         # Get or create AgentOS
         agent_os = await self.get_or_create_agent(session_id)
 
+        # Check if process needs restoration from checkpoint
+        process = agent_os.get_process(session_id)
+        logger.info(f"🔍 Checking process for session {session_id}: exists={process is not None}")
+        
+        if not process:
+            # Try to restore from checkpoint
+            try:
+                checkpoint = await self._storage.load_latest_session_checkpoint(session_id)
+                logger.info(f"🔍 Checkpoint loaded: {checkpoint is not None}")
+                
+                if checkpoint:
+                    try:
+                        logger.info(f"🔄 Restoring session {session_id} from checkpoint")
+                        agent_os.restore_session(session_id, checkpoint)
+                    except Exception as e:
+                        logger.error(f"Failed to restore session: {e}", exc_info=True)
+                        # Fallback to fresh start (will be created by chat())
+            except Exception as e:
+                logger.error(f"Error loading checkpoint: {e}", exc_info=True)
+
+
         # Emit connected event
         await self._sse_hub.publish(
             session_id,
@@ -315,6 +336,18 @@ class SessionManagerV2:
                         logger.info("[stream_chat] Saving partial progress before interruption...")
                         await self._save_conversation_to_storage(session_id, agent_os, message)
 
+                        # Save checkpoint on interruption
+                        try:
+                            if process.vcpu:
+                                checkpoint = process.vcpu.create_checkpoint(
+                                    session_id=session_id,
+                                    reason="interrupted"
+                                )
+                                await self._storage.save_session_checkpoint(checkpoint)
+                                logger.info(f"💾 Saved interrupted checkpoint for {session_id}")
+                        except Exception as e:
+                            logger.error(f"Failed to save interrupted checkpoint: {e}")
+
                         # NOTE: We intentionally do NOT rollback MMU here.
                         # If user continues the conversation, they need the full context.
                         # The saved messages in DB are for page refresh recovery.
@@ -360,6 +393,19 @@ class SessionManagerV2:
 
             # Save assistant messages to storage
             await self._save_conversation_to_storage(session_id, agent_os, message)
+
+            # Save session checkpoint (for persistence/restore)
+            try:
+                process = agent_os.get_process(session_id)
+                if process and process.vcpu:
+                    checkpoint = process.vcpu.create_checkpoint(
+                        session_id=session_id,
+                        reason="turn_complete"
+                    )
+                    await self._storage.save_session_checkpoint(checkpoint)
+                    logger.info(f"💾 Saved session checkpoint for {session_id}")
+            except Exception as e:
+                logger.error(f"Failed to save checkpoint: {e}")
 
             # Emit completion
             await self._sse_hub.publish(

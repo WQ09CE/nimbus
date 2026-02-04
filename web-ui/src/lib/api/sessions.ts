@@ -144,7 +144,7 @@ export interface MessageListResponse {
  */
 export async function getSessionMessages(
   sessionId: string,
-  limit: number = 100
+  limit: number = 1000
 ): Promise<ServerMessage[]> {
   const resp = await apiGet<MessageListResponse>(
     `/api/v1/sessions/${sessionId}/messages?limit=${limit}`

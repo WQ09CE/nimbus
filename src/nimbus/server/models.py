@@ -322,3 +322,24 @@ class ErrorResponse(BaseModel):
     code: str
     message: str
     details: Optional[Dict[str, Any]] = None
+
+
+# =============================================================================
+# Logging Models
+# =============================================================================
+
+
+class LogEntry(BaseModel):
+    """Single log entry from client."""
+
+    level: str
+    message: str
+    data: Optional[Any] = None
+    timestamp: str
+
+
+class LogBatch(BaseModel):
+    """Batch of logs from client."""
+
+    entries: List[LogEntry]
+    source: str = "client"
