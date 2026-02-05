@@ -4,7 +4,6 @@ import { useState, useMemo, useEffect, useRef } from "react";
 import type { Message } from "@/stores/chat-store";
 import type { ToolResult } from "@/lib/api";
 import { MarkdownRenderer } from "./MarkdownRenderer";
-import { useAutoScroll } from "@/hooks/useAutoScroll";
 import { ToolCard } from "./tools/ToolCard";
 
 interface ChatMessageProps {
@@ -31,34 +30,19 @@ export function ChatMessage({ message, isStreaming }: ChatMessageProps) {
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
 
-  // Auto-scroll hook for this message
-  const { elementRef: messageRef, scrollToBottom: scrollToMessage } = useAutoScroll({
-    enabled: isStreaming && !isUser,
-    smooth: true,
-    throttleMs: 200, // Less aggressive than page-level scrolling
-  });
+  // Ref for the message element (used for potential scroll, but we avoid aggressive scrolling)
+  const messageRef = useRef<HTMLDivElement>(null);
 
-  // Scroll when content grows during streaming
+  // Reset tracking refs when message changes
   useEffect(() => {
-    if (isStreaming && !isUser && message.content) {
-      const currentLength = message.content.length;
-      if (currentLength > previousContentLength.current + 50) { // Only scroll on significant content changes
-        previousContentLength.current = currentLength;
-        scrollToMessage();
-      }
-    }
-  }, [message.content, isStreaming, isUser, scrollToMessage]);
+    previousContentLength.current = message.content?.length || 0;
+    previousToolsLength.current = message.toolCalls?.length || 0;
+  }, [message.id]);
 
-  // Scroll when new tools are added during streaming
-  useEffect(() => {
-    if (isStreaming && !isUser && message.toolCalls) {
-      const currentToolsLength = message.toolCalls.length;
-      if (currentToolsLength > previousToolsLength.current) {
-        previousToolsLength.current = currentToolsLength;
-        setTimeout(() => scrollToMessage(), 150); // Slight delay for UI to update
-      }
-    }
-  }, [message.toolCalls, isStreaming, isUser, scrollToMessage]);
+  // NOTE: We intentionally do NOT auto-scroll from ChatMessage component.
+  // Auto-scroll should be handled at the container/page level to avoid
+  // conflicting scroll behaviors that cause "jumping" effects.
+  // The parent component (page.tsx or similar) should handle scroll-to-bottom.
 
   // Merge tool calls and results
   const tools = useMemo(() => {
@@ -140,7 +124,7 @@ export function ChatMessage({ message, isStreaming }: ChatMessageProps) {
                   {message.content}
                 </div>
               ) : (
-                // 助手消息使用增强的显示
+                // 助手消息使用 Markdown 渲染
                 <div className="text-sm leading-relaxed">
                   {message.content ? (
                     <div>
@@ -148,7 +132,6 @@ export function ChatMessage({ message, isStreaming }: ChatMessageProps) {
                         content={message.content}
                         className="text-gray-200"
                       />
-
                       {/* 流式输入光标 */}
                       {isStreaming && (
                         <span className="inline-block w-1.5 h-5 ml-1 bg-gradient-to-r from-blue-500 to-cyan-400 animate-pulse align-middle rounded-sm" />

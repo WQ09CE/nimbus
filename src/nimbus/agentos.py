@@ -41,7 +41,7 @@ from nimbus.os.gate import (
     SimpleEventStream,
 )
 from nimbus.tools.base import ToolDefinition, ToolRegistry
-from nimbus.tools.context_tools import SCROLL_HISTORY_DEF, COPY_TO_CLIPBOARD_DEF
+from nimbus.tools.memo import create_memo_tool
 
 # =============================================================================
 # AgentOS Configuration
@@ -70,28 +70,41 @@ class AgentOSConfig:
     # System prompt based on pi-coding-agent design
     system_rules: str = """You are an expert coding assistant. You help users by reading files, executing commands, editing code, and writing new files.
 
-Guidelines:
+## ⚠️ CRITICAL: Memory Management
+You have NO long-term memory. Your context window is LIMITED.
+The ONLY way to remember things across conversations is your **Memo** tool.
+
+**好记性不如烂笔头** - Use `Memo(action="append", content="...")` to save:
+- Current task and progress
+- Important file paths and variable names
+- Key decisions and their reasons
+- Errors encountered and how you solved them
+- Next steps
+
+If it's not in your Memo, you WILL forget it!
+
+## Guidelines
 - ALWAYS respond in CHINESE (简体中文), regardless of the user's language.
-- Use ScrollHistory to view past messages if context is truncated (you will see markers like "⬆️ [History...]").
-- IMPORTANT: When viewing history, use CopyToClipboard to save important information (code snippets, requirements) to your persistent context. The history view is transient, but the clipboard is persistent.
 - Use Bash for file operations like ls, grep, find, rg
 - Use Read to examine files before editing
 - Use Edit for precise changes (old text must match exactly)
 - Use Write only for new files or complete rewrites
 - Be concise in your responses
 - Show file paths clearly when working with files
-- Use ASCII art for diagrams.
 
-Workflow:
-1. Read files to understand the code
-2. Edit/Write to make changes
-3. Reply to the user when done. You do NOT need to call a special tool to finish.
+## Workflow
+1. Check Memo first if resuming a task: `Memo(action="read")`
+2. Read files to understand the code
+3. Edit/Write to make changes
+4. Update Memo with progress: `Memo(action="append", content="...")`
+5. Reply to the user when done
 
-Rules:
+## Rules
 - Act immediately on clear instructions, don't ask for confirmation
 - After Edit/Write success, just reply to the user (don't re-read to verify)
 - If a tool fails, try a different approach (don't retry with identical arguments)
-- Trust tool results - if Edit says success, the file IS modified"""
+- Trust tool results - if Edit says success, the file IS modified
+- Before starting complex tasks, use Memo to outline your plan"""
     workspace_info: str = ""
     capabilities: str = ""
     # Session persistence
@@ -262,30 +275,25 @@ class AgentOS:
 
         # Create process components
         mmu = self._create_mmu(pid)
-        
-        # Define local tools (closure capturing mmu)
-        async def scroll_history(direction: str, steps: int = 10) -> str:
-            return mmu.scroll(direction, steps)
-            
-        async def copy_to_clipboard(content: str) -> str:
-            mmu.update_clipboard(content)
-            return "Content copied to clipboard. It will be visible in your context."
+
+        # Create Memo tool (bound to workspace and session)
+        # Note: workspace_info is a display string like "Workspace: .", not a path
+        workspace = Path.cwd()
+        memo_def, memo_func, memo_manager = create_memo_tool(workspace, pid)
+
+        # Store memo manager for later access (e.g., prepending memo to context)
+        mmu._memo_manager = memo_manager
 
         gate = self._create_gate(pid, role, local_tools={
-            "ScrollHistory": scroll_history,
-            "CopyToClipboard": copy_to_clipboard
+            "Memo": memo_func
         })
         decoder = InstructionDecoder()
 
-        # Prepare tools list with ScrollHistory
+        # Prepare tools list with Memo
         tools_list = self._tools.get_definitions(format="openai")
         tools_list.append({
             "type": "function",
-            "function": SCROLL_HISTORY_DEF
-        })
-        tools_list.append({
-            "type": "function",
-            "function": COPY_TO_CLIPBOARD_DEF
+            "function": memo_def
         })
 
         # Create VCPU
@@ -415,29 +423,22 @@ class AgentOS:
             if not session_id:
                 session_id = f"chat-{uuid.uuid4().hex[:8]}"
             mmu = self._create_mmu(session_id)
-            # Define local tools (closure capturing mmu)
-            async def scroll_history(direction: str, steps: int = 10) -> str:
-                return mmu.scroll(direction, steps)
-                
-            async def copy_to_clipboard(content: str) -> str:
-                mmu.update_clipboard(content)
-                return "Content copied to clipboard."
-            
+
+            # Create Memo tool (bound to workspace and session)
+            workspace = Path.cwd()
+            memo_def, memo_func, memo_manager = create_memo_tool(workspace, session_id)
+            mmu._memo_manager = memo_manager
+
             gate = self._create_gate(session_id, "chat", local_tools={
-                "ScrollHistory": scroll_history,
-                "CopyToClipboard": copy_to_clipboard
+                "Memo": memo_func
             })
             decoder = InstructionDecoder()
-            
-            # Prepare tools list
+
+            # Prepare tools list with Memo
             tools_list = self._tools.get_definitions(format="openai")
             tools_list.append({
                 "type": "function",
-                "function": SCROLL_HISTORY_DEF
-            })
-            tools_list.append({
-                "type": "function",
-                "function": COPY_TO_CLIPBOARD_DEF
+                "function": memo_def
             })
 
             vcpu = VCPU(
@@ -532,28 +533,20 @@ class AgentOS:
         # Re-create components similar to chat() initialization
         mmu = self._create_mmu(session_id)
 
-        # Local tools for scroll
-        async def scroll_history(direction: str, steps: int = 10) -> str:
-            return mmu.scroll(direction, steps)
-            
-        async def copy_to_clipboard(content: str) -> str:
-            mmu.update_clipboard(content)
-            return "Content copied to clipboard."
+        # Create Memo tool (bound to workspace and session)
+        workspace = Path.cwd()
+        memo_def, memo_func, memo_manager = create_memo_tool(workspace, session_id)
+        mmu._memo_manager = memo_manager
 
         gate = self._create_gate(session_id, "chat", local_tools={
-            "ScrollHistory": scroll_history,
-            "CopyToClipboard": copy_to_clipboard
+            "Memo": memo_func
         })
         decoder = InstructionDecoder()
 
         tools_list = self._tools.get_definitions(format="openai")
         tools_list.append({
             "type": "function",
-            "function": SCROLL_HISTORY_DEF
-        })
-        tools_list.append({
-            "type": "function",
-            "function": COPY_TO_CLIPBOARD_DEF
+            "function": memo_def
         })
 
         vcpu = VCPU(
@@ -669,7 +662,7 @@ class AgentOS:
     async def _check_compaction(self, process: Process) -> None:
         if not process.mmu:
             return
-            
+
         # V2 MMU (Infinite Context) handles memory internally via assemble_context slicing.
         # We don't want external compaction to delete messages from the stack.
         # So we disable this legacy check.

@@ -1,13 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useChatStore } from "@/stores";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatList } from "@/components/chat/ChatList";
 
 import { SessionPanel } from "@/components/session/SessionPanel";
-import { useAutoScroll, useScrollDetection } from "@/hooks/useAutoScroll";
 
 export default function Home() {
   const {
@@ -33,43 +32,60 @@ export default function Home() {
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const [showSessionPanel, setShowSessionPanel] = useState(false);
 
-  // Auto-scroll hook
-  const { elementRef: messagesEndRef, scrollToBottom } = useAutoScroll({
-    enabled: autoScrollEnabled,
-    throttleMs: 100, // Smooth throttling during streaming
-  });
+  // Simple ref for scroll container
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollRAF = useRef<number | null>(null);
 
-  // Scroll detection hook
-  const { containerRef: messagesContainerRef, handleScroll, scrollToBottom: scrollContainerToBottom } = useScrollDetection({
-    threshold: 50,
-    onScrollUp: () => {
-      setUserScrolledUp(true);
-      setAutoScrollEnabled(false);
-    },
-    onReachBottom: () => {
+  // Simple scroll to bottom using scrollTop (more stable than scrollIntoView)
+  const scrollToBottom = useCallback(() => {
+    // Cancel any pending scroll
+    if (scrollRAF.current) {
+      cancelAnimationFrame(scrollRAF.current);
+    }
+    
+    // Use RAF to batch scroll updates and avoid layout thrashing
+    scrollRAF.current = requestAnimationFrame(() => {
+      const container = messagesContainerRef.current;
+      if (container) {
+        container.scrollTop = container.scrollHeight;
+      }
+    });
+  }, []);
+
+  // Handle user scroll
+  const handleScroll = useCallback(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const isAtBottom = scrollHeight - scrollTop - clientHeight <= 100;
+    
+    if (isAtBottom) {
       setUserScrolledUp(false);
       setAutoScrollEnabled(true);
-    },
-  });
+    } else {
+      setUserScrolledUp(true);
+      setAutoScrollEnabled(false);
+    }
+  }, []);
 
-  // Auto-scroll when new messages arrive or streaming content updates
+  // Auto-scroll when messages change (throttled)
   useEffect(() => {
     if (autoScrollEnabled) {
       scrollToBottom();
     }
-  }, [messages, streamingContent, streamingToolCalls, currentActivity, autoScrollEnabled, scrollToBottom]);
+  }, [messages.length, autoScrollEnabled, scrollToBottom]);
 
-  // Enhanced scroll during streaming with intelligent detection
+  // Auto-scroll during streaming (debounced to reduce jitter)
   useEffect(() => {
     if (isStreaming && autoScrollEnabled) {
-      // More frequent updates during streaming for smoother experience
       const timeoutId = setTimeout(() => {
         scrollToBottom();
-      }, 50);
-
+      }, 150); // Debounce to reduce scroll frequency
       return () => clearTimeout(timeoutId);
     }
-  }, [streamingContent, streamingToolCalls, isStreaming, autoScrollEnabled, scrollToBottom]);
+  }, [streamingContent, isStreaming, autoScrollEnabled, scrollToBottom]);
 
   // Initialize session on mount
   useEffect(() => {
@@ -194,8 +210,7 @@ export default function Home() {
               onClick={() => {
                 setAutoScrollEnabled(true);
                 setUserScrolledUp(false);
-                scrollContainerToBottom();
-                setTimeout(() => scrollToBottom(true), 100);
+                scrollToBottom();
               }}
               className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-2 rounded-full shadow-lg transition-all duration-200 flex items-center gap-2 border border-blue-500/50"
             >

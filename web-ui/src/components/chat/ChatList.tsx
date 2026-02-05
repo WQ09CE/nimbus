@@ -81,14 +81,11 @@ export function ChatList({ messages, isStreaming, streamingContent, streamingToo
           let processSteps = msgs;
           let resultMsg = null;
 
-          // Only treat as "Result Bubble" if:
-          // 1. No tools in the last message
-          // 2. Not currently streaming (keep in workflow while thinking)
-          if (!lastHasTools && !isStreamingMsg) {
-             // It's a text reply. 
-             // Is it part of a chain (Process + Result) or just a simple reply?
-             // If there are previous steps, split it.
-             // If it's the only message, display as ChatMessage.
+          // Pure text message (no tools) should ALWAYS render as ChatMessage
+          // to avoid DOM structure change when streaming ends.
+          // This prevents the "jump" effect.
+          if (!lastHasTools) {
+             // It's a text reply (streaming or not).
              if (msgs.length > 1) {
                 resultMsg = lastMsg;
                 processSteps = msgs.slice(0, -1);

@@ -514,7 +514,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 arguments: d.args || d.arguments || {},
               };
               toolCalls.push(tool);
+              // Force sync streamingContent to ensure any thinking content before tool call is visible
               set({ 
+                streamingContent: assistantContent,
                 streamingToolCalls: [...toolCalls],
                 currentActivity: `执行工具: ${tool.name}`,
                 lastHeartbeat: Date.now()
