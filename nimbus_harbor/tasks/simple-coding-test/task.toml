@@ -1,0 +1,21 @@
+# Harbor Task Configuration for Nimbus Testing
+# A simple coding task to verify Nimbus agent works correctly with Harbor
+
+[metadata]
+author_name = "Nimbus Team"
+author_email = "nimbus@example.com"
+difficulty = "easy"
+category = "coding"
+tags = ["python", "function", "basic"]
+
+[verifier]
+timeout_sec = 30
+
+[agent]
+timeout_sec = 120
+
+[environment]
+cpus = 2
+memory_mb = 2048
+storage_mb = 1024
+allow_internet = true  # Required to connect to host's pi-ai server

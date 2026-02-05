@@ -1,0 +1,21 @@
+# Harbor Task Configuration for read-and-fix-test
+# A debugging task to verify agent can read and fix buggy code
+
+[metadata]
+author_name = "Nimbus Team"
+author_email = "nimbus@example.com"
+difficulty = "easy"
+category = "debugging"
+tags = ["python", "debugging", "read-fix"]
+
+[verifier]
+timeout_sec = 30
+
+[agent]
+timeout_sec = 120
+
+[environment]
+cpus = 2
+memory_mb = 2048
+storage_mb = 1024
+allow_internet = true
