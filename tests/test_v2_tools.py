@@ -217,14 +217,13 @@ class TestToolRegistry:
         """Test getting all tool definitions."""
         tools = get_all_tools()
 
-        # 4 core tools + return_result
-        assert len(tools) == 5
+        # 4 core tools
+        assert len(tools) == 4
         tool_names = [t["name"] for t in tools]
         assert "Read" in tool_names
         assert "Write" in tool_names
         assert "Edit" in tool_names
         assert "Bash" in tool_names
-        assert "return_result" in tool_names
 
     def test_get_tool(self):
         """Test getting a single tool definition."""
@@ -252,7 +251,7 @@ class TestToolRegistry:
         """Test iterating over tools."""
         tools = iterate_tools(workspace=Path.cwd())
 
-        assert len(tools) == 5  # 4 core tools + return_result
+        assert len(tools) == 4  # 4 core tools
         for name, func, desc, params in tools:
             assert isinstance(name, str)
             assert callable(func)
@@ -284,7 +283,6 @@ class TestAgentOSIntegration:
         assert "Write" in registered
         assert "Edit" in registered
         assert "Bash" in registered
-        assert "return_result" in registered
 
         # Verify tools were actually registered
         assert "Read" in mock_os.registered_tools

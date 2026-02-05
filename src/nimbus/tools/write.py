@@ -52,7 +52,7 @@ async def write_file(
             try:
                 resolved_path.relative_to(workspace)
             except ValueError:
-                raise SandboxError(f"Path outside workspace: {file_path}")
+                raise SandboxError(file_path, workspace, f"Path outside workspace: {file_path}")
         else:
             resolved_path = workspace / file_path
     except SandboxError:

@@ -235,6 +235,6 @@ class FailureReporter:
             f"[Operation Failed] The {tool_name} operation failed after multiple attempts.\n\n"
             f"What happened: The same operation was tried {threshold} times without success.\n\n"
             f"Recovery guidance:\n{guidance}\n\n"
-            f"IMPORTANT: Please call return_result now to report what you were trying to do "
+            f"IMPORTANT: Please stop now and report what you were trying to do "
             f"and what obstacle you encountered. Do NOT retry the same operation."
         )

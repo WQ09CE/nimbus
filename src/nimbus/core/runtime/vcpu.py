@@ -51,9 +51,9 @@ from nimbus.os.gate import KernelGate
 # Tool Call Optimization Constants (Learned from opencode)
 # =============================================================================
 
-# Tools that modify state and should trigger "call return_result" hint
+# Tools that modify state and may indicate task progress.
 # State-modifying tools that change files/system state.
-# After successful Edit/Write, we inject a hint to remind the LLM to call return_result.
+# After successful Edit/Write, we inject a hint to remind the LLM to finish if done.
 # Note: Bash is excluded from hints because it's often used for read operations.
 STATE_MODIFYING_TOOLS = {"Edit", "Write"}
 
@@ -994,7 +994,7 @@ class VCPU:
           LLM tries to re-apply the same edit that already succeeded.
         - Doom loop detection (learned from opencode): Detects when the same
           tool is called with identical arguments multiple times consecutively.
-        - Terminal tool hints: Reminds LLM to call return_result after
+        - Terminal tool hints: Reminds LLM to finish the task after
           state-modifying operations (Edit, Write, Bash).
         """
         # Auto-repair tool name if needed (learned from opencode's llm.ts)
@@ -1073,14 +1073,13 @@ class VCPU:
             output_str = f"[Error] {result.fault.message}"
 
         # Inject hint for state-modifying tools on success - append to tool result
-        # This reminds LLM to call return_result after Edit/Write (actual state changes)
+        # This encourages verification after Edit/Write (actual state changes)
         # Note: Bash is excluded because it's often used for read operations (ls, grep, etc.)
-        # and we don't want to mislead the LLM when Bash output reveals infrastructure issues
         if action.name in ("Edit", "Write") and result.status == "OK":
             output_str += (
-                "\n\n[IMPORTANT] File modified successfully. "
-                "If your task is complete, call return_result immediately with a summary. "
-                "Do NOT call more tools to verify - trust the success message above."
+                "\n\n[Hint] File modified successfully. "
+                "If the task involves code or configuration, "
+                "consider testing it with Bash before finishing."
             )
 
         self.mmu.add_tool_result(tool_call_id=action.id, name=action.name, content=output_str)
@@ -1390,7 +1389,7 @@ One sentence summary:"""
 
             # Use LLM to summarize
             messages = [{"role": "user", "content": prompt}]
-            response = await self.alu.complete(messages, tools=[])
+            response = await self.alu.chat(messages, tools=[])
 
             if response.content:
                 summary = response.content.strip()

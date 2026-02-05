@@ -106,7 +106,7 @@ class EmptyResultHandler:
                 f"[HARD STOP] {action.name} has returned no matches {failures} times.\n\n"
                 f"The files you're searching for DO NOT EXIST in this workspace.\n"
                 f"Stop searching and work with what's available.\n\n"
-                f"REQUIRED ACTION: Call return_result now to report:\n"
+                f"REQUIRED ACTION: Stop now and report:\n"
                 f"1. What you were trying to find\n"
                 f"2. What you actually found/accomplished\n"
                 f"3. Any obstacles encountered\n\n"

@@ -292,13 +292,11 @@ __all__ = [
     "write_file",
     "edit_file",
     "bash_command",
-    "return_result",
     # Tool definitions
     "READ_TOOL",
     "WRITE_TOOL",
     "EDIT_TOOL",
     "BASH_TOOL",
-    "RETURN_RESULT_TOOL",
     "ALL_TOOLS",
     "TOOL_FUNCTIONS",
     # Helper functions

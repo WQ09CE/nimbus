@@ -234,7 +234,7 @@ class FileNotFoundHandler(ErrorHandler):
                 f"Suggestions:\n"
                 f"1. Search with Glob: Glob(pattern='**/{filename}')\n"
                 f"2. Find similar files: Glob(pattern='**/*{filename[:5]}*')\n"
-                f"3. If this file doesn't exist, proceed with return_result"
+                f"3. If this file doesn't exist, stop and report the issue"
             )
 
 
@@ -289,7 +289,7 @@ class PatternNoMatchHandler(ErrorHandler):
                 f"YOU MUST NOW:\n"
                 f"1. Work with the files that DO exist (check the directory listing above)\n"
                 f"2. If you need to verify your work, read the file you modified\n"
-                f"3. Call return_result to report your progress\n\n"
+                f"3. Stop and report your progress\n\n"
                 f"DO NOT try more Glob/Grep patterns for '{pattern}' - it won't help."
             )
 
@@ -386,7 +386,7 @@ class EditStringNotFoundHandler(ErrorHandler):
                 f"3. The string appears differently than expected\n\n"
                 f"Next steps:\n"
                 f"1. Read the file to see current state\n"
-                f"2. If your change is already there, call return_result\n"
+                f"2. If your change is already there, finish by responding with your result\n"
                 f"3. If not, use the exact text from the Read output"
             )
 
@@ -442,7 +442,7 @@ class CommandFailedHandler(ErrorHandler):
                 f"Consider:\n"
                 f"1. Using a different approach\n"
                 f"2. Breaking down into smaller steps\n"
-                f"3. Calling return_result to report the issue"
+                f"3. Stopping and reporting the issue"
             )
 
 
@@ -608,7 +608,7 @@ class ErrorHandlerRegistry:
         if attempt >= 3:
             return RecoveryAction.inject(
                 f"⚠️ Operation failed {attempt} times: {fault_message}\n\n"
-                f"Consider trying a different approach or calling return_result "
+                f"Consider trying a different approach or stopping "
                 f"to report what you've tried and what obstacles you encountered."
             )
 

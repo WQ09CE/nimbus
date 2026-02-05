@@ -326,6 +326,53 @@ class AgentOS:
 
         return pid
 
+    async def wait(self, pid: str, timeout: Optional[float] = None) -> ToolResult:
+        """Wait for a process to complete and return its result.
+
+        Args:
+            pid: Process ID to wait for
+            timeout: Optional timeout in seconds
+
+        Returns:
+            ToolResult from the process
+
+        Raises:
+            RuntimeError: If process not found
+        """
+        process = self._processes.get(pid)
+        if not process:
+            raise RuntimeError(f"Process {pid} not found")
+
+        # If process is pending, start it
+        if process.state == "PENDING":
+            process.state = "RUNNING"
+            return await self._run_process(process)
+
+        # If process is already running with a task, wait for it
+        if process.task and not process.task.done():
+            try:
+                if timeout:
+                    return await asyncio.wait_for(process.task, timeout=timeout)
+                return await process.task
+            except asyncio.TimeoutError:
+                process.state = "CANCELLED"
+                return ToolResult(
+                    status="TIMEOUT",
+                    fault=Fault(
+                        domain="KERNEL",
+                        code="TIMEOUT",
+                        message=f"Process timed out after {timeout}s",
+                    ),
+                )
+
+        # If process is completed, return the result
+        if process.state in ("SUCCEEDED", "FAILED", "CANCELLED"):
+            return process.result or ToolResult(status="OK")
+
+        # Otherwise, run the process
+        process.state = "RUNNING"
+        return await self._run_process(process)
+
     async def run(self, goal: str, role: str = "") -> ToolResult:
         pid = self.spawn(goal, role=role)
         return await self.wait(pid)

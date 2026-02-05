@@ -30,5 +30,21 @@ SCROLL_HISTORY_DEF = {
     }
 }
 
+# Definition for CopyToClipboard
+COPY_TO_CLIPBOARD_DEF = {
+    "name": "CopyToClipboard",
+    "description": "Copy important information (code snippets, variable values, requirements) to a persistent clipboard. This information will remain visible in your context even when you scroll through history.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "content": {
+                "type": "string",
+                "description": "The content to copy to clipboard."
+            }
+        },
+        "required": ["content"]
+    }
+}
+
 # The implementation is dynamically generated per process to capture MMU instance.
 # This file serves as the schema definition source.

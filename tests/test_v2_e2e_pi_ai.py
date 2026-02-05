@@ -259,7 +259,8 @@ class TestAgentOSIntegration:
 
         assert result.status == "OK"
         assert result.output is not None
-        assert "Paris" in result.output
+        # Accept both English "Paris" or Chinese "巴黎" due to system language settings
+        assert "Paris" in result.output or "巴黎" in result.output
         print(f"Result: {result.output}")
 
     @pytest.mark.asyncio

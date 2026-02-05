@@ -79,7 +79,7 @@ class DoomLoopDetector:
             "   - Read the file to get the current state\n"
             "   - If the change you wanted is already there, move on\n"
             "   - If you need a different edit, use text from the fresh Read\n"
-            "4. If your task is complete, call return_result immediately"
+            "4. If your task is complete, finish by responding with your result"
         ),
         "Write": (
             "WRITE TOOL GUIDANCE:\n"
@@ -106,7 +106,7 @@ class DoomLoopDetector:
             "- The pattern may not match any files\n"
             "- Try a broader pattern (e.g., **/*.py instead of specific path)\n"
             "- Verify the search directory is correct\n"
-            "- If the file doesn't exist, use return_result to report"
+            "- If the file doesn't exist, stop and report the issue"
         ),
         "Grep": (
             "GREP TOOL GUIDANCE:\n"
@@ -182,7 +182,7 @@ class DoomLoopDetector:
                 f"- The {tool_name} tool is failing with the same arguments\n"
                 f"- Review the error message from previous attempts\n"
                 f"- Try a different approach or different arguments\n"
-                f"- If stuck, call return_result to report the issue"
+                f"- If stuck, stop and explain what went wrong"
             ),
         )
 
