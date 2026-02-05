@@ -1,28 +1,36 @@
-"""Read Tool - Enhanced file reading with image support
+"""Read Tool - Smart file reading with adaptive limits
 
-Based on pi-coding-agent implementation with:
-- Text file truncation (2000 lines or 50KB limit)
-- Image file support (base64 attachment)
-- Smart offset/limit for large files
-- 1-indexed line numbers (user-friendly)
+Intelligent Limit System:
+- **Adaptive scaling**: 2000 lines / 100KB for modern LLMs (vs old 300/12KB)
+- **Context aware**: Automatically scales based on available context capacity
+- **Small file optimization**: Reads small files completely without truncation
+- **Memory safe**: Large files use streaming to prevent OOM
 
-Example:
-    >>> result = await read_file("README.md")
+Features:
+- Smart truncation with helpful continue hints
+- Image file support (jpg, png, gif, webp)
+- Memory-safe large file handling
+- User-friendly 1-indexed line numbers
+- Precise offset/limit control
+
+Examples:
+    >>> result = await read_file("vcpu.py")  # Reads complete 1500-line file
     >>> print(result)
-    Read README.md (150 lines):
-    ...
 
     >>> result = await read_file("large.log", offset=1000, limit=100)
-    >>> print(result)
-    Read large.log (lines 1000-1100 of 5000):
-    ...
+    >>> print(result)  # Read specific range
 """
 
 import mimetypes
 from pathlib import Path
 from typing import Any, Optional
 
-from .utils import DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, format_size, truncate_head
+from .utils import (
+    DEFAULT_MAX_BYTES,
+    format_size,
+    get_smart_limits,
+    truncate_head,
+)
 
 
 async def read_file(
@@ -124,7 +132,7 @@ async def _read_text(
 async def _read_small_text(
     file_path: Path, offset: Optional[int], limit: Optional[int], original_path: str
 ) -> str:
-    """Read small text file fully into memory."""
+    """Read small text file fully into memory with smart limits."""
     try:
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
@@ -135,6 +143,10 @@ async def _read_small_text(
 
     lines = content.split("\n")
     total_lines = len(lines)
+    file_size = len(content.encode("utf-8"))
+
+    # Get smart limits based on file size
+    smart_max_lines, smart_max_bytes = get_smart_limits(file_size=file_size)
 
     # Apply offset (1-indexed → 0-indexed)
     start_line = (offset - 1) if offset else 0
@@ -153,16 +165,16 @@ async def _read_small_text(
         selected_content = "\n".join(lines[start_line:])
         user_limited_lines = None
 
-    # Apply truncation
-    truncation = truncate_head(selected_content)
+    # Apply smart truncation
+    truncation = truncate_head(selected_content, max_lines=smart_max_lines, max_bytes=smart_max_bytes)
 
     # Build output text
     if truncation["first_line_exceeds_limit"]:
         first_line_size = format_size(len(lines[start_line].encode("utf-8")))
-        max_size = format_size(DEFAULT_MAX_BYTES)
+        max_size = format_size(smart_max_bytes)
         return (
             f"[Line {start_line + 1} is {first_line_size}, exceeds {max_size} limit. "
-            f"Use bash: sed -n '{start_line + 1}p' {file_path.name} | head -c {DEFAULT_MAX_BYTES}]"
+            f"Use bash: sed -n '{start_line + 1}p' {file_path.name} | head -c {smart_max_bytes}]"
         )
 
     output_text = truncation["content"]
@@ -177,7 +189,7 @@ async def _read_small_text(
                 f"Use offset={next_offset} to continue.]"
             )
         else:
-            max_size = format_size(DEFAULT_MAX_BYTES)
+            max_size = format_size(smart_max_bytes)
             output_text += (
                 f"\n\n[Showing lines {start_line + 1}-{end_line_display} of {total_lines} "
                 f"({max_size} limit). Use offset={next_offset} to continue.]"
@@ -199,7 +211,10 @@ async def _read_large_text(
     original_path: str,
     file_size: int,
 ) -> str:
-    """Read large text file line-by-line to avoid OOM."""
+    """Read large text file line-by-line to avoid OOM with smart limits."""
+    # Get smart limits based on file size
+    smart_max_lines, smart_max_bytes = get_smart_limits(file_size=file_size)
+
     # Apply offset (1-indexed → 0-indexed)
     start_line = (offset - 1) if offset else 0
     start_line = max(0, start_line)
@@ -208,11 +223,11 @@ async def _read_large_text(
     lines_skipped = 0
     bytes_read = 0
 
-    # Limits
-    max_lines = limit if limit is not None else DEFAULT_MAX_LINES
-    # Cap limit to default if not specified or too huge
-    if limit is None or limit > DEFAULT_MAX_LINES:
-        max_lines = DEFAULT_MAX_LINES
+    # Use smart limits unless user specified a smaller limit
+    max_lines = limit if limit is not None else smart_max_lines
+    # Cap to smart limit if user limit is too large
+    if limit is None or limit > smart_max_lines:
+        max_lines = smart_max_lines
 
     truncated_by_bytes = False
     truncated_by_lines = False
@@ -234,15 +249,15 @@ async def _read_large_text(
 
                 line_bytes = len(line.encode("utf-8"))
 
-                # Check byte limit
-                if bytes_read + line_bytes > DEFAULT_MAX_BYTES:
+                # Check byte limit using smart limit
+                if bytes_read + line_bytes > smart_max_bytes:
                     # If it's the very first line, return special error
                     if len(lines_read) == 0:
                         first_line_size = format_size(line_bytes)
-                        max_size = format_size(DEFAULT_MAX_BYTES)
+                        max_size = format_size(smart_max_bytes)
                         return (
                             f"[Line {start_line + 1} is {first_line_size}, exceeds {max_size} limit. "
-                            f"Use bash: sed -n '{start_line + 1}p' {Path(original_path).name} | head -c {DEFAULT_MAX_BYTES}]"
+                            f"Use bash: sed -n '{start_line + 1}p' {Path(original_path).name} | head -c {smart_max_bytes}]"
                         )
 
                     truncated_by_bytes = True

@@ -6,16 +6,58 @@ Based on pi-coding-agent source code.
 
 import difflib
 import re
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 # =============================================================================
 # Constants
 # =============================================================================
 
-# Optimized for Agent Context Window (approx 3000 tokens)
-# Prevents "read -> overflow -> compact -> forget" cycle
-DEFAULT_MAX_LINES = 300
-DEFAULT_MAX_BYTES = 12 * 1024  # 12KB
+# SMART LIMITS: Optimized for modern 100k+ context LLMs (Claude, GPT-4, etc.)
+# Previous: 300 lines / 12KB (too conservative for modern models)
+# Current: Intelligent scaling based on context capacity and file size
+
+# Base limits for 100k context models (8x improvement over legacy limits)
+DEFAULT_MAX_LINES = 2000  # ~100KB for typical code files
+DEFAULT_MAX_BYTES = 100 * 1024  # 100KB ≈ 33k tokens (vs old 12KB)
+
+
+def get_smart_limits(context_capacity: Optional[int] = None, file_size: Optional[int] = None) -> tuple[int, int]:
+    """
+    Calculate smart limits based on context capacity and file size.
+
+    Args:
+        context_capacity: Max context tokens (default: 100k)
+        file_size: File size in bytes (for optimization hints)
+
+    Returns:
+        Tuple of (max_lines, max_bytes)
+    """
+    context_capacity = context_capacity or 100_000  # Default to 100k
+
+    # Simple scaling: larger context = more generous limits
+    if context_capacity >= 200_000:
+        # Very large context (200k+): be generous
+        max_lines = 4000
+        max_bytes = 200 * 1024  # 200KB
+    elif context_capacity >= 100_000:
+        # Large context (100k+): use default modern limits
+        max_lines = DEFAULT_MAX_LINES
+        max_bytes = DEFAULT_MAX_BYTES
+    elif context_capacity >= 32_000:
+        # Medium context (32k-100k): scale down
+        max_lines = 1000
+        max_bytes = 50 * 1024  # 50KB
+    else:
+        # Small context (<32k): be conservative
+        max_lines = 300
+        max_bytes = 12 * 1024  # 12KB
+
+    # File size optimization: if file is small, read it all
+    if file_size and file_size <= max_bytes // 4:
+        # File is small (< 25% of limit), no need to truncate
+        return max_lines * 4, max_bytes * 4
+
+    return max_lines, max_bytes
 
 
 # =============================================================================
