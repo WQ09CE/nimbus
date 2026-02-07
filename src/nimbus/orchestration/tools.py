@@ -8,7 +8,10 @@ Custom tool definitions for the Dual-Agent orchestration layer.
 import asyncio
 import socket
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
+
+if TYPE_CHECKING:
+    from nimbus.agentos import AgentOS
 
 from nimbus.tools.base import ToolParameter, tool
 
@@ -293,3 +296,38 @@ def is_command_readonly(command: str) -> bool:
             return True
 
     return False
+
+
+# =============================================================================
+# Core Bash Wrapping
+# =============================================================================
+
+
+def wrap_core_bash(os: "AgentOS") -> None:
+    """
+    Replace an AgentOS's Bash tool with a whitelist-filtered version.
+
+    If the command doesn't match the read-only whitelist, returns an error
+    message instead of executing. Used for Core agent in dual-agent mode.
+
+    Args:
+        os: AgentOS instance whose Bash tool to wrap
+    """
+    original_entry = os._tools.get("Bash")
+    if not original_entry:
+        return
+
+    original_def, original_func = original_entry
+
+    async def filtered_bash(**kwargs):
+        command = kwargs.get("command", "")
+        if not is_command_readonly(command):
+            return (
+                f"[Error] Core Agent cannot execute write commands.\n"
+                f"Blocked command: {command[:100]}\n"
+                f"Use Dispatch to delegate write operations to the Executor."
+            )
+        return await original_func(**kwargs)
+
+    os._tools.unregister("Bash")
+    os._tools.register(original_def, filtered_bash)

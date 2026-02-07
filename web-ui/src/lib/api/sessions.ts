@@ -20,6 +20,7 @@ export interface Session {
   workspace_path?: string;
   last_message_at?: string;
   message_count: number;
+  agent_mode?: string;
 }
 
 export interface SessionCreateRequest {
@@ -27,6 +28,7 @@ export interface SessionCreateRequest {
   workspace_path?: string;
   memory_type?: string;
   planner_type?: string;
+  agent_mode?: string;
 }
 
 export interface SessionListResponse {

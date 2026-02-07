@@ -30,6 +30,7 @@ from .tools import (
     VERIFY_TOOL_DEF,
     is_command_readonly,
     run_verify_checks,
+    wrap_core_bash,
 )
 from .workspace_diff import (
     WorkspaceDiff,
@@ -175,32 +176,8 @@ class DualAgentOrchestrator:
         return os
 
     def _wrap_core_bash(self, os: AgentOS) -> None:
-        """
-        Replace Core's Bash tool with a whitelist-filtered version.
-
-        If the command doesn't match the whitelist, returns an error message
-        instead of executing.
-        """
-        # Get the original Bash function from the registry
-        original_entry = os._tools.get("Bash")
-        if not original_entry:
-            return
-
-        original_def, original_func = original_entry
-
-        async def filtered_bash(**kwargs):
-            command = kwargs.get("command", "")
-            if not is_command_readonly(command):
-                return (
-                    f"[Error] Core Agent cannot execute write commands.\n"
-                    f"Blocked command: {command[:100]}\n"
-                    f"Use Dispatch to delegate write operations to the Executor."
-                )
-            return await original_func(**kwargs)
-
-        # Re-register with the filtered version
-        os._tools.unregister("Bash")
-        os._tools.register(original_def, filtered_bash)
+        """Replace Core's Bash tool with a whitelist-filtered version."""
+        wrap_core_bash(os)
 
     # =========================================================================
     # Main Entry Point

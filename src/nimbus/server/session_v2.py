@@ -52,10 +52,16 @@ class SessionManagerV2:
         planner_type: str = "dag",
         session_id: Optional[str] = None,
         model_config: Optional[Dict[str, str]] = None,
+        agent_mode: str = "standard",
     ) -> Dict[str, Any]:
         """Create a new session."""
         if session_id is None:
             session_id = f"sess_{uuid.uuid4().hex[:12]}"
+
+        # Persist agent_mode via config_overrides (no schema migration needed)
+        config_overrides = None
+        if agent_mode != "standard":
+            config_overrides = {"agent_mode": agent_mode}
 
         session = await self._storage.create_session(
             session_id=session_id,
@@ -64,9 +70,10 @@ class SessionManagerV2:
             memory_type=memory_type,
             planner_type=planner_type,
             model_config=model_config,
+            config_overrides=config_overrides,
         )
 
-        logger.info(f"✨ Created session {session_id} (v2)")
+        logger.info(f"✨ Created session {session_id} (v2, mode={agent_mode})")
         return session
 
     async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
@@ -142,16 +149,79 @@ class SessionManagerV2:
             workspace = Path(os.path.expanduser(workspace_path))
             logger.info(f"📁 Using workspace: {workspace}")
 
-        # Create AgentOS with default tools
-        logger.info(f"🔧 Creating AgentOS for session {session_id}")
-        agent_os = create_agent_os(
-            llm_client=llm_client,
-            tools={},
-            max_processes=5,
-            default_timeout=300.0,
-            workspace=workspace,  # Pass workspace for tool sandboxing
-            register_defaults=True,  # Auto-register default tools
-        )
+        # Get agent mode from session config
+        agent_mode = "standard"
+        config_overrides = session.get("config_overrides")
+        if config_overrides:
+            import json as _json
+            try:
+                overrides = _json.loads(config_overrides) if isinstance(config_overrides, str) else config_overrides
+                agent_mode = overrides.get("agent_mode", "standard")
+            except (ValueError, TypeError):
+                pass
+
+        if agent_mode == "dual_agent":
+            from pathlib import Path as _Path
+
+            from nimbus.orchestration.dispatch_tool import DispatchTool, DispatchToolConfig
+            from nimbus.orchestration.prompts import CORE_SYSTEM_PROMPT
+            from nimbus.orchestration.tools import (
+                DISPATCH_TOOL_DEF,
+                VERIFY_TOOL_DEF,
+                wrap_core_bash,
+            )
+            from nimbus.tools import register_default_tools
+
+            _workspace = workspace if workspace else _Path.cwd()
+
+            # Create AgentOS with restricted tools + Core system prompt
+            agent_os = create_agent_os(
+                llm_client=llm_client,
+                workspace=_workspace,
+                register_defaults=False,
+                kernel_tools=False,
+                system_rules=CORE_SYSTEM_PROMPT,
+            )
+
+            # Register only read-only tools
+            register_default_tools(agent_os, workspace=_workspace, tools=["Read", "Bash"])
+
+            # Wrap Bash with whitelist filter
+            wrap_core_bash(agent_os)
+
+            # Create and register Dispatch + Verify meta-tools
+            dispatch_tool = DispatchTool(
+                workspace=_workspace,
+                llm_client=llm_client,
+                config=DispatchToolConfig(),
+                parent_events=agent_os._events,
+            )
+
+            agent_os.register_tool(
+                name="Dispatch",
+                func=dispatch_tool.dispatch,
+                description=DISPATCH_TOOL_DEF["description"],
+                parameters=DISPATCH_TOOL_DEF["parameters"],
+            )
+            agent_os.register_tool(
+                name="Verify",
+                func=dispatch_tool.verify,
+                description=VERIFY_TOOL_DEF["description"],
+                parameters=VERIFY_TOOL_DEF["parameters"],
+            )
+
+            logger.info(f"🔧 Created dual_agent AgentOS for session {session_id}: tools={agent_os.list_tools()}")
+        else:
+            # Standard mode — unchanged
+            logger.info(f"🔧 Creating AgentOS for session {session_id}")
+            agent_os = create_agent_os(
+                llm_client=llm_client,
+                tools={},
+                max_processes=5,
+                default_timeout=300.0,
+                workspace=workspace,
+                register_defaults=True,
+            )
 
         async with self._lock:
             self._sessions[session_id] = agent_os
@@ -510,13 +580,16 @@ class SessionManagerV2:
         """Convert v2 Event to SSE event."""
         event_type = event.type.lower()
 
+        # Check if this is a sub-agent (executor) event
+        is_sub_agent = event.data.get("_source") == "executor"
+
         # Map v2 event types to SSE event types
         type_mapping = {
             "tool_started": "tool_call",
             "tool_finished": "tool_result",
             "proc_spawned": "task_start",
             "proc_finished": "task_done",
-            "step_started": "step_start",  # NEW: Signal new turn
+            "step_started": "step_start",
             "thinking": "message",
             # Legacy/Alternative mappings
             "tool_call": "tool_call",
@@ -527,6 +600,10 @@ class SessionManagerV2:
         }
 
         sse_type = type_mapping.get(event_type, "heartbeat")
+
+        # Prefix sub-agent events so frontend can distinguish
+        if is_sub_agent and sse_type in ("tool_call", "tool_result"):
+            sse_type = f"sub_{sse_type}"
 
         # Emit to SSE hub
         await self._sse_hub.publish(

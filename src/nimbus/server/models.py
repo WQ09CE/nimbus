@@ -60,6 +60,7 @@ class SessionCreate(BaseModel):
     memory_type: str = "tiered"  # simple | tiered
     planner_type: str = "dag"  # simple | dag
     llm_config: Optional[Dict[str, str]] = None  # {provider, model_id}
+    agent_mode: str = "standard"  # standard | dual_agent
 
 
 class SessionResponse(BaseModel):
@@ -71,6 +72,7 @@ class SessionResponse(BaseModel):
     status: SessionStatus
     memory_type: str
     planner_type: str
+    agent_mode: str = "standard"  # standard | dual_agent
     workspace_path: Optional[str] = None
     last_message_at: Optional[datetime] = None
     message_count: int = 0

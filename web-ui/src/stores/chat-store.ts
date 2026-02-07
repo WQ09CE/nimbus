@@ -535,8 +535,43 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 duration: d.duration_ms,
               };
               toolResults.push(result);
-              set({ 
+              set({
                 currentActivity: "工具执行完成",
+                lastHeartbeat: Date.now()
+              });
+            }
+            break;
+
+          case "sub_tool_call":
+            if (data && typeof data === "object") {
+              const d = data as ToolCallData;
+              const tool: ToolCall = {
+                id: d.action_id || d.id || "",
+                name: `[Executor] ${d.tool || d.name || "unknown"}`,
+                arguments: d.args || d.arguments || {},
+              };
+              toolCalls.push(tool);
+              set({
+                streamingToolCalls: [...toolCalls],
+                currentActivity: `Executor: ${d.tool || d.name}`,
+                lastHeartbeat: Date.now()
+              });
+            }
+            break;
+
+          case "sub_tool_result":
+            if (data && typeof data === "object") {
+              const d = data as ToolResultData;
+              const result: ToolResult = {
+                id: d.action_id || d.id || "",
+                name: `[Executor] ${d.tool || d.name || "unknown"}`,
+                result: d.output !== undefined ? d.output : d.result,
+                error: d.status === "ERROR" ? (d.fault ? d.fault.message : "Error") : undefined,
+                duration: d.duration_ms,
+              };
+              toolResults.push(result);
+              set({
+                currentActivity: "Executor: 工具执行完成",
                 lastHeartbeat: Date.now()
               });
             }

@@ -41,6 +41,8 @@ export type ChatEventType =
   | "step_start"
   | "tool_call"
   | "tool_result"
+  | "sub_tool_call"
+  | "sub_tool_result"
   | "task_done"
   | "task_failed"
   | "permission_request"

@@ -168,6 +168,7 @@ async def create_session(
         memory_type=data.memory_type,
         planner_type=data.planner_type,
         model_config=data.llm_config,
+        agent_mode=data.agent_mode,
     )
 
     return SessionResponse(
@@ -177,6 +178,7 @@ async def create_session(
         status=SessionStatus(session["status"]),
         memory_type=session["memory_type"],
         planner_type=session["planner_type"],
+        agent_mode=session.get("agent_mode", "standard"),
         workspace_path=session.get("workspace_path"),
         message_count=0,
     )
@@ -204,6 +206,7 @@ async def list_sessions(
             status=SessionStatus(s["status"]),
             memory_type=s["memory_type"],
             planner_type=s["planner_type"],
+            agent_mode=s.get("agent_mode", "standard"),
             workspace_path=s.get("workspace_path"),
             last_message_at=s.get("last_message_at"),
             message_count=s.get("message_count", 0),
@@ -240,6 +243,7 @@ async def get_session(
         status=SessionStatus(session["status"]),
         memory_type=session["memory_type"],
         planner_type=session["planner_type"],
+        agent_mode=session.get("agent_mode", "standard"),
         workspace_path=session.get("workspace_path"),
         message_count=len(messages),
     )

@@ -156,12 +156,14 @@ class SQLiteStorage:
             cursor = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
             row = await cursor.fetchone()
 
-            # Unpack model_config from config_overrides for caller convenience
+            # Unpack model_config and agent_mode from config_overrides for caller convenience
             result = self._row_to_dict(row)
             if result.get("config_overrides"):
                 overrides = json.loads(result["config_overrides"])
                 if "model_config" in overrides:
                     result["model_config"] = overrides["model_config"]
+                if "agent_mode" in overrides:
+                    result["agent_mode"] = overrides["agent_mode"]
 
             return result
 
@@ -190,9 +192,11 @@ class SQLiteStorage:
                 # Parse JSON fields
                 if result.get("config_overrides"):
                     result["config_overrides"] = json.loads(result["config_overrides"])
-                    # Extract model_config for convenience
+                    # Extract model_config and agent_mode for convenience
                     if "model_config" in result["config_overrides"]:
                         result["model_config"] = result["config_overrides"]["model_config"]
+                    if "agent_mode" in result["config_overrides"]:
+                        result["agent_mode"] = result["config_overrides"]["agent_mode"]
 
                 if result.get("memory_state"):
                     result["memory_state"] = json.loads(result["memory_state"])
@@ -235,7 +239,19 @@ class SQLiteStorage:
                 (status, limit, offset),
             )
             rows = await cursor.fetchall()
-            sessions = [self._row_to_dict(row) for row in rows]
+            sessions = []
+            for row in rows:
+                s = self._row_to_dict(row)
+                if s.get("config_overrides"):
+                    try:
+                        overrides = json.loads(s["config_overrides"])
+                        if "model_config" in overrides:
+                            s["model_config"] = overrides["model_config"]
+                        if "agent_mode" in overrides:
+                            s["agent_mode"] = overrides["agent_mode"]
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                sessions.append(s)
 
             return sessions, total
 

@@ -1183,6 +1183,7 @@ def create_agent_os(
     default_timeout: float = 300.0,
     workspace: Optional["Path"] = None,
     register_defaults: bool = True,
+    kernel_tools: bool = True,
 ) -> AgentOS:
     """
     Factory function to create an AgentOS with common defaults.
@@ -1195,6 +1196,7 @@ def create_agent_os(
         default_timeout: Default execution timeout
         workspace: Workspace path for tool sandboxing
         register_defaults: Whether to register default v2 tools (Read, Glob, etc.)
+        kernel_tools: Whether to auto-register kernel tools (Read, Write, Edit, Bash)
 
     Returns:
         Configured AgentOS instance with default tools registered
@@ -1209,6 +1211,7 @@ def create_agent_os(
         default_timeout=default_timeout,
         system_rules=system_rules or AgentOSConfig.system_rules,
         workspace_info=f"Workspace: {workspace}",
+        kernel_tools=kernel_tools,
     )
 
     os = AgentOS(llm_client=llm_client, tools=tools, config=config)
