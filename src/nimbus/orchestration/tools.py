@@ -8,7 +8,7 @@ Custom tool definitions for the Dual-Agent orchestration layer.
 import asyncio
 import socket
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
     from nimbus.agentos import AgentOS
@@ -255,14 +255,11 @@ CORE_BASH_WHITELIST_PREFIXES = [
     "diff", "comm",
     # Output
     "echo", "printf",
-    # Verification scripts
-    "python3 -c", "python -c",
     # Command lookup
     "which", "type", "whereis",
     # Environment
     "env", "printenv",
-    # Network check (read-only)
-    "curl", "wget",
+    # Network check (read-only, GET only)
     "nc -z",
     # Process inspection
     "pgrep", "ps", "lsof",
@@ -274,6 +271,23 @@ CORE_BASH_WHITELIST_PREFIXES = [
     "npm list", "npm ls",
     "test ", "[ ",  # shell test expressions
 ]
+
+
+def _is_curl_readonly(command: str) -> bool:
+    """Check if a curl command is read-only (GET only, no data upload)."""
+    # Block flags that enable writes or data exfiltration
+    dangerous_flags = [
+        "-X POST", "-X PUT", "-X DELETE", "-X PATCH",
+        "-d ", "--data", "--data-raw", "--data-binary", "--data-urlencode",
+        "-F ", "--form",
+        "-T ", "--upload-file",
+        "-o ", "--output",  # writing to file
+        "-O",  # writing to file (remote name)
+    ]
+    for flag in dangerous_flags:
+        if flag in command:
+            return False
+    return True
 
 
 def is_command_readonly(command: str) -> bool:
@@ -291,6 +305,10 @@ def is_command_readonly(command: str) -> bool:
     while "=" in cmd.split()[0] if cmd.split() else False:
         cmd = cmd.split(None, 1)[1] if " " in cmd else ""
 
+    # Special handling: curl is allowed but only for read-only (GET) requests
+    if cmd.startswith("curl"):
+        return _is_curl_readonly(cmd)
+
     for prefix in CORE_BASH_WHITELIST_PREFIXES:
         if cmd.startswith(prefix):
             return True
@@ -303,19 +321,24 @@ def is_command_readonly(command: str) -> bool:
 # =============================================================================
 
 
-def wrap_core_bash(os: "AgentOS") -> None:
+def register_core_bash(os: "AgentOS", roles: Optional[List[str]] = None) -> None:
     """
-    Replace an AgentOS's Bash tool with a whitelist-filtered version.
-
-    If the command doesn't match the read-only whitelist, returns an error
-    message instead of executing. Used for Core agent in dual-agent mode.
+    Register a 'CoreBash' tool that wraps Bash with a whitelist filter.
+    Role: ["core"] by default.
 
     Args:
-        os: AgentOS instance whose Bash tool to wrap
+        os: AgentOS instance
+        roles: Optional list of roles that can use this tool (default: ["core"])
     """
+    if roles is None:
+        roles = ["core"]
+
     original_entry = os._tools.get("Bash")
     if not original_entry:
-        return
+        raise RuntimeError(
+            "register_core_bash requires 'Bash' tool to be registered first. "
+            "Ensure register_default_tools(..., tools=['Bash']) is called before register_core_bash()."
+        )
 
     original_def, original_func = original_entry
 
@@ -329,5 +352,16 @@ def wrap_core_bash(os: "AgentOS") -> None:
             )
         return await original_func(**kwargs)
 
-    os._tools.unregister("Bash")
-    os._tools.register(original_def, filtered_bash)
+    # Create new definition for CoreBash
+    from nimbus.tools.base import ToolDefinition
+    
+    # We clone the parameters from original definition
+    core_bash_def = ToolDefinition(
+        name="CoreBash",
+        description=original_def.description,
+        parameters=original_def.parameters,
+        dangerous=False, # Read-only, so safe?
+        roles=roles,
+    )
+    
+    os._tools.register(core_bash_def, filtered_bash)

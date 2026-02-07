@@ -1,13 +1,13 @@
 """
 DispatchTool -- Meta-Tool for Dual-Agent orchestration.
 
-Encapsulates Executor AgentOS lifecycle, event forwarding, and dispatch/verify logic.
-Designed to be registered as a tool on any AgentOS (typically the Core agent).
+Spawns Executor processes via the parent AgentOS kernel using role-based
+tool filtering.  No nested AgentOS instances.
 
 Usage:
-    dispatch_tool = DispatchTool(workspace, llm_client, config, parent_events)
+    dispatch_tool = DispatchTool(agent_os=core_os, config=config)
 
-    # Register on an AgentOS
+    # Register on the same AgentOS
     agent_os.register_tool("Dispatch", dispatch_tool.dispatch, ...)
     agent_os.register_tool("Verify", dispatch_tool.verify, ...)
 """
@@ -21,10 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from loguru import logger
 
-from nimbus.agentos import AgentOS, AgentOSConfig
-from nimbus.core.protocol import Event
-from nimbus.core.runtime.vcpu import LLMClient, VCPUConfig
-from nimbus.tools import register_default_tools
+from nimbus.agentos import AgentOS
 
 from .prompts import EXECUTOR_SYSTEM_PROMPT
 from .tools import run_verify_checks
@@ -41,15 +38,15 @@ class DispatchToolConfig:
     """Configuration for DispatchTool."""
 
     # Executor agent
-    executor_max_iterations: int = 25
+    executor_max_iterations: int = 15  # Right-sized dispatch should need 1-10 tool calls
     executor_system_prompt: str = EXECUTOR_SYSTEM_PROMPT
 
     # Dispatch limits
-    max_dispatch_count: int = 5
-    dispatch_timeout: float = 300.0  # seconds per dispatch
+    max_dispatch_count: int = 8
+    dispatch_timeout: float = 120.0  # seconds per dispatch (right-sized task ≈ 30-90s)
 
     # Total time budget
-    total_timeout: float = 600.0  # seconds
+    total_timeout: float = 900.0  # seconds (8 dispatches × ~120s max, with overhead)
 
     # Context injection: auto-attach changed file contents on re-dispatch
     auto_inject_context: bool = True
@@ -59,76 +56,33 @@ class DispatchToolConfig:
 
 class DispatchTool:
     """
-    Dispatch Meta-Tool: creates and manages an internal Executor AgentOS.
+    Dispatch Meta-Tool: spawns Executor processes on the parent AgentOS kernel.
 
-    Designed to be registered on a Core AgentOS as a regular tool.
-    Internally creates a separate Executor AgentOS with full permissions
-    (Read/Write/Edit/Bash) to carry out implementation tasks.
+    Registered on the Core AgentOS as a regular tool.  Uses
+    ``agent_os.spawn(role="executor")`` to create child processes that
+    inherit the kernel's tool registry (filtered by role).
 
     Features:
-    - Lazy Executor OS creation (session-level singleton, reused across dispatches)
-    - Event forwarding: Executor events bubble up to parent event_stream
+    - Native child-process model (no nested AgentOS)
     - Workspace snapshot/diff tracking
     - Dispatch count and time budget enforcement
     """
 
     def __init__(
         self,
-        workspace: Path,
-        llm_client: LLMClient,
+        agent_os: AgentOS,
         config: Optional[DispatchToolConfig] = None,
-        parent_events: Optional[Any] = None,  # SimpleEventStream
+        workspace: Optional[Path] = None,
     ):
-        self._workspace = workspace
-        self._llm = llm_client
+        self._agent_os = agent_os
+        self._workspace = workspace or Path.cwd()
         self._config = config or DispatchToolConfig()
-        self._parent_events = parent_events
-
+        
         # State
-        self._executor_os: Optional[AgentOS] = None
-        self._event_forwarder: Optional[Callable] = None
         self._dispatch_count = 0
         self._last_dispatch_diff: Optional[WorkspaceDiff] = None
         self._start_time: Optional[float] = None
-
-    # =========================================================================
-    # Executor OS Lifecycle
-    # =========================================================================
-
-    def _get_or_create_executor(self) -> AgentOS:
-        """Lazy-create Executor AgentOS, reuse across dispatches."""
-        if self._executor_os is not None:
-            return self._executor_os
-
-        executor_config = AgentOSConfig(
-            kernel_tools=False,  # Don't auto-register; we do it manually with workspace binding
-            system_rules=self._config.executor_system_prompt,
-            vcpu_config=VCPUConfig(max_iterations=self._config.executor_max_iterations),
-            workspace_info=f"Workspace: {self._workspace}",
-            enable_session=False,
-        )
-        self._executor_os = AgentOS(llm_client=self._llm, config=executor_config)
-
-        # Register all tools WITH workspace binding
-        register_default_tools(self._executor_os, workspace=self._workspace)
-
-        # Register event forwarder
-        if self._parent_events is not None:
-            self._event_forwarder = lambda event: self._forward_event(event)
-            self._executor_os.add_event_listener(self._event_forwarder)
-
-        logger.info(
-            f"Executor AgentOS created: tools={self._executor_os.list_tools()}"
-        )
-        return self._executor_os
-
-    def _forward_event(self, event: Event) -> None:
-        """Forward Executor events to parent event_stream with metadata."""
-        # Add source metadata so parent can distinguish executor events
-        event.data["_source"] = "executor"
-        event.data["_dispatch_id"] = f"dispatch_{self._dispatch_count}"
-        if self._parent_events is not None:
-            self._parent_events.emit(event)
+        self._executor_pid: Optional[str] = None
 
     # =========================================================================
     # Dispatch Tool Handler
@@ -141,9 +95,16 @@ class DispatchTool:
         1. Check dispatch limits (count and time budget)
         2. Auto-inject context from previous dispatch if enabled
         3. Take workspace snapshot
-        4. Run Executor on the task
+        4. Spawn Executor process via AgentOS
         5. Diff workspace and return results
         """
+        # Auto-reset if previous run's time budget is exhausted
+        if self._start_time is not None:
+            elapsed_since_start = time.time() - self._start_time
+            if elapsed_since_start > self._config.total_timeout:
+                logger.info("Auto-resetting DispatchTool (previous time budget exhausted)")
+                self.reset()
+
         # Initialize start time on first dispatch
         if self._start_time is None:
             self._start_time = time.time()
@@ -200,27 +161,45 @@ class DispatchTool:
             f"\n\nTime budget for this task: {dispatch_timeout:.0f} seconds. Be efficient."
         )
 
-        # --- Get or create Executor ---
-        executor_os = self._get_or_create_executor()
-
         # --- Take before snapshot ---
         snapshot_before = take_snapshot(self._workspace)
 
-        # --- Run Executor ---
+        # --- Spawn Executor Process ---
+        # We reuse the same PID if possible? No, each dispatch is a new task usually.
+        # But if we want to share memory (Memo), we might want to attach to same session?
+        # For now, let's spawn a fresh process for each dispatch, 
+        # but we could implement state persistence later.
+        
+        # NOTE: Native spawn with role="executor"
+        pid = self._agent_os.spawn(
+            goal=executor_goal, 
+            role="executor", 
+            system_rules=self._config.executor_system_prompt,
+            max_iterations=self._config.executor_max_iterations,
+        )
+        self._executor_pid = pid
+        
+        # --- Event Forwarding Hook ---
+        # We need to bridge Executor events to the parent stream so UI can see them.
+        # The parent stream is usually available via the Core process mechanism 
+        # or we just rely on Global Event Bus if AgentOS supported it.
+        # Since DispatchTool.dispatch is just a function, we can't easily yield events.
+        # 
+        # Solution: The AgentOS global event stream should already be emitting these events.
+        # The UI needs to listen to ALL events or we need to chain them.
+        # 
+        # For now, we assume the UI (or client) listens to the OS event stream 
+        # and filters/displays all PIDs.
+        
+        logger.info(f"Spawned Executor process {pid}")
+
+        # --- Wait for completion ---
+        executor_output = ""
         try:
-            result = await asyncio.wait_for(
-                executor_os.run(executor_goal, role="executor"),
-                timeout=dispatch_timeout,
-            )
+            result = await self._agent_os.wait(pid, timeout=dispatch_timeout)
             executor_output = result.output or "(Executor returned no output)"
             if result.fault:
                 executor_output += f"\n\nExecutor fault: {result.fault}"
-        except asyncio.TimeoutError:
-            executor_output = (
-                f"[Executor timed out after {dispatch_timeout:.0f}s]\n"
-                f"Some work may have been partially completed."
-            )
-            logger.warning(f"Dispatch #{dispatch_num} timed out")
         except Exception as e:
             executor_output = f"[Executor error: {e}]"
             logger.error(f"Dispatch #{dispatch_num} failed: {e}")
@@ -293,8 +272,7 @@ class DispatchTool:
             "max_dispatches": self._config.max_dispatch_count,
             "elapsed_seconds": round(elapsed, 1),
             "total_timeout": self._config.total_timeout,
-            "executor_created": self._executor_os is not None,
-            "executor_tools": self._executor_os.list_tools() if self._executor_os else [],
+            "last_executor_pid": self._executor_pid,
         }
 
     def reset(self) -> None:
@@ -302,9 +280,8 @@ class DispatchTool:
         self._dispatch_count = 0
         self._last_dispatch_diff = None
         self._start_time = None
+        self._executor_pid = None
 
     def cleanup(self) -> None:
-        """Clean up resources (remove event forwarder)."""
-        if self._executor_os and self._event_forwarder:
-            self._executor_os.remove_event_listener(self._event_forwarder)
-            self._event_forwarder = None
+        """Clean up resources."""
+        self.reset()

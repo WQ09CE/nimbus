@@ -41,6 +41,7 @@ class SessionManagerV2:
         self._permission_manager = permission_manager
         self._max_sessions = max_sessions
         self._sessions: Dict[str, AgentOS] = {}  # session_id -> AgentOS
+        self._dispatch_tools: Dict[str, Any] = {}  # session_id -> DispatchTool (dual_agent mode only)
         self._lock = asyncio.Lock()
         self._shared_llm_client = None
 
@@ -98,6 +99,10 @@ class SessionManagerV2:
         async with self._lock:
             if session_id in self._sessions:
                 del self._sessions[session_id]
+            # Clean up DispatchTool if exists (dual_agent mode)
+            dispatch_tool = self._dispatch_tools.pop(session_id, None)
+            if dispatch_tool:
+                dispatch_tool.cleanup()
 
         self._permission_manager.cancel_pending(session_id)
         await self._storage.delete_session(session_id)
@@ -163,38 +168,51 @@ class SessionManagerV2:
         if agent_mode == "dual_agent":
             from pathlib import Path as _Path
 
+            from nimbus.core.runtime.vcpu import VCPUConfig
             from nimbus.orchestration.dispatch_tool import DispatchTool, DispatchToolConfig
-            from nimbus.orchestration.prompts import CORE_SYSTEM_PROMPT
+            from nimbus.orchestration.prompts import CORE_SYSTEM_PROMPT, EXECUTOR_SYSTEM_PROMPT
             from nimbus.orchestration.tools import (
                 DISPATCH_TOOL_DEF,
                 VERIFY_TOOL_DEF,
-                wrap_core_bash,
+                register_core_bash,
             )
             from nimbus.tools import register_default_tools
 
             _workspace = workspace if workspace else _Path.cwd()
 
-            # Create AgentOS with restricted tools + Core system prompt
-            agent_os = create_agent_os(
-                llm_client=llm_client,
-                workspace=_workspace,
-                register_defaults=False,
+            # Single-kernel architecture with Role-Based Access Control
+            from nimbus.agentos import AgentOSConfig
+
+            os_config = AgentOSConfig(
                 kernel_tools=False,
                 system_rules=CORE_SYSTEM_PROMPT,
+                vcpu_config=VCPUConfig(max_iterations=20),
+                workspace_info=f"Workspace: {_workspace}",
+                enable_session=False,
+            )
+            agent_os = AgentOS(llm_client=llm_client, config=os_config)
+
+            # Shared tools (all roles)
+            register_default_tools(agent_os, workspace=_workspace, tools=["Read"])
+
+            # Executor-only tools
+            register_default_tools(
+                agent_os, workspace=_workspace,
+                tools=["Write", "Edit", "Bash"],
+                roles=["executor"],
             )
 
-            # Register only read-only tools
-            register_default_tools(agent_os, workspace=_workspace, tools=["Read", "Bash"])
+            # Core-only restricted shell (also visible to chat role used by session)
+            register_core_bash(agent_os, roles=["core", "chat"])
 
-            # Wrap Bash with whitelist filter
-            wrap_core_bash(agent_os)
-
-            # Create and register Dispatch + Verify meta-tools
+            # Dispatch + Verify meta-tools
+            dispatch_config = DispatchToolConfig(
+                executor_system_prompt=EXECUTOR_SYSTEM_PROMPT,
+            )
             dispatch_tool = DispatchTool(
+                agent_os=agent_os,
+                config=dispatch_config,
                 workspace=_workspace,
-                llm_client=llm_client,
-                config=DispatchToolConfig(),
-                parent_events=agent_os._events,
             )
 
             agent_os.register_tool(
@@ -202,13 +220,18 @@ class SessionManagerV2:
                 func=dispatch_tool.dispatch,
                 description=DISPATCH_TOOL_DEF["description"],
                 parameters=DISPATCH_TOOL_DEF["parameters"],
+                roles=["core", "chat"],
             )
             agent_os.register_tool(
                 name="Verify",
                 func=dispatch_tool.verify,
                 description=VERIFY_TOOL_DEF["description"],
                 parameters=VERIFY_TOOL_DEF["parameters"],
+                roles=["core", "chat"],
             )
+
+            # Store dispatch_tool for lifecycle management
+            self._dispatch_tools[session_id] = dispatch_tool
 
             logger.info(f"🔧 Created dual_agent AgentOS for session {session_id}: tools={agent_os.list_tools()}")
         else:
@@ -269,6 +292,11 @@ class SessionManagerV2:
         await asyncio.sleep(0.5)
 
         logger.info(f"[stream_chat] Starting for session {session_id}")
+
+        # Reset DispatchTool budget for this new message turn (dual_agent mode)
+        dispatch_tool = self._dispatch_tools.get(session_id)
+        if dispatch_tool:
+            dispatch_tool.reset()
 
         # Get or create AgentOS
         agent_os = await self.get_or_create_agent(session_id)
@@ -580,8 +608,9 @@ class SessionManagerV2:
         """Convert v2 Event to SSE event."""
         event_type = event.type.lower()
 
-        # Check if this is a sub-agent (executor) event
-        is_sub_agent = event.data.get("_source") == "executor"
+        # Detect sub-agent (executor) events by comparing pid with session_id.
+        # Core/chat processes use session_id as pid; executor processes use "proc-xxx".
+        is_sub_agent = event.pid != session_id
 
         # Map v2 event types to SSE event types
         type_mapping = {
@@ -601,9 +630,22 @@ class SessionManagerV2:
 
         sse_type = type_mapping.get(event_type, "heartbeat")
 
-        # Prefix sub-agent events so frontend can distinguish
-        if is_sub_agent and sse_type in ("tool_call", "tool_result"):
-            sse_type = f"sub_{sse_type}"
+        if is_sub_agent:
+            # For sub-agent events, only forward tool calls/results (prefixed)
+            # and lifecycle events. Suppress step_start/heartbeat to avoid
+            # interfering with the frontend's message commit flow.
+            if sse_type in ("tool_call", "tool_result"):
+                sse_type = f"sub_{sse_type}"
+            elif sse_type == "task_start":
+                sse_type = "executor_start"
+                # Inject executor metadata for the frontend
+                event.data["_executor_pid"] = event.pid
+            elif sse_type == "task_done":
+                sse_type = "executor_done"
+                event.data["_executor_pid"] = event.pid
+            else:
+                # Suppress other sub-agent events (step_start, heartbeat, etc.)
+                return
 
         # Emit to SSE hub
         await self._sse_hub.publish(
