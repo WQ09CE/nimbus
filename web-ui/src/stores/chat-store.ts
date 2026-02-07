@@ -50,7 +50,7 @@ interface ToolResultData {
   error?: string;
   duration_ms?: number;
   status?: string;
-  fault?: { message: string; [key: string]: unknown };
+  fault?: { message: string;[key: string]: unknown };
   [key: string]: unknown;
 }
 
@@ -82,7 +82,7 @@ interface ChatState {
   isCreatingSession: boolean;  // Prevent concurrent session creation
 
   // Actions
-  createNewSession: (force?: boolean) => Promise<void>;
+  createNewSession: (force?: boolean, options?: { name?: string; workspace_path?: string }) => Promise<void>;
   switchSession: (session: Session | null) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
@@ -111,40 +111,43 @@ const initialState = {
 export const useChatStore = create<ChatState>((set, get) => ({
   ...initialState,
 
-  createNewSession: async (force = false) => {
+  createNewSession: async (force = false, options?: { name?: string; workspace_path?: string }) => {
     const { isCreatingSession, session } = get();
-    
+
     // Prevent concurrent session creation
     if (isCreatingSession) {
       console.log("[Store] Session creation already in progress, skipping");
       return;
     }
-    
+
     // Don't create if we already have a session (unless force=true from UI button)
     if (session && !force) {
       console.log("[Store] Session already exists:", session.id);
       return;
     }
-    
+
     try {
       set({ isLoading: true, isCreatingSession: true, error: null });
-      const newSession = await createSession();
+      const newSession = await createSession({
+        agent_mode: "dual_agent",
+        ...options,
+      });
       console.log("[Store] Session created:", newSession.id);
-      
+
       // Fix: Persist session ID immediately
       if (typeof window !== "undefined") {
         localStorage.setItem("nimbus_session_id", newSession.id);
       }
-      
+
       set({ session: newSession, messages: [], isLoading: false, isCreatingSession: false });
 
       // Process queue if any messages arrived during creation
       const { messageQueue } = get();
       if (messageQueue.length > 0) {
-          console.log("[Store] Processing queued message after session creation");
-          const next = messageQueue[0];
-          set({ messageQueue: messageQueue.slice(1) });
-          setTimeout(() => get().sendMessage(next), 0);
+        console.log("[Store] Processing queued message after session creation");
+        const next = messageQueue[0];
+        set({ messageQueue: messageQueue.slice(1) });
+        setTimeout(() => get().sendMessage(next), 0);
       }
     } catch (err) {
       set({
@@ -197,10 +200,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const serverMessages = await getSessionMessages(session.id);
       console.log("[Store] Raw server messages:", serverMessages);
-      
+
       // First pass: extract all messages and build a map of tool results
       const toolResultsMap = new Map<string, ToolResult>();
-      
+
       for (const m of serverMessages) {
         if (m.role === 'tool' && m.artifacts) {
           for (const artifact of m.artifacts) {
@@ -217,25 +220,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
         }
       }
-      
+
       // Second pass: build messages, skipping tool messages and merging results into assistant messages
       const messages: Message[] = [];
-      
+
       for (const m of serverMessages) {
         // Skip tool messages - their content is merged into assistant messages
         if (m.role === 'tool') continue;
-        
+
         // Skip system messages that are just task completion markers
         if (m.role === 'system' && m.content?.startsWith('✓ Task completed')) continue;
-        
+
         let toolCalls: ToolCall[] | undefined;
         let toolResults: ToolResult[] | undefined;
-        
+
         if (m.artifacts && Array.isArray(m.artifacts)) {
           for (const artifact of m.artifacts) {
             if (artifact && typeof artifact === 'object') {
               const art = artifact as Record<string, unknown>;
-              
+
               // Handle tool_calls artifact
               if (art.type === 'tool_calls' && Array.isArray(art.tool_calls)) {
                 toolCalls = (art.tool_calls as Array<{
@@ -244,13 +247,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 }>).map(tc => ({
                   id: tc.id || '',
                   name: tc.function?.name || '',
-                  arguments: tc.function?.arguments 
-                    ? (typeof tc.function.arguments === 'string' 
-                        ? JSON.parse(tc.function.arguments) 
-                        : tc.function.arguments)
+                  arguments: tc.function?.arguments
+                    ? (typeof tc.function.arguments === 'string'
+                      ? JSON.parse(tc.function.arguments)
+                      : tc.function.arguments)
                     : {},
                 }));
-                
+
                 // Match tool results from the map
                 toolResults = toolCalls
                   .filter(tc => tc.id)
@@ -260,7 +263,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
           }
         }
-        
+
         messages.push({
           id: m.id,
           role: m.role as 'user' | 'assistant' | 'system',
@@ -270,10 +273,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           timestamp: !isNaN(new Date(m.created_at).getTime()) ? new Date(m.created_at).getTime() : Date.now(),
         });
       }
-      
+
       // Sort messages by timestamp to ensure correct order
       messages.sort((a, b) => a.timestamp - b.timestamp);
-      
+
       console.log("[Store] Parsed messages:", messages);
       set({ messages, isLoading: false });
       console.log(`[Store] Loaded ${messages.length} messages for session ${session.id}`);
@@ -299,14 +302,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
     } catch (err: any) {
       console.error("[Store] Failed to load session:", err);
-      
+
       // Only clear session if it's a 404 (Not Found)
       // For network errors (backend restart), keep the ID so we can retry
       if (typeof window !== "undefined") {
-         // Check if error has status 404
-         if (err.status === 404) {
-             localStorage.removeItem("nimbus_session_id");
-         }
+        // Check if error has status 404
+        if (err.status === 404) {
+          localStorage.removeItem("nimbus_session_id");
+        }
       }
       set({ isLoading: false });
     }
@@ -314,40 +317,40 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   sendMessage: async (content: string) => {
     const { session, messages, isStreaming, messageQueue, isCreatingSession } = get();
-    
+
     // Handle streaming case: Inject message instead of queuing
     if (isStreaming && session) {
-        // Optimistically add to UI
-        const userMessage: Message = {
-          id: `user-inject-${Date.now()}`,
-          role: "user",
-          content: `[追加指令] ${content}`,
-          timestamp: Date.now(),
-        };
-        
-        set({ 
-            messages: [...messages, userMessage],
-            // Don't change streaming state, just append message
-        });
-        
-        try {
-            await injectMessage(session.id, content);
-            console.log(`[Store] Injected message into session ${session.id}`);
-        } catch (err) {
-            console.error("[Store] Failed to inject message:", err);
-            // Maybe show a toast or error status?
-            // For now, keep it simple
-        }
-        return;
+      // Optimistically add to UI
+      const userMessage: Message = {
+        id: `user-inject-${Date.now()}`,
+        role: "user",
+        content: `[追加指令] ${content}`,
+        timestamp: Date.now(),
+      };
+
+      set({
+        messages: [...messages, userMessage],
+        // Don't change streaming state, just append message
+      });
+
+      try {
+        await injectMessage(session.id, content);
+        console.log(`[Store] Injected message into session ${session.id}`);
+      } catch (err) {
+        console.error("[Store] Failed to inject message:", err);
+        // Maybe show a toast or error status?
+        // For now, keep it simple
+      }
+      return;
     }
-    
+
     // Wait for session creation if in progress
     if (isCreatingSession) {
       console.log("[Store] Waiting for session creation...");
       set({ messageQueue: [...messageQueue, content] });
       return;
     }
-    
+
     // Must have a session to send messages
     const currentSession = session;
     if (!currentSession) {
@@ -384,7 +387,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const toolCalls: ToolCall[] = [];
       const toolResults: ToolResult[] = [];
       let shouldContinue = true;
-      
+
       // Throttling state
       let lastUpdate = 0;
       const UPDATE_INTERVAL = 50; // ms
@@ -395,23 +398,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         switch (type) {
           case "connected":
-            set({ 
+            set({
               currentActivity: "已连接",
-              lastHeartbeat: Date.now() 
+              lastHeartbeat: Date.now()
             });
             break;
 
           case "message_start":
-            set({ 
+            set({
               currentActivity: "开始生成回复...",
-              lastHeartbeat: Date.now() 
+              lastHeartbeat: Date.now()
             });
             break;
 
           case "task_start":
-            set({ 
+            set({
               currentActivity: "开始执行任务...",
-              lastHeartbeat: Date.now() 
+              lastHeartbeat: Date.now()
             });
             break;
 
@@ -443,12 +446,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
             // Update iteration info
             if (data && typeof data === "object" && "iteration" in data) {
-                const iter = (data as any).iteration;
-                set({ 
-                  thinkingIteration: iter,
-                  currentActivity: `思考中 (第 ${iter} 轮)...`,
-                  lastHeartbeat: Date.now() 
-                });
+              const iter = (data as any).iteration;
+              set({
+                thinkingIteration: iter,
+                currentActivity: `思考中 (第 ${iter} 轮)...`,
+                lastHeartbeat: Date.now()
+              });
             }
             break;
 
@@ -458,21 +461,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
               const hbData = data as HeartbeatData;
               if ("iteration" in hbData && typeof hbData.iteration === "number") {
                 const iter = hbData.iteration;
-                set({ 
+                set({
                   thinkingIteration: iter,
                   currentActivity: `正在思考 (第 ${iter + 1} 轮)...`,
-                  lastHeartbeat: Date.now() 
+                  lastHeartbeat: Date.now()
                 });
               } else if ("kind" in hbData && hbData.kind === "THOUGHT") {
-                set({ 
+                set({
                   currentActivity: "正在思考...",
-                  lastHeartbeat: Date.now() 
+                  lastHeartbeat: Date.now()
                 });
               } else if ("reason" in hbData) {
                 // Thought completed
-                set({ 
+                set({
                   currentActivity: "思考完成，生成回复...",
-                  lastHeartbeat: Date.now() 
+                  lastHeartbeat: Date.now()
                 });
               }
             }
@@ -488,19 +491,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 newContent = c;
               }
             }
-            
+
             if (newContent) {
-                assistantContent += newContent;
-                const now = Date.now();
-                // Throttle updates to avoid flickering
-                if (now - lastUpdate > UPDATE_INTERVAL) {
-                    set({ 
-                        streamingContent: assistantContent,
-                        currentActivity: "生成回复中...",
-                        lastHeartbeat: now
-                    });
-                    lastUpdate = now;
-                }
+              assistantContent += newContent;
+              const now = Date.now();
+              // Throttle updates to avoid flickering
+              if (now - lastUpdate > UPDATE_INTERVAL) {
+                set({
+                  streamingContent: assistantContent,
+                  currentActivity: "生成回复中...",
+                  lastHeartbeat: now
+                });
+                lastUpdate = now;
+              }
             }
             break;
 
@@ -512,10 +515,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 id: d.action_id || d.id || "",
                 name: d.tool || d.name || "unknown",
                 arguments: d.args || d.arguments || {},
+                agentType: "core",
               };
               toolCalls.push(tool);
               // Force sync streamingContent to ensure any thinking content before tool call is visible
-              set({ 
+              set({
                 streamingContent: assistantContent,
                 streamingToolCalls: [...toolCalls],
                 currentActivity: `执行工具: ${tool.name}`,
@@ -545,15 +549,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
           case "sub_tool_call":
             if (data && typeof data === "object") {
               const d = data as ToolCallData;
-              const tool: ToolCall = {
+              const subTool: ToolCall = {
                 id: d.action_id || d.id || "",
-                name: `[Executor] ${d.tool || d.name || "unknown"}`,
+                name: d.tool || d.name || "unknown",
                 arguments: d.args || d.arguments || {},
+                agentType: "dispatch",
               };
-              toolCalls.push(tool);
+              // Nest under the current Dispatch tool call
+              const lastDispatchIdx = toolCalls.map(tc => tc.name).lastIndexOf("Dispatch");
+              if (lastDispatchIdx >= 0) {
+                const dispatch = toolCalls[lastDispatchIdx];
+                if (!dispatch.subCalls) dispatch.subCalls = [];
+                dispatch.subCalls.push(subTool);
+              }
               set({
                 streamingToolCalls: [...toolCalls],
-                currentActivity: `Executor: ${d.tool || d.name}`,
+                currentActivity: `⚡ Executor: ${subTool.name}`,
                 lastHeartbeat: Date.now()
               });
             }
@@ -562,23 +573,44 @@ export const useChatStore = create<ChatState>((set, get) => ({
           case "sub_tool_result":
             if (data && typeof data === "object") {
               const d = data as ToolResultData;
-              const result: ToolResult = {
+              const subResult: ToolResult = {
                 id: d.action_id || d.id || "",
-                name: `[Executor] ${d.tool || d.name || "unknown"}`,
+                name: d.tool || d.name || "unknown",
                 result: d.output !== undefined ? d.output : d.result,
                 error: d.status === "ERROR" ? (d.fault ? d.fault.message : "Error") : undefined,
                 duration: d.duration_ms,
               };
-              toolResults.push(result);
+              // Nest under the current Dispatch tool call
+              const dispatchIdx = toolCalls.map(tc => tc.name).lastIndexOf("Dispatch");
+              if (dispatchIdx >= 0) {
+                const dispatch = toolCalls[dispatchIdx];
+                if (!dispatch.subResults) dispatch.subResults = [];
+                dispatch.subResults.push(subResult);
+              }
               set({
-                currentActivity: "Executor: 工具执行完成",
+                streamingToolCalls: [...toolCalls],
+                currentActivity: `⚡ Executor: ${d.tool || d.name} 完成`,
                 lastHeartbeat: Date.now()
               });
             }
             break;
 
+          case "executor_start":
+            set({
+              currentActivity: "⚡ Executor 已启动...",
+              lastHeartbeat: Date.now()
+            });
+            break;
+
+          case "executor_done":
+            set({
+              currentActivity: "⚡ Executor 已完成",
+              lastHeartbeat: Date.now()
+            });
+            break;
+
           case "dag_complete":
-            set({ 
+            set({
               currentActivity: "完成",
               lastHeartbeat: Date.now()
             });
@@ -621,10 +653,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Process next message in queue
       const { messageQueue: queue } = get();
       if (queue.length > 0) {
-          const next = queue[0];
-          set({ messageQueue: queue.slice(1) });
-          // Use setTimeout to allow state update to propagate
-          setTimeout(() => get().sendMessage(next), 0);
+        const next = queue[0];
+        set({ messageQueue: queue.slice(1) });
+        // Use setTimeout to allow state update to propagate
+        setTimeout(() => get().sendMessage(next), 0);
       }
     } catch (err) {
       // Handle user cancellation differently from errors
@@ -670,13 +702,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
   clearError: () => set({ error: null }),
 
   interruptMessage: () => {
-      const { streamAbortController, isStreaming } = get();
+    const { streamAbortController, isStreaming } = get();
 
-      if (isStreaming && streamAbortController) {
-        set({ isInterrupting: true });
-        streamAbortController.abort();
-      }
-    },
+    if (isStreaming && streamAbortController) {
+      set({ isInterrupting: true });
+      streamAbortController.abort();
+    }
+  },
 
-    reset: () => set(initialState),
+  reset: () => set(initialState),
 }));

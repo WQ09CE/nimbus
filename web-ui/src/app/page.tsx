@@ -43,7 +43,7 @@ export default function Home() {
     if (scrollRAF.current) {
       cancelAnimationFrame(scrollRAF.current);
     }
-    
+
     // Use RAF to batch scroll updates and avoid layout thrashing
     scrollRAF.current = requestAnimationFrame(() => {
       const container = messagesContainerRef.current;
@@ -57,10 +57,10 @@ export default function Home() {
   const handleScroll = useCallback(() => {
     const container = messagesContainerRef.current;
     if (!container) return;
-    
+
     const { scrollTop, scrollHeight, clientHeight } = container;
     const isAtBottom = scrollHeight - scrollTop - clientHeight <= 100;
-    
+
     if (isAtBottom) {
       setUserScrolledUp(false);
       setAutoScrollEnabled(true);
@@ -90,7 +90,7 @@ export default function Home() {
   // Initialize session on mount
   useEffect(() => {
     setMounted(true);
-    
+
     // Try to restore session from localStorage
     const savedSessionId = localStorage.getItem("nimbus_session_id");
     if (savedSessionId && !session) {
@@ -111,43 +111,55 @@ export default function Home() {
   }
 
   return (
-    <div className="h-screen bg-black text-gray-100 flex flex-col font-mono">
-      {/* Header */}
-      <header className="flex-shrink-0 border-b border-gray-800 px-6 py-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <span className="text-xl">☁️</span>
-            <h1 className="text-lg font-semibold text-blue-400">Nimbus</h1>
-            {session && (
-              <button
-                onClick={() => setShowSessionPanel(true)}
-                className="flex items-center gap-2 text-xs bg-gray-800 hover:bg-gray-700 px-2 py-1 rounded transition-colors"
-              >
-                <span className="text-gray-400">📁</span>
-                <span className="text-gray-300">
-                  {session.name || session.id.slice(0, 8)}
-                </span>
-                {session.workspace_path && (
-                  <span className="text-gray-500 max-w-[200px] truncate">
-                    ({session.workspace_path.split('/').slice(-2).join('/')})
-                  </span>
+    <div className="h-screen flex flex-col font-sans overflow-hidden relative">
+      {/* Ambient Glow Effects */}
+      <div className="fixed inset-0 pointer-events-none z-0">
+        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-500/10 rounded-full blur-[120px]" />
+        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-500/10 rounded-full blur-[120px]" />
+      </div>
+
+      {/* Header - Glassmorphism */}
+      <header className="flex-shrink-0 z-20 px-6 py-4 bg-gray-950/40 backdrop-blur-xl border-b border-white/5 supports-[backdrop-filter]:bg-gray-950/20">
+        <div className="max-w-6xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-cyan-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
+              <span className="text-xl">☁️</span>
+            </div>
+            <div>
+              <h1 className="text-lg font-bold bg-gradient-to-r from-blue-100 to-blue-300 bg-clip-text text-transparent">Nimbus</h1>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] uppercase tracking-wider text-blue-400 font-semibold px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/20">Beta</span>
+                {session && (
+                  <button
+                    onClick={() => setShowSessionPanel(true)}
+                    className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors group"
+                  >
+                    <span className="truncate max-w-[150px]">
+                      {session.name || session.id.slice(0, 8)}
+                    </span>
+                    <span className="opacity-0 group-hover:opacity-100 transition-opacity">▼</span>
+                  </button>
                 )}
-                <span className="text-gray-600">▼</span>
-              </button>
-            )}
+              </div>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
+
+          <div className="flex items-center gap-3">
             <button
               onClick={() => setShowSessionPanel(true)}
-              className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+              className="p-2 text-gray-400 hover:text-white hover:bg-white/5 rounded-lg transition-all"
+              title="History"
             >
-              Sessions
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
             </button>
             <button
               onClick={() => createNewSession(true)}
-              className="text-xs bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-white transition-colors"
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg shadow-lg shadow-blue-600/20 transition-all hover:scale-[1.02] active:scale-[0.98]"
             >
-              + New
+              <span>New Chat</span>
+              <span className="text-blue-200 text-xs bg-blue-700/50 px-1.5 rounded">⌘K</span>
             </button>
           </div>
         </div>
@@ -194,11 +206,11 @@ export default function Home() {
         )}
 
         {/* Message list */}
-        <ChatList 
-            messages={messages}
-            isStreaming={isStreaming}
-            streamingContent={streamingContent}
-            streamingToolCalls={streamingToolCalls}
+        <ChatList
+          messages={messages}
+          isStreaming={isStreaming}
+          streamingContent={streamingContent}
+          streamingToolCalls={streamingToolCalls}
         />
 
         <div ref={messagesEndRef} />
@@ -225,24 +237,32 @@ export default function Home() {
       </div>
 
       {/* Working Indicator */}
-      {isStreaming && currentActivity && (
-        <div className="w-full px-6 pb-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
-           <div className="max-w-4xl mx-auto">
-             <div className="flex items-center gap-3 text-gray-400 text-xs py-2 px-3 bg-gray-900/80 rounded border border-gray-800/50 backdrop-blur-md shadow-lg border-l-4 border-l-blue-500">
-                  <span className="relative flex h-2 w-2">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+      {isStreaming && currentActivity && (() => {
+        const isExecutor = currentActivity.startsWith('⚡');
+        const borderColor = isExecutor ? 'border-l-purple-500' : 'border-l-blue-500';
+        const dotColor = isExecutor ? 'bg-purple-400' : 'bg-blue-400';
+        const dotBg = isExecutor ? 'bg-purple-500' : 'bg-blue-500';
+        const textColor = isExecutor ? 'text-purple-300' : 'text-blue-300';
+
+        return (
+          <div className="w-full px-6 pb-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
+            <div className="max-w-4xl mx-auto">
+              <div className={`flex items-center gap-3 text-gray-400 text-xs py-2 px-3 bg-gray-900/80 rounded border border-gray-800/50 backdrop-blur-md shadow-lg border-l-4 ${borderColor} transition-all duration-300`}>
+                <span className="relative flex h-2 w-2">
+                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${dotColor} opacity-75`}></span>
+                  <span className={`relative inline-flex rounded-full h-2 w-2 ${dotBg}`}></span>
+                </span>
+                <span className={`font-mono ${textColor} font-medium tracking-wide`}>{currentActivity.toUpperCase()}</span>
+                {thinkingIteration !== null && thinkingIteration > 0 && (
+                  <span className="text-gray-500 font-mono ml-auto">
+                    ITERATION {thinkingIteration + 1}
                   </span>
-                  <span className="font-mono text-blue-300 font-medium tracking-wide">{currentActivity.toUpperCase()}</span>
-                  {thinkingIteration !== null && thinkingIteration > 0 && (
-                    <span className="text-gray-500 font-mono ml-auto">
-                      ITERATION {thinkingIteration + 1}
-                    </span>
-                  )}
-             </div>
-           </div>
-        </div>
-      )}
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Input */}
       <ChatInput
@@ -257,9 +277,9 @@ export default function Home() {
 
 
       {/* Session Panel */}
-      <SessionPanel 
-        isOpen={showSessionPanel} 
-        onClose={() => setShowSessionPanel(false)} 
+      <SessionPanel
+        isOpen={showSessionPanel}
+        onClose={() => setShowSessionPanel(false)}
       />
     </div>
   );

@@ -19,6 +19,10 @@ export interface ToolCall {
   id?: string;
   name: string;
   arguments: Record<string, unknown>;
+  agentType?: "core" | "dispatch";
+  // Nested executor tool calls (only present on Dispatch tools)
+  subCalls?: ToolCall[];
+  subResults?: ToolResult[];
 }
 
 export interface ToolResult {
@@ -43,6 +47,8 @@ export type ChatEventType =
   | "tool_result"
   | "sub_tool_call"
   | "sub_tool_result"
+  | "executor_start"
+  | "executor_done"
   | "task_done"
   | "task_failed"
   | "permission_request"
@@ -60,12 +66,12 @@ export interface ChatEvent {
  * Inject message into running session
  */
 export async function injectMessage(
-  sessionId: string, 
+  sessionId: string,
   content: string
 ): Promise<void> {
   const endpoint = `/api/v1/sessions/${sessionId}/inject`;
   const request: ChatRequest = { content };
-  
+
   await apiPost(endpoint, request);
 }
 

@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { ToolDisplay } from './ToolDisplay';
+import { DispatchCard } from './DispatchCard';
+import type { ToolCall, ToolResult } from '@/lib/api';
 
 interface ToolCardProps {
   tool: {
@@ -10,87 +12,148 @@ interface ToolCardProps {
     error?: string;
     status: "running" | "completed" | "failed";
     duration?: number;
+    agentType?: "core" | "dispatch";
+    subCalls?: ToolCall[];
+    subResults?: ToolResult[];
   };
   defaultExpanded?: boolean;
 }
 
 export function ToolCard({ tool, defaultExpanded }: ToolCardProps) {
-  // Heuristic: Only Read defaults to collapsed (to save space).
-  // Write/Edit/Bash default to expanded (to show changes/actions).
-  // Always expand if there is an error.
-  const isRead = tool.name === 'Read';
-  const isError = tool.status === 'failed' || !!tool.error;
-  
-  const heuristicExpanded = !isRead || isError;
-  
-  // Use state for toggle
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? heuristicExpanded);
+  // Dispatch tools get their own dedicated card
+  if (tool.name === 'Dispatch') {
+    return <DispatchCard tool={tool} />;
+  }
 
-  // Extract summary
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? false);
+
+  // Status Colors & Icons
+  const getStatusStyle = () => {
+    switch (tool.status) {
+      case "running":
+        return {
+          icon: <div className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse shadow-[0_0_8px_rgba(234,179,8,0.5)]" />,
+          border: "border-yellow-500/30",
+          bg: "bg-yellow-500/5",
+        };
+      case "completed":
+        return {
+          icon: <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" />,
+          border: "border-emerald-500/30",
+          bg: "bg-emerald-500/5",
+        };
+      case "failed":
+        return {
+          icon: <div className="w-2 h-2 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]" />,
+          border: "border-red-500/30",
+          bg: "bg-red-500/5",
+        };
+      default:
+        return { icon: null, border: "border-gray-800", bg: "bg-gray-900" };
+    }
+  };
+
+  const style = getStatusStyle();
+  const isDispatch = tool.agentType === "dispatch";
+
+  // Summary extraction
   let summary = "";
   if (tool.args) {
-    if (tool.name === "Read" || tool.name === "Write" || tool.name === "Edit") {
-        // Strict: Only show path if passed in correct argument to avoid misleading user
-        // If LLM used wrong arg (e.g. 'filename'), summary should be empty/unknown
-        // so user knows something is wrong with the args.
-        summary = tool.args.file_path || "";
-    } else if (tool.name === "Bash") {
-        summary = tool.args.command;
+    // Try to find a file path argument by common names
+    const pathArg = tool.args.path || tool.args.file_path || tool.args.target_file || tool.args.TargetFile || tool.args.AbsolutePath || tool.args.filename || tool.args.file;
+
+    // Try to find a command argument
+    const cmdArg = tool.args.command || tool.args.cmd || tool.args.CommandLine || tool.args.command_line;
+
+    if (["Read", "Write", "Edit", "view_file", "replace_file_content", "write_to_file", "edit_file"].some(n => tool.name.toLowerCase().includes(n.toLowerCase()))) {
+      if (typeof pathArg === 'string') {
+        // Extract just the filename if it's too long, or keep full path? 
+        // Let's shorten it for the card header: ".../filename.ext"
+        const parts = pathArg.split('/');
+        const fileName = parts.pop() || pathArg;
+        // If deep path, show parent dir too
+        const parentDir = parts.pop();
+        summary = parentDir ? `${parentDir}/${fileName}` : fileName;
+      }
+    } else if (["Bash", "RunCommand", "run_command", "execute"].some(n => tool.name.toLowerCase().includes(n.toLowerCase()))) {
+      if (typeof cmdArg === 'string') {
+        summary = cmdArg;
+      }
+    } else if (tool.name.toLowerCase().includes("search") && (tool.args.query || tool.args.Query)) {
+      summary = (tool.args.query || tool.args.Query) as string;
     }
   }
 
-  // Styles based on status
-  const statusColor = 
-    tool.status === "running" ? "bg-yellow-900/30 text-yellow-500 border-yellow-800/50" :
-    tool.status === "completed" ? "bg-green-900/30 text-green-500 border-green-800/50" :
-    "bg-red-900/30 text-red-500 border-red-800/50";
-
-  const statusLabel = 
-    tool.status === "running" ? "RUN" :
-    tool.status === "completed" ? "OK" : "ERR";
-
   return (
-    <div className="border border-gray-800 rounded bg-[#0d1117] overflow-hidden my-2 shadow-sm group/card transition-all duration-200">
+    <div className={`
+      group/card overflow-hidden rounded-lg border transition-all duration-200 relative
+      ${isExpanded
+        ? `bg-[#0d1117] ${style.border}`
+        : isDispatch
+          ? "bg-purple-900/10 border-purple-500/20 hover:border-purple-500/30"
+          : "bg-black/20 border-white/5 hover:border-white/10"
+      }
+    `}>
+      {/* Dispatch Agent Indicator Strip */}
+      {isDispatch && (
+        <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-purple-500 shadow-[0_0_8px_rgba(168,85,247,0.5)]" />
+      )}
+
       {/* Header */}
-      <div 
-        className="bg-[#161b22] px-3 py-2 flex justify-between items-center cursor-pointer hover:bg-[#21262d] transition-colors select-none"
+      <div
+        className={`px-3 py-2.5 flex items-center justify-between cursor-pointer select-none ${isDispatch ? "pl-4" : ""}`}
         onClick={() => setIsExpanded(!isExpanded)}
       >
-        <div className="flex items-center gap-3 overflow-hidden">
-          {/* Status Badge */}
-          <span className={`text-[10px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded border ${statusColor}`}>
-            {statusLabel}
-          </span>
-          
-          {/* Tool Name */}
-          <span className="text-sm font-mono text-purple-300 font-semibold whitespace-nowrap">
-            {tool.name}
-          </span>
-          
-          {/* Summary (File path or command) */}
-          {summary && (
-            <span className="text-xs text-gray-500 font-mono truncate ml-1 opacity-70 max-w-[200px] sm:max-w-[300px]" title={summary}>
-              {summary}
+        <div className="flex items-center gap-3 min-w-0">
+          {/* Status Indicator */}
+          <div className="flex items-center justify-center w-4 h-4 shrink-0">
+            {style.icon}
+          </div>
+
+          {/* Agent Label (only for Dispatch) */}
+          {isDispatch && (
+            <span className="text-[10px] uppercase font-bold text-purple-400 bg-purple-500/10 px-1.5 py-0.5 rounded border border-purple-500/20 tracking-wider">
+              Executor
             </span>
           )}
-          
-          {/* Duration */}
-          {tool.duration && (
-            <span className="text-[10px] text-gray-600 font-mono whitespace-nowrap ml-auto pl-2">
-              {tool.duration}ms
+
+          {/* Tool Name */}
+          <span className={`text-[13px] font-mono font-medium tracking-wide truncate ${isDispatch ? "text-purple-200" : "text-gray-300"}`}>
+            {tool.name}
+          </span>
+
+          {/* Divider */}
+          {summary && <span className="text-gray-700 text-xs">/</span>}
+
+          {/* Summary */}
+          {summary && (
+            <span className="text-[12px] font-mono text-gray-500 truncate opacity-80 group-hover/card:opacity-100 transition-opacity">
+              {summary}
             </span>
           )}
         </div>
 
-        {/* Toggle Icon */}
-        <span className="text-gray-500 text-xs ml-2 transform transition-transform duration-200" style={{ transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }}>
-          ▼
-        </span>
+        <div className="flex items-center gap-3 shrink-0 ml-2">
+          {/* Duration */}
+          {tool.duration && (
+            <span className="text-[10px] font-mono text-gray-600">
+              {tool.duration}ms
+            </span>
+          )}
+
+          {/* Chevron */}
+          <svg
+            className={`w-3 h-3 text-gray-600 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`}
+            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </div>
       </div>
 
       {/* Body */}
       {isExpanded && (
-        <div className="border-t border-gray-800">
+        <div className="border-t border-gray-800/50 bg-[#0d1117]/50">
           <ToolDisplay tool={tool} isExpanded={true} />
         </div>
       )}
