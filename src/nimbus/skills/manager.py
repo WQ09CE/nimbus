@@ -10,8 +10,15 @@ class SkillManager:
     
     def __init__(self, skill_dirs: List[Path]):
         self.skill_dirs = skill_dirs
+        self.skill_dirs = skill_dirs
         self.skills: Dict[str, SkillManifest] = {}
         self.tools: Dict[str, ScriptTool] = {} 
+
+    def reload(self) -> None:
+        """Reload all skills from disk."""
+        self.skills.clear()
+        self.tools.clear()
+        self.load_all()
 
     def load_all(self) -> None:
         """Scan configured directories and load all skills."""

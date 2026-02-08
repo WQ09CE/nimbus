@@ -165,59 +165,23 @@ class AgentOS:
         # Skill Manager
         self._skill_manager = SkillManager(self.config.skill_paths)
         self._skill_manager.load_all()
-
+        self._skill_tool_names: List[str] = []
+        
         # Register Skill Tools
-        for tool_name, tool_func in self._skill_manager.tools.items():
-             # We wrap the ScriptTool (which is callable)
-             # But ToolRegistry expects a ToolDefinition + Callable
-             # ScriptTool.tool_definition property returns a dict, likely OpenAI format
-             # We need to adapt it to ToolRegistry.register expectations
-             # ToolRegistry.register takes ToolDefinition object
-             
-             tool_inst = self._skill_manager.tools[tool_name]
-             def_dict = tool_inst.tool_definition
-             
-             # Convert dict to ToolDefinition
-             # Note: ToolDefinition expects list of ToolParameter
-             # This adaptation might be verbose, let's see if we can simplify
-             # ToolRegistry.register is for internal structured tools
-             # Maybe we can just register the function directly if it has _tool_definition attribute?
-             
-             # Hack: attach _tool_definition to the callable
-             # This works if AgentOS.spawn -> VCPU reads tools from registry
-             # VCPU.tools uses self._tools.get_definitions(format="openai")
-             
-             # Let's use register_decorated-like approach
-             func = tool_func
-             # We can't attach to the instance method directly easily without wrapper
-             # But ScriptTool IS the callable object
-             
-             # Let's manually register for now
-             from nimbus.tools.base import ToolDefinition, ToolParameter
-             
-             params = []
-             props = def_dict["parameters"]["properties"]
-             required = def_dict["parameters"].get("required", [])
-             
-             for pname, pdef in props.items():
-                 params.append(ToolParameter(
-                     name=pname,
-                     type=pdef.get("type", "string"),
-                     description=pdef.get("description", ""),
-                     required=(pname in required)
-                 ))
-                 
-             definition = ToolDefinition(
-                 name=def_dict["name"],
-                 description=def_dict["description"],
-                 parameters=params
-             )
-             
-             self._tools.register(definition, func)
-             
-             # Add skill instructions to system rules if needed?
-             # For now, we skip dynamic instruction injection to avoid context pollution
-             # Integration of prompts is handled via namespace or manual loading
+        self._register_skill_tools()
+        
+        # Register ReloadSkills tool
+        from nimbus.tools.base import ToolDefinition, ToolParameter
+        
+        async def reload_skills_wrapper(**kwargs):
+            return self.reload_skills(**kwargs)
+            
+        reload_def = ToolDefinition(
+            name="ReloadSkills",
+            description="Reload all skills from disk. Use this after creating or modifying skills to make them available immediately.",
+            parameters=[]
+        )
+        self._tools.register(reload_def, reload_skills_wrapper)
 
         # 1. Register Kernel Tools (Auto)
         kernel_tools_desc = ""
@@ -315,6 +279,92 @@ class AgentOS:
             config=self.config.compaction_config,
             llm=DefaultCompactionLLM(llm_client),
         )
+
+    def _register_skill_tools(self) -> None:
+        """Register all loaded skill tools."""
+        from nimbus.tools.base import ToolDefinition, ToolParameter
+        
+        # self._skill_tool_names should be initialized in __init__
+        if not hasattr(self, "_skill_tool_names"):
+             self._skill_tool_names = []
+
+        for tool_name, tool_func in self._skill_manager.tools.items():
+            # Skip if already registered skill tool (avoid duplicates in list)
+            if tool_name in self._skill_tool_names:
+                continue
+                
+            tool_inst = self._skill_manager.tools[tool_name]
+            def_dict = tool_inst.tool_definition
+             
+            params = []
+            if "parameters" in def_dict:
+                props = def_dict["parameters"].get("properties", {})
+                required = def_dict["parameters"].get("required", [])
+                
+                for pname, pdef in props.items():
+                    params.append(ToolParameter(
+                        name=pname,
+                        type=pdef.get("type", "string"),
+                        description=pdef.get("description", ""),
+                        required=(pname in required)
+                    ))
+                 
+            definition = ToolDefinition(
+                name=def_dict["name"],
+                description=def_dict["description"],
+                parameters=params
+            )
+             
+            self._tools.register(definition, tool_inst.__call__)
+            self._skill_tool_names.append(tool_name)
+
+    def reload_skills(self, **kwargs) -> str:
+        """Reload all skills from disk.
+        
+        This method:
+        1. Optionally adds new skill directories.
+        2. Unregisters all currently loaded skill tools.
+        3. Reloads the SkillManager (re-scans directories).
+        4. Registers the new set of skill tools.
+        
+        Returns:
+            Status message describing the reload result.
+        """
+        # If a path is provided, add it to skill_dirs (avoid duplicates)
+        from pathlib import Path
+        added_paths = []
+        for key in ("path", "paths"):
+            val = kwargs.get(key)
+            if val:
+                if isinstance(val, str):
+                    val = [val]
+                for p in val:
+                    new_dir = Path(p).resolve()
+                    if new_dir.is_dir() and new_dir not in [d.resolve() for d in self._skill_manager.skill_dirs]:
+                        self._skill_manager.skill_dirs.append(new_dir)
+                        added_paths.append(str(new_dir))
+
+        # Unregister current skills
+        removed_count = 0
+        if hasattr(self, "_skill_tool_names"):
+            for name in list(self._skill_tool_names):
+                if self._tools.unregister(name):
+                    removed_count += 1
+            self._skill_tool_names.clear()
+        else:
+             self._skill_tool_names = []
+        
+        # Reload manager
+        self._skill_manager.reload()
+        
+        # Re-register
+        self._register_skill_tools()
+        
+        msg = f"Reloaded skills. Removed {removed_count} old tools. Loaded {len(self._skill_tool_names)} new tools from {len(self._skill_manager.skills)} skills."
+        if added_paths:
+            msg += f" Added skill dirs: {added_paths}"
+        msg += f" Scanning: {[str(d) for d in self._skill_manager.skill_dirs]}"
+        return msg
 
     # =========================================================================
     # Main API

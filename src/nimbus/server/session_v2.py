@@ -238,6 +238,18 @@ class SessionManagerV2:
 
             _workspace = workspace if workspace else _Path.cwd()
 
+            # Discover skill directories
+            _skill_paths = []
+            _candidate_skill_dirs = [
+                _workspace / "examples" / "skills",
+                _workspace / "skills",
+                _Path(__file__).resolve().parent.parent.parent.parent / "examples" / "skills",
+            ]
+            for _sd in _candidate_skill_dirs:
+                if _sd.is_dir():
+                    _skill_paths.append(_sd)
+                    break
+
             # Single-kernel architecture with Role-Based Access Control
             from nimbus.agentos import AgentOSConfig
 
@@ -246,6 +258,7 @@ class SessionManagerV2:
                 system_rules=CORE_SYSTEM_PROMPT,
                 vcpu_config=VCPUConfig(max_iterations=20),
                 workspace_info=f"Workspace: {_workspace}",
+                skill_paths=_skill_paths,
                 enable_session=False,
             )
             agent_os = AgentOS(llm_client=llm_client, config=os_config)

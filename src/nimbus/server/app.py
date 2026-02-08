@@ -83,8 +83,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     llm = PiLLMAdapter(pi_config)
     await llm.start()
 
+    # Config skills path
+    skill_paths = [Path("examples/skills")]
+    
     vcpu_config = VCPUConfig(max_iterations=50)
-    agent_config = AgentOSConfig(vcpu_config=vcpu_config)
+    agent_config = AgentOSConfig(
+        vcpu_config=vcpu_config,
+        skill_paths=skill_paths
+    )
 
     agent_os = AgentOS(llm_client=llm, config=agent_config)
 
@@ -95,6 +101,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     register_default_tools(agent_os, workspace=workspace)
 
     logger.info(f"Initialized default AgentOS with model={model}, workspace={workspace}")
+    logger.info(f"Loaded skills from: {skill_paths}")
 
     # Store in app state
     app.state.storage = storage
