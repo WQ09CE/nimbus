@@ -577,15 +577,16 @@ async def list_files(
         raise HTTPException(status_code=404, detail="Session not found")
 
     workspace_path = session.get("workspace_path")
-    if not workspace_path:
-        return []
 
     import os
     from pathlib import Path
 
-    # Resolve workspace root
+    # Resolve workspace root (fallback to cwd like the agent does)
     try:
-        root = Path(os.path.expanduser(workspace_path)).resolve()
+        if workspace_path:
+            root = Path(os.path.expanduser(workspace_path)).resolve()
+        else:
+            root = Path.cwd().resolve()
     except Exception:
         return []
 
