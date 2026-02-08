@@ -42,6 +42,7 @@ from nimbus.os.gate import (
 )
 from nimbus.tools.base import ToolDefinition, ToolRegistry
 from nimbus.tools.memo import create_memo_tool
+from nimbus.skills.manager import SkillManager
 
 # =============================================================================
 # AgentOS Configuration
@@ -111,7 +112,10 @@ If it's not in your Memo, you WILL forget it!
     session_dir: Optional[Path] = None  # None = ephemeral mode
     enable_session: bool = True
     # Compaction
+    # Compaction
     compaction_config: CompactionConfig = field(default_factory=CompactionConfig)
+    # Skill System
+    skill_paths: List[Path] = field(default_factory=list)
 
 
 # =============================================================================
@@ -157,6 +161,63 @@ class AgentOS:
 
         # Tool registry
         self._tools = ToolRegistry()
+
+        # Skill Manager
+        self._skill_manager = SkillManager(self.config.skill_paths)
+        self._skill_manager.load_all()
+
+        # Register Skill Tools
+        for tool_name, tool_func in self._skill_manager.tools.items():
+             # We wrap the ScriptTool (which is callable)
+             # But ToolRegistry expects a ToolDefinition + Callable
+             # ScriptTool.tool_definition property returns a dict, likely OpenAI format
+             # We need to adapt it to ToolRegistry.register expectations
+             # ToolRegistry.register takes ToolDefinition object
+             
+             tool_inst = self._skill_manager.tools[tool_name]
+             def_dict = tool_inst.tool_definition
+             
+             # Convert dict to ToolDefinition
+             # Note: ToolDefinition expects list of ToolParameter
+             # This adaptation might be verbose, let's see if we can simplify
+             # ToolRegistry.register is for internal structured tools
+             # Maybe we can just register the function directly if it has _tool_definition attribute?
+             
+             # Hack: attach _tool_definition to the callable
+             # This works if AgentOS.spawn -> VCPU reads tools from registry
+             # VCPU.tools uses self._tools.get_definitions(format="openai")
+             
+             # Let's use register_decorated-like approach
+             func = tool_func
+             # We can't attach to the instance method directly easily without wrapper
+             # But ScriptTool IS the callable object
+             
+             # Let's manually register for now
+             from nimbus.tools.base import ToolDefinition, ToolParameter
+             
+             params = []
+             props = def_dict["parameters"]["properties"]
+             required = def_dict["parameters"].get("required", [])
+             
+             for pname, pdef in props.items():
+                 params.append(ToolParameter(
+                     name=pname,
+                     type=pdef.get("type", "string"),
+                     description=pdef.get("description", ""),
+                     required=(pname in required)
+                 ))
+                 
+             definition = ToolDefinition(
+                 name=def_dict["name"],
+                 description=def_dict["description"],
+                 parameters=params
+             )
+             
+             self._tools.register(definition, func)
+             
+             # Add skill instructions to system rules if needed?
+             # For now, we skip dynamic instruction injection to avoid context pollution
+             # Integration of prompts is handled via namespace or manual loading
 
         # 1. Register Kernel Tools (Auto)
         kernel_tools_desc = ""
