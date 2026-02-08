@@ -1277,6 +1277,7 @@ def create_agent_os(
     workspace: Optional["Path"] = None,
     register_defaults: bool = True,
     kernel_tools: bool = True,
+    skill_paths: Optional[List[Path]] = None,
 ) -> AgentOS:
     """
     Factory function to create an AgentOS with common defaults.
@@ -1305,6 +1306,7 @@ def create_agent_os(
         system_rules=system_rules or AgentOSConfig.system_rules,
         workspace_info=f"Workspace: {workspace}",
         kernel_tools=kernel_tools,
+        skill_paths=skill_paths or [],
     )
 
     os = AgentOS(llm_client=llm_client, tools=tools, config=config)
