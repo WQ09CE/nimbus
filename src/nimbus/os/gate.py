@@ -127,6 +127,37 @@ class KernelGate:
         # Normalize common parameter name aliases (LLM hallucination tolerance)
         action.args = _normalize_tool_args(tool_name, action.args)
 
+        # Validate required parameters (after normalization)
+        validation_error = _validate_required_args(tool_name, action.args)
+        if validation_error:
+            error_output = f"[Error] {validation_error}"
+            self._emit_event(
+                "TOOL_FINISHED",
+                {
+                    "action_id": action.id,
+                    "tool": tool_name,
+                    "status": "ERROR",
+                    "output": error_output,
+                    "duration_ms": 0,
+                    "fault": {
+                        "domain": "TOOL",
+                        "code": "MISSING_REQUIRED_PARAM",
+                        "message": validation_error,
+                        "retryable": True,
+                    },
+                },
+            )
+            return ToolResult(
+                status="ERROR",
+                output=error_output,
+                fault=Fault(
+                    domain="TOOL",
+                    code="MISSING_REQUIRED_PARAM",
+                    message=validation_error,
+                    retryable=True,
+                ),
+            )
+
         logger.info(f"Executing tool '{tool_name}'...")
 
         start_time = time.time_ns()
@@ -338,6 +369,14 @@ _ARG_ALIASES: Dict[str, Dict[str, str]] = {
     },
 }
 
+# Required parameters for each tool (used for pre-flight validation)
+_REQUIRED_PARAMS: Dict[str, List[str]] = {
+    "Read": ["file_path"],
+    "Write": ["file_path", "content"],
+    "Edit": ["file_path", "old_text", "new_text"],
+    "Bash": ["command"],
+}
+
 
 def _normalize_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize tool argument names to handle common LLM hallucinations.
@@ -357,3 +396,27 @@ def _normalize_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]
             normalized[canonical] = normalized.pop(alias)
 
     return normalized
+
+
+def _validate_required_args(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
+    """Validate that all required parameters are present after normalization.
+    
+    Returns an error message string if validation fails, None if OK.
+    This catches cases where LLM omits required params entirely
+    (not just uses wrong names, which _normalize_tool_args handles).
+    """
+    required = _REQUIRED_PARAMS.get(tool_name)
+    if not required:
+        return None
+    
+    missing = [p for p in required if p not in args or args[p] is None or args[p] == ""]
+    if not missing:
+        return None
+    
+    # Build a helpful usage hint
+    param_hints = ", ".join(f'{p}="..."' for p in required)
+    missing_str = ", ".join(f"'{p}'" for p in missing)
+    return (
+        f"Missing required parameter {missing_str}. "
+        f"Usage: {tool_name}({param_hints})"
+    )

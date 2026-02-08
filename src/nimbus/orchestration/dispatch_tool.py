@@ -155,10 +155,10 @@ class DispatchTool:
         if context:
             executor_goal = f"{task}\n\n## Context\n{context}"
 
-        # Add time hint
-        dispatch_timeout = min(self._config.dispatch_timeout, remaining - 20)
+        # Executor is controlled by max_iterations, not wall-clock timeout.
+        # Only add a conciseness hint, no time pressure.
         executor_goal += (
-            f"\n\nTime budget for this task: {dispatch_timeout:.0f} seconds. Be efficient."
+            f"\n\nYou have up to {self._config.executor_max_iterations} tool calls. Be efficient."
         )
 
         # --- Take before snapshot ---
@@ -194,9 +194,12 @@ class DispatchTool:
         logger.info(f"Spawned Executor process {pid}")
 
         # --- Wait for completion ---
+        # Executor stops naturally when it hits max_iterations or returns.
+        # We use total_timeout as a safety net only (not per-dispatch).
+        safety_timeout = max(remaining, 60.0)  # At least 60s safety margin
         executor_output = ""
         try:
-            result = await self._agent_os.wait(pid, timeout=dispatch_timeout)
+            result = await self._agent_os.wait(pid, timeout=safety_timeout)
             executor_output = result.output or "(Executor returned no output)"
             if result.fault:
                 executor_output += f"\n\nExecutor fault: {result.fault}"

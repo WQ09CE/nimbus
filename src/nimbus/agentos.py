@@ -419,7 +419,13 @@ class AgentOS:
         vcpu_config = self.config.vcpu_config
         if max_iterations is not None:
             from dataclasses import replace as dc_replace
-            vcpu_config = dc_replace(vcpu_config, max_iterations=max_iterations)
+            # Executor-like sub-processes: set iteration limit and disable compaction.
+            # They should stop at max_iterations, not compact and continue.
+            vcpu_config = dc_replace(
+                vcpu_config,
+                max_iterations=max_iterations,
+                compact_on_limit=False,
+            )
 
         # Create VCPU
         vcpu = VCPU(
@@ -1099,6 +1105,54 @@ class AgentOS:
                     logger.info(f"[{process.pid}] Processed inbox message: {msg[:50]}...")
 
                 await self._check_compaction(process)
+
+                # Check iteration limit (iteration-based budget instead of wall-clock timeout)
+                vcpu = process.vcpu
+                if vcpu._state.iteration >= vcpu.config.max_iterations:
+                    if vcpu.config.compact_on_limit:
+                        # For long-running processes (e.g. Core Agent), compact and continue
+                        compacted = await self._compaction_for_process(process.pid, process.mmu)
+                        if compacted:
+                            logger.info(
+                                f"[{process.pid}] Compaction #{vcpu._state.compaction_count} complete, "
+                                f"resetting iteration counter (was {vcpu._state.iteration})"
+                            )
+                            vcpu._state.iteration = 0
+                            vcpu._state.compaction_count += 1
+                            continue
+                    # Budget exceeded (or compaction disabled/failed)
+                    # Give the LLM one final step to summarize what it did
+                    logger.info(
+                        f"[{process.pid}] Iteration budget reached "
+                        f"({vcpu._state.iteration}/{vcpu.config.max_iterations}), "
+                        f"requesting final summary..."
+                    )
+                    process.mmu.add_user_message(
+                        "[SYSTEM] You have reached your iteration limit. "
+                        "Do NOT call any more tools. Immediately respond with a summary of: "
+                        "1) what you completed, 2) what remains unfinished."
+                    )
+                    # Run one final step for the summary
+                    final_step = await process.vcpu.step()
+                    process.state = "SUCCEEDED"
+                    # Extract LLM's text response as the output
+                    summary = ""
+                    if final_step.is_final and final_step.final_result:
+                        summary = final_step.final_result.output or ""
+                    elif final_step.actions:
+                        # LLM might have responded with text (RETURN action)
+                        for action in final_step.actions:
+                            if action.kind == "RETURN":
+                                summary = action.args.get("result", "")
+                                break
+                            elif action.kind == "THOUGHT":
+                                summary = action.args.get("content", "")
+                    if not summary:
+                        summary = (
+                            f"Iteration budget reached ({vcpu.config.max_iterations} iterations). "
+                            f"Task may be partially complete."
+                        )
+                    return ToolResult(status="OK", output=summary)
 
                 step_result = await process.vcpu.step()
 
