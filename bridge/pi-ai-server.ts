@@ -112,12 +112,17 @@ function parseModelString(modelStr: string): { provider: string; modelId: string
   }
 
   // Try to find model in all providers
-  for (const provider of getProviders()) {
-    if (!provider.id) continue;
-    const models = getModels(provider.id);
-    const found = models.find(m => m.id === modelStr);
-    if (found) {
-      return { provider: provider.id, modelId: modelStr };
+  for (const p of getProviders()) {
+    const providerId = typeof p === 'string' ? p : (p as any).id;
+    if (!providerId) continue;
+    try {
+      const models = getModels(providerId);
+      const found = models.find(m => m.id === modelStr);
+      if (found) {
+        return { provider: providerId, modelId: modelStr };
+      }
+    } catch (e) {
+      // Skip providers that fail
     }
   }
 
