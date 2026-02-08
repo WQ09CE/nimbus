@@ -1,17 +1,16 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { 
-  Session, 
-  listSessions, 
-  deleteSession, 
+import {
+  Session,
+  listSessions,
+  deleteSession,
   deleteSessions,
-  createSession,
   interruptSession,
   resumeSession,
 } from "@/lib/api/sessions";
 import { useChatStore } from "@/stores";
-import { PathInput } from "./PathInput";
+import { CreateSessionDialog, CreateSessionConfig } from "./CreateSessionDialog";
 
 interface SessionPanelProps {
   isOpen: boolean;
@@ -21,22 +20,19 @@ interface SessionPanelProps {
 type SessionStatus = "active" | "interrupted" | "completed" | "deleted";
 
 const STATUS_CONFIG: Record<SessionStatus, { label: string; color: string; icon: string }> = {
-  active: { label: "运行中", color: "bg-green-500", icon: "🟢" },
-  interrupted: { label: "已暂停", color: "bg-yellow-500", icon: "⏸️" },
-  completed: { label: "已完成", color: "bg-blue-500", icon: "✅" },
-  deleted: { label: "已删除", color: "bg-gray-500", icon: "🗑️" },
+  active: { label: "Active", color: "text-emerald-400 bg-emerald-400/10 border-emerald-400/20", icon: "●" },
+  interrupted: { label: "Paused", color: "text-amber-400 bg-amber-400/10 border-amber-400/20", icon: "⏸" },
+  completed: { label: "Done", color: "text-blue-400 bg-blue-400/10 border-blue-400/20", icon: "✓" },
+  deleted: { label: "Deleted", color: "text-gray-500 bg-gray-500/10 border-gray-500/20", icon: "🗑" },
 };
 
 export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
-  const { session: currentSession, switchSession, isStreaming } = useChatStore();
+  const { session: currentSession, switchSession, createNewSession, isStreaming } = useChatStore();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(false);
-  const [showNewDialog, setShowNewDialog] = useState(false);
-  const [newSessionName, setNewSessionName] = useState("");
-  const [newSessionPath, setNewSessionPath] = useState("");
-  const [creating, setCreating] = useState(false);
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-  
+
   // Batch selection state
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isSelectMode, setIsSelectMode] = useState(false);
@@ -45,7 +41,7 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
     setLoading(true);
     try {
       const list = await listSessions();
-      setSessions(list.sort((a, b) => 
+      setSessions(list.sort((a, b) =>
         new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       ));
     } catch (err) {
@@ -59,52 +55,36 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
     if (isOpen) {
       fetchSessions();
     } else {
-      // Reset select mode when panel closes
       setIsSelectMode(false);
       setSelectedIds(new Set());
     }
   }, [isOpen, fetchSessions]);
 
-  const handleCreateSession = async () => {
-    if (!newSessionName.trim()) return;
-    
-    setCreating(true);
+  const handleCreateSession = async (config: CreateSessionConfig) => {
     try {
-      const session = await createSession({
-        name: newSessionName.trim(),
-        workspace_path: newSessionPath.trim() || undefined,
+      // Pass the full config to the store's createNewSession
+      // Note: We need to update useChatStore to accept this config structure if it doesn't already
+      // For now, we fit it into the existing signature
+      await createNewSession(true, {
+        ...config,
+        // Ensure llm_config is passed correctly even if spread above doesn't match perfectly
+        llm_config: config.llm_config,
       });
-      setSessions(prev => [session, ...prev]);
-      setShowNewDialog(false);
-      setNewSessionName("");
-      setNewSessionPath("");
-      // Switch to new session
-      switchSession(session);
-      onClose();
+      await fetchSessions();
     } catch (err) {
       console.error("Failed to create session:", err);
-    } finally {
-      setCreating(false);
     }
   };
 
   const handleDeleteSession = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!confirm("确定要删除这个 session 吗？所有对话历史将被清除。")) return;
-    
+    if (!confirm("确定要删除这个会话吗？")) return;
+
     setActionLoading(id);
     try {
       await deleteSession(id);
       setSessions(prev => prev.filter(s => s.id !== id));
-      setSelectedIds(prev => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-      // If deleting current session, clear it
-      if (currentSession?.id === id) {
-        switchSession(null);
-      }
+      if (currentSession?.id === id) switchSession(null);
     } catch (err) {
       console.error("Failed to delete session:", err);
     } finally {
@@ -114,404 +94,191 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
 
   const handleBatchDelete = async () => {
     if (selectedIds.size === 0) return;
-    
-    const count = selectedIds.size;
-    if (!confirm(`确定要删除选中的 ${count} 个 session 吗？所有对话历史将被清除。`)) return;
-    
+    if (!confirm(`确定要删除选中的 ${selectedIds.size} 个会话吗？`)) return;
+
     setActionLoading("batch");
     try {
       await deleteSessions(Array.from(selectedIds));
       setSessions(prev => prev.filter(s => !selectedIds.has(s.id)));
-      
-      // If current session was deleted, clear it
-      if (currentSession && selectedIds.has(currentSession.id)) {
-        switchSession(null);
-      }
-      
+      if (currentSession && selectedIds.has(currentSession.id)) switchSession(null);
       setSelectedIds(new Set());
       setIsSelectMode(false);
     } catch (err) {
-      console.error("Failed to batch delete sessions:", err);
+      console.error("Failed to batch delete:", err);
     } finally {
       setActionLoading(null);
     }
   };
 
-  const toggleSelect = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const toggleSelect = (id: string) => {
     setSelectedIds(prev => {
       const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   };
 
-  const toggleSelectAll = () => {
-    if (selectedIds.size === sessions.length) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(sessions.map(s => s.id)));
-    }
-  };
-
-  const handleInterruptSession = async (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    
-    setActionLoading(id);
-    try {
-      const result = await interruptSession(id);
-      if (result.success) {
-        // Update session status locally
-        setSessions(prev => prev.map(s => 
-          s.id === id ? { ...s, status: "interrupted" } : s
-        ));
-        alert(`Session 已暂停\n保存在第 ${result.checkpoint?.step_index} 步\n内存消息: ${result.checkpoint?.memory_messages}`);
-      } else {
-        alert(`暂停失败: ${result.error}`);
-      }
-    } catch (err) {
-      console.error("Failed to interrupt session:", err);
-      alert("暂停失败");
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  const handleResumeSession = async (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    
-    setActionLoading(id);
-    try {
-      const result = await resumeSession(id);
-      if (result.success) {
-        // Update session status locally
-        setSessions(prev => prev.map(s => 
-          s.id === id ? { ...s, status: "active" } : s
-        ));
-        alert(`Session 已恢复\n从第 ${result.restored_step} 步继续`);
-        // Switch to this session
-        const session = sessions.find(s => s.id === id);
-        if (session) {
-          switchSession({ ...session, status: "active" });
-          onClose();
-        }
-      } else {
-        alert(`恢复失败: ${result.error}`);
-      }
-    } catch (err) {
-      console.error("Failed to resume session:", err);
-      alert("恢复失败");
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  const handleSelectSession = (session: Session) => {
-    switchSession(session);
-    onClose();
-  };
-
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr);
-    return date.toLocaleString("zh-CN", {
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  };
-
-  const getWorkspaceName = (path?: string) => {
-    if (!path || path === ".") return "当前目录";
-    if (path === "~") return "Home";
-    // Handle ~ paths
-    if (path.startsWith("~/")) {
-      const parts = path.split("/");
-      return parts[parts.length - 1] || path;
-    }
-    const parts = path.split("/");
-    return parts[parts.length - 1] || path;
-  };
-
-  const getWorkspaceTooltip = (path?: string) => {
-    if (!path) return "使用服务器当前目录";
-    if (path === ".") return "使用服务器当前目录";
-    return `工作目录: ${path}`;
-  };
-
-  const getStatusConfig = (status: string) => {
-    return STATUS_CONFIG[status as SessionStatus] || STATUS_CONFIG.active;
+    const now = new Date();
+    const isToday = date.toDateString() === now.toDateString();
+    return isToday
+      ? date.toLocaleTimeString("zh-CN", { hour: '2-digit', minute: '2-digit' })
+      : date.toLocaleDateString("zh-CN", { month: '2-digit', day: '2-digit' });
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center" onClick={onClose}>
-      <div 
-        className="bg-gray-900 border border-gray-700 rounded-lg w-[700px] max-h-[80vh] flex flex-col shadow-2xl"
-        onClick={e => e.stopPropagation()}
-      >
+    <>
+      <div className="fixed inset-0 bg-black/60 z-40 backdrop-blur-sm" onClick={onClose} />
+
+      {/* Sidebar Panel */}
+      <div className="fixed top-0 left-0 bottom-0 w-[400px] bg-[#1a1a1a] border-r border-[#333] z-50 shadow-2xl flex flex-col transform transition-transform duration-300 animate-in slide-in-from-left">
+
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+        <div className="px-5 py-4 border-b border-[#333] flex items-center justify-between bg-[#1f1f1f]">
           <div>
-            <h2 className="text-lg font-semibold text-gray-200">Sessions</h2>
-            <p className="text-xs text-gray-500 mt-0.5">
-              {isSelectMode 
-                ? `已选择 ${selectedIds.size} 个` 
-                : "管理你的对话会话"}
+            <h2 className="text-lg font-semibold text-gray-100 tracking-tight">Sessions</h2>
+            <p className="text-[11px] text-gray-500 font-mono mt-0.5 uppercase tracking-wider">
+              {sessions.length} Conversations
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            {isSelectMode ? (
-              <>
-                <button
-                  onClick={toggleSelectAll}
-                  className="text-xs text-gray-400 hover:text-gray-200 px-2 py-1.5"
-                >
-                  {selectedIds.size === sessions.length ? "取消全选" : "全选"}
-                </button>
-                <button
-                  onClick={handleBatchDelete}
-                  disabled={selectedIds.size === 0 || actionLoading === "batch"}
-                  className="text-sm bg-red-600 hover:bg-red-700 disabled:bg-gray-600 px-3 py-1.5 rounded text-white"
-                >
-                  {actionLoading === "batch" ? "删除中..." : `删除 (${selectedIds.size})`}
-                </button>
-                <button
-                  onClick={() => {
-                    setIsSelectMode(false);
-                    setSelectedIds(new Set());
-                  }}
-                  className="text-sm text-gray-400 hover:text-gray-200 px-2 py-1.5"
-                >
-                  取消
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  onClick={() => setIsSelectMode(true)}
-                  className="text-sm text-gray-400 hover:text-gray-200 px-2 py-1.5"
-                  title="批量管理"
-                >
-                  ☑️
-                </button>
-                <button
-                  onClick={fetchSessions}
-                  className="text-sm text-gray-400 hover:text-gray-200 px-2 py-1.5"
-                  title="刷新"
-                >
-                  🔄
-                </button>
-                <button
-                  onClick={() => setShowNewDialog(true)}
-                  className="text-sm bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded text-white"
-                >
-                  + 新建
-                </button>
-              </>
-            )}
+          <div className="flex gap-2">
             <button
-              onClick={onClose}
-              className="text-gray-400 hover:text-gray-200 text-xl px-2"
+              onClick={() => setIsSelectMode(!isSelectMode)}
+              className={`p-2 rounded-lg transition-colors ${isSelectMode ? 'bg-[#333] text-white' : 'text-gray-400 hover:bg-[#333]'}`}
+              title="批量管理"
             >
-              ×
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" /></svg>
+            </button>
+            <button
+              onClick={() => setShowCreateDialog(true)}
+              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-lg transition-colors shadow-lg shadow-blue-500/20 flex items-center gap-1.5"
+            >
+              <span>+</span> New
             </button>
           </div>
         </div>
 
-        {/* New Session Dialog */}
-        {showNewDialog && (
-          <div className="px-4 py-3 border-b border-gray-700 bg-gray-800/50">
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">Session 名称 *</label>
-                <input
-                  type="text"
-                  value={newSessionName}
-                  onChange={e => setNewSessionName(e.target.value)}
-                  placeholder="例如: nimbus-dev"
-                  className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500"
-                  autoFocus
-                  onKeyDown={e => {
-                    if (e.key === "Enter" && newSessionName.trim()) {
-                      handleCreateSession();
-                    }
-                  }}
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">工作目录 (可选)</label>
-                <PathInput
-                  value={newSessionPath}
-                  onChange={setNewSessionPath}
-                  placeholder="输入路径或按 Tab 补全，例如: ~/projects/"
-                  className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500"
-                />
-                <div className="flex items-center gap-2 mt-2">
-                  <span className="text-xs text-gray-500">快捷选择:</span>
-                  <button
-                    type="button"
-                    onClick={() => setNewSessionPath(".")}
-                    className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded text-gray-300"
-                  >
-                    当前目录
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setNewSessionPath("~/")}
-                    className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded text-gray-300"
-                  >
-                    Home
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setNewSessionPath("~/Desktop/")}
-                    className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded text-gray-300"
-                  >
-                    桌面
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500 mt-1">
-                  💡 输入路径后按 <kbd className="bg-gray-700 px-1 rounded">Tab</kbd> 或 <kbd className="bg-gray-700 px-1 rounded">↓</kbd> 显示补全
-                </p>
-              </div>
-              <div className="flex justify-end gap-2">
-                <button
-                  onClick={() => {
-                    setShowNewDialog(false);
-                    setNewSessionName("");
-                    setNewSessionPath("");
-                  }}
-                  className="text-sm px-3 py-1.5 text-gray-400 hover:text-gray-200"
-                >
-                  取消
-                </button>
-                <button
-                  onClick={handleCreateSession}
-                  disabled={!newSessionName.trim() || creating}
-                  className="text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 px-3 py-1.5 rounded text-white"
-                >
-                  {creating ? "创建中..." : "创建"}
-                </button>
-              </div>
-            </div>
+        {/* Batch Actions Bar */}
+        {isSelectMode && (
+          <div className="px-4 py-2 bg-[#2a2a2a] border-b border-[#333] flex justify-between items-center animate-in slide-in-from-top-2">
+            <span className="text-xs text-gray-400">Selected: {selectedIds.size}</span>
+            <button
+              onClick={handleBatchDelete}
+              disabled={selectedIds.size === 0}
+              className="text-xs text-red-400 hover:text-red-300 disabled:text-gray-600 font-medium px-2 py-1"
+            >
+              Delete Selected
+            </button>
           </div>
         )}
 
-        {/* Session List */}
-        <div className="flex-1 overflow-y-auto">
+        {/* List */}
+        <div className="flex-1 overflow-y-auto custom-scrollbar">
           {loading ? (
-            <div className="text-center py-8 text-gray-500">Loading...</div>
+            <div className="flex justify-center py-12">
+              <div className="w-6 h-6 border-2 border-gray-600 border-t-blue-500 rounded-full animate-spin" />
+            </div>
           ) : sessions.length === 0 ? (
-            <div className="text-center py-8 text-gray-500">
-              <div className="text-4xl mb-2">📭</div>
-              暂无 session，点击「新建」创建一个
+            <div className="flex flex-col items-center justify-center h-64 text-gray-500 px-8 text-center">
+              <div className="text-4xl mb-3 opacity-20">💬</div>
+              <p className="text-sm">No conversations yet.</p>
+              <button
+                onClick={() => setShowCreateDialog(true)}
+                className="mt-4 text-blue-400 hover:text-blue-300 text-xs font-medium"
+              >
+                Start a new chat
+              </button>
             </div>
           ) : (
-            <div className="divide-y divide-gray-800">
+            <div className="divide-y divide-[#252525]">
               {sessions.map(session => {
-                const statusConfig = getStatusConfig(session.status);
-                const isCurrentSession = currentSession?.id === session.id;
-                const isActionLoading = actionLoading === session.id;
-                
+                const isActive = currentSession?.id === session.id;
+                const status = STATUS_CONFIG[session.status as SessionStatus] || STATUS_CONFIG.active;
+                const isSelected = selectedIds.has(session.id);
+                // Fallback name logic: name -> id prefix -> "Untitled"
+                const displayName = session.name?.trim() || `Session ${session.id.slice(0, 8)}`;
+                const isStatusActive = session.status === "active";
+
                 return (
                   <div
                     key={session.id}
-                    onClick={() => isSelectMode ? toggleSelect(session.id, { stopPropagation: () => {} } as React.MouseEvent) : handleSelectSession(session)}
-                    className={`px-4 py-3 cursor-pointer hover:bg-gray-800/50 transition-colors ${
-                      isCurrentSession ? "bg-blue-900/20 border-l-2 border-blue-500" : ""
-                    } ${selectedIds.has(session.id) ? "bg-red-900/20" : ""}`}
+                    onClick={() => isSelectMode ? toggleSelect(session.id) : (() => { switchSession(session); onClose(); })()}
+                    className={`
+                      group relative px-4 py-3 cursor-pointer transition-all duration-200
+                      ${isActive ? 'bg-blue-500/10 border-l-2 border-l-blue-500' : 'hover:bg-[#252525] border-l-2 border-l-transparent'}
+                      ${isSelected ? 'bg-[#2a2a2a]' : ''}
+                    `}
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      {/* Checkbox for select mode */}
-                      {isSelectMode && (
-                        <div 
-                          className="flex items-center pt-0.5"
-                          onClick={(e) => toggleSelect(session.id, e)}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={selectedIds.has(session.id)}
-                            onChange={() => {}}
-                            className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-blue-500 focus:ring-offset-gray-900"
-                          />
-                        </div>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        {/* Title Row */}
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-sm font-medium text-gray-200 truncate">
-                            {session.name || session.id.slice(0, 12)}
-                          </span>
-                          {isCurrentSession && (
-                            <span className="text-xs bg-blue-600 px-1.5 py-0.5 rounded text-white shrink-0">
-                              当前
-                            </span>
-                          )}
-                          {isCurrentSession && isStreaming && (
-                            <span className="text-xs bg-green-600 px-1.5 py-0.5 rounded text-white shrink-0 animate-pulse">
-                              运行中
-                            </span>
-                          )}
-                          <span 
-                            className={`text-xs px-1.5 py-0.5 rounded text-white shrink-0 ${statusConfig.color}`}
-                            title={statusConfig.label}
-                          >
-                            {statusConfig.icon} {statusConfig.label}
-                          </span>
-                        </div>
-                        
-                        {/* Info Row */}
-                        <div className="flex items-center gap-3 mt-1 text-xs text-gray-500 flex-wrap">
-                          <span title={getWorkspaceTooltip(session.workspace_path)}>📁 {getWorkspaceName(session.workspace_path)}</span>
-                          <span title="消息数">💬 {session.message_count}</span>
-                          <span title="创建时间">🕐 {formatDate(session.created_at)}</span>
-                          <span className="text-gray-600 font-mono text-[10px]">{session.id.slice(0, 16)}</span>
-                        </div>
+                    {/* Select Checkbox */}
+                    {isSelectMode && (
+                      <div className="absolute left-2 top-1/2 -translate-y-1/2 z-10">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelect(session.id)}
+                          className="w-4 h-4 rounded border-gray-600 bg-[#1a1a1a] text-blue-500 focus:ring-offset-0"
+                        />
                       </div>
-                      
-                      {/* Action Buttons */}
-                      <div className="flex items-center gap-1 shrink-0">
-                        {/* Interrupt button - only for current active session */}
-                        {isCurrentSession && isStreaming && (
-                          <button
-                            onClick={(e) => handleInterruptSession(session.id, e)}
-                            disabled={isActionLoading}
-                            className="text-yellow-500 hover:text-yellow-400 p-1.5 transition-colors disabled:opacity-50"
-                            title="暂停执行"
-                          >
-                            {isActionLoading ? "⏳" : "⏸️"}
-                          </button>
+                    )}
+
+                    <div className={isSelectMode ? "pl-6" : ""}>
+                      <div className="flex justify-between items-baseline mb-1">
+                        <h3 className={`text-sm font-medium pr-2 truncate leading-snug max-w-[200px] ${isActive ? 'text-blue-400' : 'text-gray-200'}`}>
+                          {displayName}
+                        </h3>
+                        <span className="text-[10px] text-gray-600 font-mono whitespace-nowrap shrink-0">
+                          {formatDate(session.created_at)}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        {/* Simplified Status: Only show pill for non-active, otherwise just dot if needed or strict styling */}
+                        {isStatusActive ? (
+                          <div className="flex items-center gap-1.5 text-[10px] text-emerald-500/80">
+                            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500"></div>
+                            Active
+                          </div>
+                        ) : (
+                          <div className={`
+                            flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border uppercase tracking-wider
+                            ${status.color} scale-90 origin-left
+                          `}>
+                            {status.label}
+                          </div>
                         )}
-                        
-                        {/* Resume button - for interrupted sessions */}
-                        {session.status === "interrupted" && (
-                          <button
-                            onClick={(e) => handleResumeSession(session.id, e)}
-                            disabled={isActionLoading}
-                            className="text-green-500 hover:text-green-400 p-1.5 transition-colors disabled:opacity-50"
-                            title="恢复执行"
-                          >
-                            {isActionLoading ? "⏳" : "▶️"}
-                          </button>
+
+                        {session.workspace_path && (
+                          <>
+                            <span className="text-gray-700 mx-0.5">•</span>
+                            <span className="text-[10px] text-gray-500 truncate max-w-[120px] font-mono" title={session.workspace_path}>
+                              {session.workspace_path.startsWith('/') ? '..' : ''}/{session.workspace_path.split('/').pop()}
+                            </span>
+                          </>
                         )}
-                        
-                        {/* Delete button */}
-                        <button
-                          onClick={(e) => handleDeleteSession(session.id, e)}
-                          disabled={isActionLoading}
-                          className="text-gray-600 hover:text-red-400 p-1.5 transition-colors disabled:opacity-50"
-                          title="删除"
-                        >
-                          🗑️
-                        </button>
+
+                        <span className="text-[10px] text-gray-600 font-mono ml-auto flex items-center gap-1">
+                          <svg className="w-3 h-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
+                          {session.message_count}
+                        </span>
                       </div>
                     </div>
+
+                    {/* Hover Actions */}
+                    {!isSelectMode && (
+                      <div className="absolute right-2 top-1/2 -translate-y-1/2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-[#1a1a1a] shadow-[-10px_0_20px_#1a1a1a] pl-2">
+                        <button
+                          onClick={(e) => handleDeleteSession(session.id, e)}
+                          className="p-1.5 text-gray-500 hover:text-red-400 transition-colors rounded-md hover:bg-red-500/10"
+                          title="Delete Session"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -520,20 +287,16 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
         </div>
 
         {/* Footer */}
-        <div className="px-4 py-2 border-t border-gray-700 bg-gray-800/30">
-          <div className="flex items-center justify-between text-xs text-gray-500">
-            <span>共 {sessions.length} 个 session</span>
-            <div className="flex items-center gap-3">
-              <span className="flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-green-500"></span> 运行中
-              </span>
-              <span className="flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-yellow-500"></span> 已暂停
-              </span>
-            </div>
-          </div>
+        <div className="p-4 border-t border-[#333] bg-[#1f1f1f] text-xs text-center text-gray-600">
+          Nimbus v0.5.0 • Local Agent Server
         </div>
       </div>
-    </div>
+
+      <CreateSessionDialog
+        isOpen={showCreateDialog}
+        onClose={() => setShowCreateDialog(false)}
+        onCreate={handleCreateSession}
+      />
+    </>
   );
 }

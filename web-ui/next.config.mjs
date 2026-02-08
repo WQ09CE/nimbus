@@ -4,14 +4,11 @@ const nextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
-  // 禁用热重载 - 避免开发时代码修改中断用户会话
+  // 允许跨域开发请求
+  // experimental: {
+  //   allowedDevOrigins: ["127.0.0.1:3000", "localhost:3000", "0.0.0.0:3000"],
+  // },
   webpack: (config, { dev, isServer }) => {
-    if (dev && !isServer) {
-      // 禁用 Fast Refresh (React Hot Reload)
-      config.watchOptions = {
-        ignored: ['**/*'],  // 忽略所有文件变化
-      };
-    }
     return config;
   },
   // 减少不必要的日志

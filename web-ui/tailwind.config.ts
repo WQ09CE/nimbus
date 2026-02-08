@@ -9,6 +9,7 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
+        sans: ["var(--font-sans)", "system-ui", "sans-serif"],
         mono: [
           "var(--font-mono)",  // JetBrains Mono from next/font
           "ui-monospace",

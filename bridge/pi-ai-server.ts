@@ -51,7 +51,7 @@ const OAUTH_PROVIDERS = ["anthropic", "openai-codex", "github-copilot", "google-
 
 async function getApiKey(provider: string): Promise<string | null> {
   const auth = loadAuth();
-  
+
   // Check if it's an OAuth provider
   if (OAUTH_PROVIDERS.includes(provider)) {
     const result = await getOAuthApiKey(provider as any, auth);
@@ -63,12 +63,12 @@ async function getApiKey(provider: string): Promise<string | null> {
     }
     return null;
   }
-  
+
   // Check for API key in auth.json
   if (auth[provider]?.apiKey) {
     return auth[provider].apiKey;
   }
-  
+
   // Check environment variables
   const envKey = process.env[`${provider.toUpperCase().replace(/-/g, "_")}_API_KEY`];
   return envKey || null;
@@ -83,7 +83,7 @@ interface ChatRequest {
   provider?: string;        // "anthropic"
   messages: Array<{
     role: "system" | "user" | "assistant" | "tool";
-    content: string | Array<{ type: string; text?: string; [key: string]: any }>;
+    content: string | Array<{ type: string; text?: string;[key: string]: any }>;
     tool_call_id?: string;
     name?: string;
   }>;
@@ -110,7 +110,7 @@ function parseModelString(modelStr: string): { provider: string; modelId: string
     const [provider, modelId] = modelStr.split("/", 2);
     return { provider, modelId };
   }
-  
+
   // Try to find model in all providers
   for (const provider of getProviders()) {
     if (!provider.id) continue;
@@ -120,7 +120,7 @@ function parseModelString(modelStr: string): { provider: string; modelId: string
       return { provider: provider.id, modelId: modelStr };
     }
   }
-  
+
   return null;
 }
 
@@ -128,17 +128,17 @@ function convertToContext(req: ChatRequest): Context {
   const context: Context = {
     messages: [],
   };
-  
+
   // Extract system prompt
   const systemMsg = req.messages.find(m => m.role === "system");
   if (systemMsg && typeof systemMsg.content === "string") {
     context.systemPrompt = systemMsg.content;
   }
-  
+
   // Convert messages
   for (const msg of req.messages) {
     if (msg.role === "system") continue;
-    
+
     if (msg.role === "user") {
       context.messages.push({
         role: "user",
@@ -148,20 +148,20 @@ function convertToContext(req: ChatRequest): Context {
     } else if (msg.role === "assistant") {
       context.messages.push({
         role: "assistant",
-        content: typeof msg.content === "string" 
+        content: typeof msg.content === "string"
           ? [{ type: "text", text: msg.content }]
           : msg.content.map(c => {
-              if (c.type === "text") return { type: "text" as const, text: c.text || "" };
-              if (c.type === "tool_use" || c.type === "toolCall") {
-                return {
-                  type: "toolCall" as const,
-                  id: c.id,
-                  name: c.name,
-                  arguments: c.input || c.arguments || {},
-                };
-              }
-              return c;
-            }),
+            if (c.type === "text") return { type: "text" as const, text: c.text || "" };
+            if (c.type === "tool_use" || c.type === "toolCall") {
+              return {
+                type: "toolCall" as const,
+                id: c.id,
+                name: c.name,
+                arguments: c.input || c.arguments || {},
+              };
+            }
+            return c;
+          }),
         model: req.model || "",
         provider: req.provider || "",
         api: "messages",
@@ -180,7 +180,7 @@ function convertToContext(req: ChatRequest): Context {
       });
     }
   }
-  
+
   // Convert tools
   if (req.tools && req.tools.length > 0) {
     context.tools = req.tools.map(t => ({
@@ -189,7 +189,7 @@ function convertToContext(req: ChatRequest): Context {
       parameters: t.function.parameters,
     }));
   }
-  
+
   return context;
 }
 
@@ -204,35 +204,35 @@ function formatSSE(event: string, data: any): string {
 async function handleComplete(req: ChatRequest, res: ServerResponse) {
   try {
     // Parse model
-    const modelInfo = req.model 
+    const modelInfo = req.model
       ? parseModelString(req.model)
       : { provider: req.provider || "anthropic", modelId: "claude-sonnet-4-20250514" };
-    
+
     if (!modelInfo) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: `Unknown model: ${req.model}` }));
       return;
     }
-    
+
     const model = getModel(modelInfo.provider as any, modelInfo.modelId as any);
     if (!model) {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: `Model not found: ${modelInfo.provider}/${modelInfo.modelId}` }));
       return;
     }
-    
+
     // Get API key
     const apiKey = await getApiKey(modelInfo.provider);
     if (!apiKey) {
       res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ 
-        error: `No API key for provider: ${modelInfo.provider}. Run: npx @mariozechner/pi-ai login ${modelInfo.provider}` 
+      res.end(JSON.stringify({
+        error: `No API key for provider: ${modelInfo.provider}. Run: npx @mariozechner/pi-ai login ${modelInfo.provider}`
       }));
       return;
     }
-    
+
     const context = convertToContext(req);
-    
+
     if (req.stream) {
       // Streaming response
       res.writeHead(200, {
@@ -240,10 +240,10 @@ async function handleComplete(req: ChatRequest, res: ServerResponse) {
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
       });
-      
+
       const s = stream(model, context, { apiKey });
       let responseId = `chatcmpl-${Date.now()}`;
-      
+
       for await (const event of s) {
         switch (event.type) {
           case "text_delta":
@@ -257,7 +257,7 @@ async function handleComplete(req: ChatRequest, res: ServerResponse) {
               }],
             }));
             break;
-          
+
           case "toolcall_end":
             res.write(formatSSE("tool_call", {
               id: responseId,
@@ -271,37 +271,37 @@ async function handleComplete(req: ChatRequest, res: ServerResponse) {
               },
             }));
             break;
-          
+
           case "done":
             res.write(formatSSE("done", {
               id: responseId,
               finish_reason: event.reason,
             }));
             break;
-          
+
           case "error":
             res.write(formatSSE("error", { error: event.error }));
             break;
         }
       }
-      
+
       const result = await s.result();
       res.write(formatSSE("result", {
         usage: result.usage,
         model: result.model,
       }));
-      
+
       res.end();
     } else {
       // Non-streaming response
       const result = await complete(model, context, { apiKey });
-      
+
       // Debug log: show what pi-ai returned
       console.log("[pi-ai-server] Raw result from pi-ai:");
       console.log("  stopReason:", result.stopReason);
       console.log("  content types:", result.content.map(c => c.type));
       console.log("  content preview:", JSON.stringify(result.content.slice(0, 2)).substring(0, 500));
-      
+
       // Convert to OpenAI format
       const response = {
         id: `chatcmpl-${Date.now()}`,
@@ -335,7 +335,7 @@ async function handleComplete(req: ChatRequest, res: ServerResponse) {
           total_tokens: result.usage.input + result.usage.output,
         },
       };
-      
+
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(response));
     }
@@ -348,18 +348,33 @@ async function handleComplete(req: ChatRequest, res: ServerResponse) {
 
 async function handleModels(res: ServerResponse) {
   const models: Array<{ id: string; provider: string; name: string }> = [];
-  
-  for (const provider of getProviders()) {
-    if (!provider.id) continue;
-    for (const model of getModels(provider.id)) {
-      models.push({
-        id: `${provider.id}/${model.id}`,
-        provider: provider.id,
-        name: model.name,
-      });
+
+  const providers = getProviders();
+  for (const p of providers) {
+    // Handle both string IDs and object providers (for forward compatibility/different versions)
+    const providerId = typeof p === 'string' ? p : (p as any).id;
+    if (!providerId) continue;
+
+    // Only show models for providers with configured API keys
+    const apiKey = await getApiKey(providerId);
+    if (!apiKey) {
+      continue;
+    }
+
+    try {
+      const providerModels = getModels(providerId);
+      for (const model of providerModels) {
+        models.push({
+          id: `${providerId}/${model.id}`,
+          provider: providerId,
+          name: model.name || model.id,
+        });
+      }
+    } catch (e) {
+      console.error(`[pi-ai-server] Failed to get models for ${providerId}:`, e);
     }
   }
-  
+
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ data: models }));
 }
@@ -387,42 +402,42 @@ const server = createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  
+
   if (req.method === "OPTIONS") {
     res.writeHead(204);
     res.end();
     return;
   }
-  
+
   const url = req.url || "/";
-  
+
   try {
     // Health check
     if (url === "/health" && req.method === "GET") {
       await handleHealth(res);
       return;
     }
-    
+
     // List models
     if (url === "/v1/models" && req.method === "GET") {
       await handleModels(res);
       return;
     }
-    
+
     // Chat completions (OpenAI compatible)
     if ((url === "/v1/chat/completions" || url === "/v1/complete" || url === "/v1/stream") && req.method === "POST") {
       const body = await readBody(req);
       const data: ChatRequest = JSON.parse(body);
-      
+
       // /v1/stream forces streaming
       if (url === "/v1/stream") {
         data.stream = true;
       }
-      
+
       await handleComplete(data, res);
       return;
     }
-    
+
     // 404
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Not found" }));

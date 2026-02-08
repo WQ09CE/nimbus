@@ -166,6 +166,8 @@ class PiAiHttpClient:
         model: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         stream: bool = False,
+        temperature: Optional[float] = None,
+        thinking: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """构建请求"""
         # 转换消息格式
@@ -187,6 +189,12 @@ class PiAiHttpClient:
         if tools:
             req["tools"] = tools
 
+        if temperature is not None:
+            req["temperature"] = temperature
+
+        if thinking is not None:
+            req["thinking"] = thinking
+
         return req
 
     async def complete(
@@ -194,6 +202,8 @@ class PiAiHttpClient:
         messages: List[Message],
         model: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        temperature: Optional[float] = None,
+        thinking: Optional[bool] = None,
     ) -> CompletionResult:
         """非流式完成"""
         if self._client is None:
@@ -203,7 +213,14 @@ class PiAiHttpClient:
         PiAiHttpClient._request_counter += 1
         req_id = PiAiHttpClient._request_counter
 
-        req = self._build_request(messages, model, tools, stream=False)
+        req = self._build_request(
+            messages,
+            model,
+            tools,
+            stream=False,
+            temperature=temperature,
+            thinking=thinking,
+        )
 
         # Log request info
         from loguru import logger
@@ -283,6 +300,8 @@ class PiAiHttpClient:
         messages: List[Message],
         model: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
+        temperature: Optional[float] = None,
+        thinking: Optional[bool] = None,
     ) -> AsyncIterator[StreamEvent]:
         """流式完成"""
         if self._client is None:
@@ -292,7 +311,14 @@ class PiAiHttpClient:
         PiAiHttpClient._request_counter += 1
         req_id = PiAiHttpClient._request_counter
 
-        req = self._build_request(messages, model, tools, stream=True)
+        req = self._build_request(
+            messages,
+            model,
+            tools,
+            stream=True,
+            temperature=temperature,
+            thinking=thinking,
+        )
 
         # Log request info
         from loguru import logger

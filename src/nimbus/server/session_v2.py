@@ -51,18 +51,14 @@ class SessionManagerV2:
         workspace_path: Optional[str] = None,
         memory_type: str = "tiered",
         planner_type: str = "dag",
-        session_id: Optional[str] = None,
         model_config: Optional[Dict[str, str]] = None,
         agent_mode: str = "standard",
     ) -> Dict[str, Any]:
         """Create a new session."""
-        if session_id is None:
-            session_id = f"sess_{uuid.uuid4().hex[:12]}"
+        session_id = f"sess_{uuid.uuid4().hex[:12]}"
 
-        # Persist agent_mode via config_overrides (no schema migration needed)
-        config_overrides = None
-        if agent_mode != "standard":
-            config_overrides = {"agent_mode": agent_mode}
+        # Store agent_mode in config_overrides
+        config_overrides = {"agent_mode": agent_mode}
 
         session = await self._storage.create_session(
             session_id=session_id,
@@ -73,9 +69,57 @@ class SessionManagerV2:
             model_config=model_config,
             config_overrides=config_overrides,
         )
-
-        logger.info(f"✨ Created session {session_id} (v2, mode={agent_mode})")
+        logger.info(f"✨ Created session {session_id} ({agent_mode})")
         return session
+
+    async def update_session(self, session_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+        """Update session configuration."""
+        async with self._lock:
+            # 1. Get current session
+            session = await self._storage.get_session(session_id)
+            if not session:
+                raise ValueError(f"Session not found: {session_id}")
+
+            # Prepare storage updates
+            storage_updates = {}
+
+            # Handle model_config merging into config_overrides
+            if "model_config" in updates:
+                new_model_config = updates.pop("model_config")
+
+                # Parse existing overrides
+                config_overrides_raw = session.get("config_overrides")
+                if isinstance(config_overrides_raw, str):
+                    import json
+                    config_overrides = json.loads(config_overrides_raw)
+                else:
+                    config_overrides = config_overrides_raw or {}
+
+                # Ensure model_config exists
+                if "model_config" not in config_overrides:
+                    config_overrides["model_config"] = {}
+
+                # Update it
+                config_overrides["model_config"].update(new_model_config)
+
+                storage_updates["config_overrides"] = config_overrides
+
+            # Handle other fields (name, workspace_path, etc.)
+            for k, v in updates.items():
+                if k in ["name", "workspace_path"]:  # whitelisted fields
+                    storage_updates[k] = v
+
+            # Update storage
+            if storage_updates:
+                await self._storage.update_session(session_id, **storage_updates)
+
+            # 2. Invalidate cache
+            if session_id in self._sessions:
+                logger.info(f"🔄 Invalidating cached session {session_id} due to config update")
+                del self._sessions[session_id]
+                self._dispatch_tools.pop(session_id, None)
+
+            return await self._storage.get_session(session_id)
 
     async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get session by ID."""
@@ -121,26 +165,51 @@ class SessionManagerV2:
         if not session:
             raise ValueError(f"Session not found: {session_id}")
 
-        # Check for model config in session or use default
-        model_config = session.get("model_config")
+        # Parse config overrides
+        config_overrides = session.get("config_overrides")
+        overrides = {}
+        if config_overrides:
+            if isinstance(config_overrides, str):
+                import json
+                try:
+                    overrides = json.loads(config_overrides)
+                except json.JSONDecodeError:
+                    pass
+            elif isinstance(config_overrides, dict):
+                overrides = config_overrides
+
+        model_config = overrides.get("model_config")
+        agent_mode = overrides.get("agent_mode", "standard")
 
         # Create default LLM client if not provided
         if llm_client is None:
-            # We need to get a new client if we have specific model config
-            # otherwise we can use the shared one (if it matches default)
             if model_config:
                 from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+
+                # Parse parameters
+                temperature = model_config.get("temperature")
+                if temperature is not None:
+                    try:
+                        temperature = float(temperature)
+                    except (ValueError, TypeError):
+                        temperature = None
+
+                thinking = model_config.get("thinking")
+                if thinking is not None:
+                    if isinstance(thinking, str):
+                        thinking = thinking.lower() == "true"
+                    else:
+                        thinking = bool(thinking)
 
                 config = PiLLMConfig(
                     provider=model_config.get("provider", "anthropic"),
                     model_id=model_config.get("model_id", "claude-sonnet-4-20250514"),
+                    temperature=temperature,
+                    thinking=thinking,
                 )
                 adapter = PiLLMAdapter(config)
                 await adapter.__aenter__()
-                llm_client = (
-                    adapter  # This client will need to be closed manually or attached to session
-                )
-                # TODO: Manage lifecycle of per-session LLM clients
+                llm_client = adapter
             else:
                 llm_client = await self._get_shared_llm_client()
 
@@ -153,17 +222,6 @@ class SessionManagerV2:
 
             workspace = Path(os.path.expanduser(workspace_path))
             logger.info(f"📁 Using workspace: {workspace}")
-
-        # Get agent mode from session config
-        agent_mode = "standard"
-        config_overrides = session.get("config_overrides")
-        if config_overrides:
-            import json as _json
-            try:
-                overrides = _json.loads(config_overrides) if isinstance(config_overrides, str) else config_overrides
-                agent_mode = overrides.get("agent_mode", "standard")
-            except (ValueError, TypeError):
-                pass
 
         if agent_mode == "dual_agent":
             from pathlib import Path as _Path

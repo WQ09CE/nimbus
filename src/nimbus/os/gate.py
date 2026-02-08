@@ -107,7 +107,7 @@ class KernelGate:
             ToolResult with status, output, and optional fault
         """
         tool_name = action.name
-        timeout = timeout_sec or self.default_timeout
+        timeout = timeout_sec or _META_TOOL_TIMEOUTS.get(tool_name, self.default_timeout)
 
         # 1. Emit Start Event
         self._emit_event(
@@ -123,6 +123,10 @@ class KernelGate:
         from nimbus.core.logging import get_logger
 
         logger = get_logger("kernel.gate")
+
+        # Normalize common parameter name aliases (LLM hallucination tolerance)
+        action.args = _normalize_tool_args(tool_name, action.args)
+
         logger.info(f"Executing tool '{tool_name}'...")
 
         start_time = time.time_ns()
@@ -292,3 +296,64 @@ class SimpleEventStream:
     def clear(self) -> None:
         """Clear all collected events."""
         self.events.clear()
+
+
+# =============================================================================
+# Tool Argument Normalization (LLM hallucination tolerance)
+# =============================================================================
+
+# Meta-tools that spawn sub-agents need longer timeouts than regular tools.
+# These override the Gate's default_timeout (typically 60s).
+_META_TOOL_TIMEOUTS: Dict[str, float] = {
+    "Dispatch": 180.0,  # Executor agent runs inside; needs >> default timeout
+    "Verify": 120.0,    # Runs multiple checks sequentially
+}
+
+# Maps tool_name -> {alias: canonical_name}
+_ARG_ALIASES: Dict[str, Dict[str, str]] = {
+    "Read": {
+        "path": "file_path",
+        "filename": "file_path",
+        "file": "file_path",
+    },
+    "Write": {
+        "path": "file_path",
+        "filename": "file_path",
+        "file": "file_path",
+    },
+    "Edit": {
+        "path": "file_path",
+        "filename": "file_path",
+        "file": "file_path",
+        "old": "old_text",
+        "oldText": "old_text",
+        "search": "old_text",
+        "new": "new_text",
+        "newText": "new_text",
+        "replace": "new_text",
+    },
+    "Bash": {
+        "cmd": "command",
+        "script": "command",
+    },
+}
+
+
+def _normalize_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize tool argument names to handle common LLM hallucinations.
+
+    LLMs frequently use 'path' instead of 'file_path', 'filename' instead of
+    'file_path', etc. Rather than wasting a turn on an error, we silently fix it.
+
+    Only remaps if the canonical name is NOT already present (avoid overwriting).
+    """
+    aliases = _ARG_ALIASES.get(tool_name)
+    if not aliases:
+        return args
+
+    normalized = dict(args)
+    for alias, canonical in aliases.items():
+        if alias in normalized and canonical not in normalized:
+            normalized[canonical] = normalized.pop(alias)
+
+    return normalized

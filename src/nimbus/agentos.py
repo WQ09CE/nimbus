@@ -259,13 +259,21 @@ class AgentOS:
     # Main API
     # =========================================================================
 
-    def spawn(self, goal: str, role: str = "") -> str:
+    def spawn(
+        self,
+        goal: str,
+        role: str = "",
+        system_rules: Optional[str] = None,
+        max_iterations: Optional[int] = None,
+    ) -> str:
         """
         Spawn a new process with the given goal and role.
         
         Args:
             goal: The goal/task for the process
             role: Optional role identifier for the process
+            system_rules: Optional custom system rules (overrides kernel default)
+            max_iterations: Optional max VCPU iterations (overrides kernel default)
             
         Returns:
             Process ID (pid) of the spawned process
@@ -274,7 +282,7 @@ class AgentOS:
         pid = f"proc-{uuid.uuid4().hex[:8]}"
 
         # Create process components
-        mmu = self._create_mmu(pid)
+        mmu = self._create_mmu(pid, system_rules=system_rules)
 
         # Create Memo tool (bound to workspace and session)
         # Note: workspace_info is a display string like "Workspace: .", not a path
@@ -290,16 +298,22 @@ class AgentOS:
         decoder = InstructionDecoder()
 
         # Prepare tools list with Memo
-        tools_list = self._tools.get_definitions(format="openai")
+        tools_list = self._tools.get_definitions(format="openai", role=role)
         tools_list.append({
             "type": "function",
             "function": memo_def
         })
 
+        # Determine VCPU config (allow per-process overrides)
+        vcpu_config = self.config.vcpu_config
+        if max_iterations is not None:
+            from dataclasses import replace as dc_replace
+            vcpu_config = dc_replace(vcpu_config, max_iterations=max_iterations)
+
         # Create VCPU
         vcpu = VCPU(
             alu=self._llm,
-            config=self.config.vcpu_config,
+            config=vcpu_config,
             decoder=decoder,
             mmu=mmu,
             gate=gate,
@@ -343,10 +357,26 @@ class AgentOS:
         if not process:
             raise RuntimeError(f"Process {pid} not found")
 
+        def _timeout_result() -> ToolResult:
+            process.state = "CANCELLED"
+            return ToolResult(
+                status="TIMEOUT",
+                fault=Fault(
+                    domain="KERNEL",
+                    code="TIMEOUT",
+                    message=f"Process {pid} timed out after {timeout}s",
+                ),
+            )
+
         # If process is pending, start it
         if process.state == "PENDING":
             process.state = "RUNNING"
-            return await self._run_process(process)
+            try:
+                if timeout:
+                    return await asyncio.wait_for(self._run_process(process), timeout=timeout)
+                return await self._run_process(process)
+            except asyncio.TimeoutError:
+                return _timeout_result()
 
         # If process is already running with a task, wait for it
         if process.task and not process.task.done():
@@ -355,15 +385,7 @@ class AgentOS:
                     return await asyncio.wait_for(process.task, timeout=timeout)
                 return await process.task
             except asyncio.TimeoutError:
-                process.state = "CANCELLED"
-                return ToolResult(
-                    status="TIMEOUT",
-                    fault=Fault(
-                        domain="KERNEL",
-                        code="TIMEOUT",
-                        message=f"Process timed out after {timeout}s",
-                    ),
-                )
+                return _timeout_result()
 
         # If process is completed, return the result
         if process.state in ("SUCCEEDED", "FAILED", "CANCELLED"):
@@ -371,7 +393,12 @@ class AgentOS:
 
         # Otherwise, run the process
         process.state = "RUNNING"
-        return await self._run_process(process)
+        try:
+            if timeout:
+                return await asyncio.wait_for(self._run_process(process), timeout=timeout)
+            return await self._run_process(process)
+        except asyncio.TimeoutError:
+            return _timeout_result()
 
     async def run(self, goal: str, role: str = "") -> ToolResult:
         pid = self.spawn(goal, role=role)
@@ -482,7 +509,7 @@ class AgentOS:
             decoder = InstructionDecoder()
 
             # Prepare tools list with Memo
-            tools_list = self._tools.get_definitions(format="openai")
+            tools_list = self._tools.get_definitions(format="openai", role="chat")
             tools_list.append({
                 "type": "function",
                 "function": memo_def
@@ -1059,6 +1086,7 @@ class AgentOS:
         func: Callable,
         description: str = "",
         parameters: Optional[Dict[str, Any]] = None,
+        roles: Optional[List[str]] = None,
     ) -> None:
         """
         Register a tool.
@@ -1068,6 +1096,7 @@ class AgentOS:
             func: Tool function
             description: Tool description
             parameters: Tool parameters schema
+            roles: List of allowed roles
         """
         if name in self._tools:
             self._tools.unregister(name)
@@ -1079,6 +1108,7 @@ class AgentOS:
                 name=name,
                 description=description or func.__doc__ or "",
                 parameters=[],
+                roles=roles,
             )
             self._tools.register(definition, func)
 
@@ -1135,13 +1165,15 @@ class AgentOS:
     # Internal Methods
     # =========================================================================
 
-    def _create_mmu(self, pid: str) -> MMU:
+    def _create_mmu(self, pid: str, system_rules: Optional[str] = None) -> MMU:
         """Create an MMU for a process."""
         mmu = MMU(config=self.config.mmu_config, process_id=pid)
 
+        sys_rules = system_rules if system_rules is not None else self.config.system_rules
+
         # Set pinned context
         pinned = PinnedContext(
-            system_rules=self.config.system_rules,
+            system_rules=sys_rules,
             workspace_info=self.config.workspace_info,
             capabilities=self.config.capabilities,
         )

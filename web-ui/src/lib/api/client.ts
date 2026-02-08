@@ -43,7 +43,7 @@ export async function apiFetch<T>(
   const url = `${API_BASE}${endpoint}`;
   const reqId = generateRequestId();
   const method = options.method || "GET";
-  
+
   logger.info(`[API] ${method} ${url} (req_id=${reqId})`);
 
   const response = await fetch(url, {
@@ -65,7 +65,7 @@ export async function apiFetch<T>(
 
   const text = await response.text();
   logger.debug(`[API] Response ${response.status} (req_id=${reqId})`, text.length > 100 ? text.slice(0, 100) + '...' : text);
-  
+
   if (!text) return {} as T;
 
   return JSON.parse(text) as T;
@@ -93,6 +93,16 @@ export function apiPost<T>(endpoint: string, data?: unknown): Promise<T> {
  */
 export function apiDelete<T>(endpoint: string): Promise<T> {
   return apiFetch<T>(endpoint, { method: "DELETE" });
+}
+
+/**
+ * PATCH request helper.
+ */
+export function apiPatch<T>(endpoint: string, data?: unknown): Promise<T> {
+  return apiFetch<T>(endpoint, {
+    method: "PATCH",
+    body: data ? JSON.stringify(data) : undefined,
+  });
 }
 
 /**
@@ -158,7 +168,7 @@ export async function* apiStream(
 
       for (const line of lines) {
         if (line.trim() === "") continue;
-        
+
         if (line.startsWith("event: ")) {
           currentEvent = line.slice(7).trim();
         } else if (line.startsWith("data: ")) {

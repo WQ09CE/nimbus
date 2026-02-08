@@ -5,6 +5,8 @@ import { useChatStore } from "@/stores";
 import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatList } from "@/components/chat/ChatList";
+import { ModelSelector } from "@/components/chat/ModelSelector";
+import { FileExplorer } from "@/components/chat/FileExplorer";
 
 import { SessionPanel } from "@/components/session/SessionPanel";
 
@@ -31,6 +33,7 @@ export default function Home() {
   const [userScrolledUp, setUserScrolledUp] = useState(false);
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const [showSessionPanel, setShowSessionPanel] = useState(false);
+  const [showFilePanel, setShowFilePanel] = useState(false);
 
   // Simple ref for scroll container
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -145,6 +148,24 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-3">
+            {/* Model Selector */}
+            {session && (
+              <ModelSelector
+                session={session}
+                onChange={() => loadSession(session.id)}
+              />
+            )}
+
+            <button
+              onClick={() => setShowFilePanel(!showFilePanel)}
+              className={`p-2 rounded-lg transition-all ${showFilePanel ? 'text-blue-400 bg-blue-500/10' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
+              title="Files"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+              </svg>
+            </button>
+
             <button
               onClick={() => setShowSessionPanel(true)}
               className="p-2 text-gray-400 hover:text-white hover:bg-white/5 rounded-lg transition-all"
@@ -165,118 +186,161 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Messages */}
-      <div
-        ref={messagesContainerRef}
-        className="flex-1 overflow-y-auto px-6 py-4"
-        onScroll={handleScroll}
-      >
-        {/* Error */}
-        {error && (
-          <div className="mb-4 p-3 bg-red-900/20 border border-red-800 rounded text-red-400 text-sm">
-            <span className="font-semibold">Error:</span> {error}
-            <button
-              onClick={clearError}
-              className="ml-3 underline hover:no-underline"
-            >
-              Dismiss
-            </button>
+      {/* Main Content Area */}
+      <div className="flex-1 flex overflow-hidden min-h-0 relative">
+
+        {/* Chat Column */}
+        <main className="flex-1 flex flex-col min-w-0 relative z-0 bg-transparent">
+          {/* Messages */}
+          <div
+            ref={messagesContainerRef}
+            className="flex-1 overflow-y-auto px-6 py-4 scroll-smooth custom-scrollbar"
+            onScroll={handleScroll}
+          >
+            {/* Error */}
+            {error && (
+              <div className="mb-4 p-3 bg-red-900/20 border border-red-800 rounded text-red-400 text-sm animate-in fade-in slide-in-from-top-2">
+                <span className="font-semibold">Error:</span> {error}
+                <button
+                  onClick={clearError}
+                  className="ml-3 underline hover:no-underline"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+
+            {/* Loading messages */}
+            {isLoading && (
+              <div className="flex flex-col items-center justify-center h-full text-center">
+                <div className="text-4xl mb-4 animate-pulse">☁️</div>
+                <p className="text-gray-500 text-sm">Loading session...</p>
+              </div>
+            )}
+
+            {/* Welcome Screen - Only show when no messages and not loading */}
+            {messages.length === 0 && !isStreaming && !isLoading && (
+              <div className="flex flex-col items-center justify-center h-full text-center animate-in zoom-in-95 duration-500">
+                <div className="w-16 h-16 bg-gradient-to-tr from-blue-600 to-cyan-500 rounded-2xl flex items-center justify-center shadow-2xl shadow-blue-500/20 mb-6">
+                  <span className="text-3xl">☁️</span>
+                </div>
+                <h2 className="text-2xl font-bold bg-gradient-to-br from-white to-gray-400 bg-clip-text text-transparent mb-3">
+                  Nimbus Agent
+                </h2>
+                <div className="grid grid-cols-2 gap-3 max-w-lg mt-8">
+                  <div className="p-4 bg-white/5 border border-white/5 rounded-xl hover:bg-white/10 transition-colors cursor-default text-left">
+                    <div className="text-blue-400 mb-2">📄</div>
+                    <h3 className="text-sm font-medium text-gray-200 mb-1">File Operations</h3>
+                    <p className="text-xs text-gray-500">Read, write, edit files workspace</p>
+                  </div>
+                  <div className="p-4 bg-white/5 border border-white/5 rounded-xl hover:bg-white/10 transition-colors cursor-default text-left">
+                    <div className="text-purple-400 mb-2">⚡</div>
+                    <h3 className="text-sm font-medium text-gray-200 mb-1">Code Execution</h3>
+                    <p className="text-xs text-gray-500">Run scripts and commands safely</p>
+                  </div>
+                  <div className="p-4 bg-white/5 border border-white/5 rounded-xl hover:bg-white/10 transition-colors cursor-default text-left">
+                    <div className="text-emerald-400 mb-2">🔍</div>
+                    <h3 className="text-sm font-medium text-gray-200 mb-1">Search</h3>
+                    <p className="text-xs text-gray-500">Web search and knowledge retrieval</p>
+                  </div>
+                  <div className="p-4 bg-white/5 border border-white/5 rounded-xl hover:bg-white/10 transition-colors cursor-default text-left">
+                    <div className="text-amber-400 mb-2">🧠</div>
+                    <h3 className="text-sm font-medium text-gray-200 mb-1">Reasoning</h3>
+                    <p className="text-xs text-gray-500">Complex task planning and execution</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Message list */}
+            <ChatList
+              messages={messages}
+              isStreaming={isStreaming}
+              streamingContent={streamingContent}
+              streamingToolCalls={streamingToolCalls}
+            />
+
+            <div ref={messagesEndRef} className="h-4" /> {/* Spacer at bottom */}
           </div>
-        )}
 
-        {/* Loading messages */}
-        {isLoading && (
-          <div className="flex flex-col items-center justify-center h-full text-center">
-            <div className="text-4xl mb-4 animate-pulse">☁️</div>
-            <p className="text-gray-500 text-sm">加载中...</p>
+          {/* Working Indicator */}
+          {isStreaming && currentActivity && (() => {
+            const isExecutor = currentActivity.startsWith('⚡');
+            const borderColor = isExecutor ? 'border-l-purple-500' : 'border-l-blue-500';
+            const dotColor = isExecutor ? 'bg-purple-400' : 'bg-blue-400';
+            const dotBg = isExecutor ? 'bg-purple-500' : 'bg-blue-500';
+            const textColor = isExecutor ? 'text-purple-300' : 'text-blue-300';
+
+            return (
+              <div className="w-full px-6 pb-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                <div className="max-w-4xl mx-auto">
+                  <div className={`flex items-center gap-3 text-gray-400 text-xs py-2 px-3 bg-gray-900/80 rounded border border-gray-800/50 backdrop-blur-md shadow-lg border-l-4 ${borderColor} transition-all duration-300`}>
+                    <span className="relative flex h-2 w-2">
+                      <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${dotColor} opacity-75`}></span>
+                      <span className={`relative inline-flex rounded-full h-2 w-2 ${dotBg}`}></span>
+                    </span>
+                    <span className={`font-mono ${textColor} font-medium tracking-wide`}>{currentActivity.toUpperCase()}</span>
+                    {thinkingIteration !== null && thinkingIteration > 0 && (
+                      <span className="text-gray-500 font-mono ml-auto">
+                        ITERATION {thinkingIteration + 1}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Input Area */}
+          <div className="flex-shrink-0 p-6 pt-0 bg-transparent">
+            <ChatInput
+              onSend={sendMessage}
+              onInterrupt={interruptMessage}
+              disabled={false}
+              isStreaming={isStreaming}
+              isInterrupting={isInterrupting}
+              placeholder={isStreaming ? "Wait for response..." : "Type a message..."}
+            />
           </div>
-        )}
 
-        {/* Welcome */}
-        {messages.length === 0 && !isStreaming && !isLoading && (
-          <div className="flex flex-col items-center justify-center h-full text-center">
-            <div className="text-4xl mb-4">☁️</div>
-            <h2 className="text-xl font-semibold text-blue-400 mb-2">
-              Nimbus Agent
-            </h2>
-            <p className="text-gray-500 text-sm max-w-md">
-              Ask me anything. I can read files, search the web, and execute code.
-            </p>
-          </div>
-        )}
+          {/* Scroll to bottom button */}
+          {userScrolledUp && (isStreaming || messages.length > 3) && (
+            <div className="absolute bottom-24 right-6 z-10">
+              <button
+                onClick={() => {
+                  setAutoScrollEnabled(true);
+                  setUserScrolledUp(false);
+                  scrollToBottom();
+                }}
+                className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-2 rounded-full shadow-lg transition-all duration-200 flex items-center gap-2 border border-blue-500/50 hover:scale-105 active:scale-95"
+              >
+                <span>⬇</span>
+                <span className="hidden sm:inline">To Bottom</span>
+                {isStreaming && (
+                  <div className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"></div>
+                )}
+              </button>
+            </div>
+          )}
+        </main>
 
-        {/* Message list */}
-        <ChatList
-          messages={messages}
-          isStreaming={isStreaming}
-          streamingContent={streamingContent}
-          streamingToolCalls={streamingToolCalls}
-        />
+        {/* File Explorer Sidebar */}
+        <div
+          className={`
+            bg-[#1e1e1e] border-l border-[#333] transition-all duration-300 ease-in-out flex flex-col 
+            ${showFilePanel ? 'w-80 opacity-100 translate-x-0' : 'w-0 opacity-0 overflow-hidden border-l-0 translate-x-full'}
+          `}
+        >
+          {session && (
+            <div className="h-full w-80"> {/* Fixed width container to prevent layout shift during transition */}
+              <FileExplorer sessionId={session.id} />
+            </div>
+          )}
+        </div>
 
-        <div ref={messagesEndRef} />
-
-        {/* Scroll to bottom button - only show when user scrolled up and there's activity */}
-        {userScrolledUp && (isStreaming || messages.length > 3) && (
-          <div className="fixed bottom-24 right-6 z-10">
-            <button
-              onClick={() => {
-                setAutoScrollEnabled(true);
-                setUserScrolledUp(false);
-                scrollToBottom();
-              }}
-              className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-2 rounded-full shadow-lg transition-all duration-200 flex items-center gap-2 border border-blue-500/50"
-            >
-              <span>⬇</span>
-              <span>滚动到底部</span>
-              {isStreaming && (
-                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-              )}
-            </button>
-          </div>
-        )}
       </div>
 
-      {/* Working Indicator */}
-      {isStreaming && currentActivity && (() => {
-        const isExecutor = currentActivity.startsWith('⚡');
-        const borderColor = isExecutor ? 'border-l-purple-500' : 'border-l-blue-500';
-        const dotColor = isExecutor ? 'bg-purple-400' : 'bg-blue-400';
-        const dotBg = isExecutor ? 'bg-purple-500' : 'bg-blue-500';
-        const textColor = isExecutor ? 'text-purple-300' : 'text-blue-300';
-
-        return (
-          <div className="w-full px-6 pb-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
-            <div className="max-w-4xl mx-auto">
-              <div className={`flex items-center gap-3 text-gray-400 text-xs py-2 px-3 bg-gray-900/80 rounded border border-gray-800/50 backdrop-blur-md shadow-lg border-l-4 ${borderColor} transition-all duration-300`}>
-                <span className="relative flex h-2 w-2">
-                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${dotColor} opacity-75`}></span>
-                  <span className={`relative inline-flex rounded-full h-2 w-2 ${dotBg}`}></span>
-                </span>
-                <span className={`font-mono ${textColor} font-medium tracking-wide`}>{currentActivity.toUpperCase()}</span>
-                {thinkingIteration !== null && thinkingIteration > 0 && (
-                  <span className="text-gray-500 font-mono ml-auto">
-                    ITERATION {thinkingIteration + 1}
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* Input */}
-      <ChatInput
-        onSend={sendMessage}
-        onInterrupt={interruptMessage}
-        disabled={false} // Allow typing/queueing during streaming
-        isStreaming={isStreaming}
-        isInterrupting={isInterrupting}
-        placeholder={isStreaming ? "输入消息以排队..." : "输入您的消息..."}
-      />
-
-
-
-      {/* Session Panel */}
+      {/* Session Panel Overlay */}
       <SessionPanel
         isOpen={showSessionPanel}
         onClose={() => setShowSessionPanel(false)}

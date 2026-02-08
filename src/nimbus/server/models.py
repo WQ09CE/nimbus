@@ -63,6 +63,15 @@ class SessionCreate(BaseModel):
     agent_mode: str = "standard"  # standard | dual_agent
 
 
+class SessionUpdate(BaseModel):
+    """Request model for updating a session."""
+
+    name: Optional[str] = None
+    workspace_path: Optional[str] = None
+    llm_config: Optional[Dict[str, str]] = None
+    agent_mode: Optional[str] = None
+
+
 class SessionResponse(BaseModel):
     """Response model for session info."""
 
@@ -76,6 +85,7 @@ class SessionResponse(BaseModel):
     workspace_path: Optional[str] = None
     last_message_at: Optional[datetime] = None
     message_count: int = 0
+    llm_config: Optional[Dict[str, str]] = None
 
 
 class SessionDetail(SessionResponse):
@@ -345,3 +355,30 @@ class LogBatch(BaseModel):
 
     entries: List[LogEntry]
     source: str = "client"
+
+
+# =============================================================================
+# File System Models
+# =============================================================================
+
+
+class FileType(str, Enum):
+    """File type enumeration."""
+
+    FILE = "file"
+    DIRECTORY = "directory"
+
+
+class FileNode(BaseModel):
+    """File system node (file or directory)."""
+
+    name: str
+    path: str  # Relative path from root
+    type: FileType
+    children: Optional[List["FileNode"]] = None
+    size: Optional[int] = None
+    last_modified: Optional[datetime] = None
+
+
+FileNode.model_rebuild()
+

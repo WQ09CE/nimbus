@@ -78,6 +78,8 @@ class PiLLMConfig:
     model_id: str = "claude-sonnet-4-20250514"  # 兼容旧接口
     max_tokens: int = 8192
     timeout: float = 120.0
+    temperature: Optional[float] = None
+    thinking: Optional[bool] = None
 
     def get_model(self) -> str:
         """获取完整的模型名"""
@@ -322,7 +324,13 @@ class PiLLMAdapter:
         http_messages = self._convert_messages_to_http(messages)
         http_tools = self._convert_tools_to_http(tools)
 
-        async for event in self._client.stream(http_messages, self._model, http_tools):
+        async for event in self._client.stream(
+            messages=http_messages,
+            model=self._model,
+            tools=http_tools,
+            temperature=self.config.temperature,
+            thinking=self.config.thinking,
+        ):
             if event.type == "delta":
                 yield LLMStreamEvent(type="text", text=event.content or "")
             elif event.type == "tool_call" and event.tool_call:
@@ -345,7 +353,16 @@ class PiLLMAdapter:
         """列出可用模型"""
         if not self._started:
             await self.start()
-        return await self._client.list_models()
+        models = await self._client.list_models()
+        if not models:
+            # Fallback to defaults if empty
+            return [
+                {"id": "anthropic/claude-sonnet-4-20250514", "object": "model"},
+                {"id": "anthropic/claude-opus-4-5", "object": "model"},
+                {"id": "openai/gpt-4o", "object": "model"},
+                {"id": "openai/gpt-4-turbo", "object": "model"},
+            ]
+        return models
 
 
 # ============================================================================

@@ -8,7 +8,7 @@
  * POST /api/v1/sessions/{id}/resume - Resume session
  */
 
-import { apiGet, apiPost, apiDelete } from "./client";
+import { apiGet, apiPost, apiDelete, apiPatch } from "./client";
 
 export interface Session {
   id: string;
@@ -21,6 +21,7 @@ export interface Session {
   last_message_at?: string;
   message_count: number;
   agent_mode?: string;
+  llm_config?: Record<string, string>;
 }
 
 export interface SessionCreateRequest {
@@ -157,6 +158,42 @@ export async function getSessionMessages(
 /**
  * Batch delete sessions
  */
+export interface FileNode {
+  name: string;
+  path: string;
+  type: "file" | "directory";
+  children?: FileNode[];
+  size?: number;
+  last_modified?: string;
+}
+
+export async function listFiles(sessionId: string, path: string = ""): Promise<FileNode[]> {
+  const url = `/api/v1/sessions/${sessionId}/files${path ? `?path=${encodeURIComponent(path)}` : ""}`;
+  return apiGet<FileNode[]>(url);
+}
+
 export async function deleteSessions(ids: string[]): Promise<void> {
   await Promise.all(ids.map(id => deleteSession(id)));
+}
+
+/**
+ * Update session configuration
+ */
+export async function updateSession(id: string, updates: Partial<SessionCreateRequest> & { llm_config?: Record<string, string> }): Promise<Session> {
+  return apiPatch<Session>(`/api/v1/sessions/${id}`, updates);
+}
+
+export interface Model {
+  id: string;
+  object?: string;
+  created?: number;
+  owned_by?: string;
+}
+
+/**
+ * List available models
+ */
+export async function listModels(): Promise<Model[]> {
+  const resp = await apiGet<{ models: Model[] }>("/api/v1/models");
+  return resp.models || [];
 }

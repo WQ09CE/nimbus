@@ -207,6 +207,7 @@ def register_default_tools(
     os: "AgentOS",
     workspace: Path | None = None,
     tools: List[str] | None = None,
+    roles: List[str] | Dict[str, List[str]] | None = None,
 ) -> List[str]:
     """Register default tools with AgentOS.
 
@@ -214,6 +215,7 @@ def register_default_tools(
         os: AgentOS instance to register tools with.
         workspace: Workspace path for tool sandboxing.
         tools: Optional list of specific tool names to register.
+        roles: Optional roles configuration. Can be a list (applied to all) or dict (tool_name -> roles).
 
     Returns:
         List of registered tool names.
@@ -233,11 +235,19 @@ def register_default_tools(
 
         wrapped_func = create_workspace_wrapper(func, workspace)
 
+        # Determine roles for this tool
+        tool_roles = None
+        if isinstance(roles, list):
+            tool_roles = roles
+        elif isinstance(roles, dict):
+            tool_roles = roles.get(name)
+
         os.register_tool(
             name=name,
             func=wrapped_func,
             description=tool_def.get("description", ""),
             parameters=tool_def.get("parameters"),
+            roles=tool_roles,
         )
 
         registered.append(name)

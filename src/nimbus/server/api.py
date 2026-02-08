@@ -40,6 +40,9 @@ from .models import (
     SessionList,
     SessionResponse,
     SessionStatus,
+    SessionUpdate,
+    FileNode,
+    FileType,
     SkillList,
     SkillParameter,
     # Skill
@@ -144,7 +147,7 @@ async def list_models(
     """List available models via Pi Bridge."""
     adapter = await session_manager._get_shared_llm_client()
     try:
-        models = await adapter.get_models()
+        models = await adapter.list_models()
         return {"models": models}
     except Exception as e:
         logger.error(f"Failed to list models: {e}")
@@ -171,17 +174,9 @@ async def create_session(
         agent_mode=data.agent_mode,
     )
 
-    return SessionResponse(
-        id=session["id"],
-        name=session.get("name"),
-        created_at=session["created_at"],
-        status=SessionStatus(session["status"]),
-        memory_type=session["memory_type"],
-        planner_type=session["planner_type"],
-        agent_mode=session.get("agent_mode", "standard"),
-        workspace_path=session.get("workspace_path"),
-        message_count=0,
-    )
+    from .api_utils import _format_session_response
+
+    return _format_session_response(session)
 
 
 @router.get("/sessions", response_model=SessionList)
@@ -198,24 +193,10 @@ async def list_sessions(
         offset=offset,
     )
 
-    items = [
-        SessionResponse(
-            id=s["id"],
-            name=s.get("name"),
-            created_at=s["created_at"],
-            status=SessionStatus(s["status"]),
-            memory_type=s["memory_type"],
-            planner_type=s["planner_type"],
-            agent_mode=s.get("agent_mode", "standard"),
-            workspace_path=s.get("workspace_path"),
-            last_message_at=s.get("last_message_at"),
-            message_count=s.get("message_count", 0),
-        )
-        for s in sessions
-    ]
+    from .api_utils import _format_session_response
 
     return SessionList(
-        items=items,
+        items=[_format_session_response(s) for s in sessions],
         total=total,
         limit=limit,
         offset=offset,
@@ -236,17 +217,39 @@ async def get_session(
     # Get message count
     messages = await storage.get_messages(session_id, limit=1000)
 
-    return SessionDetail(
-        id=session["id"],
-        name=session.get("name"),
-        created_at=session["created_at"],
-        status=SessionStatus(session["status"]),
-        memory_type=session["memory_type"],
-        planner_type=session["planner_type"],
-        agent_mode=session.get("agent_mode", "standard"),
-        workspace_path=session.get("workspace_path"),
-        message_count=len(messages),
-    )
+    from .api_utils import _format_session_response
+
+    base = _format_session_response(session)
+    base_data = base.model_dump()
+    base_data["message_count"] = len(messages)
+
+    return SessionDetail(**base_data)
+
+
+@router.patch("/sessions/{session_id}", response_model=SessionResponse)
+async def update_session(
+    session_id: str,
+    updates: SessionUpdate,
+    session_manager=Depends(get_session_manager),
+):
+    """Update session configuration."""
+    update_data = updates.model_dump(exclude_unset=True)
+
+    # Map llm_config to model_config for internal consistency
+    if "llm_config" in update_data:
+        update_data["model_config"] = update_data.pop("llm_config")
+
+    try:
+        session = await session_manager.update_session(session_id, update_data)
+
+        from .api_utils import _format_session_response
+
+        return _format_session_response(session)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to update session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
@@ -553,6 +556,85 @@ async def get_messages(
         )
 
     return MessageList(items=items)
+
+
+# =============================================================================
+# File System APIs
+# =============================================================================
+
+
+from typing import List
+
+@router.get("/sessions/{session_id}/files", response_model=List[FileNode])
+async def list_files(
+    session_id: str,
+    path: str = "",
+    session_manager=Depends(get_session_manager),
+):
+    """List files in session workspace."""
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    workspace_path = session.get("workspace_path")
+    if not workspace_path:
+        return []
+
+    import os
+    from pathlib import Path
+
+    # Resolve workspace root
+    try:
+        root = Path(os.path.expanduser(workspace_path)).resolve()
+    except Exception:
+        return []
+
+    if not root.exists():
+        return []
+
+    # Calculate target directory
+    target_dir = root
+    if path:
+        target_dir = (root / path).resolve()
+        # Verify path is inside workspace
+        try:
+            target_dir.relative_to(root)
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Access denied: Path outside workspace")
+
+    if not target_dir.exists() or not target_dir.is_dir():
+        return []
+
+    nodes = []
+    try:
+        # Shallow scan
+        for entry in os.scandir(target_dir):
+            if entry.name.startswith("."):
+                continue  # Skip hidden files
+
+            is_dir = entry.is_dir()
+            # Calculate relative path safely
+            try:
+                rel_path = str(Path(entry.path).relative_to(root))
+            except ValueError:
+                continue
+
+            node = FileNode(
+                name=entry.name,
+                path=rel_path,
+                type=FileType.DIRECTORY if is_dir else FileType.FILE,
+                size=entry.stat().st_size if not is_dir else None,
+                last_modified=datetime.fromtimestamp(entry.stat().st_mtime),
+            )
+            nodes.append(node)
+
+    except PermissionError:
+        pass
+
+    # Sort: directories first, then files by name
+    nodes.sort(key=lambda x: (x.type != FileType.DIRECTORY, x.name.lower()))
+
+    return nodes
 
 
 # =============================================================================

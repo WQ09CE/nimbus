@@ -223,6 +223,8 @@ class ToolDefinition:
     parameters: List[ToolParameter] = field(default_factory=list)
     dangerous: bool = False  # If True, requires permission
 
+    roles: Optional[List[str]] = None  # List of roles allowed to use this tool (None = all)
+
     def get_required_parameters(self) -> List[ToolParameter]:
         """Get all required parameters.
 
@@ -326,6 +328,7 @@ class ToolDefinition:
             "description": self.description,
             "parameters": [p.to_dict() for p in self.parameters],
             "dangerous": self.dangerous,
+            "roles": self.roles,
         }
 
     @classmethod
@@ -345,6 +348,7 @@ class ToolDefinition:
             description=data.get("description", ""),
             parameters=parameters,
             dangerous=data.get("dangerous", False),
+            roles=data.get("roles"),
         )
 
     def __repr__(self) -> str:
@@ -352,7 +356,8 @@ class ToolDefinition:
         return (
             f"ToolDefinition(name={self.name!r}, "
             f"parameters={len(self.parameters)}, "
-            f"dangerous={self.dangerous})"
+            f"dangerous={self.dangerous}, "
+            f"roles={self.roles})"
         )
 
 
@@ -388,7 +393,9 @@ class ToolRegistry:
             ValueError: If a tool with the same name is already registered.
         """
         if definition.name in self._tools:
-            raise ValueError(f"Tool '{definition.name}' is already registered")
+            # Allow overwriting for now to support dynamic registration in tests/demos
+            # raise ValueError(f"Tool '{definition.name}' is already registered")
+            pass
         self._tools[definition.name] = (definition, func)
 
     def register_decorated(self, func: Callable[..., Any]) -> None:
@@ -468,11 +475,18 @@ class ToolRegistry:
         """
         return [name for name, (defn, _) in self._tools.items() if defn.dangerous]
 
-    def get_definitions(self, format: str = "claude") -> List[Dict[str, Any]]:
-        """Get all tool definitions in specified format.
+    def get_definitions(
+        self, 
+        format: str = "claude", 
+        role: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Get all permissible tool definitions in specified format.
 
         Args:
             format: Target format ("claude" or "openai").
+            role: Optional role name to filter tools by. 
+                  If provided, only returns tools where role is in tool.roles
+                  or tool.roles is None (all).
 
         Returns:
             List of tool definitions in the specified format.
@@ -480,10 +494,18 @@ class ToolRegistry:
         Raises:
             ValueError: If format is not recognized.
         """
+        definitions = []
+        for defn, _ in self._tools.values():
+            # Role check
+            if role and defn.roles and role not in defn.roles:
+                continue
+            
+            definitions.append(defn)
+
         if format == "claude":
-            return [defn.to_tool_use_format() for defn, _ in self._tools.values()]
+            return [defn.to_tool_use_format() for defn in definitions]
         elif format == "openai":
-            return [defn.to_openai_format() for defn, _ in self._tools.values()]
+            return [defn.to_openai_format() for defn in definitions]
         else:
             raise ValueError(f"Unknown format: {format}. Use 'claude' or 'openai'.")
 

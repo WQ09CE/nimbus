@@ -82,7 +82,15 @@ interface ChatState {
   isCreatingSession: boolean;  // Prevent concurrent session creation
 
   // Actions
-  createNewSession: (force?: boolean, options?: { name?: string; workspace_path?: string }) => Promise<void>;
+  createNewSession: (
+    force?: boolean,
+    options?: {
+      name?: string;
+      workspace_path?: string;
+      agent_mode?: string;
+      llm_config?: Record<string, any>;
+    }
+  ) => Promise<void>;
   switchSession: (session: Session | null) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
@@ -111,7 +119,12 @@ const initialState = {
 export const useChatStore = create<ChatState>((set, get) => ({
   ...initialState,
 
-  createNewSession: async (force = false, options?: { name?: string; workspace_path?: string }) => {
+  createNewSession: async (force = false, options?: {
+    name?: string;
+    workspace_path?: string;
+    agent_mode?: string;
+    llm_config?: Record<string, any>;
+  }) => {
     const { isCreatingSession, session } = get();
 
     // Prevent concurrent session creation
@@ -128,8 +141,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     try {
       set({ isLoading: true, isCreatingSession: true, error: null });
+
       const newSession = await createSession({
-        agent_mode: "dual_agent",
+        // Default to dual_agent unless specified otherwise
+        agent_mode: options?.agent_mode || "dual_agent",
         ...options,
       });
       console.log("[Store] Session created:", newSession.id);
