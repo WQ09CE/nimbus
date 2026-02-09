@@ -51,6 +51,11 @@ def main():
         print(f"Next steps:")
         print(f"1. Create tools using `AddTool`")
         print(f"2. Add implementation scripts to `{skill_dir}/scripts/`")
+        print(f"3. Run `ReloadSkills` to make the new skill available")
+        # Emit machine-readable hint for the agent
+        abs_skill_dir = skill_dir.resolve()
+        abs_root = root_path.resolve()
+        print(f"[Hint] To load this skill, call: ReloadSkills(path=\"{abs_root}\")")
         
     except OSError as e:
         print(f"[Error] Failed to create skill structure: {e}")

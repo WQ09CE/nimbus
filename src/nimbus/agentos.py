@@ -179,7 +179,14 @@ class AgentOS:
         reload_def = ToolDefinition(
             name="ReloadSkills",
             description="Reload all skills from disk. Use this after creating or modifying skills to make them available immediately.",
-            parameters=[]
+            parameters=[
+                ToolParameter(
+                    name="path",
+                    type="string",
+                    description="Optional: additional skill directory path to add and scan (e.g. 'skills' or '/absolute/path/to/skills')",
+                    required=False,
+                ),
+            ]
         )
         self._tools.register(reload_def, reload_skills_wrapper)
 

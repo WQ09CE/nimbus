@@ -32,14 +32,19 @@ class ScriptTool:
     async def __call__(self, **kwargs) -> str:
         """Execute the script with arguments."""
         # Convert kwargs to CLI args
-        # This is a naive implementation: --key value
-        # Can be improved with more complex mapping if needed
         cli_args = []
         for k, v in kwargs.items():
-            if v is True:
-                cli_args.append(f"--{k}")
-            elif v is False:
-                continue # Skip false flags
+            # Normalize boolean values (LLM may send string "true"/"false")
+            if isinstance(v, bool):
+                if v:
+                    cli_args.append(f"--{k}")
+                # False → skip
+            elif isinstance(v, str) and v.lower() in ("true", "false", "yes", "no", "1", "0"):
+                if v.lower() in ("true", "yes", "1"):
+                    cli_args.append(f"--{k}")
+                # "false"/"no"/"0" → skip
+            elif v is None:
+                continue  # Skip None values
             else:
                 cli_args.append(f"--{k}")
                 cli_args.append(str(v))

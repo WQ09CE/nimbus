@@ -238,17 +238,20 @@ class SessionManagerV2:
 
             _workspace = workspace if workspace else _Path.cwd()
 
-            # Discover skill directories
+            # Discover skill directories (scan ALL existing candidates, not just first)
             _skill_paths = []
             _candidate_skill_dirs = [
-                _workspace / "examples" / "skills",
                 _workspace / "skills",
+                _workspace / "examples" / "skills",
                 _Path(__file__).resolve().parent.parent.parent.parent / "examples" / "skills",
+                _Path.home() / ".nimbus" / "skills",
             ]
+            _seen = set()
             for _sd in _candidate_skill_dirs:
-                if _sd.is_dir():
+                _resolved = _sd.resolve()
+                if _resolved.is_dir() and _resolved not in _seen:
                     _skill_paths.append(_sd)
-                    break
+                    _seen.add(_resolved)
 
             # Single-kernel architecture with Role-Based Access Control
             from nimbus.agentos import AgentOSConfig
