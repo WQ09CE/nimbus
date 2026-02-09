@@ -10,7 +10,7 @@ Example:
 """
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from .sandbox import Sandbox, SandboxError
 
@@ -19,6 +19,7 @@ async def write_file(
     file_path: str,
     content: str,
     workspace: Optional[Path] = None,
+    allowed_paths: Optional[List[Path]] = None,
     **kwargs: Any,
 ) -> str:
     """
@@ -29,40 +30,47 @@ async def write_file(
         file_path: Path to file (relative or absolute)
         content: Content to write
         workspace: Workspace root for relative paths
+        allowed_paths: Additional allowed paths outside workspace (e.g. ~/.nimbus/)
 
     Returns:
         Success message with byte count
 
     Raises:
-        SandboxError: If path escapes workspace
+        SandboxError: If path escapes workspace and allowed_paths
         PermissionError: If cannot write to path
     """
-    # Resolve path
     path_obj = Path(file_path)
     if workspace is None:
         workspace = path_obj.parent if path_obj.is_absolute() else Path.cwd()
 
-    # Validate with sandbox (allow non-existing files)
-    Sandbox(workspace)
-    try:
-        # For write, we allow non-existing paths as long as they're within workspace
-        if path_obj.is_absolute():
-            resolved_path = path_obj
-            # Check if it's within workspace
-            try:
-                resolved_path.relative_to(workspace)
-            except ValueError:
-                raise SandboxError(file_path, workspace, f"Path outside workspace: {file_path}")
-        else:
-            resolved_path = workspace / file_path
-    except SandboxError:
-        raise
+    if path_obj.is_absolute():
+        resolved_path = path_obj.resolve()
+
+        in_workspace = False
+        try:
+            resolved_path.relative_to(workspace.resolve())
+            in_workspace = True
+        except ValueError:
+            pass
+
+        in_allowed = False
+        if not in_workspace and allowed_paths:
+            for ap in allowed_paths:
+                try:
+                    resolved_path.relative_to(ap.resolve())
+                    in_allowed = True
+                    break
+                except ValueError:
+                    continue
+
+        if not in_workspace and not in_allowed:
+            raise SandboxError(file_path, workspace, f"Path outside workspace: {file_path}")
+    else:
+        resolved_path = (workspace / file_path).resolve()
 
     try:
-        # Create parent directories
         resolved_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Write file
         with open(resolved_path, "w", encoding="utf-8") as f:
             f.write(content)
 

@@ -13,7 +13,7 @@ For glob/grep functionality, use Bash:
 """
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 # Base classes
 from nimbus.tools.base import (
@@ -193,11 +193,13 @@ def get_tool_function(name: str) -> Callable | None:
     return TOOL_FUNCTIONS.get(name)
 
 
-def create_workspace_wrapper(func: Callable, workspace: Path) -> Callable:
-    """Create a wrapper that injects workspace into tool calls."""
+def create_workspace_wrapper(func: Callable, workspace: Path, allowed_paths: Optional[List[Path]] = None) -> Callable:
+    """Create a wrapper that injects workspace and allowed_paths into tool calls."""
 
     async def wrapper(**kwargs: Any) -> Any:
         kwargs["workspace"] = workspace
+        if allowed_paths:
+            kwargs["allowed_paths"] = allowed_paths
         return await func(**kwargs)
 
     return wrapper
@@ -233,7 +235,8 @@ def register_default_tools(
         if tool_def is None or func is None:
             continue
 
-        wrapped_func = create_workspace_wrapper(func, workspace)
+        nimbus_home = Path.home() / ".nimbus"
+        wrapped_func = create_workspace_wrapper(func, workspace, allowed_paths=[nimbus_home])
 
         # Determine roles for this tool
         tool_roles = None

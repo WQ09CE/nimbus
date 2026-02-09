@@ -413,10 +413,20 @@ def _validate_required_args(tool_name: str, args: Dict[str, Any]) -> Optional[st
     if not missing:
         return None
     
-    # Build a helpful usage hint
-    param_hints = ", ".join(f'{p}="..."' for p in required)
+    # Build a loud, clear error with concrete examples
     missing_str = ", ".join(f"'{p}'" for p in missing)
+    
+    # Tool-specific usage examples
+    examples = {
+        "Bash": 'Bash(command="ls -la")',
+        "Read": 'Read(file_path="src/main.py")',
+        "Write": 'Write(file_path="output.txt", content="hello")',
+        "Edit": 'Edit(file_path="main.py", old_text="old", new_text="new")',
+    }
+    example = examples.get(tool_name, f'{tool_name}({", ".join(f"{p}=..." for p in required)})')
+    
     return (
-        f"Missing required parameter {missing_str}. "
-        f"Usage: {tool_name}({param_hints})"
+        f"PARAMETER ERROR: You must provide {missing_str} in your tool call. "
+        f"You sent: {tool_name}({', '.join(f'{k}={v!r}' for k, v in args.items()) if args else ''}). "
+        f"Correct example: {example}"
     )

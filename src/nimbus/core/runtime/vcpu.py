@@ -1017,7 +1017,12 @@ class VCPU:
         # Note: Custom tools (not in TOOL_NAME_CANONICAL) are allowed to pass through.
         # The gate will handle unknown tool errors if the tool doesn't exist.
 
-        # Check for doom loop BEFORE executing (using DoomLoopDetector)
+        # Execute the tool (gate handles param validation internally)
+        result = await self.gate.syscall_tool(action)
+
+        # Check for doom loop AFTER executing
+        # This way, param validation failures from gate don't pollute doom detection.
+        # We only track actual execution attempts (including gate-level validation errors).
         doom_result = self._doom_detector.check(action.name, action.args)
 
         if doom_result.is_loop:
@@ -1031,7 +1036,7 @@ class VCPU:
                 },
             )
 
-            # Return a recoverable error using FailureReporter
+            # Override the result with doom loop error
             return ToolResult(
                 status="ERROR",
                 output=self._failure_reporter.format_doom_loop_error(
@@ -1047,9 +1052,6 @@ class VCPU:
                     retryable=False,
                 ),
             )
-
-        # Execute the tool
-        result = await self.gate.syscall_tool(action)
 
         # Try error recovery BEFORE adding to memory (so failed attempts don't pollute context)
         if result.fault:
