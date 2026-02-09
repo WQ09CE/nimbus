@@ -11,6 +11,7 @@ interface ChatListProps {
 }
 
 export function ChatList({ messages, isStreaming, streamingContent, streamingToolCalls }: ChatListProps) {
+  // Historical messages grouping - only depends on messages, NOT streamingContent
   const groups = useMemo(() => {
     const result: any[] = [];
     let currentAgentGroup: Message[] = [];
@@ -29,30 +30,28 @@ export function ChatList({ messages, isStreaming, streamingContent, streamingToo
       } else if (msg.role === 'assistant') {
         currentAgentGroup.push(msg);
       } else if (msg.role === 'system') {
-        // System messages (e.g. Memory Archived) also go into flow?
-        // Or separate? Let's treat as separate for now.
         flushAgentGroup();
         result.push({ type: 'system', message: msg });
       }
     });
 
-    // Add streaming message to pending group if assistant
-    if (isStreaming) {
-       // Construct streaming message
-       const streamingMsg: Message = {
-         id: "streaming",
-         role: "assistant",
-         content: streamingContent,
-         toolCalls: streamingToolCalls.length > 0 ? streamingToolCalls : undefined,
-         timestamp: Date.now(),
-       };
-       currentAgentGroup.push(streamingMsg);
-    }
-
     flushAgentGroup();
     
     return result;
-  }, [messages, isStreaming, streamingContent, streamingToolCalls]);
+  }, [messages]); // ← Only depends on messages!
+
+  // Streaming message rendered separately - won't cause historical messages to re-render
+  const streamingElement = useMemo(() => {
+    if (!isStreaming) return null;
+    const streamingMsg: Message = {
+      id: "streaming",
+      role: "assistant",
+      content: streamingContent,
+      toolCalls: streamingToolCalls.length > 0 ? streamingToolCalls : undefined,
+      timestamp: Date.now(),
+    };
+    return <ChatMessage message={streamingMsg} isStreaming={true} />;
+  }, [isStreaming, streamingContent, streamingToolCalls]);
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
@@ -70,27 +69,16 @@ export function ChatList({ messages, isStreaming, streamingContent, streamingToo
           if (msgs.length === 0) return null;
 
           const lastMsg = msgs[msgs.length - 1];
-          // Determine if the last message is a "Result" (Text only, no tools)
-          // Exception: If it's the ONLY message and has no tools, it's a direct reply.
-          // Exception: If it's streaming, we treat it as process until done? 
-          // No, if streaming text, it looks like a result being typed.
-          
           const lastHasTools = lastMsg.toolCalls && lastMsg.toolCalls.length > 0;
-          const isStreamingMsg = lastMsg.id === "streaming";
           
           let processSteps = msgs;
           let resultMsg = null;
 
-          // Pure text message (no tools) should ALWAYS render as ChatMessage
-          // to avoid DOM structure change when streaming ends.
-          // This prevents the "jump" effect.
           if (!lastHasTools) {
-             // It's a text reply (streaming or not).
              if (msgs.length > 1) {
                 resultMsg = lastMsg;
                 processSteps = msgs.slice(0, -1);
              } else {
-                // Single message, text only.
                 resultMsg = lastMsg;
                 processSteps = [];
              }
@@ -101,13 +89,13 @@ export function ChatList({ messages, isStreaming, streamingContent, streamingToo
               {processSteps.length > 0 && (
                 <AgentProcess 
                     steps={processSteps} 
-                    isStreaming={isStreaming && !resultMsg} 
+                    isStreaming={false} 
                 />
               )}
               {resultMsg && (
                 <ChatMessage 
                     message={resultMsg} 
-                    isStreaming={isStreaming && groupIndex === groups.length - 1} 
+                    isStreaming={false} 
                 />
               )}
             </div>
@@ -116,6 +104,8 @@ export function ChatList({ messages, isStreaming, streamingContent, streamingToo
         
         return null;
       })}
+      {/* Streaming message - rendered outside groups to avoid re-rendering history */}
+      {streamingElement}
     </div>
   );
 }

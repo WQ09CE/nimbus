@@ -34,8 +34,8 @@ function parseExecutorReport(resultText: string): string {
     let report = parts[0];
     report = report.replace(/^##\s+Dispatch\s+#\d+\s+Result\s*/m, '');
     report = report.replace(/^###\s+Executor Report\s*/m, '');
-    report = report.replace(/\n*Use `Read`.*$/s, '');
-    report = report.replace(/\n*Dispatches used:.*$/s, '');
+    report = report.replace(/\n*Use `Read`[\s\S]*$/, '');
+    report = report.replace(/\n*Dispatches used:[\s\S]*$/, '');
     return report.trim();
 }
 

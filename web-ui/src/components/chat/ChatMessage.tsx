@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, useRef } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import type { Message } from "@/stores/chat-store";
 import type { ToolResult } from "@/lib/api";
 import { MarkdownRenderer } from "./MarkdownRenderer";
@@ -42,7 +42,7 @@ function AiAvatar() {
   );
 }
 
-export function ChatMessage({ message, isStreaming }: ChatMessageProps) {
+export const ChatMessage = React.memo(function ChatMessage({ message, isStreaming }: ChatMessageProps) {
   const [showTools, setShowTools] = useState(false);
 
   const isUser = message.role === "user";
@@ -144,7 +144,7 @@ export function ChatMessage({ message, isStreaming }: ChatMessageProps) {
               )}
 
               {message.content ? (
-                <MarkdownRenderer content={message.content} className="prose-invert prose-p:leading-relaxed prose-pre:bg-black/30 text-gray-100" />
+                <MarkdownRenderer content={message.content} isStreaming={isStreaming && message.id === "streaming"} className="prose-invert prose-p:leading-relaxed prose-pre:bg-black/30 text-gray-100" />
               ) : (
                 isStreaming && <span className="animate-pulse text-gray-500">Thinking...</span>
               )}
@@ -154,4 +154,12 @@ export function ChatMessage({ message, isStreaming }: ChatMessageProps) {
       </div>
     </div>
   );
-}
+}, (prevProps, nextProps) => {
+  return (
+    prevProps.message.id === nextProps.message.id &&
+    prevProps.message.content === nextProps.message.content &&
+    prevProps.isStreaming === nextProps.isStreaming &&
+    prevProps.message.toolCalls === nextProps.message.toolCalls &&
+    prevProps.message.toolResults === nextProps.message.toolResults
+  );
+});

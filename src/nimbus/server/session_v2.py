@@ -44,6 +44,7 @@ class SessionManagerV2:
         self._dispatch_tools: Dict[str, Any] = {}  # session_id -> DispatchTool (dual_agent mode only)
         self._lock = asyncio.Lock()
         self._shared_llm_client = None
+        self._sub_tool_buffer: Dict[str, list] = {}  # session_id -> list of sub-tool events
 
     async def create_session(
         self,
@@ -664,6 +665,14 @@ class SessionManagerV2:
                             "name": msg.name,
                         }
                     ]
+                    # Attach buffered sub-tool events to Dispatch results
+                    if msg.name == "Dispatch" and session_id in self._sub_tool_buffer:
+                        sub_events = self._sub_tool_buffer.pop(session_id)
+                        if sub_events:
+                            artifacts.append({
+                                "type": "sub_tool_events",
+                                "events": sub_events,
+                            })
 
                 await self._storage.add_message(
                     message_id=msg_id,
@@ -720,6 +729,18 @@ class SessionManagerV2:
             else:
                 # Suppress other sub-agent events (step_start, heartbeat, etc.)
                 return
+
+        # Buffer sub-tool events for later persistence with Dispatch result
+        if sse_type in ("sub_tool_call", "sub_tool_result"):
+            if session_id not in self._sub_tool_buffer:
+                self._sub_tool_buffer[session_id] = []
+            self._sub_tool_buffer[session_id].append({
+                "type": sse_type,
+                "data": event.data,
+            })
+        elif sse_type == "executor_start":
+            # Clear buffer for new executor run
+            self._sub_tool_buffer[session_id] = []
 
         # Emit to SSE hub
         await self._sse_hub.publish(
