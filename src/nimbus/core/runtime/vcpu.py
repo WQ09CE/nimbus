@@ -1049,7 +1049,7 @@ class VCPU:
             )
 
         # Execute the tool
-        result = await self.gate.syscall_tool(action, timeout_sec=self.config.default_timeout)
+        result = await self.gate.syscall_tool(action)
 
         # Try error recovery BEFORE adding to memory (so failed attempts don't pollute context)
         if result.fault:

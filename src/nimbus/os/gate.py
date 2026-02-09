@@ -336,7 +336,7 @@ class SimpleEventStream:
 # Meta-tools that spawn sub-agents need longer timeouts than regular tools.
 # These override the Gate's default_timeout (typically 60s).
 _META_TOOL_TIMEOUTS: Dict[str, float] = {
-    "Dispatch": 180.0,  # Executor agent runs inside; needs >> default timeout
+    "Dispatch": 600.0,  # Executor agent runs inside; controlled by max_iterations not timeout
     "Verify": 120.0,    # Runs multiple checks sequentially
 }
 
