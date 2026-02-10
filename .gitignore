@@ -63,3 +63,6 @@ tests/sandbox/workspace/
 
 # Lock files (regenerated)
 # uv.lock
+
+# Test job results
+jobs/

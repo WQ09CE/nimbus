@@ -1,148 +1,0 @@
-Get:1 http://deb.debian.org/debian bookworm InRelease [151 kB]
-Get:2 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]
-Get:3 http://deb.debian.org/debian-security bookworm-security InRelease [48.0 kB]
-Get:4 http://deb.debian.org/debian bookworm/main amd64 Packages [8792 kB]
-Get:5 http://deb.debian.org/debian bookworm-updates/main amd64 Packages [6924 B]
-Get:6 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages [293 kB]
-Fetched 9346 kB in 8s (1213 kB/s)
-Reading package lists...
-Reading package lists...
-Building dependency tree...
-Reading state information...
-The following additional packages will be installed:
-  libcurl4
-The following NEW packages will be installed:
-  curl libcurl4
-0 upgraded, 2 newly installed, 0 to remove and 38 not upgraded.
-Need to get 707 kB of archives.
-After this operation, 1361 kB of additional disk space will be used.
-Get:1 http://deb.debian.org/debian bookworm/main amd64 libcurl4 amd64 7.88.1-10+deb12u14 [392 kB]
-Get:2 http://deb.debian.org/debian bookworm/main amd64 curl amd64 7.88.1-10+deb12u14 [316 kB]
-debconf: delaying package configuration, since apt-utils is not installed
-Fetched 707 kB in 3s (211 kB/s)
-Selecting previously unselected package libcurl4:amd64.
-(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 17935 files and directories currently installed.)
-Preparing to unpack .../libcurl4_7.88.1-10+deb12u14_amd64.deb ...
-Unpacking libcurl4:amd64 (7.88.1-10+deb12u14) ...
-Selecting previously unselected package curl.
-Preparing to unpack .../curl_7.88.1-10+deb12u14_amd64.deb ...
-Unpacking curl (7.88.1-10+deb12u14) ...
-Setting up libcurl4:amd64 (7.88.1-10+deb12u14) ...
-Setting up curl (7.88.1-10+deb12u14) ...
-Processing triggers for libc-bin (2.36-9+deb12u13) ...
-head: error reading '/proc/self/exe': Bad file descriptor
-head: failed to close '/proc/self/exe': Bad file descriptor
-ERROR: unknown platform bitness
-sh: 1812: [: Illegal number: 
-downloading uv 0.7.13 x86_64-unknown-linux-gnu
-no checksums to verify
-installing to /root/.local/bin
-  uv
-  uvx
-everything's installed!
-
-To add $HOME/.local/bin to your PATH, either restart your shell or run:
-
-    source $HOME/.local/bin/env (sh, bash, zsh)
-    source $HOME/.local/bin/env.fish (fish)
-<jemalloc>: MADV_DONTNEED does not work (memset will be used instead)
-<jemalloc>: (This is the expected behaviour if you are running under QEMU)
-Using Python 3.13.7 environment at: /usr/local
-Resolved 5 packages in 5.80s
-Prepared 1 package in 739ms
-Uninstalled 1 package in 8ms
-Installed 1 package in 23ms
- - pytest==9.0.2
- + pytest==8.4.1
-<jemalloc>: MADV_DONTNEED does not work (memset will be used instead)
-<jemalloc>: (This is the expected behaviour if you are running under QEMU)
-============================= test session starts ==============================
-platform linux -- Python 3.13.7, pytest-8.4.1, pluggy-1.6.0
-rootdir: /tests
-plugins: anyio-4.12.1
-collected 11 items
-
-../tests/test_outputs.py ..........F                                     [100%]
-
-=================================== FAILURES ===================================
-________________________ test_pyknotid_repository_tests ________________________
-
-    def test_pyknotid_repository_tests():
-        """Download and run the original pyknotid test suite."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            git_cmd = [
-                "git",
-                "clone",
-                "--depth",
-                "1",
-                "--branch",
-                "0.5.3",
-                "https://github.com/SPOCKnots/pyknotid.git",
-                temp_dir,
-            ]
-            result = subprocess.run(git_cmd, capture_output=True, text=True)
-            tests_dir = os.path.join(temp_dir, "tests")
-    
-            # Run pytest excluding the problematic test files
-            pytest_cmd = [
-                "python",
-                "-m",
-                "pytest",
-                tests_dir,
-                "--ignore",
-                os.path.join(tests_dir, "test_random_curves.py"),
-                "--ignore",
-                os.path.join(tests_dir, "test_catalogue.py"),
-                "-v",
-            ]
-    
-            original_cwd = os.getcwd()
-            try:
-                os.chdir("/app/pyknotid")
-                result = subprocess.run(pytest_cmd, capture_output=True, text=True)
->               assert result.returncode == 0, (
-                    f"Repository tests failed with return code {result.returncode}"
-                )
-E               AssertionError: Repository tests failed with return code 1
-E               assert 1 == 0
-E                +  where 1 = CompletedProcess(args=['python', '-m', 'pytest', '/tmp/tmpisf93l84/tests', '--ignore', '/tmp/tmpisf93l84/tests/test_ra...onstructed_space_curve\n========================= 1 failed, 17 passed in 7.15s =========================\n", stderr='').returncode
-
-/tests/test_outputs.py:173: AssertionError
-==================================== PASSES ====================================
-_______________________________ test_ccomplexity _______________________________
------------------------------ Captured stdout call -----------------------------
-cython i1 0 0
-______________________ test_cinvariants_python_vs_cython _______________________
------------------------------ Captured stdout call -----------------------------
-Finding crossings
-i = 0 / 47
-3.0 crossings found
-
-Currently comparing index 0
-______________________________ test_example_usage ______________________________
------------------------------ Captured stdout call -----------------------------
-Finding crossings
-i = 0 / 97
-7.0 crossings found
-
-Simplifying: initially 14 crossings
--> 10 crossings after 1 runs-> 10 crossings after 2 runs
-Finding crossings
-i = 0 / 97
-4.0 crossings found
-
-Simplifying: initially 8 crossings
--> 8 crossings after 1 runs
-=========================== short test summary info ============================
-PASSED ../tests/test_outputs.py::test_numpy_version
-PASSED ../tests/test_outputs.py::test_repo_cloned
-PASSED ../tests/test_outputs.py::test_pyknotid_core_import
-PASSED ../tests/test_outputs.py::test_chelpers_cython_extension
-PASSED ../tests/test_outputs.py::test_ccomplexity_cython_extension
-PASSED ../tests/test_outputs.py::test_cinvariants_cython_extension
-PASSED ../tests/test_outputs.py::test_chelpers
-PASSED ../tests/test_outputs.py::test_ccomplexity
-PASSED ../tests/test_outputs.py::test_cinvariants_python_vs_cython
-PASSED ../tests/test_outputs.py::test_example_usage
-FAILED ../tests/test_outputs.py::test_pyknotid_repository_tests - AssertionEr...
-======================== 1 failed, 10 passed in 14.88s =========================
