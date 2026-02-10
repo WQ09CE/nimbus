@@ -59,7 +59,7 @@ class DispatchToolConfig:
         # Short aliases
         "claude": "anthropic/claude-opus-4-6",
         "opus": "anthropic/claude-opus-4-6",
-        "sonnet": "anthropic/claude-sonnet-4-20250514",
+        "sonnet": "anthropic/claude-sonnet-4-5",
         "gpt": "openai-codex/gpt-5.3-codex",
         "gpt5": "openai-codex/gpt-5.3-codex",
         "gpt-5.3": "openai-codex/gpt-5.3-codex",

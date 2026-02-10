@@ -30,7 +30,7 @@ You can optionally specify which model the Executor should use via `Dispatch(tas
 | `claude` / `opus` | `anthropic/claude-opus-4-6` (default, best for complex coding) |
 | `gpt` / `codex` | `openai-codex/gpt-5.3-codex` (good for reasoning & brainstorming) |
 | `gemini` / `gemini-pro` | `google-antigravity/gemini-3-pro-high` (good for analysis) |
-| `sonnet` | `anthropic/claude-sonnet-4-20250514` (faster, lighter Claude) |
+| `sonnet` | `anthropic/claude-sonnet-4-5` (faster, lighter Claude) |
 
 **When to use different models:**
 - Default (no model specified): uses your own model — best for most coding tasks
