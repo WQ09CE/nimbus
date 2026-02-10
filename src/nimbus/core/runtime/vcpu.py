@@ -652,11 +652,39 @@ class VCPU:
                         args = str(tc.get("function", {}).get("arguments", "{}"))[:100]
                     logger.debug(f"  🔧 Tool: {name}({args})")
 
+            # 2. SPLIT MIXED RESPONSE: Handle models that return both content and tool_calls
+            # (e.g., GPT-5.3-codex tends to "talk while calling tools")
+            # We split this into two phases to match Claude/Gemini behavior:
+            #   Phase 1: Output the text content (THOUGHT)
+            #   Phase 2: Execute the tool calls
+            split_response = False
+            if response.content and response.content.strip() and response.tool_calls:
+                logger.info(
+                    "🔀 Detected mixed response (content + tool_calls). Splitting into thought → action."
+                )
+                split_response = True
+                
+                # First, emit the content as a THOUGHT action
+                thought_action = ActionIR(
+                    kind="THOUGHT", 
+                    name="thought", 
+                    args={"text": response.content.strip()}
+                )
+                
+                # Execute the thought immediately (just yields to stream)
+                thought_result = await self._execute_action(thought_action)
+                step_result.results.append(thought_result)
+                
+                # Add assistant message with only content to MMU (for context continuity)
+                self.mmu.add_assistant_message(response.content)
+
             # 2. DECODE: Parse into ActionIR
             decode_start = time.time_ns()
             try:
+                # If we split the response, decode only tool_calls (content already handled)
+                decode_content = None if split_response else response.content
                 actions = self.decoder.decode(
-                    content=response.content, tool_calls=response.tool_calls
+                    content=decode_content, tool_calls=response.tool_calls
                 )
             except Fault as f:
                 step_result.fault = f
@@ -704,12 +732,21 @@ class VCPU:
                         # Already a dict
                         tool_calls_for_storage.append(tc)
 
-                self.mmu.add_assistant_with_tool_calls(
-                    content=response.content, tool_calls=tool_calls_for_storage
-                )
+                # Only add assistant message if we didn't already add it in split phase
+                if not split_response:
+                    self.mmu.add_assistant_with_tool_calls(
+                        content=response.content, tool_calls=tool_calls_for_storage
+                    )
+                else:
+                    # Split case: add assistant message with only tool_calls (content already added)
+                    self.mmu.add_assistant_with_tool_calls(
+                        content=None, tool_calls=tool_calls_for_storage
+                    )
             elif response.content:
                 # Add text-only assistant message (Implicit Return / Thought)
-                self.mmu.add_assistant_message(response.content)
+                # Skip if we already added it in split phase
+                if not split_response:
+                    self.mmu.add_assistant_message(response.content)
 
             # Emit action events
             for action in actions:

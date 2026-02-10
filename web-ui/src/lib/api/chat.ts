@@ -10,9 +10,34 @@ export interface ChatMessage {
   content: string;
 }
 
+/**
+ * Attachment sent with a chat message.
+ */
+export interface ChatAttachment {
+  /** Unique ID (generated client-side) */
+  id: string;
+  /** Attachment type */
+  type: "image" | "text" | "pdf";
+  /** File name */
+  name: string;
+  /** File size in bytes */
+  size: number;
+  /** Content: base64 for images, raw text for text files */
+  content: string;
+  /** MIME type, e.g. "image/png", "text/plain" */
+  mimeType: string;
+  /** Preview URL for images (blob URL) */
+  preview?: string;
+}
+
 export interface ChatRequest {
   content: string;
-  attachments?: unknown[];
+  attachments?: Array<{
+    type: string;
+    content: string;
+    name?: string;
+    mime_type?: string;
+  }>;
 }
 
 export interface ToolCall {
@@ -81,10 +106,21 @@ export async function injectMessage(
 export async function* streamChat(
   sessionId: string,
   message: string,
+  attachments?: ChatAttachment[],
   signal?: AbortSignal
 ): AsyncGenerator<ChatEvent> {
   const endpoint = `/api/v1/sessions/${sessionId}/chat`;
   const request: ChatRequest = { content: message };
+
+  // Add attachments if present
+  if (attachments && attachments.length > 0) {
+    request.attachments = attachments.map(att => ({
+      type: att.type,
+      content: att.content,
+      name: att.name,
+      mime_type: att.mimeType,
+    }));
+  }
 
   for await (const event of apiStream(endpoint, request, signal)) {
     yield event as ChatEvent;

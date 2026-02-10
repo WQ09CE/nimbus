@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo, memo, useEffect, useRef } from "react";
+import React, { useState, useMemo, memo } from "react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -62,27 +62,8 @@ function CopyButton({ code }: { code: string }) {
 const plugins = [remarkGfm];
 
 export const MarkdownRenderer = memo(function MarkdownRenderer({ content, className = "", isStreaming = false }: MarkdownRendererProps) {
-  const [renderedContent, setRenderedContent] = useState(content);
-  const lastUpdateRef = useRef(Date.now());
-
-  useEffect(() => {
-    if (!isStreaming) {
-      setRenderedContent(content);
-      return;
-    }
-
-    const now = Date.now();
-    if (now - lastUpdateRef.current > 50) {
-      setRenderedContent(content);
-      lastUpdateRef.current = now;
-    } else {
-      const timeoutId = setTimeout(() => {
-        setRenderedContent(content);
-        lastUpdateRef.current = Date.now();
-      }, 50);
-      return () => clearTimeout(timeoutId);
-    }
-  }, [content, isStreaming]);
+  // No internal state/effect throttle — store already throttles at 50ms.
+  // This eliminates double-render during streaming.
 
   const components = useMemo(() => ({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -271,7 +252,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, classN
         remarkPlugins={plugins}
         components={components}
       >
-        {renderedContent}
+        {content}
       </ReactMarkdown>
       {isStreaming && <span className="animate-pulse text-blue-400 font-mono ml-1">▍</span>}
     </div>

@@ -73,6 +73,14 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
     return merged;
   }, [message.toolCalls, message.toolResults]);
 
+  // Auto-expand tool list when Dispatch tools are present
+  const hasDispatch = tools.some((t) => t.name === "Dispatch");
+  useEffect(() => {
+    if (hasDispatch) {
+      setShowTools(true);
+    }
+  }, [hasDispatch]);
+
   if (isSystem) {
     return (
       <div className="flex justify-center my-6">
@@ -83,6 +91,21 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
       </div>
     );
   }
+
+  const hasContent = Boolean(message.content);
+  const hasTools = tools.length > 0;
+  const hasRunningTools = tools.some((t) => t.status === "running");
+
+  const getToolKey = (tool: MergedTool, index: number) => {
+    const stableId = tool.id;
+    if (stableId) return stableId;
+
+    const serializedArgs = JSON.stringify(tool.args ?? {});
+    const durationPart = typeof tool.duration === "number" ? `-d:${tool.duration}` : "";
+    const errorPart = tool.error ? "-e" : "";
+
+    return `${tool.name}-${serializedArgs}${durationPart}${errorPart}-${index}`;
+  };
 
   return (
     <div className={`flex gap-4 mb-6 ${isUser ? "flex-row-reverse" : "flex-row"} group`}>
@@ -117,18 +140,65 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
           {isUser ? (
             <div className="text-[15px] leading-relaxed whitespace-pre-wrap font-sans selection:bg-white/20">
               {message.content}
+              {/* Attachments */}
+              {message.attachments && message.attachments.length > 0 && (
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {message.attachments.map(att => {
+                    // Build image src: prefer data URL from base64 content, fall back to preview blob URL
+                    const imageSrc = att.type === "image" && att.content
+                      ? `data:${att.mimeType || "image/png"};base64,${att.content}`
+                      : att.preview;
+
+                    return (
+                      <div key={att.id} className="rounded-lg overflow-hidden border border-white/20">
+                        {att.type === "image" && imageSrc ? (
+                          <img
+                            src={imageSrc}
+                            alt={att.name}
+                            className="max-w-[200px] max-h-[150px] object-cover cursor-pointer hover:opacity-80 transition-opacity"
+                            onClick={() => {
+                              // Open full image in new tab
+                              const w = window.open();
+                              if (w) {
+                                w.document.write(`<img src="${imageSrc}" style="max-width:100%;height:auto;" />`);
+                                w.document.title = att.name;
+                              }
+                            }}
+                          />
+                        ) : (
+                          <div className="flex items-center gap-2 px-3 py-2 bg-white/10">
+                            <span className="text-sm">{att.type === "pdf" ? "📄" : "📝"}</span>
+                            <span className="text-xs text-blue-100">{att.name}</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           ) : (
             <div className="text-[15px] leading-relaxed min-w-[200px]">
-              {tools.length > 0 && (
-                <div className="mb-3">
+              {hasContent ? (
+                <MarkdownRenderer content={message.content} isStreaming={isStreaming && message.id === "streaming"} className="prose-invert prose-p:leading-relaxed prose-pre:bg-black/30 text-gray-100" />
+              ) : (
+                <>
+                  {isStreaming && !hasTools && <span className="animate-pulse text-gray-500">Thinking...</span>}
+                  {isStreaming && hasTools && !hasRunningTools && (
+                    <span className="text-xs text-gray-500">Generating response...</span>
+                  )}
+                </>
+              )}
+
+              {hasTools && (
+                <div className={hasContent ? "mt-3" : undefined}>
                   <button
                     onClick={() => setShowTools(!showTools)}
                     className="flex items-center gap-2 text-xs font-medium text-blue-400 bg-blue-500/10 px-2 py-1 rounded hover:bg-blue-500/20 transition-colors border border-blue-500/10"
                   >
                     <span className="text-[10px]">{showTools ? "▼" : "▶"}</span>
                     <span>Used {tools.length} Tools</span>
-                    {isStreaming && tools.some(t => t.status === 'running') && (
+                    {isStreaming && hasRunningTools && (
                       <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse ml-1" />
                     )}
                   </button>
@@ -136,17 +206,11 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
                   {showTools && (
                     <div className="mt-2 space-y-2 border-l-2 border-gray-800 pl-2">
                       {tools.map((tool, i) => (
-                        <ToolCard key={i} tool={tool} />
+                        <ToolCard key={getToolKey(tool, i)} tool={tool} />
                       ))}
                     </div>
                   )}
                 </div>
-              )}
-
-              {message.content ? (
-                <MarkdownRenderer content={message.content} isStreaming={isStreaming && message.id === "streaming"} className="prose-invert prose-p:leading-relaxed prose-pre:bg-black/30 text-gray-100" />
-              ) : (
-                isStreaming && <span className="animate-pulse text-gray-500">Thinking...</span>
               )}
             </div>
           )}

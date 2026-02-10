@@ -1,17 +1,20 @@
 import React, { useMemo } from 'react';
 import type { Message } from "@/stores/chat-store";
+import { useChatStore } from "@/stores";
 import { ChatMessage } from "./ChatMessage";
 import { AgentProcess } from "./AgentProcess";
 
 interface ChatListProps {
   messages: Message[];
-  isStreaming: boolean;
-  streamingContent: string;
-  streamingToolCalls: any[];
 }
 
-export function ChatList({ messages, isStreaming, streamingContent, streamingToolCalls }: ChatListProps) {
-  // Historical messages grouping - only depends on messages, NOT streamingContent
+export function ChatList({ messages }: ChatListProps) {
+  // ChatList subscribes to streaming state directly (not via props from Home)
+  const isStreaming = useChatStore(s => s.isStreaming);
+  const streamingContent = useChatStore(s => s.streamingContent);
+  const streamingToolCalls = useChatStore(s => s.streamingToolCalls);
+
+  // Historical messages grouping - only depends on messages
   const groups = useMemo(() => {
     const result: any[] = [];
     let currentAgentGroup: Message[] = [];
@@ -38,9 +41,9 @@ export function ChatList({ messages, isStreaming, streamingContent, streamingToo
     flushAgentGroup();
     
     return result;
-  }, [messages]); // ← Only depends on messages!
+  }, [messages]);
 
-  // Streaming message rendered separately - won't cause historical messages to re-render
+  // Streaming message rendered separately
   const streamingElement = useMemo(() => {
     if (!isStreaming) return null;
     const streamingMsg: Message = {
@@ -104,7 +107,6 @@ export function ChatList({ messages, isStreaming, streamingContent, streamingToo
         
         return null;
       })}
-      {/* Streaming message - rendered outside groups to avoid re-rendering history */}
       {streamingElement}
     </div>
   );

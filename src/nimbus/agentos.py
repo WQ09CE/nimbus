@@ -652,7 +652,7 @@ class AgentOS:
                 }
                 return
 
-    async def chat(self, message: str, session_id: str | None = None) -> ToolResult:
+    async def chat(self, message: "str | list", session_id: str | None = None) -> ToolResult:
         is_existing_process = False
         if session_id and session_id in self._processes:
             process = self._processes[session_id]
@@ -1103,7 +1103,7 @@ class AgentOS:
 
         return signalled
 
-    def inject_message(self, pid: str, message: str) -> bool:
+    def inject_message(self, pid: str, message: "str | list") -> bool:
         process = self._processes.get(pid)
         if not process:
             return False

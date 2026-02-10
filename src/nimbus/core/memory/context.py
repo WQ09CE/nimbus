@@ -226,8 +226,13 @@ class StackFrame:
         """Add a message to this frame's history."""
         self.messages.append(message)
 
-    def add_user_message(self, content: str) -> None:
-        """Add a user message."""
+    def add_user_message(self, content: "str | list") -> None:
+        """Add a user message.
+        
+        Args:
+            content: Text string or list of content blocks 
+                     (e.g. [{"type": "text", "text": "..."}, {"type": "image", "data": "base64...", "mimeType": "image/png"}])
+        """
         self.messages.append(Message(role="user", content=content))
 
     def add_assistant_message(self, content: str) -> None:

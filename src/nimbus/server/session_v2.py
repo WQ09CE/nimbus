@@ -371,7 +371,7 @@ class SessionManagerV2:
     async def stream_chat(
         self,
         session_id: str,
-        message: str,
+        message: "str | list",
     ):
         """
         Stream chat response with SSE events.

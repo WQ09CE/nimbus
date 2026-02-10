@@ -19,6 +19,7 @@ cd "$SCRIPT_DIR"
 PI_AI_PORT=${PI_AI_PORT:-3031}
 NIMBUS_PORT=${NIMBUS_PORT:-4096}
 WEBUI_PORT=${WEBUI_PORT:-3000}
+WEBUI_STAGING_PORT=$((WEBUI_PORT + 1))
 
 # 日志目录
 LOG_DIR="$SCRIPT_DIR/.logs"
@@ -143,22 +144,31 @@ start_webui() {
         log_ok "web-ui already running on :$WEBUI_PORT"
         return 0
     fi
-    
+
     log_info "Starting web-ui..."
-    
+
     # 检查依赖
     if [ ! -d "web-ui/node_modules" ]; then
         log_info "Installing web-ui dependencies..."
         (cd web-ui && npm install) 2>/dev/null
     fi
-    
-    # 启动服务 (使用 screen 完全脱离终端)
-    # 启用 Hot Reload 以支持开发体验
+
+    # 检查 .next 构建产物是否存在，不存在则先构建
+    if [ ! -d "web-ui/.next" ]; then
+        log_info "No .next build found, building web-ui..."
+        if ! (cd web-ui && npm run build) >> "$LOG_DIR/webui.log" 2>&1; then
+            log_error "web-ui build failed. Check $LOG_DIR/webui.log"
+            return 1
+        fi
+        log_ok "web-ui build completed"
+    fi
+
+    # 使用 next start 启动生产模式服务 (使用 screen 完全脱离终端)
     echo -e "\n\n========== $(date '+%Y-%m-%d %H:%M:%S') web-ui starting ==========\n" >> "$LOG_DIR/webui.log"
-    screen -dmS nimbus-webui bash -c "cd '$SCRIPT_DIR/web-ui' && npm run dev -- -p $WEBUI_PORT >> '$LOG_DIR/webui.log' 2>&1"
-    
+    screen -dmS nimbus-webui bash -c "cd '$SCRIPT_DIR/web-ui' && npm run start -- -p $WEBUI_PORT >> '$LOG_DIR/webui.log' 2>&1"
+
     if wait_for_port $WEBUI_PORT 20; then
-        log_ok "web-ui started on :$WEBUI_PORT"
+        log_ok "web-ui started on :$WEBUI_PORT (production mode)"
     else
         log_error "Failed to start web-ui. Check $LOG_DIR/webui.log"
         return 1
@@ -297,15 +307,131 @@ cmd_restart() {
 
 cmd_reload_ui() {
     echo ""
-    echo "🔄 Reloading Web-UI (for manual code changes)..."
+    echo "🔄 Reloading Web-UI (simple restart, no rebuild)..."
     echo "═══════════════════════════════════════"
-    
+    echo "💡 Tip: Use './nimbus deploy-ui' for safe rebuild with health check"
+    echo ""
+
     stop_service $WEBUI_PORT "web-ui"
     sleep 1
     start_webui
-    
+
     echo ""
     echo "✅ Web-UI reloaded"
+    cmd_status
+}
+
+cmd_deploy_ui() {
+    echo ""
+    echo "🚀 Deploy Web-UI (safe rebuild with health check)..."
+    echo "═══════════════════════════════════════"
+
+    local webui_dir="$SCRIPT_DIR/web-ui"
+    local next_dir="$webui_dir/.next"
+    local next_bak="$webui_dir/.next.bak"
+
+    # Step 1: 备份当前 .next
+    if [ -d "$next_dir" ]; then
+        log_info "Backing up current .next to .next.bak..."
+        rm -rf "$next_bak"
+        mv "$next_dir" "$next_bak"
+        log_ok "Backup created"
+    else
+        log_warn "No existing .next directory to backup"
+    fi
+
+    # Step 2: 执行构建
+    log_info "Building web-ui..."
+    if ! (cd "$webui_dir" && npm run build) >> "$LOG_DIR/webui.log" 2>&1; then
+        log_error "Build failed!"
+        # 恢复备份
+        if [ -d "$next_bak" ]; then
+            log_info "Restoring .next.bak..."
+            rm -rf "$next_dir"
+            mv "$next_bak" "$next_dir"
+            log_ok "Backup restored"
+        fi
+        return 1
+    fi
+    log_ok "Build succeeded"
+
+    # Step 3: 在 staging 端口启动健康检查
+    log_info "Starting staging instance on :$WEBUI_STAGING_PORT for health check..."
+    echo -e "\n\n========== $(date '+%Y-%m-%d %H:%M:%S') web-ui staging ==========\n" >> "$LOG_DIR/webui.log"
+    screen -dmS nimbus-webui-staging bash -c "cd '$webui_dir' && npm run start -- -p $WEBUI_STAGING_PORT >> '$LOG_DIR/webui.log' 2>&1"
+
+    if ! wait_for_port $WEBUI_STAGING_PORT 20; then
+        log_error "Staging instance failed to start on :$WEBUI_STAGING_PORT"
+        # 停掉 staging（以防万一）
+        stop_service $WEBUI_STAGING_PORT "web-ui-staging"
+        # 恢复备份
+        if [ -d "$next_bak" ]; then
+            log_info "Restoring .next.bak..."
+            rm -rf "$next_dir"
+            mv "$next_bak" "$next_dir"
+            log_ok "Backup restored"
+        fi
+        return 1
+    fi
+
+    # Step 4: 健康检查 - curl 检查 200
+    log_info "Running health check on http://localhost:$WEBUI_STAGING_PORT ..."
+    local http_code
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$WEBUI_STAGING_PORT" 2>/dev/null)
+
+    if [ "$http_code" = "200" ]; then
+        log_ok "Health check passed (HTTP $http_code)"
+
+        # Step 5: 健康检查通过 - 停掉 staging，停掉旧 live，启动新 live
+        log_info "Stopping staging instance..."
+        stop_service $WEBUI_STAGING_PORT "web-ui-staging"
+
+        log_info "Stopping old live instance..."
+        stop_service $WEBUI_PORT "web-ui"
+        sleep 1
+
+        log_info "Starting new live instance on :$WEBUI_PORT..."
+        echo -e "\n\n========== $(date '+%Y-%m-%d %H:%M:%S') web-ui starting (deploy) ==========\n" >> "$LOG_DIR/webui.log"
+        screen -dmS nimbus-webui bash -c "cd '$webui_dir' && npm run start -- -p $WEBUI_PORT >> '$LOG_DIR/webui.log' 2>&1"
+
+        if wait_for_port $WEBUI_PORT 20; then
+            log_ok "web-ui deployed on :$WEBUI_PORT (production mode)"
+            # 清理备份
+            rm -rf "$next_bak"
+        else
+            log_error "Failed to start new live instance. Check $LOG_DIR/webui.log"
+            # 恢复备份并重启旧版本
+            if [ -d "$next_bak" ]; then
+                log_info "Restoring .next.bak and restarting old version..."
+                rm -rf "$next_dir"
+                mv "$next_bak" "$next_dir"
+                screen -dmS nimbus-webui bash -c "cd '$webui_dir' && npm run start -- -p $WEBUI_PORT >> '$LOG_DIR/webui.log' 2>&1"
+                if wait_for_port $WEBUI_PORT 20; then
+                    log_ok "Old version restored and running on :$WEBUI_PORT"
+                else
+                    log_error "Failed to restore old version!"
+                fi
+            fi
+            return 1
+        fi
+    else
+        log_error "Health check failed (HTTP $http_code)"
+
+        # Step 6: 健康检查失败 - 停掉 staging，恢复备份
+        log_info "Stopping staging instance..."
+        stop_service $WEBUI_STAGING_PORT "web-ui-staging"
+
+        if [ -d "$next_bak" ]; then
+            log_info "Restoring .next.bak..."
+            rm -rf "$next_dir"
+            mv "$next_bak" "$next_dir"
+            log_ok "Backup restored"
+        fi
+        return 1
+    fi
+
+    echo ""
+    echo "✅ Web-UI deployed successfully!"
     cmd_status
 }
 
@@ -319,7 +445,8 @@ cmd_help() {
     echo "  start [--no-ui]   Start all services (or without web-ui)"
     echo "  stop              Stop all services"
     echo "  restart           Restart all services"
-    echo "  reload-ui         Restart only web-ui (for manual code updates)"
+    echo "  deploy-ui         Safe rebuild & deploy web-ui (build + health check)"
+    echo "  reload-ui         Restart web-ui without rebuild (quick restart)"
     echo "  status            Show service status"
     echo "  logs [service]    View logs (pi-ai|nimbus|webui|all)"
     echo "  help              Show this help"
@@ -328,9 +455,11 @@ cmd_help() {
     echo "  PI_AI_PORT=$PI_AI_PORT"
     echo "  NIMBUS_PORT=$NIMBUS_PORT"
     echo "  WEBUI_PORT=$WEBUI_PORT"
+    echo "  WEBUI_STAGING_PORT=$WEBUI_STAGING_PORT"
     echo ""
-    echo "Note: Hot reload is disabled to prevent chat interruption."
-    echo "      Use 'reload-ui' to manually apply code changes."
+    echo "Note: Web-UI runs in production mode (next start)."
+    echo "      Use 'deploy-ui' to rebuild and deploy with health check."
+    echo "      Use 'reload-ui' for a quick restart without rebuild."
     echo ""
 }
 
@@ -347,6 +476,9 @@ case "${1:-help}" in
         ;;
     restart)
         cmd_restart "$2"
+        ;;
+    deploy-ui|deploy)
+        cmd_deploy_ui
         ;;
     reload-ui|reload)
         cmd_reload_ui

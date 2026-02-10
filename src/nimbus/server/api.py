@@ -414,24 +414,50 @@ async def chat(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Save user message
+    # Build message content (with optional attachments)
+    logger.info(f"📎 Attachments received: {len(data.attachments)} items" if data.attachments else "📎 No attachments")
+    chat_content: str | list = data.content
+    if data.attachments:
+        content_parts = []
+        # Add text part
+        if data.content:
+            content_parts.append({"type": "text", "text": data.content})
+        # Add attachment parts
+        for att in data.attachments:
+            if att.type == "image" and att.content:
+                content_parts.append({
+                    "type": "image",
+                    "data": att.content,
+                    "mimeType": att.mime_type or "image/png",
+                })
+            elif att.type in ("text", "pdf") and att.content:
+                # Text files: append content inline
+                file_label = att.name or "attachment"
+                content_parts.append({
+                    "type": "text",
+                    "text": f"\n\n--- {file_label} ---\n{att.content}\n--- end of {file_label} ---",
+                })
+        if content_parts:
+            chat_content = content_parts
+
+    # Save user message (store text-only version for persistence)
     message_id = f"msg_{uuid.uuid4().hex[:12]}"
     await storage.add_message(
         message_id=message_id,
         session_id=session_id,
         role="user",
-        content=data.content,
+        content=data.content,  # Always save the text version
     )
 
     # Start background task to run chat
     async def run_chat():
         """Background task that runs the chat and emits events via SSE hub."""
         logger.info(
-            f"🚀 run_chat started for session {session_id}, message: {data.content[:50]}..."
+            f"🚀 run_chat started for session {session_id}, message: {str(data.content)[:50]}..."
         )
         try:
             logger.info("📞 Calling stream_chat...")
-            await session_manager.stream_chat(session_id, data.content)
+            await session_manager.stream_chat(session_id, chat_content)
             logger.info("✅ stream_chat completed")
         except asyncio.CancelledError:
             # Client disconnected - this is expected, not an error

@@ -219,7 +219,7 @@ class MMU:
     def add_message(self, message: Message) -> None:
         self.current_frame.add_message(message)
 
-    def add_user_message(self, content: str) -> None:
+    def add_user_message(self, content: "str | list") -> None:
         # Check for pending tool calls and fix order if needed
         self._ensure_tool_call_integrity()
         self.current_frame.add_user_message(content)

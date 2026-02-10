@@ -1,103 +1,48 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import { useChatStore } from "@/stores";
-import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatList } from "@/components/chat/ChatList";
 import { ModelSelector } from "@/components/chat/ModelSelector";
 import { FileExplorer } from "@/components/chat/FileExplorer";
-
+import { WorkingIndicator } from "@/components/chat/WorkingIndicator";
+import { StreamingScroller } from "@/components/chat/StreamingScroller";
 import { SessionPanel } from "@/components/session/SessionPanel";
 
 export default function Home() {
-  const {
-    session,
-    messages,
-    isStreaming,
-    streamingContent,
-    streamingToolCalls,
-    thinkingIteration,
-    currentActivity,
-    error,
-    isInterrupting,
-    isLoading,
-    createNewSession,
-    loadSession,
-    sendMessage,
-    interruptMessage,
-    clearError,
-  } = useChatStore();
+  // Fine-grained selectors — only subscribe to what Home actually needs
+  const session = useChatStore(s => s.session);
+  const messages = useChatStore(s => s.messages);
+  const isStreaming = useChatStore(s => s.isStreaming);
+  const error = useChatStore(s => s.error);
+  const isLoading = useChatStore(s => s.isLoading);
+
+  // Actions — stable references from Zustand
+  const createNewSession = useChatStore(s => s.createNewSession);
+  const loadSession = useChatStore(s => s.loadSession);
+  const sendMessage = useChatStore(s => s.sendMessage);
+  const interruptMessage = useChatStore(s => s.interruptMessage);
+  const clearError = useChatStore(s => s.clearError);
 
   const [mounted, setMounted] = useState(false);
-  const [userScrolledUp, setUserScrolledUp] = useState(false);
-  const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const [showSessionPanel, setShowSessionPanel] = useState(false);
   const [showFilePanel, setShowFilePanel] = useState(false);
 
-  // Simple ref for scroll container
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const scrollRAF = useRef<number | null>(null);
 
-  // Simple scroll to bottom using scrollTop (more stable than scrollIntoView)
-  const scrollToBottom = useCallback(() => {
-    // Cancel any pending scroll
-    if (scrollRAF.current) {
-      cancelAnimationFrame(scrollRAF.current);
-    }
-
-    // Use RAF to batch scroll updates and avoid layout thrashing
-    scrollRAF.current = requestAnimationFrame(() => {
-      const container = messagesContainerRef.current;
-      if (container) {
-        container.scrollTop = container.scrollHeight;
-      }
-    });
-  }, []);
-
-  // Handle user scroll
-  const handleScroll = useCallback(() => {
-    const container = messagesContainerRef.current;
-    if (!container) return;
-
-    const { scrollTop, scrollHeight, clientHeight } = container;
-    const isAtBottom = scrollHeight - scrollTop - clientHeight <= 100;
-
-    if (isAtBottom) {
-      setUserScrolledUp(false);
-      setAutoScrollEnabled(true);
-    } else {
-      setUserScrolledUp(true);
-      setAutoScrollEnabled(false);
-    }
-  }, []);
-
-  // Auto-scroll when messages change (throttled)
-  useEffect(() => {
-    if (autoScrollEnabled) {
-      scrollToBottom();
-    }
-  }, [messages.length, autoScrollEnabled, scrollToBottom]);
-
-  // Auto-scroll during streaming (debounced to reduce jitter)
-  useEffect(() => {
-    if (isStreaming && autoScrollEnabled) {
-      const timeoutId = setTimeout(() => {
-        scrollToBottom();
-      }, 150); // Debounce to reduce scroll frequency
-      return () => clearTimeout(timeoutId);
-    }
-  }, [streamingContent, isStreaming, autoScrollEnabled, scrollToBottom]);
+  // Stable placeholder (only changes when isStreaming changes)
+  const placeholder = useMemo(
+    () => isStreaming ? "Wait for response..." : "Type a message...",
+    [isStreaming]
+  );
 
   // Initialize session on mount
   useEffect(() => {
     setMounted(true);
-
-    // Try to restore session from localStorage
     const savedSessionId = localStorage.getItem("nimbus_session_id");
     if (savedSessionId && !session) {
-      console.log("[Page] Restoring session:", savedSessionId);
       loadSession(savedSessionId);
     } else if (!session) {
       createNewSession();
@@ -121,8 +66,8 @@ export default function Home() {
         <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-500/10 rounded-full blur-[120px]" />
       </div>
 
-      {/* Header - Glassmorphism */}
-      <header className="flex-shrink-0 z-20 px-6 py-4 bg-gray-950/40 backdrop-blur-xl border-b border-white/5 supports-[backdrop-filter]:bg-gray-950/20">
+      {/* Header */}
+      <header className="flex-shrink-0 z-20 px-6 py-4 bg-gray-950/80 border-b border-white/5">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-cyan-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
@@ -148,7 +93,6 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Model Selector */}
             {session && (
               <ModelSelector
                 session={session}
@@ -195,7 +139,6 @@ export default function Home() {
           <div
             ref={messagesContainerRef}
             className="flex-1 overflow-y-auto px-6 py-4 scroll-smooth custom-scrollbar"
-            onScroll={handleScroll}
           >
             {/* Error */}
             {error && (
@@ -218,7 +161,7 @@ export default function Home() {
               </div>
             )}
 
-            {/* Welcome Screen - Only show when no messages and not loading */}
+            {/* Welcome Screen */}
             {messages.length === 0 && !isStreaming && !isLoading && (
               <div className="flex flex-col items-center justify-center h-full text-center animate-in zoom-in-95 duration-500">
                 <div className="w-16 h-16 bg-gradient-to-tr from-blue-600 to-cyan-500 rounded-2xl flex items-center justify-center shadow-2xl shadow-blue-500/20 mb-6">
@@ -252,44 +195,14 @@ export default function Home() {
               </div>
             )}
 
-            {/* Message list */}
-            <ChatList
-              messages={messages}
-              isStreaming={isStreaming}
-              streamingContent={streamingContent}
-              streamingToolCalls={streamingToolCalls}
-            />
+            {/* Message list — ChatList subscribes to streaming internally */}
+            <ChatList messages={messages} />
 
-            <div ref={messagesEndRef} className="h-4" /> {/* Spacer at bottom */}
+            <div ref={messagesEndRef} className="h-4" />
           </div>
 
-          {/* Working Indicator */}
-          {isStreaming && currentActivity && (() => {
-            const isExecutor = currentActivity.startsWith('⚡');
-            const borderColor = isExecutor ? 'border-l-purple-500' : 'border-l-blue-500';
-            const dotColor = isExecutor ? 'bg-purple-400' : 'bg-blue-400';
-            const dotBg = isExecutor ? 'bg-purple-500' : 'bg-blue-500';
-            const textColor = isExecutor ? 'text-purple-300' : 'text-blue-300';
-
-            return (
-              <div className="w-full px-6 pb-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                <div className="max-w-4xl mx-auto">
-                  <div className={`flex items-center gap-3 text-gray-400 text-xs py-2 px-3 bg-gray-900/80 rounded border border-gray-800/50 backdrop-blur-md shadow-lg border-l-4 ${borderColor} transition-all duration-300`}>
-                    <span className="relative flex h-2 w-2">
-                      <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${dotColor} opacity-75`}></span>
-                      <span className={`relative inline-flex rounded-full h-2 w-2 ${dotBg}`}></span>
-                    </span>
-                    <span className={`font-mono ${textColor} font-medium tracking-wide`}>{currentActivity.toUpperCase()}</span>
-                    {thinkingIteration !== null && thinkingIteration > 0 && (
-                      <span className="text-gray-500 font-mono ml-auto">
-                        ITERATION {thinkingIteration + 1}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })()}
+          {/* Working Indicator — subscribes to streaming state internally */}
+          <WorkingIndicator />
 
           {/* Input Area */}
           <div className="flex-shrink-0 p-6 pt-0 bg-transparent">
@@ -298,30 +211,13 @@ export default function Home() {
               onInterrupt={interruptMessage}
               disabled={false}
               isStreaming={isStreaming}
-              isInterrupting={isInterrupting}
-              placeholder={isStreaming ? "Wait for response..." : "Type a message..."}
+              isInterrupting={false}
+              placeholder={placeholder}
             />
           </div>
 
-          {/* Scroll to bottom button */}
-          {userScrolledUp && (isStreaming || messages.length > 3) && (
-            <div className="absolute bottom-24 right-6 z-10">
-              <button
-                onClick={() => {
-                  setAutoScrollEnabled(true);
-                  setUserScrolledUp(false);
-                  scrollToBottom();
-                }}
-                className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-2 rounded-full shadow-lg transition-all duration-200 flex items-center gap-2 border border-blue-500/50 hover:scale-105 active:scale-95"
-              >
-                <span>⬇</span>
-                <span className="hidden sm:inline">To Bottom</span>
-                {isStreaming && (
-                  <div className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"></div>
-                )}
-              </button>
-            </div>
-          )}
+          {/* Scroll controller — subscribes to streaming state internally */}
+          <StreamingScroller containerRef={messagesContainerRef} />
         </main>
 
         {/* File Explorer Sidebar */}
@@ -332,7 +228,7 @@ export default function Home() {
           `}
         >
           {session && (
-            <div className="h-full w-80"> {/* Fixed width container to prevent layout shift during transition */}
+            <div className="h-full w-80">
               <FileExplorer sessionId={session.id} />
             </div>
           )}

@@ -8,9 +8,10 @@ import {
   type ToolCall,
   type ToolResult,
   type ServerMessage,
+  type ChatAttachment,
   createSession,
   streamChat,
-  injectMessage, // New import
+  injectMessage,
   getSessionMessages,
   getSession,
 } from "@/lib/api";
@@ -21,6 +22,7 @@ export interface Message {
   content: string;
   toolCalls?: ToolCall[];
   toolResults?: ToolResult[];
+  attachments?: ChatAttachment[];
   timestamp: number;
 }
 
@@ -93,7 +95,7 @@ interface ChatState {
   ) => Promise<void>;
   switchSession: (session: Session | null) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
-  sendMessage: (content: string) => Promise<void>;
+  sendMessage: (content: string, attachments?: ChatAttachment[]) => Promise<void>;
   interruptMessage: () => void;
   clearError: () => void;
   reset: () => void;
@@ -330,7 +332,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  sendMessage: async (content: string) => {
+  sendMessage: async (content: string, attachments?: ChatAttachment[]) => {
     const { session, messages, isStreaming, messageQueue, isCreatingSession } = get();
 
     // Handle streaming case: Inject message instead of queuing
@@ -340,6 +342,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         id: `user-inject-${Date.now()}`,
         role: "user",
         content: `[追加指令] ${content}`,
+        attachments,
         timestamp: Date.now(),
       };
 
@@ -349,12 +352,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
 
       try {
+        // Note: inject currently only supports text. Attachments are shown in UI but
+        // not sent to backend via inject. For full attachment support, use non-streaming send.
         await injectMessage(session.id, content);
         console.log(`[Store] Injected message into session ${session.id}`);
       } catch (err) {
         console.error("[Store] Failed to inject message:", err);
-        // Maybe show a toast or error status?
-        // For now, keep it simple
       }
       return;
     }
@@ -379,6 +382,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       id: `user-${Date.now()}`,
       role: "user",
       content,
+      attachments,
       timestamp: Date.now(),
     };
 
@@ -408,7 +412,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const UPDATE_INTERVAL = 50; // ms
 
       // Stream response
-      for await (const event of streamChat(currentSession.id, content, abortController.signal)) {
+      for await (const event of streamChat(currentSession.id, content, attachments, abortController.signal)) {
         const { type, data } = event;
 
         switch (type) {
