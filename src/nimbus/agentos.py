@@ -383,6 +383,8 @@ class AgentOS:
         role: str = "",
         system_rules: Optional[str] = None,
         max_iterations: Optional[int] = None,
+        llm_client: Optional[Any] = None,
+        tools_override: Optional[List] = None,
     ) -> str:
         """
         Spawn a new process with the given goal and role.
@@ -392,6 +394,8 @@ class AgentOS:
             role: Optional role identifier for the process
             system_rules: Optional custom system rules (overrides kernel default)
             max_iterations: Optional max VCPU iterations (overrides kernel default)
+            llm_client: Optional LLM client for this process (overrides kernel default)
+            tools_override: Optional explicit tools list. None=inherit from kernel, []=no tools (pure reasoning)
             
         Returns:
             Process ID (pid) of the spawned process
@@ -415,12 +419,17 @@ class AgentOS:
         })
         decoder = InstructionDecoder()
 
-        # Prepare tools list with Memo
-        tools_list = self._tools.get_definitions(format="openai", role=role)
-        tools_list.append({
-            "type": "function",
-            "function": memo_def
-        })
+        # Prepare tools list
+        if tools_override is not None:
+            # Explicit tools list (empty = pure reasoning, no tools)
+            tools_list = list(tools_override)
+        else:
+            # Inherit from kernel (filtered by role) + Memo
+            tools_list = self._tools.get_definitions(format="openai", role=role)
+            tools_list.append({
+                "type": "function",
+                "function": memo_def
+            })
 
         # Determine VCPU config (allow per-process overrides)
         vcpu_config = self.config.vcpu_config
@@ -436,7 +445,7 @@ class AgentOS:
 
         # Create VCPU
         vcpu = VCPU(
-            alu=self._llm,
+            alu=llm_client or self._llm,
             config=vcpu_config,
             decoder=decoder,
             mmu=mmu,
@@ -523,6 +532,37 @@ class AgentOS:
             return await self._run_process(process)
         except asyncio.TimeoutError:
             return _timeout_result()
+
+    async def wait_all(
+        self,
+        pids: List[str],
+        timeout: Optional[float] = None,
+    ) -> Dict[str, "ToolResult"]:
+        """
+        Wait for multiple processes to complete in parallel.
+
+        Args:
+            pids: List of process IDs to wait for
+            timeout: Optional timeout in seconds (applies to each process)
+
+        Returns:
+            Dict mapping pid -> ToolResult
+        """
+        from nimbus.core.protocol import Fault
+
+        async def _safe_wait(pid: str) -> tuple:
+            try:
+                result = await self.wait(pid, timeout=timeout)
+                return pid, result
+            except Exception as e:
+                return pid, ToolResult(
+                    status="ERROR",
+                    fault=Fault(domain="KERNEL", code="WAIT_FAIL", message=str(e)),
+                )
+
+        tasks = [_safe_wait(pid) for pid in pids]
+        completed = await asyncio.gather(*tasks)
+        return dict(completed)
 
     async def run(self, goal: str, role: str = "") -> ToolResult:
         pid = self.spawn(goal, role=role)

@@ -305,6 +305,21 @@ class SessionManagerV2:
                 roles=["core", "chat"],
             )
 
+            # ReviewCommittee tool (AI Review Committee)
+            from nimbus.orchestration.review_tool import ReviewTool, REVIEW_TOOL_DEF
+
+            review_tool = ReviewTool(
+                agent_os=agent_os,
+                workspace=_workspace,
+            )
+            agent_os.register_tool(
+                name="ReviewCommittee",
+                func=review_tool.review,
+                description=REVIEW_TOOL_DEF["description"],
+                parameters=REVIEW_TOOL_DEF["parameters"],
+                roles=["core", "chat"],
+            )
+
             # Store dispatch_tool for lifecycle management
             self._dispatch_tools[session_id] = dispatch_tool
 
