@@ -47,6 +47,15 @@ DISPATCH_TOOL_DEF = {
                     "or constraints the Executor needs to know. Optional."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional: specify which LLM model the Executor should use. "
+                    "Aliases: 'claude'→claude-opus-4-6, 'gpt'→gpt-5.3-codex, 'gemini'→gemini-3-pro-high. "
+                    "Or use full model ID like 'openai-codex/gpt-5.3-codex'. "
+                    "Default: same model as Core Agent."
+                ),
+            },
         },
         "required": ["task"],
     },

@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from loguru import logger
 
+from nimbus.adapters.llm_factory import create_llm_client
 from nimbus.agentos import AgentOS
 
 from .prompts import EXECUTOR_SYSTEM_PROMPT
@@ -52,6 +53,21 @@ class DispatchToolConfig:
     auto_inject_context: bool = True
     context_max_file_size: int = 8000
     context_max_files: int = 8
+
+    # Model alias mapping for Executor
+    model_aliases: Dict[str, str] = field(default_factory=lambda: {
+        # Short aliases
+        "claude": "anthropic/claude-opus-4-6",
+        "opus": "anthropic/claude-opus-4-6",
+        "sonnet": "anthropic/claude-sonnet-4-20250514",
+        "gpt": "openai-codex/gpt-5.3-codex",
+        "gpt5": "openai-codex/gpt-5.3-codex",
+        "gpt-5.3": "openai-codex/gpt-5.3-codex",
+        "codex": "openai-codex/gpt-5.3-codex",
+        "gemini": "google-antigravity/gemini-3-pro-high",
+        "gemini3": "google-antigravity/gemini-3-pro-high",
+        "gemini-pro": "google-antigravity/gemini-3-pro-high",
+    })
 
 
 class DispatchTool:
@@ -170,12 +186,28 @@ class DispatchTool:
         # For now, let's spawn a fresh process for each dispatch, 
         # but we could implement state persistence later.
         
+        # --- Resolve model for Executor ---
+        executor_llm = None
+        model_name = kwargs.get("model", "")
+        if model_name:
+            # Resolve alias
+            resolved = self._config.model_aliases.get(model_name.lower().strip(), model_name)
+            # Ensure it has provider prefix
+            if "/" not in resolved:
+                resolved = self._config.model_aliases.get(resolved.lower(), resolved)
+            try:
+                executor_llm = await create_llm_client(resolved)
+                logger.info(f"  🤖 Executor using model: {resolved}")
+            except Exception as e:
+                logger.warning(f"  ⚠️ Failed to create LLM for {resolved}: {e}, using default")
+
         # NOTE: Native spawn with role="executor"
         pid = self._agent_os.spawn(
             goal=executor_goal, 
             role="executor", 
             system_rules=self._config.executor_system_prompt,
             max_iterations=self._config.executor_max_iterations,
+            llm_client=executor_llm,
         )
         self._executor_pid = pid
         
