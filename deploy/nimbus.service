@@ -1,0 +1,19 @@
+[Unit]
+Description=Nimbus AI Agent Framework
+After=network.target
+
+[Service]
+Type=forking
+User=wangqing
+WorkingDirectory=/Users/wangqing/sourcecode/agent/agent-framework/nimbus
+Environment="PI_AI_PORT=3031"
+Environment="NIMBUS_PORT=4096"
+Environment="WEBUI_PORT=3000"
+ExecStart=/Users/wangqing/sourcecode/agent/agent-framework/nimbus/nimbus start
+ExecStop=/Users/wangqing/sourcecode/agent/agent-framework/nimbus/nimbus stop
+ExecReload=/Users/wangqing/sourcecode/agent/agent-framework/nimbus/nimbus restart
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target

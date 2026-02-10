@@ -615,7 +615,7 @@ class AgentOS:
                         "type": "tool_call",
                         "name": tool_name,
                         "args": tool_args,
-                        "call_id": tool_id,
+                        "action_id": tool_id,
                     }
                     if i < len(result.results):
                         tool_result = result.results[i]
@@ -623,12 +623,17 @@ class AgentOS:
                             "type": "tool_result",
                             "name": tool_name,
                             "args": tool_args,
-                            "tool_use_id": tool_id,
-                            "content": getattr(tool_result, "output", str(tool_result)),
+                            "action_id": tool_id,
+                            "output": getattr(tool_result, "output", str(tool_result)),
+                            "status": getattr(tool_result, "status", "OK"),
+                            "duration_ms": getattr(tool_result, "meta", {}).get("duration_ms") if hasattr(tool_result, "meta") else None,
                         }
                 elif action_kind == "THOUGHT":
-                    content = action.args.get("content", "") if action.args else ""
+                    content = action.args.get("content", action.args.get("text", "")) if action.args else ""
                     if content:
+                        # Check if this thought was blocked by hallucination firewall
+                        if i < len(result.results) and getattr(result.results[i], "meta", {}).get("hallucination_blocked"):
+                            continue  # Skip — firewall blocked this
                         yield {"type": "text", "content": content}
                 elif action_kind == "RETURN":
                     result_value = action.args.get("result", "") if action.args else ""

@@ -582,7 +582,23 @@ class VCPU:
                 )
 
             # Callback for streaming thinking process
+            # Buffer content to detect hallucination before emitting
+            _stream_buffer = {"text": "", "suppressed": False}
+
             def on_think_chunk(chunk: str):
+                _stream_buffer["text"] += chunk
+                # Check if accumulated text contains hallucination pattern
+                if not _stream_buffer["suppressed"]:
+                    from nimbus.core.runtime.decoder import InstructionDecoder
+                    for pattern in InstructionDecoder.HALLUCINATION_PATTERNS:
+                        if pattern in _stream_buffer["text"]:
+                            _stream_buffer["suppressed"] = True
+                            logger.warning(
+                                f"🛡️ Hallucination firewall (stream): Suppressing output containing '{pattern}'"
+                            )
+                            return
+                if _stream_buffer["suppressed"]:
+                    return  # Swallow all subsequent chunks for this response
                 self._emit_event("THINKING", {"content": chunk})
 
             response = await self.alu.chat(messages, tools=tools_to_pass, on_chunk=on_think_chunk)
@@ -659,24 +675,39 @@ class VCPU:
             #   Phase 2: Execute the tool calls
             split_response = False
             if response.content and response.content.strip() and response.tool_calls:
-                logger.info(
-                    "🔀 Detected mixed response (content + tool_calls). Splitting into thought → action."
-                )
-                split_response = True
-                
-                # First, emit the content as a THOUGHT action
-                thought_action = ActionIR(
-                    kind="THOUGHT", 
-                    name="thought", 
-                    args={"text": response.content.strip()}
-                )
-                
-                # Execute the thought immediately (just yields to stream)
-                thought_result = await self._execute_action(thought_action)
-                step_result.results.append(thought_result)
-                
-                # Add assistant message with only content to MMU (for context continuity)
-                self.mmu.add_assistant_message(response.content)
+                # Hallucination firewall for mixed responses:
+                # If content is hallucinated, strip it and keep only tool_calls
+                from nimbus.core.runtime.decoder import InstructionDecoder
+                content_is_hallucination = False
+                for pattern in InstructionDecoder.HALLUCINATION_PATTERNS:
+                    if pattern in response.content:
+                        content_is_hallucination = True
+                        logger.warning(
+                            f"🛡️ Hallucination firewall (mixed): Stripping hallucinated content, "
+                            f"keeping tool_calls. Content: {response.content[:100]}..."
+                        )
+                        response.content = None
+                        break
+
+                if not content_is_hallucination:
+                    logger.info(
+                        "🔀 Detected mixed response (content + tool_calls). Splitting into thought → action."
+                    )
+                    split_response = True
+                    
+                    # First, emit the content as a THOUGHT action
+                    thought_action = ActionIR(
+                        kind="THOUGHT", 
+                        name="thought", 
+                        args={"text": response.content.strip()}
+                    )
+                    
+                    # Execute the thought immediately (just yields to stream)
+                    thought_result = await self._execute_action(thought_action)
+                    step_result.results.append(thought_result)
+                    
+                    # Add assistant message with only content to MMU (for context continuity)
+                    self.mmu.add_assistant_message(response.content)
 
             # 2. DECODE: Parse into ActionIR
             decode_start = time.time_ns()
@@ -687,6 +718,35 @@ class VCPU:
                     content=decode_content, tool_calls=response.tool_calls
                 )
             except Fault as f:
+                # If it's a hallucination fault, inject correction and let caller retry
+                if f.code == "ILL_INSTRUCTION":
+                    self._state.hallucination_count = getattr(self._state, 'hallucination_count', 0) + 1
+                    max_hallucinations = 3
+                    if self._state.hallucination_count >= max_hallucinations:
+                        logger.error(
+                            f"🛑 Hallucination limit ({max_hallucinations}) reached. "
+                            f"Gemini cannot stop hallucinating. Forcing completion."
+                        )
+                        step_result.is_final = True
+                        step_result.final_result = ToolResult(
+                            status="OK",
+                            output="(Task could not be completed - model produced invalid responses)",
+                            is_final=True,
+                        )
+                        self._state.is_done = True
+                        step_result.timing_ms["total"] = (time.time_ns() - start_time) // 1_000_000
+                        return step_result
+                    # Inject correction into context so LLM sees it next turn
+                    self.mmu.add_assistant_message("I need to use proper function calls.")
+                    self.mmu.add_user_message(
+                        "[System] You just output text instead of calling tools. "
+                        "Use the function calling API. Do NOT write tool calls as text. "
+                        "Call the tools directly."
+                    )
+                    logger.warning(
+                        f"🛡️ Hallucination #{self._state.hallucination_count}: "
+                        f"injected correction into context"
+                    )
                 step_result.fault = f
                 step_result.timing_ms["total"] = (time.time_ns() - start_time) // 1_000_000
                 if self.tracer:
@@ -743,6 +803,31 @@ class VCPU:
                         content=None, tool_calls=tool_calls_for_storage
                     )
             elif response.content:
+                # Hallucination firewall: check BEFORE adding to memory
+                # If the response is a hallucinated tool call in text form,
+                # don't add it to memory and force a retry.
+                is_hallucination = False
+                if not response.tool_calls:
+                    from nimbus.core.runtime.decoder import InstructionDecoder
+                    for pattern in InstructionDecoder.HALLUCINATION_PATTERNS:
+                        if pattern in response.content:
+                            is_hallucination = True
+                            logger.warning(
+                                f"🛡️ Hallucination firewall: Response contains '{pattern}', "
+                                f"discarding. Content: {response.content[:100]}..."
+                            )
+                            break
+
+                if is_hallucination:
+                    # Don't add to memory. Inject a correction and return non-final.
+                    self.mmu.add_user_message(
+                        "[System] Your previous response contained text-formatted tool calls "
+                        "instead of actual function calls. Please use the provided tools directly. "
+                        "Do NOT output tool calls as text."
+                    )
+                    step_result.timing_ms["total"] = (time.time_ns() - start_time) // 1_000_000
+                    return step_result  # Return with is_final=False, caller will retry
+
                 # Add text-only assistant message (Implicit Return / Thought)
                 # Skip if we already added it in split phase
                 if not split_response:
@@ -1143,6 +1228,29 @@ class VCPU:
             "result",
             action.args.get("output", action.args.get("content", action.args.get("text", ""))),
         )
+
+        # Hallucination firewall: if the THOUGHT content is a hallucinated tool call,
+        # discard it and let the loop continue (non-final) so LLM retries properly.
+        if action.kind == "THOUGHT" and result:
+            from nimbus.core.runtime.decoder import InstructionDecoder
+            for pattern in InstructionDecoder.HALLUCINATION_PATTERNS:
+                if pattern in result:
+                    logger.warning(
+                        f"🛡️ Hallucination firewall: THOUGHT contains '{pattern}', "
+                        f"discarding and retrying. Content: {str(result)[:100]}..."
+                    )
+                    # Add a nudge message so LLM knows to use real tool calls
+                    self.mmu.add_user_message(
+                        "[System] Your previous response contained text-formatted tool calls "
+                        "instead of actual function calls. Please use the provided tools directly. "
+                        "Do NOT output tool calls as text."
+                    )
+                    return ToolResult(
+                        status="OK",
+                        output="",
+                        is_final=False,  # Not final — let the loop continue
+                        meta={"hallucination_blocked": True},
+                    )
 
         self._emit_event(
             "PROC_FINISHED",

@@ -249,49 +249,84 @@ def _fmt(passed: bool, msg: str) -> str:
 # Core Bash Whitelist Filter
 # =============================================================================
 
-CORE_BASH_WHITELIST_PREFIXES = [
-    # Search
-    "grep", "egrep", "fgrep", "rg", "ag",
-    # File discovery
-    "find", "fd", "locate",
-    # Directory browsing
-    "ls", "tree", "du",
-    # File viewing
-    "cat", "head", "tail", "less", "more", "bat",
-    # File info
-    "wc", "stat", "file", "md5sum", "sha256sum",
-    # Comparison
-    "diff", "comm",
-    # Output
-    "echo", "printf",
-    # Command lookup
-    "which", "type", "whereis",
-    # Environment
-    "env", "printenv",
-    # Network check (read-only, GET only)
-    "nc -z",
-    # Process inspection
-    "pgrep", "ps", "lsof",
-    # Git read-only
-    "git status", "git log", "git diff", "git show", "git branch",
-    # Other read-only
-    "date", "uname", "hostname", "whoami", "id",
-    "pip list", "pip show", "pip freeze",
-    "npm list", "npm ls",
-    "test ", "[ ",  # shell test expressions
+# Blacklist: commands that can modify files, install packages, or execute arbitrary code.
+# Everything NOT on this list is allowed for the Core agent.
+CORE_BASH_BLACKLIST_PREFIXES = [
+    # File mutation
+    "rm ", "rm\t", "rmdir", "mv ", "mv\t", "cp ", "cp\t",
+    "mkdir", "touch", "chmod", "chown", "chgrp",
+    "truncate", "shred", "dd ",
+    "ln ", "ln\t",  # symlinks
+    "install ",  # coreutils install
+    # File writing tools
+    "tee ", "tee\t",
+    "sed -i", "sed --in-place",  # in-place sed (read-only sed is fine)
+    # Package managers (install/uninstall)
+    "pip install", "pip uninstall", "pip3 install", "pip3 uninstall",
+    "npm install", "npm uninstall", "npm ci", "npm run", "npx ",
+    "yarn add", "yarn remove", "yarn install",
+    "pnpm add", "pnpm remove", "pnpm install",
+    "brew install", "brew uninstall", "brew upgrade",
+    "apt ", "apt-get ", "yum ", "dnf ", "pacman ",
+    # Git write operations
+    "git add", "git commit", "git push", "git checkout", "git switch",
+    "git reset", "git merge", "git rebase", "git cherry-pick",
+    "git stash", "git tag", "git rm", "git mv", "git clean",
+    "git restore",  # can modify working tree
+    # Arbitrary code execution
+    "python ", "python3 ", "python\t", "python3\t",
+    "node ", "node\t",
+    "ruby ", "perl ", "lua ",
+    "sh ", "sh\t", "bash ", "bash\t", "zsh ", "zsh\t",
+    "eval ", "exec ",
+    # Dangerous network
+    "wget ", "curl -o", "curl -O", "curl --output",
+    "scp ", "rsync ", "sftp ",
+    # System
+    "kill ", "killall ", "pkill ",
+    "sudo ", "su ",
+    "systemctl", "service ",
+    "crontab",
+    "reboot", "shutdown", "halt",
+]
+
+# Patterns that indicate write operations anywhere in the command
+CORE_BASH_BLACKLIST_PATTERNS = [
+    " > ",  " >> ",   # output redirection
+    "\t> ", "\t>> ",
+    ">/",   ">>/",    # redirect without space (e.g., >/dev/null is ok, but catch file writes)
+]
+
+# Safe redirect targets (these are OK even with >)
+SAFE_REDIRECT_TARGETS = [
+    "/dev/null",
 ]
 
 
-def _is_curl_readonly(command: str) -> bool:
-    """Check if a curl command is read-only (GET only, no data upload)."""
-    # Block flags that enable writes or data exfiltration
+def _has_dangerous_redirect(command: str) -> bool:
+    """Check if command has output redirection to a real file."""
+    import re
+    # Find all redirect patterns: >, >>
+    # But allow > /dev/null and 2>&1
+    redirects = re.findall(r'(?:^|[^2&])>{1,2}\s*(\S+)', command)
+    for target in redirects:
+        if target in SAFE_REDIRECT_TARGETS:
+            continue
+        if target.startswith("&"):  # 2>&1 style
+            continue
+        return True
+    return False
+
+
+def _is_curl_safe(command: str) -> bool:
+    """Check if a curl command is safe (no write flags)."""
     dangerous_flags = [
         "-X POST", "-X PUT", "-X DELETE", "-X PATCH",
         "-d ", "--data", "--data-raw", "--data-binary", "--data-urlencode",
         "-F ", "--form",
         "-T ", "--upload-file",
-        "-o ", "--output",  # writing to file
-        "-O",  # writing to file (remote name)
+        "-o ", "--output",
+        "-O",
     ]
     for flag in dangerous_flags:
         if flag in command:
@@ -301,28 +336,43 @@ def _is_curl_readonly(command: str) -> bool:
 
 def is_command_readonly(command: str) -> bool:
     """
-    Check if a command matches the Core agent's read-only whitelist.
+    Check if a command is safe for the Core agent using a blacklist approach.
 
-    Uses prefix matching. Returns True if the command is allowed.
+    Blocks known dangerous commands (file mutation, package install, code execution, etc).
+    Everything else is allowed, making the Core agent much more capable for read/analysis tasks.
     """
     cmd = command.strip()
-    # Allow pipes and chains if each segment is whitelisted
-    # But for simplicity, just check the primary command
-    # (pipes like `grep ... | wc -l` are fine)
+    if not cmd:
+        return False
 
     # Strip leading env vars like KEY=val
-    while "=" in cmd.split()[0] if cmd.split() else False:
+    while cmd and "=" in (cmd.split()[0] if cmd.split() else ""):
         cmd = cmd.split(None, 1)[1] if " " in cmd else ""
 
-    # Special handling: curl is allowed but only for read-only (GET) requests
+    # Check for dangerous redirects
+    if _has_dangerous_redirect(cmd):
+        return False
+
+    # Special handling for curl
     if cmd.startswith("curl"):
-        return _is_curl_readonly(cmd)
+        return _is_curl_safe(cmd)
 
-    for prefix in CORE_BASH_WHITELIST_PREFIXES:
+    # Check blacklist prefixes
+    for prefix in CORE_BASH_BLACKLIST_PREFIXES:
         if cmd.startswith(prefix):
-            return True
+            return False
 
-    return False
+    # Check piped commands - each segment must be safe
+    # Only check if there are actual pipes (not || which is logical OR)
+    if " | " in cmd:
+        segments = cmd.split(" | ")
+        for segment in segments[1:]:  # first segment already checked above
+            seg = segment.strip()
+            for prefix in CORE_BASH_BLACKLIST_PREFIXES:
+                if seg.startswith(prefix):
+                    return False
+
+    return True
 
 
 # =============================================================================

@@ -1,0 +1,59 @@
+head: error reading '/proc/self/exe': Bad file descriptor
+head: failed to close '/proc/self/exe': Bad file descriptor
+ERROR: unknown platform bitness
+sh: 1812: [: Illegal number: 
+downloading uv 0.7.13 x86_64-unknown-linux-gnu
+no checksums to verify
+installing to /root/.local/bin
+  uv
+  uvx
+everything's installed!
+
+To add $HOME/.local/bin to your PATH, either restart your shell or run:
+
+    source $HOME/.local/bin/env (sh, bash, zsh)
+    source $HOME/.local/bin/env.fish (fish)
+<jemalloc>: MADV_DONTNEED does not work (memset will be used instead)
+<jemalloc>: (This is the expected behaviour if you are running under QEMU)
+Initialized project `app`
+<jemalloc>: MADV_DONTNEED does not work (memset will be used instead)
+<jemalloc>: (This is the expected behaviour if you are running under QEMU)
+Using CPython 3.12.3 interpreter at: /usr/bin/python3.12
+Creating virtual environment at: .venv
+Resolved 7 packages in 5.98s
+Downloading pygments (1.2MiB)
+ Downloading pygments
+Prepared 5 packages in 3.47s
+Installed 5 packages in 26ms
+ + iniconfig==2.3.0
+ + packaging==26.0
+ + pluggy==1.6.0
+ + pygments==2.19.2
+ + pytest==8.4.1
+<jemalloc>: MADV_DONTNEED does not work (memset will be used instead)
+<jemalloc>: (This is the expected behaviour if you are running under QEMU)
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.4.1, pluggy-1.6.0
+rootdir: /tests
+collected 1 item
+
+../tests/test_outputs.py F                                               [100%]
+
+=================================== FAILURES ===================================
+____________________________ test_hello_html_exists ____________________________
+
+    def test_hello_html_exists():
+        """Test that the hello.html file exists and contains the correct content."""
+        result = subprocess.run(
+            ["bash", "/tests/verify.sh"], capture_output=True, text=True
+        )
+    
+>       assert "TEST PASSED" in result.stdout, "Did not pass test"
+E       AssertionError: Did not pass test
+E       assert 'TEST PASSED' in "Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease\nHit:2 http://archive.ubuntu.com/ubuntu noble-updates InReleas...Content does not match expected output\nExpected: 'hello world'\nGot: 'hello world\nupdated content'\nTest completed\n"
+E        +  where "Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease\nHit:2 http://archive.ubuntu.com/ubuntu noble-updates InReleas...Content does not match expected output\nExpected: 'hello world'\nGot: 'hello world\nupdated content'\nTest completed\n" = CompletedProcess(args=['bash', '/tests/verify.sh'], returncode=0, stdout="Hit:1 http://archive.ubuntu.com/ubuntu noble...t installed\nexpect: spawn id exp3 not open\n    while executing\n"expect eof"\n    (file "./git_test.exp" line 15)\n').stdout
+
+/tests/test_outputs.py:15: AssertionError
+=========================== short test summary info ============================
+FAILED ../tests/test_outputs.py::test_hello_html_exists - AssertionError: Did...
+============================== 1 failed in 32.93s ==============================

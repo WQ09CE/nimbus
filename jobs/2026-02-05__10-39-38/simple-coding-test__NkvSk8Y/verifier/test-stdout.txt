@@ -1,0 +1,13 @@
+PASS: fibonacci(0) = 0
+PASS: fibonacci(1) = 1
+PASS: fibonacci(2) = 1
+PASS: fibonacci(3) = 2
+PASS: fibonacci(4) = 3
+PASS: fibonacci(5) = 5
+PASS: fibonacci(10) = 55
+PASS: fibonacci(15) = 610
+PASS: fibonacci(-1) correctly raises ValueError
+
+Results: 9/9 tests passed
+Score: 1.00
+All tests passed!

@@ -51,6 +51,8 @@ class InstructionDecoder:
         "```tool",
         "<tool_call>",
         "<function_call>",
+        "[Historical context:",  # Fix for GPT-5.3/Gemini hallucinating context
+        "Do not mimic this format",
     ]
 
     # Special tool names that map to control flow actions

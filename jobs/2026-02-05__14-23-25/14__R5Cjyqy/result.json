@@ -1,0 +1,92 @@
+{
+    "id": "2e36b357-e878-427d-9083-5f9dcf386074",
+    "task_name": "14",
+    "trial_name": "14__R5Cjyqy",
+    "trial_uri": "file:///Users/wangqing/sourcecode/agent/agent-framework/nimbus/jobs/2026-02-05__14-23-25/14__R5Cjyqy",
+    "task_id": {
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "c7645920aa236bace409d73e0fa64e805befbfb6",
+        "path": "datasets/evoeval/14"
+    },
+    "source": "evoeval",
+    "task_checksum": "afff74c6206b54cfe7cb433f42fd49cc3fba6e03917b90598f78da9faef81b4e",
+    "config": {
+        "task": {
+            "path": "datasets/evoeval/14",
+            "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+            "git_commit_id": "c7645920aa236bace409d73e0fa64e805befbfb6",
+            "overwrite": false,
+            "download_dir": null,
+            "source": "evoeval"
+        },
+        "trial_name": "14__R5Cjyqy",
+        "trials_dir": "jobs/2026-02-05__14-23-25",
+        "timeout_multiplier": 1.0,
+        "agent": {
+            "name": null,
+            "import_path": "nimbus_harbor.nimbus_agent:NimbusAgent",
+            "model_name": null,
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "kwargs": {}
+        },
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "kwargs": {}
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "job_id": "51c85e49-b203-4186-a0df-eb7554321bfe"
+    },
+    "agent_info": {
+        "name": "nimbus",
+        "version": "0.1.0",
+        "model_info": {
+            "name": "claude-sonnet-4-20250514",
+            "provider": "anthropic"
+        }
+    },
+    "agent_result": {
+        "n_input_tokens": null,
+        "n_cache_tokens": null,
+        "n_output_tokens": null,
+        "cost_usd": null,
+        "rollout_details": null,
+        "metadata": null
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 0.0
+        }
+    },
+    "exception_info": null,
+    "started_at": "2026-02-05T07:01:31.106422Z",
+    "finished_at": "2026-02-05T07:05:41.589597Z",
+    "environment_setup": {
+        "started_at": "2026-02-05T07:01:31.107251Z",
+        "finished_at": "2026-02-05T07:01:31.661537Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-02-05T07:01:31.661560Z",
+        "finished_at": "2026-02-05T07:01:58.634103Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-02-05T07:01:58.634161Z",
+        "finished_at": "2026-02-05T07:05:30.919945Z"
+    },
+    "verifier": {
+        "started_at": "2026-02-05T07:05:30.920068Z",
+        "finished_at": "2026-02-05T07:05:31.322562Z"
+    }
+}

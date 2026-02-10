@@ -462,12 +462,63 @@ async def send_message(
                     yield format_sse("content.delta", {"text": response_text})
                     yield format_sse("content.done", {})
 
+                elif status_type == "text":
+                    # THOUGHT action from vCPU
+                    text = status.get("content", "")
+                    if text:
+                        response_text = text
+                        yield format_sse("content.delta", {"text": text})
+
+                elif status_type == "tool_call":
+                    # Tool call from vCPU run_stream
+                    yield format_sse(
+                        "tool.start",
+                        {
+                            "taskID": status.get("call_id", ""),
+                            "name": status.get("name", ""),
+                            "input": status.get("args", {}),
+                        },
+                    )
+
+                elif status_type == "tool_result":
+                    # Tool result from vCPU run_stream
+                    content = status.get("content", "")
+                    yield format_sse(
+                        "tool.done",
+                        {
+                            "taskID": status.get("tool_use_id", ""),
+                            "name": status.get("name", ""),
+                            "result": str(content)[:1000],
+                        },
+                    )
+
+                elif status_type == "done":
+                    # Final result from vCPU
+                    result = status.get("result", {})
+                    output = result.get("output", "") if isinstance(result, dict) else str(result)
+                    if output and not response_text:
+                        response_text = output
+                        yield format_sse("content.delta", {"text": output})
+                    elif output and output != response_text:
+                        response_text = output
+                        yield format_sse("content.delta", {"text": output})
+                    yield format_sse("content.done", {})
+
+                elif status_type == "compaction":
+                    yield format_sse(
+                        "event.status",
+                        {
+                            "status": "compacting",
+                            "message": status.get("message", "Compacting context..."),
+                        },
+                    )
+
                 elif status_type == "error":
                     yield format_sse(
                         "event.error",
                         {
                             "code": "execution_error",
-                            "message": status.get("content", "Unknown error"),
+                            "message": status.get("content", status.get("message", "Unknown error")),
                         },
                     )
 

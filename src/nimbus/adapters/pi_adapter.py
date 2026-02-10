@@ -80,6 +80,7 @@ class PiLLMConfig:
     timeout: float = 120.0
     temperature: Optional[float] = None
     thinking: Optional[bool] = None
+    stop: Optional[List[str]] = None
 
     def get_model(self) -> str:
         """获取完整的模型名"""
@@ -330,6 +331,7 @@ class PiLLMAdapter:
             tools=http_tools,
             temperature=self.config.temperature,
             thinking=self.config.thinking,
+            stop=self.config.stop,
         ):
             if event.type == "delta":
                 yield LLMStreamEvent(type="text", text=event.content or "")

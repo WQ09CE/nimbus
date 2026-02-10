@@ -1,0 +1,92 @@
+{
+    "id": "af64790f-edd2-4c2a-a3ce-56d5ff50f2db",
+    "task_name": "chess-best-move",
+    "trial_name": "chess-best-move__RZ6DZg7",
+    "trial_uri": "file:///Users/wangqing/sourcecode/agent/agent-framework/nimbus/jobs/tb-sample-v4/2026-02-05__21-17-19/chess-best-move__RZ6DZg7",
+    "task_id": {
+        "git_url": "https://github.com/laude-institute/terminal-bench-2-0-sample.git",
+        "git_commit_id": "7e917f35c281188532772312d4ad91ca9274febc",
+        "path": "sample/chess-best-move"
+    },
+    "source": "terminal-bench-sample",
+    "task_checksum": "f75ce4b6d83603dec44a49bc0548196c18d4308a6db3c07bbfcf53aa4324e754",
+    "config": {
+        "task": {
+            "path": "sample/chess-best-move",
+            "git_url": "https://github.com/laude-institute/terminal-bench-2-0-sample.git",
+            "git_commit_id": "7e917f35c281188532772312d4ad91ca9274febc",
+            "overwrite": false,
+            "download_dir": null,
+            "source": "terminal-bench-sample"
+        },
+        "trial_name": "chess-best-move__RZ6DZg7",
+        "trials_dir": "jobs/tb-sample-v4/2026-02-05__21-17-19",
+        "timeout_multiplier": 1.0,
+        "agent": {
+            "name": null,
+            "import_path": "nimbus_harbor.nimbus_agent:NimbusAgent",
+            "model_name": null,
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "kwargs": {}
+        },
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "kwargs": {}
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "job_id": "06edf60b-bc07-42b4-ae4a-d5e369694011"
+    },
+    "agent_info": {
+        "name": "nimbus",
+        "version": "0.1.0",
+        "model_info": {
+            "name": "claude-sonnet-4-5",
+            "provider": "anthropic"
+        }
+    },
+    "agent_result": {
+        "n_input_tokens": null,
+        "n_cache_tokens": null,
+        "n_output_tokens": null,
+        "cost_usd": null,
+        "rollout_details": null,
+        "metadata": null
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 0.0
+        }
+    },
+    "exception_info": null,
+    "started_at": "2026-02-05T13:17:25.773168Z",
+    "finished_at": "2026-02-05T13:20:45.044011Z",
+    "environment_setup": {
+        "started_at": "2026-02-05T13:17:25.774554Z",
+        "finished_at": "2026-02-05T13:17:53.941923Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-02-05T13:17:53.941942Z",
+        "finished_at": "2026-02-05T13:19:22.503002Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-02-05T13:19:22.503141Z",
+        "finished_at": "2026-02-05T13:19:44.875945Z"
+    },
+    "verifier": {
+        "started_at": "2026-02-05T13:19:44.876074Z",
+        "finished_at": "2026-02-05T13:20:34.253391Z"
+    }
+}

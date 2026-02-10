@@ -1,0 +1,45 @@
+{
+    "id": "7b1b5ffc-eb36-4668-9377-d6d266c7d00a",
+    "started_at": "2026-02-05T16:43:02.023902",
+    "finished_at": null,
+    "n_total_trials": 10,
+    "stats": {
+        "n_trials": 10,
+        "n_errors": 8,
+        "evals": {
+            "nimbus__claude-sonnet-4-5__terminal-bench-sample": {
+                "n_trials": 3,
+                "n_errors": 8,
+                "metrics": [
+                    {
+                        "mean": 0.3
+                    }
+                ],
+                "reward_stats": {
+                    "reward": {
+                        "1.0": [
+                            "fix-code-vulnerability__hSwJLem",
+                            "log-summary-date-ranges__kkFfdtR",
+                            "build-cython-ext__8cfV2W5"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "RuntimeError": [
+                        "chess-best-move__c9Q3Muc",
+                        "sqlite-with-gcov__z8mBbSa",
+                        "polyglot-c-py__qHKLSNu",
+                        "qemu-startup__4uZaH7x",
+                        "regex-log__Uw87jXT",
+                        "qemu-alpine-ssh__RT4fxhr",
+                        "configure-git-webserver__HYEd9qH"
+                    ],
+                    "AgentTimeoutError": [
+                        "build-cython-ext__8cfV2W5"
+                    ]
+                }
+            }
+        }
+    },
+    "trial_results": []
+}

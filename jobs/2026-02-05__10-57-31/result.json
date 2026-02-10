@@ -1,0 +1,29 @@
+{
+    "id": "f01f3b3c-36af-4575-8e28-1e0999f3ceb5",
+    "started_at": "2026-02-05T10:57:31.925368",
+    "finished_at": "2026-02-05T10:58:11.271862",
+    "n_total_trials": 1,
+    "stats": {
+        "n_trials": 1,
+        "n_errors": 0,
+        "evals": {
+            "nimbus__claude-sonnet-4-20250514__adhoc": {
+                "n_trials": 1,
+                "n_errors": 0,
+                "metrics": [
+                    {
+                        "mean": 0.0
+                    }
+                ],
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "simple-coding-test__XEth9Rh"
+                        ]
+                    }
+                },
+                "exception_stats": {}
+            }
+        }
+    }
+}

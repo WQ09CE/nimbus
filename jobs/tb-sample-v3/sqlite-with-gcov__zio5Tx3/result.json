@@ -1,0 +1,92 @@
+{
+    "id": "5223d196-b0b0-4253-a306-f89ee12fa5cd",
+    "task_name": "sqlite-with-gcov",
+    "trial_name": "sqlite-with-gcov__zio5Tx3",
+    "trial_uri": "file:///Users/wangqing/sourcecode/agent/agent-framework/nimbus/jobs/tb-sample-v3/sqlite-with-gcov__zio5Tx3",
+    "task_id": {
+        "git_url": "https://github.com/laude-institute/terminal-bench-2-0-sample.git",
+        "git_commit_id": "7e917f35c281188532772312d4ad91ca9274febc",
+        "path": "sample/sqlite-with-gcov"
+    },
+    "source": "terminal-bench-sample",
+    "task_checksum": "c65579430697a10d93b59685c767111e1e42041117889a3deffaff334215c1d5",
+    "config": {
+        "task": {
+            "path": "sample/sqlite-with-gcov",
+            "git_url": "https://github.com/laude-institute/terminal-bench-2-0-sample.git",
+            "git_commit_id": "7e917f35c281188532772312d4ad91ca9274febc",
+            "overwrite": false,
+            "download_dir": null,
+            "source": "terminal-bench-sample"
+        },
+        "trial_name": "sqlite-with-gcov__zio5Tx3",
+        "trials_dir": "jobs/tb-sample-v3",
+        "timeout_multiplier": 1.0,
+        "agent": {
+            "name": null,
+            "import_path": "nimbus_harbor.nimbus_agent:NimbusAgent",
+            "model_name": null,
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "kwargs": {}
+        },
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "kwargs": {}
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "job_id": "45910b86-571b-4c84-bfe9-a761dd5d51ba"
+    },
+    "agent_info": {
+        "name": "nimbus",
+        "version": "0.1.0",
+        "model_info": {
+            "name": "claude-sonnet-4-5",
+            "provider": "anthropic"
+        }
+    },
+    "agent_result": {
+        "n_input_tokens": null,
+        "n_cache_tokens": null,
+        "n_output_tokens": null,
+        "cost_usd": null,
+        "rollout_details": null,
+        "metadata": null
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 1.0
+        }
+    },
+    "exception_info": null,
+    "started_at": "2026-02-05T09:26:46.344339Z",
+    "finished_at": "2026-02-05T09:37:27.512647Z",
+    "environment_setup": {
+        "started_at": "2026-02-05T09:26:46.354184Z",
+        "finished_at": "2026-02-05T09:27:02.367559Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-02-05T09:27:02.367673Z",
+        "finished_at": "2026-02-05T09:29:48.732611Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-02-05T09:29:48.732730Z",
+        "finished_at": "2026-02-05T09:36:36.030021Z"
+    },
+    "verifier": {
+        "started_at": "2026-02-05T09:36:36.030124Z",
+        "finished_at": "2026-02-05T09:37:16.872604Z"
+    }
+}

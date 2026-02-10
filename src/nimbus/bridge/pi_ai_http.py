@@ -168,6 +168,7 @@ class PiAiHttpClient:
         stream: bool = False,
         temperature: Optional[float] = None,
         thinking: Optional[bool] = None,
+        stop: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """构建请求"""
         # 转换消息格式
@@ -195,6 +196,9 @@ class PiAiHttpClient:
         if thinking is not None:
             req["thinking"] = thinking
 
+        if stop is not None:
+            req["stop"] = stop
+
         return req
 
     async def complete(
@@ -204,6 +208,7 @@ class PiAiHttpClient:
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: Optional[float] = None,
         thinking: Optional[bool] = None,
+        stop: Optional[List[str]] = None,
     ) -> CompletionResult:
         """非流式完成"""
         if self._client is None:
@@ -220,6 +225,7 @@ class PiAiHttpClient:
             stream=False,
             temperature=temperature,
             thinking=thinking,
+            stop=stop,
         )
 
         # Log request info
@@ -302,6 +308,7 @@ class PiAiHttpClient:
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: Optional[float] = None,
         thinking: Optional[bool] = None,
+        stop: Optional[List[str]] = None,
     ) -> AsyncIterator[StreamEvent]:
         """流式完成"""
         if self._client is None:
@@ -318,6 +325,7 @@ class PiAiHttpClient:
             stream=True,
             temperature=temperature,
             thinking=thinking,
+            stop=stop,
         )
 
         # Log request info

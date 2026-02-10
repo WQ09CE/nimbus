@@ -1,0 +1,15 @@
+Traceback (most recent call last):
+  File "/Users/wangqing/sourcecode/agent/agent-framework/nimbus/.venv/lib/python3.13/site-packages/harbor/trial/trial.py", line 359, in run
+    await self._setup_agent()
+  File "/Users/wangqing/sourcecode/agent/agent-framework/nimbus/.venv/lib/python3.13/site-packages/harbor/trial/trial.py", line 232, in _setup_agent
+    await asyncio.wait_for(
+    ...<2 lines>...
+    )
+  File "/opt/homebrew/Caskroom/miniconda/base/lib/python3.13/asyncio/tasks.py", line 507, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/Users/wangqing/sourcecode/agent/agent-framework/nimbus/nimbus_harbor/nimbus_agent.py", line 126, in setup
+    await self._verify_nimbus(environment)
+  File "/Users/wangqing/sourcecode/agent/agent-framework/nimbus/nimbus_harbor/nimbus_agent.py", line 303, in _verify_nimbus
+    raise RuntimeError("Nimbus not properly installed in container")
+RuntimeError: Nimbus not properly installed in container

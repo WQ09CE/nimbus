@@ -67,6 +67,7 @@ interface ChatState {
   isStreaming: boolean;
   streamingContent: string;
   streamingToolCalls: ToolCall[];
+  streamingToolResults: ToolResult[];
   messageQueue: string[]; // Queued user messages
 
   // Real-time progress indicators
@@ -107,6 +108,7 @@ const initialState = {
   isStreaming: false,
   streamingContent: "",
   streamingToolCalls: [],
+  streamingToolResults: [],
   messageQueue: [],
   thinkingIteration: null,
   currentActivity: null,
@@ -184,6 +186,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         isStreaming: false,
         streamingContent: "",
         streamingToolCalls: [],
+        streamingToolResults: [],
         thinkingIteration: null,
         currentActivity: null,
         error: null,
@@ -202,6 +205,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       isStreaming: false,
       streamingContent: "",
       streamingToolCalls: [],
+      streamingToolResults: [],
       thinkingIteration: null,
       currentActivity: null,
       error: null,
@@ -394,6 +398,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       isStreaming: true,
       streamingContent: "",
       streamingToolCalls: [],
+      streamingToolResults: [],
       thinkingIteration: null,
       currentActivity: "连接中...",
       lastHeartbeat: Date.now(),
@@ -453,6 +458,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 messages: [...state.messages, stepMessage],
                 streamingContent: "",
                 streamingToolCalls: [],
+                streamingToolResults: [],
               }));
 
               // Reset accumulators
@@ -559,6 +565,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               };
               toolResults.push(result);
               set({
+                streamingToolResults: [...toolResults],
                 currentActivity: "工具执行完成",
                 lastHeartbeat: Date.now()
               });
@@ -662,6 +669,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         isStreaming: false,
         streamingContent: "",
         streamingToolCalls: [],
+        streamingToolResults: [],
         thinkingIteration: null,
         currentActivity: null,
         lastHeartbeat: null,
@@ -693,6 +701,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           isStreaming: false,
           streamingContent: "",
           streamingToolCalls: [],
+          streamingToolResults: [],
           thinkingIteration: null,
           currentActivity: null,
           lastHeartbeat: null,
@@ -708,6 +717,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           isStreaming: false,
           streamingContent: "",
           streamingToolCalls: [],
+          streamingToolResults: [],
           thinkingIteration: null,
           currentActivity: null,
           lastHeartbeat: null,

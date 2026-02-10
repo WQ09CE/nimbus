@@ -1,0 +1,27 @@
+{
+    "id": "d2503fda-33a9-4fc6-82e4-cba969f2c226",
+    "started_at": "2026-02-05T14:05:58.509245",
+    "finished_at": "2026-02-05T14:06:22.934756",
+    "n_total_trials": 1,
+    "stats": {
+        "n_trials": 1,
+        "n_errors": 1,
+        "evals": {
+            "nimbus__claude-sonnet-4-20250514__hello-world": {
+                "n_trials": 0,
+                "n_errors": 1,
+                "metrics": [
+                    {
+                        "mean": 0.0
+                    }
+                ],
+                "reward_stats": {},
+                "exception_stats": {
+                    "RuntimeError": [
+                        "hello-world__dtLejGH"
+                    ]
+                }
+            }
+        }
+    }
+}

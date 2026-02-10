@@ -13,6 +13,7 @@ export function ChatList({ messages }: ChatListProps) {
   const isStreaming = useChatStore(s => s.isStreaming);
   const streamingContent = useChatStore(s => s.streamingContent);
   const streamingToolCalls = useChatStore(s => s.streamingToolCalls);
+  const streamingToolResults = useChatStore(s => s.streamingToolResults);
 
   // Historical messages grouping - only depends on messages
   const groups = useMemo(() => {
@@ -51,10 +52,11 @@ export function ChatList({ messages }: ChatListProps) {
       role: "assistant",
       content: streamingContent,
       toolCalls: streamingToolCalls.length > 0 ? streamingToolCalls : undefined,
+      toolResults: streamingToolResults.length > 0 ? streamingToolResults : undefined,
       timestamp: Date.now(),
     };
     return <ChatMessage message={streamingMsg} isStreaming={true} />;
-  }, [isStreaming, streamingContent, streamingToolCalls]);
+  }, [isStreaming, streamingContent, streamingToolCalls, streamingToolResults]);
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">

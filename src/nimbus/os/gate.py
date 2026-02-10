@@ -367,6 +367,10 @@ _ARG_ALIASES: Dict[str, Dict[str, str]] = {
         "cmd": "command",
         "script": "command",
     },
+    "CoreBash": {
+        "cmd": "command",
+        "script": "command",
+    },
 }
 
 # Required parameters for each tool (used for pre-flight validation)
