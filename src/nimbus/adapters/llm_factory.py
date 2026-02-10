@@ -86,7 +86,7 @@ def get_default_review_models() -> list[str]:
 
     # Defaults
     return [
-        "anthropic/claude-sonnet-4-20250514",
-        "openai/gpt-4o",
-        "google/gemini-2.5-pro",
+        "anthropic/claude-opus-4-6",
+        "openai/gpt-5.3-codex",
+        "google/gemini-3-pro-high",
     ]
