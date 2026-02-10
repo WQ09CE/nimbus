@@ -84,9 +84,9 @@ def get_default_review_models() -> list[str]:
         except (json.JSONDecodeError, OSError):
             pass
 
-    # Defaults
+    # Defaults (provider prefixes must match pi-ai bridge naming)
     return [
         "anthropic/claude-opus-4-6",
-        "openai/gpt-5.3-codex",
-        "google/gemini-3-pro-high",
+        "openai-codex/gpt-5.3-codex",
+        "google-antigravity/gemini-3-pro-high",
     ]
