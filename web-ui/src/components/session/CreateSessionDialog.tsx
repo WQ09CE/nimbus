@@ -32,7 +32,8 @@ const DEFAULT_MODELS = {
 export function CreateSessionDialog({ isOpen, onClose, onCreate }: CreateSessionDialogProps) {
     const [name, setName] = useState("");
     const [workspacePath, setWorkspacePath] = useState("");
-    const [agentMode, setAgentMode] = useState("standard");
+    // Default to dual_agent (Core Orchestrator) for unified architecture
+    const [agentMode, setAgentMode] = useState("dual_agent"); 
     const [loading, setLoading] = useState(false);
 
     // LLM Config
@@ -141,34 +142,6 @@ export function CreateSessionDialog({ isOpen, onClose, onCreate }: CreateSession
                                 placeholder="默认为服务器当前目录..."
                                 className="w-full bg-[#2a2a2a] border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
                             />
-                        </div>
-
-                        <div>
-                            <label className="block text-xs font-medium text-gray-400 mb-1.5">Agent 模式</label>
-                            <div className="grid grid-cols-2 gap-3">
-                                <button
-                                    type="button"
-                                    onClick={() => setAgentMode("standard")}
-                                    className={`px-3 py-2.5 rounded-lg border text-left transition-all ${agentMode === "standard"
-                                        ? "bg-blue-600/10 border-blue-500/50 text-blue-200 ring-1 ring-blue-500/20"
-                                        : "bg-[#2a2a2a] border-gray-600 text-gray-400 hover:border-gray-500"
-                                        }`}
-                                >
-                                    <div className="text-sm font-medium">Standard</div>
-                                    <div className="text-[10px] opacity-70 mt-0.5">单体全能 Agent</div>
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => setAgentMode("dual_agent")}
-                                    className={`px-3 py-2.5 rounded-lg border text-left transition-all ${agentMode === "dual_agent"
-                                        ? "bg-purple-600/10 border-purple-500/50 text-purple-200 ring-1 ring-purple-500/20"
-                                        : "bg-[#2a2a2a] border-gray-600 text-gray-400 hover:border-gray-500"
-                                        }`}
-                                >
-                                    <div className="text-sm font-medium">Dual Agent</div>
-                                    <div className="text-[10px] opacity-70 mt-0.5">Core (思考) + Executor (执行)</div>
-                                </button>
-                            </div>
                         </div>
                     </div>
 

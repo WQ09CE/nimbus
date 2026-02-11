@@ -142,11 +142,26 @@ class HallucinationSanitizer:
     def process_response(self, response: LLMResponse, decoder: Any) -> Optional[List[ActionIR]]:
         """
         Sanitize final response content.
-        If content contains hallucination, strip it.
+        If content contains hallucination, strip it or block it.
         """
+        if response.content:
+            # 1. Special handling: Strip "Historical context" noise (don't block everything)
+            if "[Historical context:" in response.content:
+                logger.warning("🛡️ Hallucination firewall: Stripping [Historical context] noise.")
+                import re
+                # Remove the entire bracketed block
+                cleaned = re.sub(r"\[Historical context:.*?\]", "", response.content, flags=re.DOTALL).strip()
+                try:
+                    response.content = cleaned if cleaned else None
+                except AttributeError:
+                    pass
+
         if response.content and not self.suppressed:
-            # Check for patterns in the full content if we missed them in stream 
+            # 2. Check for blocking patterns in the full content
             for pattern in self.patterns:
+                # Skip if already handled or not present
+                if pattern.startswith("[Historical context"): continue
+                
                 if pattern in response.content:
                     logger.warning(
                         f"🛡️ Hallucination firewall (final): Stripping content with '{pattern}'"
@@ -155,7 +170,6 @@ class HallucinationSanitizer:
                     try:
                         response.content = None
                     except AttributeError:
-                        # If response is immutable (unlikely in our mocked tests but possible)
                         pass
                     return None # Continue to next middleware
         

@@ -179,8 +179,11 @@ class SessionManagerV2:
             elif isinstance(config_overrides, dict):
                 overrides = config_overrides
 
-        model_config = overrides.get("model_config")
+        model_config = overrides.get("model_config") or {}
         agent_mode = overrides.get("agent_mode", "standard")
+        
+        # Extract model_id for prompt selection
+        model_id = model_config.get("model_id", "default")
 
         # Create default LLM client if not provided
         if llm_client is None:
@@ -204,7 +207,7 @@ class SessionManagerV2:
 
                 config = PiLLMConfig(
                     provider=model_config.get("provider", "anthropic"),
-                    model_id=model_config.get("model_id", "claude-sonnet-4-20250514"),
+                    model_id=model_id,
                     temperature=temperature,
                     thinking=thinking,
                 )
@@ -217,83 +220,56 @@ class SessionManagerV2:
         # Get workspace path from session
         workspace_path = session.get("workspace_path")
         workspace = None
+        
+        from pathlib import Path
         if workspace_path:
             import os
-            from pathlib import Path
-
             workspace = Path(os.path.expanduser(workspace_path))
             logger.info(f"📁 Using workspace: {workspace}")
 
-        if agent_mode == "dual_agent":
-            from pathlib import Path as _Path
-
-            from nimbus.core.runtime.vcpu import VCPUConfig
+        # --- UNIFIED AGENT ARCHITECTURE ---
+        # "dual_agent" maps to the "core" profile (Orchestrator).
+        # "standard" maps to the "standard" profile (Generalist).
+        
+        # Default to "core" profile unless explicitly "standard"
+        profile_name = "core"
+        if agent_mode == "standard":
+             # We can keep standard mode as a simple executor with all tools
+             profile_name = "standard"
+        
+        # Create AgentOS using the factory and profile
+        agent_os = create_agent_os(
+            llm_client=llm_client,
+            tools={},
+            max_processes=5,
+            default_timeout=300.0,
+            workspace=workspace,
+            register_defaults=True, # Registers Read, Write, etc.
+            profile=profile_name,   # Sets System Prompt & Config
+            model_id=model_id,
+        )
+        
+        # --- Dispatch Tool Integration (for Core/Dual mode) ---
+        if profile_name == "core":
             from nimbus.orchestration.dispatch_tool import DispatchTool, DispatchToolConfig
-            from nimbus.orchestration.prompts import PromptManager  # Use dynamic manager
             from nimbus.orchestration.tools import (
                 DISPATCH_TOOL_DEF,
                 VERIFY_TOOL_DEF,
                 register_core_bash,
             )
-            from nimbus.tools import register_default_tools
-
-            _workspace = workspace if workspace else _Path.cwd()
-
-            # Discover skill directories (scan ALL existing candidates, not just first)
-            _skill_paths = []
-            _candidate_skill_dirs = [
-                _workspace / "skills",
-                _workspace / "examples" / "skills",
-                _Path(__file__).resolve().parent.parent.parent.parent / "examples" / "skills",
-                _Path.home() / ".nimbus" / "skills",
-            ]
-            _seen = set()
-            for _sd in _candidate_skill_dirs:
-                _resolved = _sd.resolve()
-                if _resolved.is_dir() and _resolved not in _seen:
-                    _skill_paths.append(_sd)
-                    _seen.add(_resolved)
-
-            # Extract model_id for prompt selection
-            _model_id = model_config.get("model_id", "default") if model_config else "default"
-            _core_prompt = PromptManager.get_system_prompt("core", _model_id)
-
-            # Single-kernel architecture with Role-Based Access Control
-            from nimbus.agentos import AgentOSConfig
-
-            os_config = AgentOSConfig(
-                kernel_tools=False,
-                system_rules=_core_prompt,
-                vcpu_config=VCPUConfig(max_iterations=20),
-                workspace_info=f"Workspace: {_workspace}",
-                skill_paths=_skill_paths,
-                enable_session=False,
-            )
-            agent_os = AgentOS(llm_client=llm_client, config=os_config)
-
-            # Shared tools (all roles)
-            register_default_tools(agent_os, workspace=_workspace, tools=["Read"])
-
-            # Executor-only tools
-            register_default_tools(
-                agent_os, workspace=_workspace,
-                tools=["Write", "Edit", "Bash"],
-                roles=["executor"],
-            )
-
-            # Core-only restricted shell (also visible to chat role used by session)
+            
+            # Register CoreBash (Restricted Shell) for core role
             register_core_bash(agent_os, roles=["core", "chat"])
-
-            # Dispatch + Verify meta-tools
-            dispatch_config = DispatchToolConfig(
-                # executor_system_prompt removed: DispatchTool generates it dynamically
-            )
+            
+            # Initialize Dispatch Tool
+            dispatch_config = DispatchToolConfig()
             dispatch_tool = DispatchTool(
                 agent_os=agent_os,
                 config=dispatch_config,
-                workspace=_workspace,
+                workspace=workspace or Path.cwd(),
             )
-
+            
+            # Register Meta-Tools
             agent_os.register_tool(
                 name="Dispatch",
                 func=dispatch_tool.dispatch,
@@ -308,13 +284,12 @@ class SessionManagerV2:
                 parameters=VERIFY_TOOL_DEF["parameters"],
                 roles=["core", "chat"],
             )
-
-            # ReviewCommittee tool (AI Review Committee)
+            
+            # Register ReviewCommittee
             from nimbus.orchestration.review_tool import ReviewTool, REVIEW_TOOL_DEF
-
             review_tool = ReviewTool(
                 agent_os=agent_os,
-                workspace=_workspace,
+                workspace=workspace or Path.cwd(),
             )
             agent_os.register_tool(
                 name="ReviewCommittee",
@@ -323,22 +298,11 @@ class SessionManagerV2:
                 parameters=REVIEW_TOOL_DEF["parameters"],
                 roles=["core", "chat"],
             )
-
-            # Store dispatch_tool for lifecycle management
+            
+            # Keep reference for lifecycle management
             self._dispatch_tools[session_id] = dispatch_tool
 
-            logger.info(f"🔧 Created dual_agent AgentOS for session {session_id}: tools={agent_os.list_tools()}")
-        else:
-            # Standard mode — unchanged
-            logger.info(f"🔧 Creating AgentOS for session {session_id}")
-            agent_os = create_agent_os(
-                llm_client=llm_client,
-                tools={},
-                max_processes=5,
-                default_timeout=300.0,
-                workspace=workspace,
-                register_defaults=True,
-            )
+        logger.info(f"🔧 Created AgentOS (profile={profile_name}) for session {session_id}")
 
         async with self._lock:
             self._sessions[session_id] = agent_os

@@ -26,6 +26,7 @@ from nimbus.core.memory.mmu import MMU, MMUConfig
 from nimbus.core.protocol import Event, Fault, ToolResult
 from nimbus.core.runtime.decoder import InstructionDecoder
 from nimbus.core.runtime.vcpu import VCPU, LLMClient, VCPUConfig
+from nimbus.core.profile import AgentProfile  # NEW
 from nimbus.core.scheduler import (
     DAG,
     EventStream,
@@ -385,6 +386,7 @@ class AgentOS:
         max_iterations: Optional[int] = None,
         llm_client: Optional[Any] = None,
         tools_override: Optional[List] = None,
+        profile: Optional[AgentProfile] = None,  # NEW
     ) -> str:
         """
         Spawn a new process with the given goal and role.
@@ -396,6 +398,7 @@ class AgentOS:
             max_iterations: Optional max VCPU iterations (overrides kernel default)
             llm_client: Optional LLM client for this process (overrides kernel default)
             tools_override: Optional explicit tools list. None=inherit from kernel, []=no tools (pure reasoning)
+            profile: Optional AgentProfile to configure the process (recommended for v2)
             
         Returns:
             Process ID (pid) of the spawned process
@@ -403,8 +406,24 @@ class AgentOS:
         # Generate unique process ID
         pid = f"proc-{uuid.uuid4().hex[:8]}"
 
+        # --- Profile Resolution ---
+        _role = role
+        _system_rules = system_rules
+        _max_iterations = max_iterations
+        _tools_filter = tools_override
+
+        if profile:
+            _role = profile.role or _role
+            _system_rules = profile.system_prompt or _system_rules
+            _max_iterations = profile.max_iterations or _max_iterations
+            # If profile defines allowed tools, treat them as a filter/override
+            # Note: This logic assumes tools are already registered in kernel.
+            # Phase 3 will handle dynamic tool loading from profile.
+            if profile.allowed_tools:
+                _tools_filter = profile.allowed_tools
+
         # Create process components
-        mmu = self._create_mmu(pid, system_rules=system_rules)
+        mmu = self._create_mmu(pid, system_rules=_system_rules)
 
         # Create Memo tool (bound to workspace and session)
         # Note: workspace_info is a display string like "Workspace: .", not a path
@@ -414,18 +433,26 @@ class AgentOS:
         # Store memo manager for later access (e.g., prepending memo to context)
         mmu._memo_manager = memo_manager
 
-        gate = self._create_gate(pid, role, local_tools={
+        gate = self._create_gate(pid, _role, local_tools={
             "Memo": memo_func
         })
         decoder = InstructionDecoder()
 
         # Prepare tools list
-        if tools_override is not None:
+        if _tools_filter is not None:
             # Explicit tools list (empty = pure reasoning, no tools)
-            tools_list = list(tools_override)
+            # If using names (strings), fetch definitions from registry
+            if _tools_filter and isinstance(_tools_filter[0], str):
+                tools_list = []
+                for name in _tools_filter:
+                    defn = self._tools.get_definition(name)
+                    if defn:
+                        tools_list.append(defn)
+            else:
+                tools_list = list(_tools_filter)
         else:
             # Inherit from kernel (filtered by role) + Memo
-            tools_list = self._tools.get_definitions(format="openai", role=role)
+            tools_list = self._tools.get_definitions(format="openai", role=_role)
             tools_list.append({
                 "type": "function",
                 "function": memo_def
@@ -433,13 +460,13 @@ class AgentOS:
 
         # Determine VCPU config (allow per-process overrides)
         vcpu_config = self.config.vcpu_config
-        if max_iterations is not None:
+        if _max_iterations is not None:
             from dataclasses import replace as dc_replace
             # Executor-like sub-processes: set iteration limit and disable compaction.
             # They should stop at max_iterations, not compact and continue.
             vcpu_config = dc_replace(
                 vcpu_config,
-                max_iterations=max_iterations,
+                max_iterations=_max_iterations,
                 compact_on_limit=False,
             )
 
@@ -458,7 +485,7 @@ class AgentOS:
         process = Process(
             pid=pid,
             goal=goal,
-            role=role,
+            role=_role,
             state="PENDING",
             vcpu=vcpu,
             mmu=mmu,
@@ -469,7 +496,7 @@ class AgentOS:
         self._processes[pid] = process
 
         # Emit spawn event
-        self._emit_event("PROC_SPAWNED", pid, {"goal": goal, "role": role})
+        self._emit_event("PROC_SPAWNED", pid, {"goal": goal, "role": _role})
 
         return pid
 
@@ -1455,6 +1482,10 @@ def create_agent_os(
     register_defaults: bool = True,
     kernel_tools: bool = True,
     skill_paths: Optional[List[Path]] = None,
+    # New arguments
+    config: Optional[AgentOSConfig] = None,
+    profile: Optional[str | AgentProfile] = None,
+    model_id: str = "default",
 ) -> AgentOS:
     """
     Factory function to create an AgentOS with common defaults.
@@ -1468,6 +1499,8 @@ def create_agent_os(
         workspace: Workspace path for tool sandboxing
         register_defaults: Whether to register default v2 tools (Read, Glob, etc.)
         kernel_tools: Whether to auto-register kernel tools (Read, Write, Edit, Bash)
+        profile: AgentProfile configuration (overrides manual config)
+        model_id: Model ID for dynamic prompt generation
 
     Returns:
         Configured AgentOS instance with default tools registered
@@ -1477,21 +1510,91 @@ def create_agent_os(
     if workspace is None:
         workspace = Path.cwd()
 
-    config = AgentOSConfig(
-        max_processes=max_processes,
-        default_timeout=default_timeout,
-        system_rules=system_rules or AgentOSConfig.system_rules,
-        workspace_info=f"Workspace: {workspace}",
-        kernel_tools=kernel_tools,
-        skill_paths=skill_paths or [],
-    )
+    if config is None:
+        config = AgentOSConfig(
+            max_processes=max_processes,
+            default_timeout=default_timeout,
+            system_rules=system_rules or AgentOSConfig.system_rules,
+            workspace_info=f"Workspace: {workspace}",
+            kernel_tools=kernel_tools,
+            skill_paths=skill_paths or [],
+        )
+
+    # Handle profile overrides
+    target_profile = None
+    if isinstance(profile, str):
+        if profile == "core":
+            target_profile = AgentProfile.create_core(model_id)
+        elif profile == "executor":
+            target_profile = AgentProfile.create_executor(model_id)
+        else:
+            target_profile = AgentProfile.create_standard(model_id)
+    elif isinstance(profile, AgentProfile):
+        target_profile = profile
+        
+    if target_profile:
+        config.system_rules = target_profile.system_prompt
 
     os = AgentOS(llm_client=llm_client, tools=tools, config=config)
 
     # Register default v2 native tools
     if register_defaults:
         from nimbus.tools import register_default_tools
+        ws = workspace
 
-        register_default_tools(os, workspace=workspace)
+        if isinstance(profile, str) and profile == "core":
+            # Core Profile: Split tools by role
+            # Shared
+            register_default_tools(os, workspace=ws, tools=["Read"])
+            # Executor only
+            register_default_tools(os, workspace=ws, tools=["Write", "Edit", "Bash"], roles=["executor"])
+            
+            # --- Auto-register Orchestration Tools for Core ---
+            from nimbus.orchestration.dispatch_tool import DispatchTool, DispatchToolConfig
+            from nimbus.orchestration.tools import (
+                DISPATCH_TOOL_DEF,
+                VERIFY_TOOL_DEF,
+                register_core_bash,
+            )
+            
+            # Register CoreBash
+            register_core_bash(os, roles=["core", "chat"])
+            
+            # Register Dispatch/Verify
+            dispatch_config = DispatchToolConfig()
+            dispatch_tool = DispatchTool(
+                agent_os=os,
+                config=dispatch_config,
+                workspace=ws,
+            )
+            os.register_tool(
+                name="Dispatch",
+                func=dispatch_tool.dispatch,
+                description=DISPATCH_TOOL_DEF["description"],
+                parameters=DISPATCH_TOOL_DEF["parameters"],
+                roles=["core", "chat"],
+            )
+            os.register_tool(
+                name="Verify",
+                func=dispatch_tool.verify,
+                description=VERIFY_TOOL_DEF["description"],
+                parameters=VERIFY_TOOL_DEF["parameters"],
+                roles=["core", "chat"],
+            )
+            
+            # Register ReviewCommittee
+            from nimbus.orchestration.review_tool import ReviewTool, REVIEW_TOOL_DEF
+            review_tool = ReviewTool(agent_os=os, workspace=ws)
+            os.register_tool(
+                name="ReviewCommittee",
+                func=review_tool.review,
+                description=REVIEW_TOOL_DEF["description"],
+                parameters=REVIEW_TOOL_DEF["parameters"],
+                roles=["core", "chat"],
+            )
+            
+        else:
+            # Standard Profile: All tools for everyone
+            register_default_tools(os, workspace=ws)
 
     return os
