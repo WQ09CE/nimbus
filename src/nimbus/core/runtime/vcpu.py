@@ -45,6 +45,8 @@ from nimbus.core.runtime.error_handler import ErrorHandlerRegistry
 from nimbus.core.runtime.execution_state import ExecutionState
 from nimbus.core.runtime.failure_reporter import FailureReporter
 from nimbus.core.runtime.recovery_executor import RecoveryContext, RecoveryExecutor
+from nimbus.core.models.manifest import ModelManifest, get_model_manifest
+from nimbus.core.runtime.pipeline import ResponsePipeline
 from nimbus.os.gate import KernelGate
 
 # =============================================================================
@@ -230,6 +232,7 @@ class VCPU:
         config: Optional[VCPUConfig] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         session_id: str = "default_session",
+        manifest: Optional[ModelManifest] = None,
     ):
         """
         Initialize the vCPU.
@@ -242,6 +245,7 @@ class VCPU:
             config: vCPU configuration
             tools: Tool definitions for LLM
             session_id: ID for tracing and persistence
+            manifest: Model capabilities manifest
         """
         self.alu = alu
         self.decoder = decoder
@@ -250,6 +254,11 @@ class VCPU:
         self.config = config or VCPUConfig()
         self.tools = tools or []
         self.session_id = session_id
+        
+        # Initialize Model Capability Pipeline
+        self.manifest = manifest or get_model_manifest("default")
+        self.pipeline = ResponsePipeline(self.manifest.features)
+
         # self._message_queue removed in Phase 1 Refactor
 
         # Tracing
@@ -422,8 +431,19 @@ class VCPU:
 
                     # For retryable faults, add error to memory and continue
                     self.mmu.add_assistant_message(
-                        f"[Error] {step_result.fault.message}. Retrying..."
+                        f"[Error] {step_result.fault.message}. Retrying...",
+                        # Mark as ephemeral so it disappears after successful retry
+                        # Actually MMU.add_assistant_message doesn't support meta kwarg yet in signature
+                        # We need to check or update MMU signature, or use add_message directly
                     )
+                    # Let's fix this by using add_message directly if needed or updating MMU wrapper
+                    # For now, let's look at how add_assistant_message is implemented.
+                    # It just calls current_frame.add_assistant_message(content) which creates Message
+                    
+                    # Since we can't easily change the signature of add_assistant_message everywhere safely right now,
+                    # let's access the last message and tag it.
+                    if self.mmu.current_frame.messages:
+                        self.mmu.current_frame.messages[-1].meta["ephemeral"] = True
                 else:
                     # Reset consecutive error counter on success
                     self._state.consecutive_errors = 0
@@ -540,6 +560,10 @@ class VCPU:
             # 1. THINK: Get LLM response
             logger.info(f"Thinking... (Iteration {self._state.iteration})")
             think_start = time.time_ns()
+            
+            # Reset pipeline for new turn
+            self.pipeline.reset()
+            
             messages = self.mmu.assemble_context()
 
             # TRACE: Record Context
@@ -582,26 +606,19 @@ class VCPU:
                 )
 
             # Callback for streaming thinking process
-            # Buffer content to detect hallucination before emitting
-            _stream_buffer = {"text": "", "suppressed": False}
-
             def on_think_chunk(chunk: str):
-                _stream_buffer["text"] += chunk
-                # Check if accumulated text contains hallucination pattern
-                if not _stream_buffer["suppressed"]:
-                    from nimbus.core.runtime.decoder import InstructionDecoder
-                    for pattern in InstructionDecoder.HALLUCINATION_PATTERNS:
-                        if pattern in _stream_buffer["text"]:
-                            _stream_buffer["suppressed"] = True
-                            logger.warning(
-                                f"🛡️ Hallucination firewall (stream): Suppressing output containing '{pattern}'"
-                            )
-                            return
-                if _stream_buffer["suppressed"]:
-                    return  # Swallow all subsequent chunks for this response
-                self._emit_event("THINKING", {"content": chunk})
+                processed = self.pipeline.process_chunk(chunk)
+                if processed:
+                    self._emit_event("THINKING", {"content": processed})
 
             response = await self.alu.chat(messages, tools=tools_to_pass, on_chunk=on_think_chunk)
+            
+            # CLEANUP EPHEMERAL MESSAGES
+            # Once the LLM has responded, the previous ephemeral hints (errors/retries) 
+            # have served their purpose and should be removed to keep context clean.
+            cleaned_count = self.mmu.cleanup_ephemeral_messages()
+            if cleaned_count > 0:
+                logger.debug(f"🧹 Cleaned {cleaned_count} ephemeral messages from history.")
             
             # TRACE: Record LLM Response
             if self.tracer:
@@ -668,57 +685,14 @@ class VCPU:
                         args = str(tc.get("function", {}).get("arguments", "{}"))[:100]
                     logger.debug(f"  🔧 Tool: {name}({args})")
 
-            # 2. SPLIT MIXED RESPONSE: Handle models that return both content and tool_calls
-            # (e.g., GPT-5.3-codex tends to "talk while calling tools")
-            # We split this into two phases to match Claude/Gemini behavior:
-            #   Phase 1: Output the text content (THOUGHT)
-            #   Phase 2: Execute the tool calls
-            split_response = False
-            if response.content and response.content.strip() and response.tool_calls:
-                # Hallucination firewall for mixed responses:
-                # If content is hallucinated, strip it and keep only tool_calls
-                from nimbus.core.runtime.decoder import InstructionDecoder
-                content_is_hallucination = False
-                for pattern in InstructionDecoder.HALLUCINATION_PATTERNS:
-                    if pattern in response.content:
-                        content_is_hallucination = True
-                        logger.warning(
-                            f"🛡️ Hallucination firewall (mixed): Stripping hallucinated content, "
-                            f"keeping tool_calls. Content: {response.content[:100]}..."
-                        )
-                        response.content = None
-                        break
-
-                if not content_is_hallucination:
-                    logger.info(
-                        "🔀 Detected mixed response (content + tool_calls). Splitting into thought → action."
-                    )
-                    split_response = True
-                    
-                    # First, emit the content as a THOUGHT action
-                    thought_action = ActionIR(
-                        kind="THOUGHT", 
-                        name="thought", 
-                        args={"text": response.content.strip()}
-                    )
-                    
-                    # Execute the thought immediately (just yields to stream)
-                    thought_result = await self._execute_action(thought_action)
-                    step_result.results.append(thought_result)
-                    
-                    # Add assistant message with only content to MMU (for context continuity)
-                    self.mmu.add_assistant_message(response.content)
-
-            # 2. DECODE: Parse into ActionIR
+            # 2. PIPELINE & DECODE: Process response through middleware
             decode_start = time.time_ns()
+            raw_content = response.content  # Snapshot for change detection
+
             try:
-                # If we split the response, decode only tool_calls (content already handled)
-                decode_content = None if split_response else response.content
-                actions = self.decoder.decode(
-                    content=decode_content, tool_calls=response.tool_calls
-                )
+                actions = self.pipeline.process_response(response, self.decoder)
             except Fault as f:
-                # If it's a hallucination fault, inject correction and let caller retry
+                # If it's a hallucination fault from decoder (fallback), handle it
                 if f.code == "ILL_INSTRUCTION":
                     self._state.hallucination_count = getattr(self._state, 'hallucination_count', 0) + 1
                     max_hallucinations = 3
@@ -738,11 +712,17 @@ class VCPU:
                         return step_result
                     # Inject correction into context so LLM sees it next turn
                     self.mmu.add_assistant_message("I need to use proper function calls.")
+                    if self.mmu.current_frame.messages:
+                        self.mmu.current_frame.messages[-1].meta["ephemeral"] = True
+                        
                     self.mmu.add_user_message(
                         "[System] You just output text instead of calling tools. "
                         "Use the function calling API. Do NOT write tool calls as text. "
                         "Call the tools directly."
                     )
+                    if self.mmu.current_frame.messages:
+                        self.mmu.current_frame.messages[-1].meta["ephemeral"] = True
+                        
                     logger.warning(
                         f"🛡️ Hallucination #{self._state.hallucination_count}: "
                         f"injected correction into context"
@@ -753,6 +733,23 @@ class VCPU:
                     self.tracer.record_fault(f)
                     self.tracer.finish_step()
                 return step_result
+
+            # Check if pipeline filtered everything (Hallucination Guard)
+            # If actions empty, raw_content existed, and response.content is now None/Empty
+            if not actions and raw_content and not response.content and not response.tool_calls:
+                 logger.warning("🛡️ Pipeline stripped all content (Hallucination detected). Injecting hint.")
+                 self.mmu.add_user_message(
+                     "[System] Your response contained invalid text-formatted tool calls. "
+                     "Use the function calling API directly."
+                 )
+                 if self.mmu.current_frame.messages:
+                     self.mmu.current_frame.messages[-1].meta["ephemeral"] = True
+                     
+                 # We consume this step as a correction step
+                 step_result.timing_ms["decode"] = (time.time_ns() - decode_start) // 1_000_000
+                 step_result.timing_ms["total"] = (time.time_ns() - start_time) // 1_000_000
+                 return step_result
+
             step_result.actions = actions
             step_result.timing_ms["decode"] = (time.time_ns() - decode_start) // 1_000_000
 
@@ -760,78 +757,29 @@ class VCPU:
             if self.tracer:
                 self.tracer.record_actions(actions)
 
-            # IMPORTANT: Add assistant message with tool_calls to memory BEFORE executing tools
-            # This is required by OpenAI/OpenRouter API format:
-            # 1. user message
-            # 2. assistant message (with tool_calls)  <-- We add this here
-            # 3. tool message (with tool_call_id)     <-- Added by _handle_tool_call
-            #
-            # Without this, the API will reject the request because tool results
-            # reference tool_call_ids that don't exist in the conversation.
-            if response.tool_calls:
-                # Convert tool_calls to OpenAI format for storage
-                tool_calls_for_storage = []
-                for tc in response.tool_calls:
-                    # Handle both object-style and dict-style tool calls
-                    if hasattr(tc, "id"):
-                        tool_calls_for_storage.append(
-                            {
-                                "id": tc.id,
-                                "type": getattr(tc, "type", "function"),
-                                "function": {
-                                    "name": tc.function.name
-                                    if hasattr(tc, "function")
-                                    else tc.get("function", {}).get("name", ""),
-                                    "arguments": tc.function.arguments
-                                    if hasattr(tc, "function")
-                                    else tc.get("function", {}).get("arguments", "{}"),
-                                },
-                            }
-                        )
-                    else:
-                        # Already a dict
-                        tool_calls_for_storage.append(tc)
+            # 3. MEMORY UPDATE
+            # Determine if this was a split response (Thought + Tool)
+            is_split = False
+            if self.manifest.features.split_mixed_responses:
+                # Check structure: First action is THOUGHT, and there are TOOL_CALLs
+                has_thought = len(actions) > 0 and actions[0].kind == "THOUGHT"
+                has_tools = any(a.kind == "TOOL_CALL" for a in actions)
+                is_split = has_thought and has_tools
 
-                # Only add assistant message if we didn't already add it in split phase
-                if not split_response:
-                    self.mmu.add_assistant_with_tool_calls(
-                        content=response.content, tool_calls=tool_calls_for_storage
-                    )
-                else:
-                    # Split case: add assistant message with only tool_calls (content already added)
-                    self.mmu.add_assistant_with_tool_calls(
-                        content=None, tool_calls=tool_calls_for_storage
-                    )
+            if is_split:
+                 # Add thought content
+                 thought_text = actions[0].args.get("text", "")
+                 self.mmu.add_assistant_message(thought_text)
+                 # Add tools (using original tool_calls from response)
+                 self.mmu.add_assistant_with_tool_calls(content=None, tool_calls=response.tool_calls)
+                 
+            elif response.tool_calls:
+                 # Standard Tool Call (or stripped content)
+                 self.mmu.add_assistant_with_tool_calls(content=response.content, tool_calls=response.tool_calls)
+                 
             elif response.content:
-                # Hallucination firewall: check BEFORE adding to memory
-                # If the response is a hallucinated tool call in text form,
-                # don't add it to memory and force a retry.
-                is_hallucination = False
-                if not response.tool_calls:
-                    from nimbus.core.runtime.decoder import InstructionDecoder
-                    for pattern in InstructionDecoder.HALLUCINATION_PATTERNS:
-                        if pattern in response.content:
-                            is_hallucination = True
-                            logger.warning(
-                                f"🛡️ Hallucination firewall: Response contains '{pattern}', "
-                                f"discarding. Content: {response.content[:100]}..."
-                            )
-                            break
-
-                if is_hallucination:
-                    # Don't add to memory. Inject a correction and return non-final.
-                    self.mmu.add_user_message(
-                        "[System] Your previous response contained text-formatted tool calls "
-                        "instead of actual function calls. Please use the provided tools directly. "
-                        "Do NOT output tool calls as text."
-                    )
-                    step_result.timing_ms["total"] = (time.time_ns() - start_time) // 1_000_000
-                    return step_result  # Return with is_final=False, caller will retry
-
-                # Add text-only assistant message (Implicit Return / Thought)
-                # Skip if we already added it in split phase
-                if not split_response:
-                    self.mmu.add_assistant_message(response.content)
+                 # Standard Content
+                 self.mmu.add_assistant_message(response.content)
 
             # Emit action events
             for action in actions:
@@ -933,6 +881,39 @@ class VCPU:
     # Action Handlers
     # =========================================================================
 
+    @property
+    def _compaction_count(self) -> int:
+        return self._state.compaction_count
+
+    async def _handle_sub_call(self, action: ActionIR) -> ToolResult:
+        """Handle SUB_CALL action (Simulated)."""
+        return ToolResult(status="OK", output="Subroutine called (simulated)")
+
+    async def _handle_thought(self, action: ActionIR) -> ToolResult:
+        """Handle THOUGHT action."""
+        # 1. Pipeline splitting (non-blocking)
+        if action.meta and action.meta.get("non_blocking"):
+             return ToolResult(
+                 status="OK", 
+                 output=action.args.get("text"), 
+                 is_final=False
+             )
+        
+        # 2. Update state (Standard thought)
+        self._state.on_thought()
+        
+        # 3. Check limit
+        if self._state.consecutive_thoughts >= self.config.max_consecutive_thoughts:
+             # Hit limit -> Treat as Final Return
+             return await self._handle_return(action)
+        
+        # 4. Default (Continue Thinking) -> NON-FINAL
+        return ToolResult(
+            status="OK", 
+            output=action.args.get("text"), 
+            is_final=False
+        )
+
     async def _execute_action(self, action: ActionIR) -> ToolResult:
         """
         Execute a single ActionIR instruction.
@@ -949,7 +930,8 @@ class VCPU:
             "TOOL_CALL": self._handle_tool_call,
             "RETURN": self._handle_return,
             # Treat THOUGHT as implicit RETURN (Natural conversation)
-            "THOUGHT": self._handle_return,
+            "THOUGHT": self._handle_thought,
+            "SUB_CALL": self._handle_sub_call,
             "POST_IPC": self._handle_post_ipc,
             "REQUEST_REPLAN": self._handle_request_replan,
             "CANCEL": self._handle_cancel,
@@ -1071,6 +1053,8 @@ class VCPU:
 
         elif recovery and recovery.action_type == "inject_hint" and recovery.hint:
             self.mmu.add_system_message(recovery.hint)
+            if self.mmu.current_frame.messages:
+                self.mmu.current_frame.messages[-1].meta["ephemeral"] = True
             logger.info(f"🔧 Hint injected for no-match: {recovery.hint[:80]}...")
 
         return None
@@ -1100,6 +1084,8 @@ class VCPU:
 
         if combined:
             self.mmu.add_system_message(combined)
+            if self.mmu.current_frame.messages:
+                self.mmu.current_frame.messages[-1].meta["ephemeral"] = True
             logger.info(f"🔧 Recovery hint injected for {action.name}")
 
     async def _handle_tool_call(self, action: ActionIR) -> ToolResult:
@@ -1245,6 +1231,9 @@ class VCPU:
                         "instead of actual function calls. Please use the provided tools directly. "
                         "Do NOT output tool calls as text."
                     )
+                    if self.mmu.current_frame.messages:
+                        self.mmu.current_frame.messages[-1].meta["ephemeral"] = True
+                        
                     return ToolResult(
                         status="OK",
                         output="",

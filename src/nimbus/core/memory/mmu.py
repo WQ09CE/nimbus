@@ -329,6 +329,32 @@ class MMU:
                 msg.meta.pop("discard", None)
                 msg.meta.pop("discard_tool_calls", None)
 
+    def cleanup_ephemeral_messages(self) -> int:
+        """
+        Remove messages marked as ephemeral from the current context.
+        
+        Ephemeral messages (e.g., retry hints, error corrections) are intended 
+        to be seen only once by the LLM to guide the immediate next step.
+        Once the LLM has responded (consumed the hint), these messages 
+        should be removed to prevent context pollution.
+        
+        Returns:
+            Number of messages removed.
+        """
+        count = 0
+        # We generally only look at the current frame, but for safety scan all
+        for frame in self._stack:
+            # Create a new list keeping only non-ephemeral messages
+            # We filter in-place or replace the list
+            original_len = len(frame.messages)
+            frame.messages = [
+                msg for msg in frame.messages 
+                if not msg.meta.get("ephemeral", False)
+            ]
+            count += (original_len - len(frame.messages))
+            
+        return count
+
     def scroll(self, direction: str, steps: int = 10) -> str:
         """
         Scroll the memory view window.

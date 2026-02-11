@@ -9,7 +9,7 @@ These tests verify the core execution engine functionality:
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable
 
 import pytest
 
@@ -59,7 +59,9 @@ class MockLLMClient:
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
+        on_chunk: Optional[Callable[[str], None]] = None,
     ) -> MockLLMResponse:
+        print(f"DEBUG: chat called with on_chunk={on_chunk}")
         self.messages_received.append(messages)
         if self.call_count < len(self.responses):
             response = self.responses[self.call_count]
@@ -295,9 +297,14 @@ class TestVCPULimits:
             MockLLMResponse(content="Thinking...")
             for _ in range(100)
         ])
-
+    
         # Set max_consecutive_thoughts high enough so max_iterations triggers first
-        config = VCPUConfig(max_iterations=5, max_consecutive_thoughts=100)
+        # Disable compaction to ensure we hit the hard limit
+        config = VCPUConfig(
+            max_iterations=5, 
+            max_consecutive_thoughts=100,
+            compact_on_limit=False
+        )
         vcpu = VCPU(
             alu=llm,
             decoder=decoder,
