@@ -44,6 +44,7 @@ from nimbus.os.gate import (
 from nimbus.skills.manager import SkillManager
 from nimbus.tools.base import ToolDefinition, ToolParameter, ToolRegistry
 from nimbus.tools.memo import create_memo_tool
+from nimbus.tools.composite import CompositeToolRegistry
 
 # =============================================================================
 # AgentOS Configuration
@@ -165,6 +166,9 @@ class AgentOS:
 
         # Skill Tool registry (Skills only - for easy hot reloading)
         self._skill_tools = ToolRegistry()
+        
+        # Unified view (Core/Ext + Skills)
+        self._composite_tools = CompositeToolRegistry([self._tools, self._skill_tools])
 
         # Skill Manager
         self._skill_manager = SkillManager(self.config.skill_paths)
@@ -224,6 +228,7 @@ class AgentOS:
                     name=data["name"],
                     description=data.get("description", ""),
                     parameters=params,
+                    category="core",
                 )
 
             for tool_data in kernel_tools_list:
@@ -464,7 +469,7 @@ class AgentOS:
                 tools_list = list(_tools_filter)
         else:
             # Inherit from kernel (filtered by role) + Memo
-            tools_list = self._tools.get_definitions(format="openai", role=_role)
+            tools_list = self._composite_tools.get_definitions(format="openai", role=_role)
             tools_list.append({
                 "type": "function",
                 "function": memo_def
@@ -717,7 +722,7 @@ class AgentOS:
             decoder = InstructionDecoder()
 
             # Prepare tools list with Memo
-            tools_list = self._tools.get_definitions(format="openai", role="chat")
+            tools_list = self._composite_tools.get_definitions(format="openai", role="chat")
             tools_list.append({
                 "type": "function",
                 "function": memo_def
@@ -825,7 +830,7 @@ class AgentOS:
         })
         decoder = InstructionDecoder()
 
-        tools_list = self._tools.get_definitions(format="openai")
+        tools_list = self._composite_tools.get_definitions(format="openai")
         tools_list.append({
             "type": "function",
             "function": memo_def
@@ -1395,7 +1400,7 @@ class AgentOS:
 
     def list_tools(self) -> List[str]:
         """List all registered tools."""
-        return self._tools.list_tools()
+        return self._composite_tools.list_tools()
 
     # =========================================================================
     # Event & State Access
@@ -1460,9 +1465,10 @@ class AgentOS:
 
     def _create_gate(self, pid: str, role: str = "", local_tools: Optional[Dict[str, Callable]] = None) -> KernelGate:
         """Create a KernelGate for a process."""
+        print(f"DEBUG: Creating gate with executor type: {type(self._composite_tools)}")
         return KernelGate(
             pid=pid,
-            tool_executor=self._tools,
+            tool_executor=self._composite_tools,
             event_stream=self._events,
             default_timeout=self.config.default_timeout,
             local_tools=local_tools,
@@ -1558,21 +1564,17 @@ def create_agent_os(
 
         if isinstance(profile, str) and profile == "core":
             # Core Profile: Split tools by role
-            # Shared
-            register_default_tools(os, workspace=ws, tools=["Read"])
-            # Executor only
-            register_default_tools(os, workspace=ws, tools=["Write", "Edit", "Bash"], roles=["executor"])
+            # Shared: Read + Bash (CoreBash removed, standard Bash is shared)
+            register_default_tools(os, workspace=ws, tools=["Read", "Bash"])
+            # Executor only: Write/Edit
+            register_default_tools(os, workspace=ws, tools=["Write", "Edit"], roles=["executor"])
 
             # --- Auto-register Orchestration Tools for Core ---
             from nimbus.orchestration.dispatch_tool import DispatchTool, DispatchToolConfig
             from nimbus.orchestration.tools import (
                 DISPATCH_TOOL_DEF,
                 VERIFY_TOOL_DEF,
-                register_core_bash,
             )
-
-            # Register CoreBash
-            register_core_bash(os, roles=["core", "chat"])
 
             # Register Dispatch/Verify
             dispatch_config = DispatchToolConfig()

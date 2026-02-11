@@ -8,6 +8,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from nimbus import AgentOS, create_agent_os
@@ -181,7 +182,7 @@ class SessionManagerV2:
 
         model_config = overrides.get("model_config") or {}
         agent_mode = overrides.get("agent_mode", "standard")
-        
+
         # Extract model_id for prompt selection
         model_id = model_config.get("model_id", "default")
 
@@ -220,7 +221,7 @@ class SessionManagerV2:
         # Get workspace path from session
         workspace_path = session.get("workspace_path")
         workspace = None
-        
+
         from pathlib import Path
         if workspace_path:
             import os
@@ -230,13 +231,13 @@ class SessionManagerV2:
         # --- UNIFIED AGENT ARCHITECTURE ---
         # "dual_agent" maps to the "core" profile (Orchestrator).
         # "standard" maps to the "standard" profile (Generalist).
-        
+
         # Default to "core" profile unless explicitly "standard"
         profile_name = "core"
         if agent_mode == "standard":
              # We can keep standard mode as a simple executor with all tools
              profile_name = "standard"
-        
+
         # Create AgentOS using the factory and profile
         agent_os = create_agent_os(
             llm_client=llm_client,
@@ -248,18 +249,19 @@ class SessionManagerV2:
             profile=profile_name,   # Sets System Prompt & Config
             model_id=model_id,
         )
-        
+
         # --- Dispatch Tool Integration (for Core/Dual mode) ---
         if profile_name == "core":
             from nimbus.orchestration.dispatch_tool import DispatchTool, DispatchToolConfig
             from nimbus.orchestration.tools import (
                 DISPATCH_TOOL_DEF,
                 VERIFY_TOOL_DEF,
-                register_core_bash,
             )
             
-            # Register CoreBash (Restricted Shell) for core role
-            register_core_bash(agent_os, roles=["core", "chat"])
+            # Register CoreBash (Standard Bash)
+            # CoreBash removed as per Review P0. We use standard Bash for all roles now.
+            # But the logic below was trying to import register_core_bash which we removed.
+            # So we skip it. Standard Bash is already registered above via register_default_tools.
             
             # Initialize Dispatch Tool
             dispatch_config = DispatchToolConfig()
@@ -268,7 +270,7 @@ class SessionManagerV2:
                 config=dispatch_config,
                 workspace=workspace or Path.cwd(),
             )
-            
+
             # Register Meta-Tools
             agent_os.register_tool(
                 name="Dispatch",
@@ -284,9 +286,9 @@ class SessionManagerV2:
                 parameters=VERIFY_TOOL_DEF["parameters"],
                 roles=["core", "chat"],
             )
-            
+
             # Register ReviewCommittee
-            from nimbus.orchestration.review_tool import ReviewTool, REVIEW_TOOL_DEF
+            from nimbus.orchestration.review_tool import REVIEW_TOOL_DEF, ReviewTool
             review_tool = ReviewTool(
                 agent_os=agent_os,
                 workspace=workspace or Path.cwd(),
@@ -298,7 +300,7 @@ class SessionManagerV2:
                 parameters=REVIEW_TOOL_DEF["parameters"],
                 roles=["core", "chat"],
             )
-            
+
             # Keep reference for lifecycle management
             self._dispatch_tools[session_id] = dispatch_tool
 
@@ -362,13 +364,13 @@ class SessionManagerV2:
         # Check if process needs restoration from checkpoint
         process = agent_os.get_process(session_id)
         logger.info(f"🔍 Checking process for session {session_id}: exists={process is not None}")
-        
+
         if not process:
             # Try to restore from checkpoint
             try:
                 checkpoint = await self._storage.load_latest_session_checkpoint(session_id)
                 logger.info(f"🔍 Checkpoint loaded: {checkpoint is not None}")
-                
+
                 if checkpoint:
                     try:
                         logger.info(f"🔄 Restoring session {session_id} from checkpoint")

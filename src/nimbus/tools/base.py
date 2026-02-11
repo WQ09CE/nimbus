@@ -52,6 +52,12 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 ToolCategory = Literal["core", "extension", "skill"]
 
+RESERVED_TOOL_NAMES = frozenset({"Read", "Write", "Edit", "Bash"})
+
+class ToolNameConflictError(Exception):
+    """Raised when a tool name conflicts with a reserved name."""
+    pass
+
 
 class ToolExecutionError(Exception):
     """Exception raised when tool execution fails.
@@ -397,7 +403,15 @@ class ToolRegistry:
 
         Raises:
             ValueError: If a tool with the same name is already registered.
+            ToolNameConflictError: If a skill tool uses a reserved name.
         """
+        # Check for reserved names (only for Skill tools)
+        # Note: Core tools themselves also call register(), so we only check if category is skill
+        if definition.category == "skill" and definition.name in RESERVED_TOOL_NAMES:
+            raise ToolNameConflictError(
+                f"Skill tool '{definition.name}' conflicts with reserved Core tool name"
+            )
+
         if definition.name in self._tools:
             # Allow overwriting for now to support dynamic registration in tests/demos
             # raise ValueError(f"Tool '{definition.name}' is already registered")

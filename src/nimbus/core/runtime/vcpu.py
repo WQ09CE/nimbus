@@ -852,6 +852,8 @@ class VCPU:
                     self.tracer.record_fault(step_result.fault)
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             step_result.fault = Fault(
                 domain="KERNEL",
                 code="SYSTEM_ERROR",

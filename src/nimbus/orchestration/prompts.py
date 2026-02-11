@@ -9,7 +9,6 @@ This module provides dynamic system prompt generation based on:
 It replaces static strings with a composable PromptManager.
 """
 
-from typing import Optional
 
 # =============================================================================
 # Base Building Blocks
@@ -38,7 +37,7 @@ You are the **Core Agent** — the architect and orchestrator.
 
 ## Your Toolkit
 - **Read**: Check file contents.
-- **CoreBash**: Read-only exploration (ls, grep, find, cat). NO modification commands.
+- **Bash**: Read-only exploration (ls, grep, find, cat). NO modification commands.
 - **Dispatch**: Delegate implementation tasks.
 - **Verify**: Run deterministic checks (file existence, syntax check).
 - **Memo**: Keep track of progress and architectural decisions.
@@ -108,7 +107,7 @@ class PromptManager:
     """
     Manages system prompts for different agent roles and models.
     """
-    
+
     @staticmethod
     def get_system_prompt(role: str, model_id: str = "default") -> str:
         """
@@ -122,7 +121,7 @@ class PromptManager:
             The complete system prompt string.
         """
         parts = []
-        
+
         # 1. Role Base
         if role.lower() == "core":
             parts.append(CORE_INSTRUCTIONS)
@@ -130,10 +129,10 @@ class PromptManager:
             parts.append(EXECUTOR_INSTRUCTIONS)
         else:
             parts.append(BASE_RULES) # Fallback
-            
+
         # 2. Base Rules (Common)
         parts.append(BASE_RULES)
-        
+
         # 3. Model Specifics
         model_id = model_id.lower()
         if "gpt" in model_id or "codex" in model_id or "o1" in model_id:
@@ -142,7 +141,7 @@ class PromptManager:
             parts.append(TRAIT_CLAUDE)
         elif "gemini" in model_id or "google" in model_id:
             parts.append(TRAIT_GEMINI)
-            
+
         return "\n\n".join(parts)
 
 # =============================================================================
