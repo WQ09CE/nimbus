@@ -118,7 +118,7 @@ export function ToolCard({ tool, defaultExpanded }: ToolCardProps) {
           )}
 
           {/* Tool Name */}
-          <span className={`text-[13px] font-mono font-medium tracking-wide truncate ${isDispatch ? "text-purple-200" : "text-gray-300"}`}>
+          <span className={`text-[13px] font-mono font-medium tracking-wide shrink-0 ${isDispatch ? "text-purple-200" : "text-gray-300"}`}>
             {tool.name}
           </span>
 
