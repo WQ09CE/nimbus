@@ -194,7 +194,8 @@ class AgentOS:
                     description="Optional: additional skill directory path to add and scan (e.g. 'skills' or '/absolute/path/to/skills')",
                     required=False,
                 ),
-            ]
+            ],
+            category="extension",
         )
         self._tools.register(reload_def, reload_skills_wrapper)
 
@@ -1348,6 +1349,7 @@ class AgentOS:
         description: str = "",
         parameters: Optional[Dict[str, Any]] = None,
         roles: Optional[List[str]] = None,
+        category: Optional[str] = None,
     ) -> None:
         """
         Register a tool.
@@ -1391,6 +1393,7 @@ class AgentOS:
                 description=description or func.__doc__ or "",
                 parameters=param_list,
                 roles=roles,
+                category=category,
             )
             self._tools.register(definition, func)
 
@@ -1465,7 +1468,6 @@ class AgentOS:
 
     def _create_gate(self, pid: str, role: str = "", local_tools: Optional[Dict[str, Callable]] = None) -> KernelGate:
         """Create a KernelGate for a process."""
-        print(f"DEBUG: Creating gate with executor type: {type(self._composite_tools)}")
         return KernelGate(
             pid=pid,
             tool_executor=self._composite_tools,
@@ -1589,6 +1591,7 @@ def create_agent_os(
                 description=DISPATCH_TOOL_DEF["description"],
                 parameters=DISPATCH_TOOL_DEF["parameters"],
                 roles=["core", "chat"],
+                category="extension",
             )
             os.register_tool(
                 name="Verify",
@@ -1596,6 +1599,7 @@ def create_agent_os(
                 description=VERIFY_TOOL_DEF["description"],
                 parameters=VERIFY_TOOL_DEF["parameters"],
                 roles=["core", "chat"],
+                category="extension",
             )
 
             # Register ReviewCommittee
@@ -1607,6 +1611,7 @@ def create_agent_os(
                 description=REVIEW_TOOL_DEF["description"],
                 parameters=REVIEW_TOOL_DEF["parameters"],
                 roles=["core", "chat"],
+                category="extension",
             )
 
         else:

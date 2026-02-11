@@ -412,14 +412,14 @@ def _validate_required_args(tool_name: str, args: Dict[str, Any]) -> Optional[st
     required = _REQUIRED_PARAMS.get(tool_name)
     if not required:
         return None
-    
+
     missing = [p for p in required if p not in args or args[p] is None or args[p] == ""]
     if not missing:
         return None
-    
+
     # Build a loud, clear error with concrete examples
     missing_str = ", ".join(f"'{p}'" for p in missing)
-    
+
     # Tool-specific usage examples
     examples = {
         "Bash": 'Bash(command="ls -la")',
@@ -428,7 +428,7 @@ def _validate_required_args(tool_name: str, args: Dict[str, Any]) -> Optional[st
         "Edit": 'Edit(file_path="main.py", old_text="old", new_text="new")',
     }
     example = examples.get(tool_name, f'{tool_name}({", ".join(f"{p}=..." for p in required)})')
-    
+
     return (
         f"PARAMETER ERROR: You must provide {missing_str} in your tool call. "
         f"You sent: {tool_name}({', '.join(f'{k}={v!r}' for k, v in args.items()) if args else ''}). "

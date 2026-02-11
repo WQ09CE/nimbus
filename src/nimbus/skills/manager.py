@@ -1,18 +1,21 @@
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from nimbus.skills.loader import load_skill_manifest, SkillLoaderError
+
+from loguru import logger
+
+from nimbus.skills.loader import SkillLoaderError, load_skill_manifest
 from nimbus.skills.models import SkillManifest
 from nimbus.skills.tools import ScriptTool
-from loguru import logger
+
 
 class SkillManager:
     """Manages loading and registry of skills."""
-    
+
     def __init__(self, skill_dirs: List[Path]):
         self.skill_dirs = skill_dirs
         self.skill_dirs = skill_dirs
         self.skills: Dict[str, SkillManifest] = {}
-        self.tools: Dict[str, ScriptTool] = {} 
+        self.tools: Dict[str, ScriptTool] = {}
 
     def reload(self) -> None:
         """Reload all skills from disk."""
@@ -26,7 +29,7 @@ class SkillManager:
             if not root_dir.exists():
                 logger.warning(f"Skill directory not found: {root_dir}")
                 continue
-                
+
             if not root_dir.is_dir():
                 logger.warning(f"Skill path is not a directory: {root_dir}")
                 continue
@@ -46,12 +49,12 @@ class SkillManager:
     def register_skill(self, manifest: SkillManifest) -> None:
         """Register a loaded skill manifest."""
         self.skills[manifest.name] = manifest
-        
+
         # Register tools
         for tool_config in manifest.tools:
             if tool_config.name in self.tools:
                 logger.warning(f"Overwrite tool warning: {tool_config.name} (from {manifest.name}) replaces existing.")
-            
+
             # Create tool wrapper
             tool_wrapper = ScriptTool(tool_config, manifest.root_path)
             self.tools[tool_config.name] = tool_wrapper

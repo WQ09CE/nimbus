@@ -12,12 +12,11 @@ Usage:
     agent_os.register_tool("Verify", dispatch_tool.verify, ...)
 """
 
-import asyncio
 import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from loguru import logger
 
@@ -93,7 +92,7 @@ class DispatchTool:
         self._agent_os = agent_os
         self._workspace = workspace or Path.cwd()
         self._config = config or DispatchToolConfig()
-        
+
         # State
         self._dispatch_count = 0
         self._last_dispatch_diff: Optional[WorkspaceDiff] = None
@@ -183,14 +182,14 @@ class DispatchTool:
         # --- Spawn Executor Process ---
         # We reuse the same PID if possible? No, each dispatch is a new task usually.
         # But if we want to share memory (Memo), we might want to attach to same session?
-        # For now, let's spawn a fresh process for each dispatch, 
+        # For now, let's spawn a fresh process for each dispatch,
         # but we could implement state persistence later.
-        
+
         # --- Resolve model for Executor ---
         executor_llm = None
         model_name = kwargs.get("model", "")
         resolved_model_id = "default"  # Track resolved ID for prompt generation
-        
+
         if model_name:
             # Resolve alias
             resolved = self._config.model_aliases.get(model_name.lower().strip(), model_name)
@@ -210,26 +209,26 @@ class DispatchTool:
 
         # NOTE: Native spawn with role="executor"
         pid = self._agent_os.spawn(
-            goal=executor_goal, 
-            role="executor", 
+            goal=executor_goal,
+            role="executor",
             system_rules=system_prompt,
             max_iterations=self._config.executor_max_iterations,
             llm_client=executor_llm,
         )
         self._executor_pid = pid
-        
+
         # --- Event Forwarding Hook ---
         # We need to bridge Executor events to the parent stream so UI can see them.
-        # The parent stream is usually available via the Core process mechanism 
+        # The parent stream is usually available via the Core process mechanism
         # or we just rely on Global Event Bus if AgentOS supported it.
         # Since DispatchTool.dispatch is just a function, we can't easily yield events.
-        # 
+        #
         # Solution: The AgentOS global event stream should already be emitting these events.
         # The UI needs to listen to ALL events or we need to chain them.
-        # 
-        # For now, we assume the UI (or client) listens to the OS event stream 
+        #
+        # For now, we assume the UI (or client) listens to the OS event stream
         # and filters/displays all PIDs.
-        
+
         logger.info(f"Spawned Executor process {pid}")
 
         # --- Wait for completion ---

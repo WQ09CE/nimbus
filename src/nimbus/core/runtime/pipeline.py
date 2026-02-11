@@ -7,12 +7,10 @@ LLM responses before they reach the execution engine.
 """
 
 import logging
-from typing import List, Optional, Protocol, Any, Dict
-from dataclasses import dataclass
+from typing import Any, List, Optional, Protocol
 
-from nimbus.core.protocol import ActionIR, Fault
 from nimbus.core.models.manifest import ModelFeatures
-from nimbus.core.runtime.decoder import InstructionDecoder
+from nimbus.core.protocol import ActionIR
 
 logger = logging.getLogger("kernel.vcpu.pipeline")
 
@@ -23,14 +21,14 @@ class LLMResponse(Protocol):
     def content(self) -> Optional[str]: ...
     @content.setter
     def content(self, value: Optional[str]): ...
-    
+
     @property
     def tool_calls(self) -> Optional[List[Any]]: ...
 
 
 class ResponseMiddleware(Protocol):
     """Interface for a pipeline stage."""
-    
+
     def reset(self) -> None:
         """Reset state for a new turn."""
         ...
@@ -59,11 +57,11 @@ class ResponsePipeline:
     def __init__(self, features: ModelFeatures):
         self.features = features
         self.middleware: List[ResponseMiddleware] = []
-        
+
         # 1. First sanitize (modify response content)
         if self.features.firewall_hallucinations:
             self.middleware.append(HallucinationSanitizer(self.features.hallucination_patterns))
-            
+
         # 2. Then split (produce actions from modified response)
         if self.features.split_mixed_responses:
             self.middleware.append(MixedResponseSplitter())
@@ -89,15 +87,15 @@ class ResponsePipeline:
         If none return actions, we fall back to standard decoding.
         """
         actions = []
-        
+
         for mw in self.middleware:
             # Middleware can modify response in-place or return actions
             result = mw.process_response(response, decoder)
-            
+
             if result is not None:
                 # Middleware handled the response completely (e.g. splitting)
                 return result
-                
+
         # Default behavior: Standard Decode
         # (Only if no middleware produced actions)
         try:
@@ -106,7 +104,7 @@ class ResponsePipeline:
             # If decoding fails, we catch it here or let it propagate?
             # VCPU expects exceptions to propagate or be handled.
             raise e
-            
+
         return actions
 
 
@@ -124,7 +122,7 @@ class HallucinationSanitizer:
 
     def process_chunk(self, chunk: str) -> Optional[str]:
         self.buffer += chunk
-        
+
         if not self.suppressed:
             for pattern in self.patterns:
                 if pattern in self.buffer:
@@ -133,10 +131,10 @@ class HallucinationSanitizer:
                         f"🛡️ Hallucination firewall (stream): Suppressing output containing '{pattern}'"
                     )
                     return None
-        
+
         if self.suppressed:
             return None
-            
+
         return chunk
 
     def process_response(self, response: LLMResponse, decoder: Any) -> Optional[List[ActionIR]]:
@@ -161,7 +159,7 @@ class HallucinationSanitizer:
             for pattern in self.patterns:
                 # Skip if already handled or not present
                 if pattern.startswith("[Historical context"): continue
-                
+
                 if pattern in response.content:
                     logger.warning(
                         f"🛡️ Hallucination firewall (final): Stripping content with '{pattern}'"
@@ -172,7 +170,7 @@ class HallucinationSanitizer:
                     except AttributeError:
                         pass
                     return None # Continue to next middleware
-        
+
         return None # Continue to next middleware
 
 
@@ -195,23 +193,23 @@ class MixedResponseSplitter:
             logger.info(
                 "🔀 Detected mixed response (content + tool_calls). Splitting into thought → action."
             )
-            
+
             actions = []
-            
+
             # 1. Thought Action
             thought_action = ActionIR(
-                kind="THOUGHT", 
-                name="thought", 
+                kind="THOUGHT",
+                name="thought",
                 args={"text": response.content.strip()},
                 meta={"non_blocking": True}
             )
             actions.append(thought_action)
-            
+
             # 2. Tool Actions (Standard Decode of just tools)
             # We explicitly pass content=None to decoder to get only tools
             tool_actions = decoder.decode(content=None, tool_calls=response.tool_calls)
             actions.extend(tool_actions)
-            
+
             return actions
-            
+
         return None # Not handled, fall back to default

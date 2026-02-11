@@ -9,17 +9,15 @@ Usage:
     agent_os.register_tool("ReviewCommittee", review_tool.review, ...)
 """
 
-import json
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from loguru import logger
 
-from nimbus.agentos import AgentOS
 from nimbus.adapters.llm_factory import create_llm_client, get_default_review_models
-
+from nimbus.agentos import AgentOS
 
 # =============================================================================
 # Tool Definition (for AgentOS.register_tool)
@@ -217,7 +215,7 @@ class ReviewTool:
                 pass
 
         # Format output for Core Agent
-        output = f"## 🏛️ AI Review Committee Results\n\n"
+        output = "## 🏛️ AI Review Committee Results\n\n"
         output += f"**Focus:** {focus} | **Reviewers:** {len(reviews)} | **Time:** {elapsed:.1f}s\n\n"
 
         for r in reviews:

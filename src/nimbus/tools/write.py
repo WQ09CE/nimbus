@@ -12,7 +12,7 @@ Example:
 from pathlib import Path
 from typing import Any, List, Optional
 
-from .sandbox import Sandbox, SandboxError
+from .sandbox import SandboxError
 
 
 async def write_file(

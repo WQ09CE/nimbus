@@ -85,7 +85,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Config skills path
     skill_paths = [Path("examples/skills")]
-    
+
     vcpu_config = VCPUConfig(max_iterations=50)
     agent_config = AgentOSConfig(
         vcpu_config=vcpu_config,

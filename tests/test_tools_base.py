@@ -218,15 +218,18 @@ class TestToolRegistry:
         assert result[0].name == "Test"
         assert result[1] == test_func
 
-    def test_register_duplicate_raises(self):
-        """Test that registering duplicate name raises error."""
+    def test_register_duplicate_overwrites(self):
+        """Test that registering duplicate name overwrites silently."""
         registry = ToolRegistry()
-        tool_def = ToolDefinition(name="Test", description="Test tool")
+        tool_def1 = ToolDefinition(name="Test", description="Test tool v1")
+        tool_def2 = ToolDefinition(name="Test", description="Test tool v2")
 
-        registry.register(tool_def, lambda: None)
+        registry.register(tool_def1, lambda: "v1")
+        registry.register(tool_def2, lambda: "v2")
 
-        with pytest.raises(ValueError, match="already registered"):
-            registry.register(tool_def, lambda: None)
+        defn = registry.get_definition("Test")
+        assert defn is not None
+        assert defn.description == "Test tool v2"
 
     def test_list_tools(self):
         """Test listing all tool names."""

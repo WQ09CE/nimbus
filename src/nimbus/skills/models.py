@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-import yaml
+
 
 @dataclass
 class SkillToolArg:
@@ -42,7 +42,7 @@ class SkillManifest:
     def from_yaml(cls, frontmatter: Dict[str, Any], body: str, root_path: Optional[Path] = None) -> "SkillManifest":
         tools_data = frontmatter.get("tools", [])
         tools = [SkillToolConfig.from_dict(t) for t in tools_data]
-        
+
         return cls(
             name=frontmatter.get("name", "unknown-skill"),
             version=str(frontmatter.get("version", "0.0.1")),

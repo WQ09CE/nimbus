@@ -1,20 +1,21 @@
 import asyncio
-import shlex
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
+
 from nimbus.skills.models import SkillToolConfig
+
 
 class ScriptTool:
     """Wrapper for executing skill scripts as tools."""
-    
+
     def __init__(self, config: SkillToolConfig, root_path: Path):
         self.config = config
         self.root_path = root_path
         self.entrypoint = root_path / config.entrypoint
-        
+
         # Determine interpreter based on extension
         self.interpreter = self._get_interpreter(self.entrypoint)
-        
+
     def _get_interpreter(self, script_path: Path) -> List[str]:
         ext = script_path.suffix.lower()
         if ext == ".py":
@@ -48,9 +49,9 @@ class ScriptTool:
             else:
                 cli_args.append(f"--{k}")
                 cli_args.append(str(v))
-                
+
         cmd = self.interpreter + [str(self.entrypoint)] + cli_args
-        
+
         try:
             # We use asyncio.create_subprocess_exec for non-blocking execution
             process = await asyncio.create_subprocess_exec(
@@ -59,12 +60,12 @@ class ScriptTool:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self.root_path) # Execute in skill directory context
             )
-            
+
             stdout, stderr = await process.communicate()
-            
+
             stdout_str = stdout.decode().strip()
             stderr_str = stderr.decode().strip()
-            
+
             if process.returncode != 0:
                 error_msg = f"Script failed with exit code {process.returncode}"
                 if stderr_str:
@@ -72,9 +73,9 @@ class ScriptTool:
                 if stdout_str:
                     error_msg += f"\nStdout: {stdout_str}"
                 return f"[Error] {error_msg}"
-            
+
             return stdout_str if stdout_str else "[Success] (No output)"
-            
+
         except Exception as e:
             return f"[Error] Execution failed: {str(e)}"
 
@@ -83,21 +84,21 @@ class ScriptTool:
         """Generate OpenAI/Tool definition."""
         properties = {}
         required = []
-        
+
         for name, spec in self.config.args.items():
             # Handle simplified string spec: "arg: string" -> {"type": "string"}
             if isinstance(spec, str):
                 spec = {"type": spec}
-            
+
             # Default to string if type missing
             if "type" not in spec:
                 spec["type"] = "string"
-                
+
             properties[name] = {
                 "type": spec["type"],
                 "description": spec.get("description", "")
             }
-            
+
             # Assume required unless marked optional?
             # Or use explicit required field?
             # For simplicity, let's assume required unless default provided?

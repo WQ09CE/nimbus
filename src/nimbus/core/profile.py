@@ -6,7 +6,7 @@ This unifies the configuration for Single Agent, Core Agent, and Executor Agent.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict
+from typing import List
 
 # Delayed import to avoid circular dependency with AgentOS -> orchestration
 # from nimbus.orchestration.prompts import PromptManager
@@ -18,17 +18,17 @@ class AgentProfile:
     """
     name: str
     role: str  # "core", "executor", "standard", "reviewer"
-    
+
     # Tool Access Control
     allowed_tools: List[str] = field(default_factory=list)  # Whitelist of tool names
     kernel_tools: bool = False  # Whether to load kernel tools (deprecated concept, but kept for compat)
-    
+
     # Prompting
     system_prompt: str = ""  # The generated system prompt
-    
+
     # Runtime Config
     max_iterations: int = 20
-    
+
     @classmethod
     def create_standard(cls, model_id: str = "default") -> "AgentProfile":
         """Create a standard single-agent profile (All tools)."""
@@ -49,7 +49,8 @@ class AgentProfile:
         return cls(
             name="core",
             role="core",
-            allowed_tools=["Read", "CoreBash", "Dispatch", "Verify", "ReviewCommittee", "Memo"],
+            # Bash replaces CoreBash (Review P0)
+            allowed_tools=["Read", "Bash", "Dispatch", "Verify", "ReviewCommittee", "Memo"],
             system_prompt=PromptManager.get_system_prompt("core", model_id),
             max_iterations=30
         )

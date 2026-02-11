@@ -6,7 +6,8 @@ It replaces hardcoded checks (e.g., if model == "gemini") with feature flags.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List
+
 
 @dataclass
 class ModelFeatures:
@@ -16,18 +17,18 @@ class ModelFeatures:
     # Does the model support native tool calling?
     # If False, we might need to parse tool calls from text (not implemented yet, but good for future)
     native_tool_calling: bool = True
-    
+
     # Does the model tend to "talk while working" (output text + tool calls)?
     # If True, we enable Mixed Response Splitting.
     split_mixed_responses: bool = False
-    
+
     # Does the model suffer from hallucinating tool tags in text stream?
     # If True, we enable the Hallucination Firewall.
     firewall_hallucinations: bool = False
-    
+
     # Specific patterns to watch for in the firewall
     hallucination_patterns: List[str] = field(default_factory=list)
-    
+
     # Does the model need strict tool name correction (e.g. 'read' -> 'Read')?
     force_tool_name_repair: bool = True
 

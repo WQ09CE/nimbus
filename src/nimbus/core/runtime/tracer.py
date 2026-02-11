@@ -8,13 +8,13 @@ and the execution results in a format suitable for debugging "infinite context" 
 
 import json
 import time
-import os
-from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional
-from pathlib import Path
+from dataclasses import asdict, dataclass
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from nimbus.core.protocol import ActionIR, ToolResult, Fault
+from nimbus.core.protocol import ActionIR, Fault, ToolResult
+
 
 @dataclass
 class ContextSnapshot:
@@ -30,21 +30,21 @@ class ExecutionTrace:
     """Full lifecycle trace of a single VCPU step."""
     iteration: int
     timestamp: str
-    
+
     # 1. Input State
     context: ContextSnapshot
-    
+
     # 2. AI Processing
     llm_raw_content: str
     llm_tool_calls: List[Dict[str, Any]]
-    
+
     # 3. Decision
     actions: List[Dict[str, Any]]  # Serialized ActionIRs
-    
+
     # 4. Outcome
     results: List[Dict[str, Any]]  # Serialized ToolResults
     fault: Optional[Dict[str, Any]]
-    
+
     # Metrics
     timing_ms: Dict[str, int]
 
@@ -57,11 +57,11 @@ class TraceManager:
         # Create trace directory: .nimbus/traces/<session_id>/
         self.trace_dir = Path(base_dir) / self.session_id
         self.trace_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Current active trace
         self._current_step: Optional[ExecutionTrace] = None
         self._start_time = 0
-        
+
     def start_step(self, iteration: int):
         """Begin tracing a new step."""
         self._start_time = time.time_ns()
@@ -81,7 +81,7 @@ class TraceManager:
     def record_context(self, messages: List[Dict[str, Any]], pinned_tokens: int = 0, frame_tokens: int = 0):
         """Record the context assembly."""
         if not self._current_step: return
-        
+
         # Extract summary if present
         summary = None
         for msg in messages:
@@ -91,7 +91,7 @@ class TraceManager:
                ("📋 [Mission Control]" in content):
                 summary = content[:200] + "..." # Preview
                 break
-                
+
         total = pinned_tokens + frame_tokens
         # Fallback if tokens not provided (rough estimate)
         if total == 0:
@@ -139,15 +139,15 @@ class TraceManager:
     def finish_step(self):
         """Finalize and write the step trace."""
         if not self._current_step: return
-        
+
         # Calculate total time
         duration = (time.time_ns() - self._start_time) // 1_000_000
         self._current_step.timing_ms["total_trace_duration"] = duration
-        
+
         # 1. Write JSON (Machine Readable)
         step_num = self._current_step.iteration
         json_path = self.trace_dir / f"step_{step_num:03d}.json"
-        
+
         try:
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(asdict(self._current_step), f, indent=2, ensure_ascii=False)
@@ -157,14 +157,14 @@ class TraceManager:
         # 2. Write/Append Markdown (Human Readable)
         md_path = self.trace_dir / "trace_log.md"
         self._append_markdown_log(md_path)
-        
+
         self._current_step = None
 
     def _append_markdown_log(self, path: Path):
         """Append a human-friendly summary to the markdown log."""
         step = self._current_step
         ctx = step.context
-        
+
         md_content = f"""
 ## Step {step.iteration} [{step.timestamp}]
 
@@ -179,18 +179,18 @@ class TraceManager:
             md_content += "### ⚡ Actions\n"
             for act in step.actions:
                 md_content += f"- **{act['kind']}**: `{act['name']}`\n  Args: `{json.dumps(act['args'])}`\n"
-        
+
         if step.results:
             md_content += "\n### 👁️ Observations\n"
             for res in step.results:
                 status_icon = "✅" if res['status'] == "OK" else "❌"
                 md_content += f"- {status_icon} **{res['status']}**: {res['output']}\n"
-        
+
         if step.fault:
             md_content += f"\n### 🛑 Fault\n**{step.fault['code']}**: {step.fault['message']}\n"
-            
+
         md_content += "\n---\n"
-        
+
         try:
             with open(path, "a", encoding="utf-8") as f:
                 f.write(md_content)

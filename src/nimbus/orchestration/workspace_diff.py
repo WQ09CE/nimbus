@@ -8,7 +8,7 @@ and computes diffs between snapshots to detect Executor's file changes.
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Set
 
 # Directories to always skip when snapshotting
 SKIP_DIRS: Set[str] = {

@@ -1,5 +1,7 @@
-from typing import Any, Dict, Optional
-from .models import SessionResponse, SessionStatus, SessionUpdate
+from typing import Any, Dict
+
+from .models import SessionResponse, SessionStatus
+
 
 def _format_session_response(session: Dict[str, Any]) -> SessionResponse:
     overrides = session.get("config_overrides")
@@ -14,7 +16,7 @@ def _format_session_response(session: Dict[str, Any]) -> SessionResponse:
                 overrides = json.loads(overrides)
             except json.JSONDecodeError:
                 overrides = {}
-        
+
         if isinstance(overrides, dict):
             agent_mode = overrides.get("agent_mode", "standard")
             model_config = overrides.get("model_config")

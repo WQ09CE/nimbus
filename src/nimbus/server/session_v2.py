@@ -239,6 +239,18 @@ class SessionManagerV2:
              profile_name = "standard"
 
         # Create AgentOS using the factory and profile
+        # Discover skill directories:
+        # 1. User-level:     ~/.nimbus/skills
+        # 2. Workspace-level: <workspace>/.nimbus/skills
+        skill_paths = []
+        user_skills = Path.home() / ".nimbus" / "skills"
+        if user_skills.is_dir():
+            skill_paths.append(user_skills)
+        if workspace:
+            ws_skills = workspace / ".nimbus" / "skills"
+            if ws_skills.is_dir():
+                skill_paths.append(ws_skills)
+
         agent_os = create_agent_os(
             llm_client=llm_client,
             tools={},
@@ -248,6 +260,7 @@ class SessionManagerV2:
             register_defaults=True, # Registers Read, Write, etc.
             profile=profile_name,   # Sets System Prompt & Config
             model_id=model_id,
+            skill_paths=skill_paths,
         )
 
         # --- Dispatch Tool Integration (for Core/Dual mode) ---

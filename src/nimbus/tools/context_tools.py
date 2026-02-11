@@ -5,8 +5,6 @@ Tools for the Agent to manage its own memory and context window.
 Allows "paging" through history when the context window is full.
 """
 
-from typing import Dict, Any
-from nimbus.tools import tool
 
 # Definition for ScrollHistory
 SCROLL_HISTORY_DEF = {

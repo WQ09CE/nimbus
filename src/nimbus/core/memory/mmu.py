@@ -348,11 +348,11 @@ class MMU:
             # We filter in-place or replace the list
             original_len = len(frame.messages)
             frame.messages = [
-                msg for msg in frame.messages 
+                msg for msg in frame.messages
                 if not msg.meta.get("ephemeral", False)
             ]
             count += (original_len - len(frame.messages))
-            
+
         return count
 
     def scroll(self, direction: str, steps: int = 10) -> str:
