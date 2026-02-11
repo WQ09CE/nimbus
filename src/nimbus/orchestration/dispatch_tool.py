@@ -24,7 +24,7 @@ from loguru import logger
 from nimbus.adapters.llm_factory import create_llm_client
 from nimbus.agentos import AgentOS
 
-from .prompts import EXECUTOR_SYSTEM_PROMPT
+from .prompts import PromptManager  # NEW: Dynamic prompt manager
 from .tools import run_verify_checks
 from .workspace_diff import (
     WorkspaceDiff,
@@ -40,7 +40,7 @@ class DispatchToolConfig:
 
     # Executor agent
     executor_max_iterations: int = 15  # Right-sized dispatch should need 1-10 tool calls
-    executor_system_prompt: str = EXECUTOR_SYSTEM_PROMPT
+    # executor_system_prompt removed: we now generate it dynamically based on model
 
     # Dispatch limits
     max_dispatch_count: int = 8
@@ -189,6 +189,8 @@ class DispatchTool:
         # --- Resolve model for Executor ---
         executor_llm = None
         model_name = kwargs.get("model", "")
+        resolved_model_id = "default"  # Track resolved ID for prompt generation
+        
         if model_name:
             # Resolve alias
             resolved = self._config.model_aliases.get(model_name.lower().strip(), model_name)
@@ -198,14 +200,19 @@ class DispatchTool:
             try:
                 executor_llm = await create_llm_client(resolved)
                 logger.info(f"  🤖 Executor using model: {resolved}")
+                resolved_model_id = resolved
             except Exception as e:
                 logger.warning(f"  ⚠️ Failed to create LLM for {resolved}: {e}, using default")
+
+        # --- Dynamic System Prompt ---
+        # Generate prompt based on the specific model being used
+        system_prompt = PromptManager.get_system_prompt("executor", resolved_model_id)
 
         # NOTE: Native spawn with role="executor"
         pid = self._agent_os.spawn(
             goal=executor_goal, 
             role="executor", 
-            system_rules=self._config.executor_system_prompt,
+            system_rules=system_prompt,
             max_iterations=self._config.executor_max_iterations,
             llm_client=executor_llm,
         )

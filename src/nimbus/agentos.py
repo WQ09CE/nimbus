@@ -40,7 +40,7 @@ from nimbus.os.gate import (
     KernelGate,
     SimpleEventStream,
 )
-from nimbus.tools.base import ToolDefinition, ToolRegistry
+from nimbus.tools.base import ToolDefinition, ToolParameter, ToolRegistry
 from nimbus.tools.memo import create_memo_tool
 from nimbus.skills.manager import SkillManager
 
@@ -1319,12 +1319,33 @@ class AgentOS:
             self._tools.unregister(name)
 
         if hasattr(func, "_tool_definition"):
+            defn = func._tool_definition
+            if roles is not None:
+                defn.roles = roles
             self._tools.register_decorated(func)
         else:
+            # Parse parameters from JSON Schema dict if provided
+            param_list = []
+            if parameters and isinstance(parameters, dict):
+                props = parameters.get("properties", {})
+                required_params = parameters.get("required", [])
+                for pname, pspec in props.items():
+                    param_list.append(
+                        ToolParameter(
+                            name=pname,
+                            type=pspec.get("type", "string"),
+                            description=pspec.get("description", ""),
+                            required=(pname in required_params),
+                            enum=pspec.get("enum"),
+                            items=pspec.get("items"),
+                            properties=pspec.get("properties"),
+                        )
+                    )
+
             definition = ToolDefinition(
                 name=name,
                 description=description or func.__doc__ or "",
-                parameters=[],
+                parameters=param_list,
                 roles=roles,
             )
             self._tools.register(definition, func)

@@ -24,7 +24,7 @@ from nimbus.core.runtime.vcpu import LLMClient, VCPUConfig
 from nimbus.tools import register_default_tools
 
 from .dispatch_tool import DispatchTool, DispatchToolConfig
-from .prompts import CORE_SYSTEM_PROMPT, EXECUTOR_SYSTEM_PROMPT
+from .prompts import PromptManager  # Use dynamic manager
 from .tools import (
     DISPATCH_TOOL_DEF,
     VERIFY_TOOL_DEF,
@@ -43,11 +43,11 @@ class OrchestratorConfig:
 
     # Core agent
     core_max_iterations: int = 20
-    core_system_prompt: str = CORE_SYSTEM_PROMPT
+    # core_system_prompt removed: we use PromptManager
 
     # Executor agent
     executor_max_iterations: int = 15
-    executor_system_prompt: str = EXECUTOR_SYSTEM_PROMPT
+    # executor_system_prompt removed: we use PromptManager
 
     # Dispatch limits
     max_dispatch_count: int = 8
@@ -82,16 +82,20 @@ class DualAgentOrchestrator:
         llm_client: LLMClient,
         workspace: Optional[Path] = None,
         config: Optional[OrchestratorConfig] = None,
+        model_id: str = "default",  # NEW: Pass model ID for Core prompt
     ):
         self._llm = llm_client
         self.workspace = workspace or Path.cwd()
         self.config = config or OrchestratorConfig()
+        
+        # Generate Core System Prompt
+        core_prompt = PromptManager.get_system_prompt("core", model_id)
 
         # 1. Create Main AgentOS (Kernel)
         # Default system rules are for Core Agent (primary user of run())
         os_config = AgentOSConfig(
             kernel_tools=False,
-            system_rules=self.config.core_system_prompt,
+            system_rules=core_prompt,
             vcpu_config=VCPUConfig(max_iterations=self.config.core_max_iterations),
             workspace_info=f"Workspace: {self.workspace}",
             enable_session=False,
@@ -136,7 +140,6 @@ class DualAgentOrchestrator:
         # 5. Initialize Dispatch Tool
         dispatch_config = DispatchToolConfig(
             executor_max_iterations=self.config.executor_max_iterations,
-            executor_system_prompt=self.config.executor_system_prompt,
             max_dispatch_count=self.config.max_dispatch_count,
             dispatch_timeout=self.config.dispatch_timeout,
             total_timeout=self.config.total_timeout,

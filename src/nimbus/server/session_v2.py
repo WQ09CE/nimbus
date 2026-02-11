@@ -229,7 +229,7 @@ class SessionManagerV2:
 
             from nimbus.core.runtime.vcpu import VCPUConfig
             from nimbus.orchestration.dispatch_tool import DispatchTool, DispatchToolConfig
-            from nimbus.orchestration.prompts import CORE_SYSTEM_PROMPT, EXECUTOR_SYSTEM_PROMPT
+            from nimbus.orchestration.prompts import PromptManager  # Use dynamic manager
             from nimbus.orchestration.tools import (
                 DISPATCH_TOOL_DEF,
                 VERIFY_TOOL_DEF,
@@ -254,12 +254,16 @@ class SessionManagerV2:
                     _skill_paths.append(_sd)
                     _seen.add(_resolved)
 
+            # Extract model_id for prompt selection
+            _model_id = model_config.get("model_id", "default") if model_config else "default"
+            _core_prompt = PromptManager.get_system_prompt("core", _model_id)
+
             # Single-kernel architecture with Role-Based Access Control
             from nimbus.agentos import AgentOSConfig
 
             os_config = AgentOSConfig(
                 kernel_tools=False,
-                system_rules=CORE_SYSTEM_PROMPT,
+                system_rules=_core_prompt,
                 vcpu_config=VCPUConfig(max_iterations=20),
                 workspace_info=f"Workspace: {_workspace}",
                 skill_paths=_skill_paths,
@@ -282,7 +286,7 @@ class SessionManagerV2:
 
             # Dispatch + Verify meta-tools
             dispatch_config = DispatchToolConfig(
-                executor_system_prompt=EXECUTOR_SYSTEM_PROMPT,
+                # executor_system_prompt removed: DispatchTool generates it dynamically
             )
             dispatch_tool = DispatchTool(
                 agent_os=agent_os,

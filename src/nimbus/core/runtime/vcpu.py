@@ -800,25 +800,48 @@ class VCPU:
                 else:
                     logger.info(f"Plan: Action {action.kind} ({action.name})")
 
-            # 3. EXECUTE: Handle each action
+            # 3. EXECUTE: Execute actions in parallel
             exec_start = time.time_ns()
-            for action in actions:
-                logger.debug(f"Executing action: {action.kind} - {action.name}")
-                result = await self._execute_action(action)
-                logger.debug(f"Action result: status={result.status}, fault={result.fault}")
-                step_result.results.append(result)
-
-                # Check for final result
-                if result.is_final:
-                    step_result.is_final = True
-                    step_result.final_result = result
-                    self._state.is_done = True
-                    break
-
-                # Check for non-retryable fault
-                if result.fault and not result.fault.retryable:
-                    step_result.fault = result.fault
-                    break
+            
+            # We execute all actions concurrently to maximize performance.
+            # This follows the "parallel tool calls" paradigm (e.g. OpenAI).
+            # Order is preserved in the results list.
+            if actions:
+                logger.debug(f"Executing {len(actions)} actions in parallel...")
+                results = await asyncio.gather(
+                    *(self._execute_action(action) for action in actions),
+                    return_exceptions=True
+                )
+                
+                for i, result in enumerate(results):
+                    # Handle exceptions (programmatic errors in _execute_action)
+                    if isinstance(result, BaseException):
+                        # Treat as system error
+                        logger.error(f"Action execution failed: {result}", exc_info=result)
+                        fault_result = ToolResult(
+                            status="ERROR",
+                            fault=Fault(
+                                domain="KERNEL",
+                                code="SYSTEM_ERROR", 
+                                message=str(result),
+                                retryable=False
+                            )
+                        )
+                        step_result.results.append(fault_result)
+                        step_result.fault = fault_result.fault
+                    else:
+                        # Normal ToolResult
+                        step_result.results.append(result)
+                        
+                        # Check for final result (priority to first one found)
+                        if result.is_final and not step_result.is_final:
+                            step_result.is_final = True
+                            step_result.final_result = result
+                            self._state.is_done = True
+                        
+                        # Check for non-retryable fault
+                        if result.fault and not result.fault.retryable and not step_result.fault:
+                            step_result.fault = result.fault
 
             step_result.timing_ms["execute"] = (time.time_ns() - exec_start) // 1_000_000
             
