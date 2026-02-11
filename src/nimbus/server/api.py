@@ -22,7 +22,11 @@ from .models import (
     ChatRequest,
     DAGResponse,
     DAGStatsResponse,
+    FileNode,
+    FileType,
     HealthResponse,
+    # Logging
+    LogBatch,
     MCPServerList,
     MessageList,
     MessageResponse,
@@ -39,18 +43,13 @@ from .models import (
     SessionDetail,
     SessionList,
     SessionResponse,
-    SessionStatus,
     SessionUpdate,
-    FileNode,
-    FileType,
     SkillList,
     SkillParameter,
     # Skill
     SkillResponse,
     TaskNodeResponse,
     TaskStatusEnum,
-    # Logging
-    LogBatch,
 )
 
 logger = logging.getLogger(__name__)
@@ -99,12 +98,12 @@ async def receive_logs(batch: LogBatch):
     from nimbus.core.logging import get_logger
 
     logger = get_logger(f"client.{batch.source}")
-    
+
     for entry in batch.entries:
         msg = f"[{entry.timestamp}] {entry.message}"
         if entry.data:
             msg += f" | data={entry.data}"
-            
+
         if entry.level.lower() == "debug":
             logger.debug(msg)
         elif entry.level.lower() == "info":
@@ -115,7 +114,7 @@ async def receive_logs(batch: LogBatch):
             logger.error(msg)
         else:
             logger.info(msg)
-            
+
     return {"status": "ok"}
 
 
@@ -588,8 +587,6 @@ async def get_messages(
 # File System APIs
 # =============================================================================
 
-
-from typing import List
 
 @router.get("/sessions/{session_id}/files", response_model=List[FileNode])
 async def list_files(

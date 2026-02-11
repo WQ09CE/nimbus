@@ -34,19 +34,19 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol
 
 from nimbus.core.memory.mmu import MMU
+from nimbus.core.models.manifest import ModelManifest, get_model_manifest
 from nimbus.core.persistence import SessionCheckpointModel
 from nimbus.core.protocol import ActionIR, Event, Fault, ToolResult
 from nimbus.core.runtime.checkpoint_manager import CheckpointManager
-from nimbus.core.runtime.tracer import TraceManager
 from nimbus.core.runtime.decoder import InstructionDecoder
 from nimbus.core.runtime.doom_loop import DoomLoopDetector
 from nimbus.core.runtime.empty_result_handler import EmptyResultHandler
 from nimbus.core.runtime.error_handler import ErrorHandlerRegistry
 from nimbus.core.runtime.execution_state import ExecutionState
 from nimbus.core.runtime.failure_reporter import FailureReporter
-from nimbus.core.runtime.recovery_executor import RecoveryContext, RecoveryExecutor
-from nimbus.core.models.manifest import ModelManifest, get_model_manifest
 from nimbus.core.runtime.pipeline import ResponsePipeline
+from nimbus.core.runtime.recovery_executor import RecoveryContext, RecoveryExecutor
+from nimbus.core.runtime.tracer import TraceManager
 from nimbus.os.gate import KernelGate
 
 # =============================================================================
@@ -254,7 +254,7 @@ class VCPU:
         self.config = config or VCPUConfig()
         self.tools = tools or []
         self.session_id = session_id
-        
+
         # Initialize Model Capability Pipeline
         self.manifest = manifest or get_model_manifest("default")
         self.pipeline = ResponsePipeline(self.manifest.features)
@@ -439,7 +439,7 @@ class VCPU:
                     # Let's fix this by using add_message directly if needed or updating MMU wrapper
                     # For now, let's look at how add_assistant_message is implemented.
                     # It just calls current_frame.add_assistant_message(content) which creates Message
-                    
+
                     # Since we can't easily change the signature of add_assistant_message everywhere safely right now,
                     # let's access the last message and tag it.
                     if self.mmu.current_frame.messages:
@@ -560,10 +560,10 @@ class VCPU:
             # 1. THINK: Get LLM response
             logger.info(f"Thinking... (Iteration {self._state.iteration})")
             think_start = time.time_ns()
-            
+
             # Reset pipeline for new turn
             self.pipeline.reset()
-            
+
             messages = self.mmu.assemble_context()
 
             # TRACE: Record Context
@@ -612,14 +612,14 @@ class VCPU:
                     self._emit_event("THINKING", {"content": processed})
 
             response = await self.alu.chat(messages, tools=tools_to_pass, on_chunk=on_think_chunk)
-            
+
             # CLEANUP EPHEMERAL MESSAGES
-            # Once the LLM has responded, the previous ephemeral hints (errors/retries) 
+            # Once the LLM has responded, the previous ephemeral hints (errors/retries)
             # have served their purpose and should be removed to keep context clean.
             cleaned_count = self.mmu.cleanup_ephemeral_messages()
             if cleaned_count > 0:
                 logger.debug(f"🧹 Cleaned {cleaned_count} ephemeral messages from history.")
-            
+
             # TRACE: Record LLM Response
             if self.tracer:
                 self.tracer.record_llm_response(response.content, response.tool_calls)
@@ -714,7 +714,7 @@ class VCPU:
                     self.mmu.add_assistant_message("I need to use proper function calls.")
                     if self.mmu.current_frame.messages:
                         self.mmu.current_frame.messages[-1].meta["ephemeral"] = True
-                        
+
                     self.mmu.add_user_message(
                         "[System] You just output text instead of calling tools. "
                         "Use the function calling API. Do NOT write tool calls as text. "
@@ -722,7 +722,7 @@ class VCPU:
                     )
                     if self.mmu.current_frame.messages:
                         self.mmu.current_frame.messages[-1].meta["ephemeral"] = True
-                        
+
                     logger.warning(
                         f"🛡️ Hallucination #{self._state.hallucination_count}: "
                         f"injected correction into context"
@@ -744,7 +744,7 @@ class VCPU:
                  )
                  if self.mmu.current_frame.messages:
                      self.mmu.current_frame.messages[-1].meta["ephemeral"] = True
-                     
+
                  # We consume this step as a correction step
                  step_result.timing_ms["decode"] = (time.time_ns() - decode_start) // 1_000_000
                  step_result.timing_ms["total"] = (time.time_ns() - start_time) // 1_000_000
@@ -772,11 +772,11 @@ class VCPU:
                  self.mmu.add_assistant_message(thought_text)
                  # Add tools (using original tool_calls from response)
                  self.mmu.add_assistant_with_tool_calls(content=None, tool_calls=response.tool_calls)
-                 
+
             elif response.tool_calls:
                  # Standard Tool Call (or stripped content)
                  self.mmu.add_assistant_with_tool_calls(content=response.content, tool_calls=response.tool_calls)
-                 
+
             elif response.content:
                  # Standard Content
                  self.mmu.add_assistant_message(response.content)
@@ -802,7 +802,7 @@ class VCPU:
 
             # 3. EXECUTE: Execute actions in parallel
             exec_start = time.time_ns()
-            
+
             # We execute all actions concurrently to maximize performance.
             # This follows the "parallel tool calls" paradigm (e.g. OpenAI).
             # Order is preserved in the results list.
@@ -812,7 +812,7 @@ class VCPU:
                     *(self._execute_action(action) for action in actions),
                     return_exceptions=True
                 )
-                
+
                 for i, result in enumerate(results):
                     # Handle exceptions (programmatic errors in _execute_action)
                     if isinstance(result, BaseException):
@@ -822,7 +822,7 @@ class VCPU:
                             status="ERROR",
                             fault=Fault(
                                 domain="KERNEL",
-                                code="SYSTEM_ERROR", 
+                                code="SYSTEM_ERROR",
                                 message=str(result),
                                 retryable=False
                             )
@@ -832,19 +832,19 @@ class VCPU:
                     else:
                         # Normal ToolResult
                         step_result.results.append(result)
-                        
+
                         # Check for final result (priority to first one found)
                         if result.is_final and not step_result.is_final:
                             step_result.is_final = True
                             step_result.final_result = result
                             self._state.is_done = True
-                        
+
                         # Check for non-retryable fault
                         if result.fault and not result.fault.retryable and not step_result.fault:
                             step_result.fault = result.fault
 
             step_result.timing_ms["execute"] = (time.time_ns() - exec_start) // 1_000_000
-            
+
             # TRACE: Record Results
             if self.tracer:
                 self.tracer.record_results(step_result.results)
@@ -863,11 +863,11 @@ class VCPU:
                 self.tracer.record_fault(step_result.fault)
 
         step_result.timing_ms["total"] = (time.time_ns() - start_time) // 1_000_000
-        
+
         # TRACE: Finish Step
         if self.tracer:
             self.tracer.finish_step()
-            
+
         return step_result
 
     # =========================================================================
@@ -917,23 +917,23 @@ class VCPU:
         # 1. Pipeline splitting (non-blocking)
         if action.meta and action.meta.get("non_blocking"):
              return ToolResult(
-                 status="OK", 
-                 output=action.args.get("text"), 
+                 status="OK",
+                 output=action.args.get("text"),
                  is_final=False
              )
-        
+
         # 2. Update state (Standard thought)
         self._state.on_thought()
-        
+
         # 3. Check limit
         if self._state.consecutive_thoughts >= self.config.max_consecutive_thoughts:
              # Hit limit -> Treat as Final Return
              return await self._handle_return(action)
-        
+
         # 4. Default (Continue Thinking) -> NON-FINAL
         return ToolResult(
-            status="OK", 
-            output=action.args.get("text"), 
+            status="OK",
+            output=action.args.get("text"),
             is_final=False
         )
 
@@ -1230,6 +1230,9 @@ class VCPU:
 
         Returns the result and finalizes execution.
         """
+        from nimbus.core.logging import get_logger
+        logger = get_logger("kernel.vcpu")
+
         # Support various argument names for flexibility
         # 'result'/'output': from explicit RETURN tool call
         # 'content'/'text': from implicit THOUGHT action
@@ -1256,7 +1259,7 @@ class VCPU:
                     )
                     if self.mmu.current_frame.messages:
                         self.mmu.current_frame.messages[-1].meta["ephemeral"] = True
-                        
+
                     return ToolResult(
                         status="OK",
                         output="",

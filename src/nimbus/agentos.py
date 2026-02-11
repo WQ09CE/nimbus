@@ -23,10 +23,10 @@ from nimbus.core.compaction import (
 )
 from nimbus.core.memory.context import PinnedContext
 from nimbus.core.memory.mmu import MMU, MMUConfig
+from nimbus.core.profile import AgentProfile  # NEW
 from nimbus.core.protocol import Event, Fault, ToolResult
 from nimbus.core.runtime.decoder import InstructionDecoder
 from nimbus.core.runtime.vcpu import VCPU, LLMClient, VCPUConfig
-from nimbus.core.profile import AgentProfile  # NEW
 from nimbus.core.scheduler import (
     DAG,
     EventStream,
@@ -41,9 +41,9 @@ from nimbus.os.gate import (
     KernelGate,
     SimpleEventStream,
 )
+from nimbus.skills.manager import SkillManager
 from nimbus.tools.base import ToolDefinition, ToolParameter, ToolRegistry
 from nimbus.tools.memo import create_memo_tool
-from nimbus.skills.manager import SkillManager
 
 # =============================================================================
 # AgentOS Configuration
@@ -160,23 +160,26 @@ class AgentOS:
         self._llm = llm_client
         self.config = config or AgentOSConfig()
 
-        # Tool registry
+        # Tool registry (Core + Extension)
         self._tools = ToolRegistry()
+
+        # Skill Tool registry (Skills only - for easy hot reloading)
+        self._skill_tools = ToolRegistry()
 
         # Skill Manager
         self._skill_manager = SkillManager(self.config.skill_paths)
         self._skill_manager.load_all()
         self._skill_tool_names: List[str] = []
-        
+
         # Register Skill Tools
         self._register_skill_tools()
-        
+
         # Register ReloadSkills tool
         from nimbus.tools.base import ToolDefinition, ToolParameter
-        
+
         async def reload_skills_wrapper(**kwargs):
             return self.reload_skills(**kwargs)
-            
+
         reload_def = ToolDefinition(
             name="ReloadSkills",
             description="Reload all skills from disk. Use this after creating or modifying skills to make them available immediately.",
@@ -291,24 +294,35 @@ class AgentOS:
     def _register_skill_tools(self) -> None:
         """Register all loaded skill tools."""
         from nimbus.tools.base import ToolDefinition, ToolParameter
-        
+
         # self._skill_tool_names should be initialized in __init__
         if not hasattr(self, "_skill_tool_names"):
              self._skill_tool_names = []
 
+        # Clear existing skill tools before reloading (Unified Strategy A+)
+        # This is safer than individual unregistration
+        # We don't need to clear self._tools anymore because skills are in _skill_tools
+        # But for backward compat with _skill_tool_names tracking, we'll keep the list clear
+        # Actually, with separate registry, we can just clear it!
+        # self._skill_tools = ToolRegistry() # Or method to clear
+        # But ToolRegistry doesn't have clear(). Let's implement it or just iterate.
+
+        # Reset tracking list
+        self._skill_tool_names.clear()
+
         for tool_name, tool_func in self._skill_manager.tools.items():
             # Skip if already registered skill tool (avoid duplicates in list)
-            if tool_name in self._skill_tool_names:
-                continue
-                
+            # Actually with separate registry we don't worry about duplicates with core tools as much
+            # but we should check if name conflicts with core tools (Phase 3 requirement)
+
             tool_inst = self._skill_manager.tools[tool_name]
             def_dict = tool_inst.tool_definition
-             
+
             params = []
             if "parameters" in def_dict:
                 props = def_dict["parameters"].get("properties", {})
                 required = def_dict["parameters"].get("required", [])
-                
+
                 for pname, pdef in props.items():
                     params.append(ToolParameter(
                         name=pname,
@@ -316,14 +330,16 @@ class AgentOS:
                         description=pdef.get("description", ""),
                         required=(pname in required)
                     ))
-                 
+
             definition = ToolDefinition(
                 name=def_dict["name"],
                 description=def_dict["description"],
-                parameters=params
+                parameters=params,
+                category="skill",  # Phase 1: Tag skills explicitly
             )
-             
-            self._tools.register(definition, tool_inst.__call__)
+
+            # Register to SKILL registry
+            self._skill_tools.register(definition, tool_inst.__call__)
             self._skill_tool_names.append(tool_name)
 
     def reload_skills(self, **kwargs) -> str:
@@ -353,21 +369,17 @@ class AgentOS:
                         added_paths.append(str(new_dir))
 
         # Unregister current skills
-        removed_count = 0
-        if hasattr(self, "_skill_tool_names"):
-            for name in list(self._skill_tool_names):
-                if self._tools.unregister(name):
-                    removed_count += 1
-            self._skill_tool_names.clear()
-        else:
-             self._skill_tool_names = []
-        
+        # Strategy A+: Direct clear of the skill registry
+        removed_count = len(self._skill_tools)
+        self._skill_tools.clear()
+        self._skill_tool_names.clear()
+
         # Reload manager
         self._skill_manager.reload()
-        
+
         # Re-register
         self._register_skill_tools()
-        
+
         msg = f"Reloaded skills. Removed {removed_count} old tools. Loaded {len(self._skill_tool_names)} new tools from {len(self._skill_manager.skills)} skills."
         if added_paths:
             msg += f" Added skill dirs: {added_paths}"
@@ -1531,16 +1543,18 @@ def create_agent_os(
             target_profile = AgentProfile.create_standard(model_id)
     elif isinstance(profile, AgentProfile):
         target_profile = profile
-        
+
     if target_profile:
         config.system_rules = target_profile.system_prompt
 
     os = AgentOS(llm_client=llm_client, tools=tools, config=config)
 
-    # Register default v2 native tools
     if register_defaults:
         from nimbus.tools import register_default_tools
         ws = workspace
+
+        # If profile is None, workspace is already set above
+        # If profile is present, use it to determine tool registration
 
         if isinstance(profile, str) and profile == "core":
             # Core Profile: Split tools by role
@@ -1548,7 +1562,7 @@ def create_agent_os(
             register_default_tools(os, workspace=ws, tools=["Read"])
             # Executor only
             register_default_tools(os, workspace=ws, tools=["Write", "Edit", "Bash"], roles=["executor"])
-            
+
             # --- Auto-register Orchestration Tools for Core ---
             from nimbus.orchestration.dispatch_tool import DispatchTool, DispatchToolConfig
             from nimbus.orchestration.tools import (
@@ -1556,10 +1570,10 @@ def create_agent_os(
                 VERIFY_TOOL_DEF,
                 register_core_bash,
             )
-            
+
             # Register CoreBash
             register_core_bash(os, roles=["core", "chat"])
-            
+
             # Register Dispatch/Verify
             dispatch_config = DispatchToolConfig()
             dispatch_tool = DispatchTool(
@@ -1581,9 +1595,9 @@ def create_agent_os(
                 parameters=VERIFY_TOOL_DEF["parameters"],
                 roles=["core", "chat"],
             )
-            
+
             # Register ReviewCommittee
-            from nimbus.orchestration.review_tool import ReviewTool, REVIEW_TOOL_DEF
+            from nimbus.orchestration.review_tool import REVIEW_TOOL_DEF, ReviewTool
             review_tool = ReviewTool(agent_os=os, workspace=ws)
             os.register_tool(
                 name="ReviewCommittee",
@@ -1592,7 +1606,7 @@ def create_agent_os(
                 parameters=REVIEW_TOOL_DEF["parameters"],
                 roles=["core", "chat"],
             )
-            
+
         else:
             # Standard Profile: All tools for everyone
             register_default_tools(os, workspace=ws)

@@ -45,10 +45,12 @@ __role__ = "ISA"  # Instruction Set Architecture - tool interface definitions
 import asyncio
 from dataclasses import dataclass, field
 from functools import wraps
-from typing import Any, Callable, Dict, Iterator, List, Optional, TypeVar
+from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, TypeVar
 
 # Type for decorated tool functions
 F = TypeVar("F", bound=Callable[..., Any])
+
+ToolCategory = Literal["core", "extension", "skill"]
 
 
 class ToolExecutionError(Exception):
@@ -221,6 +223,7 @@ class ToolDefinition:
     name: str
     description: str
     parameters: List[ToolParameter] = field(default_factory=list)
+    category: Optional[ToolCategory] = None  # NEW: Tool Classification
     dangerous: bool = False  # If True, requires permission
 
     roles: Optional[List[str]] = None  # List of roles allowed to use this tool (None = all)
@@ -327,6 +330,7 @@ class ToolDefinition:
             "name": self.name,
             "description": self.description,
             "parameters": [p.to_dict() for p in self.parameters],
+            "category": self.category,
             "dangerous": self.dangerous,
             "roles": self.roles,
         }
@@ -347,6 +351,7 @@ class ToolDefinition:
             name=data["name"],
             description=data.get("description", ""),
             parameters=parameters,
+            category=data.get("category"),
             dangerous=data.get("dangerous", False),
             roles=data.get("roles"),
         )
@@ -356,6 +361,7 @@ class ToolDefinition:
         return (
             f"ToolDefinition(name={self.name!r}, "
             f"parameters={len(self.parameters)}, "
+            f"category={self.category!r}, "
             f"dangerous={self.dangerous}, "
             f"roles={self.roles})"
         )
@@ -424,6 +430,10 @@ class ToolRegistry:
         entry = self._tools.pop(name, None)
         return entry[0] if entry else None
 
+    def clear(self) -> None:
+        """Unregister all tools."""
+        self._tools.clear()
+
     def get(self, name: str) -> Optional[tuple[ToolDefinition, Callable[..., Any]]]:
         """Get tool definition and function by name.
 
@@ -467,6 +477,34 @@ class ToolRegistry:
         """
         return list(self._tools.keys())
 
+    def list_by_category(self, category: ToolCategory) -> List[str]:
+        """List tool names by category.
+        
+        Args:
+            category: The tool category to filter by ("core", "extension", "skill").
+            
+        Returns:
+            List of tool names.
+        """
+        return [
+            name for name, (defn, _) in self._tools.items()
+            if defn.category == category
+        ]
+
+    def get_categories_summary(self) -> Dict[ToolCategory, List[str]]:
+        """Get a summary of tools grouped by category.
+        
+        Returns:
+            Dictionary mapping categories to lists of tool names.
+        """
+        summary = {"core": [], "extension": [], "skill": [], "uncategorized": []}
+        for name, (defn, _) in self._tools.items():
+            cat = defn.category if defn.category else "uncategorized"
+            if cat not in summary:
+                summary[cat] = []
+            summary[cat].append(name)
+        return summary
+
     def list_dangerous_tools(self) -> List[str]:
         """List tools marked as dangerous.
 
@@ -476,8 +514,8 @@ class ToolRegistry:
         return [name for name, (defn, _) in self._tools.items() if defn.dangerous]
 
     def get_definitions(
-        self, 
-        format: str = "claude", 
+        self,
+        format: str = "claude",
         role: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Get all permissible tool definitions in specified format.
@@ -499,7 +537,7 @@ class ToolRegistry:
             # Role check
             if role and defn.roles and role not in defn.roles:
                 continue
-            
+
             definitions.append(defn)
 
         if format == "claude":
@@ -591,6 +629,7 @@ def tool(
     name: str,
     description: str,
     parameters: Optional[List[ToolParameter]] = None,
+    category: Optional[ToolCategory] = None,
     dangerous: bool = False,
 ) -> Callable[[F], F]:
     """Decorator to define a tool function.
@@ -602,6 +641,7 @@ def tool(
         name: Unique tool identifier.
         description: Human-readable description.
         parameters: List of ToolParameter definitions.
+        category: Tool category ("core", "extension", "skill").
         dangerous: If True, requires permission before execution.
 
     Returns:
@@ -611,16 +651,10 @@ def tool(
         >>> @tool(
         ...     name="Read",
         ...     description="Read file contents",
-        ...     parameters=[
-        ...         ToolParameter("file_path", "string", "Path to file", required=True),
-        ...     ]
+        ...     parameters=[...],
+        ...     category="core"
         ... )
-        ... async def read_file(file_path: str, **context) -> str:
-        ...     async with aiofiles.open(file_path, 'r') as f:
-        ...         return await f.read()
-        ...
-        >>> read_file._tool_definition.name
-        'Read'
+        ... async def read_file(...)
     """
 
     def decorator(func: F) -> F:
@@ -629,6 +663,7 @@ def tool(
             name=name,
             description=description,
             parameters=parameters or [],
+            category=category,
             dangerous=dangerous,
         )
 
