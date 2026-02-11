@@ -1,105 +1,339 @@
-# Math Toolkit 数学工具包
+# Nimbus Agent Framework
 
-> 一个简单而强大的Python数学工具包，演示 Nimbus Agent Framework 的工具调用能力。
+> Production-ready AI Agent framework with OS-like architecture.
 
-## 📋 项目简介
+## Overview
 
-Math Toolkit 是一个轻量级的数学运算工具包，提供了常用的数学计算功能：
+**Nimbus** is a modular AI Agent framework (v0.2.0 Alpha) featuring a von Neumann-inspired architecture. It treats Agent execution like an operating system: vCPU executes Think-Act-Observe cycles, MMU manages context memory, and Gate provides permission-isolated tool access.
 
-- ➕ 基本四则运算
-- 🔢 幂运算和阶乘计算  
-- 📈 斐波那契数列生成
-- 🛠️ 类型注解支持
+**Core Capabilities:**
+- 🖥️ OS-like architecture (vCPU / MMU / Gate / Process)
+- 🧠 Context Stack with automatic refinement
+- 📊 DAG-based parallel task scheduling
+- 🔒 Permission-isolated subagent system
+- 🔌 Multi-protocol support (REST / OpenCode / AI SDK v6)
 
-## 🚀 快速开始
+## Architecture
 
-### 安装
-
-```bash
-# 克隆项目
-git clone <repository-url>
-cd math-toolkit
-
-# 安装依赖（当前无外部依赖）
-pip install -r requirements.txt
-
-# 安装项目（可选）
-pip install -e .
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                              AgentOS                                      │
+│  ┌────────────────────────────────────────────────────────────────────┐  │
+│  │                         vCPU (~1400 lines)                          │  │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                  │  │
+│  │  │   THINK     │→ │    ACT      │→ │   OBSERVE   │                  │  │
+│  │  │  (LLM Call) │  │ (Tool Exec) │  │  (Results)  │                  │  │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘                  │  │
+│  │         │                │                │                          │  │
+│  │         ▼                ▼                ▼                          │  │
+│  │  ┌─────────────────────────────────────────────────────────┐        │  │
+│  │  │              Extracted Components                        │        │  │
+│  │  │  ┌─────────────────┐  ┌─────────────────┐               │        │  │
+│  │  │  │RecoveryExecutor │  │CheckpointManager│               │        │  │
+│  │  │  │ (Error Recovery)│  │  (State Save)   │               │        │  │
+│  │  │  └─────────────────┘  └─────────────────┘               │        │  │
+│  │  │  ┌─────────────────┐  ┌─────────────────┐               │        │  │
+│  │  │  │ErrorHandlerReg. │  │EmptyResultHdlr. │               │        │  │
+│  │  │  │ (Recovery Plan) │  │ (No-match Case) │               │        │  │
+│  │  │  └─────────────────┘  └─────────────────┘               │        │  │
+│  │  └─────────────────────────────────────────────────────────┘        │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│                                    │                                      │
+│         ┌──────────────────────────┼──────────────────────────┐          │
+│         ▼                          ▼                          ▼          │
+│  ┌─────────────┐           ┌─────────────┐           ┌─────────────┐     │
+│  │    MMU      │           │    Gate     │           │  Scheduler  │     │
+│  │  Context    │           │ Permission- │           │  DAG-based  │     │
+│  │  + Summary  │           │  isolated   │           │  Parallel   │     │
+│  │  + Archive  │           │ Tool Access │           │  Execution  │     │
+│  └─────────────┘           └─────────────┘           └─────────────┘     │
+└──────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                            HTTP Server                                    │
+│     /api/v1/*     │     /session/*     │     /v1/chat/completions        │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 基本使用
+### Key Components
+
+| Component | File | Lines | Purpose |
+|-----------|------|-------|---------|
+| **AgentOS** | `agentos.py` | ~900 | Main orchestrator, process management |
+| **vCPU** | `core/runtime/vcpu.py` | ~1400 | Think-Act-Observe execution loop |
+| **MMU** | `core/memory/mmu.py` | ~1100 | Context stack, memory management |
+| **Gate** | `os/gate.py` | ~400 | Permission-isolated tool dispatch |
+| **Scheduler** | `core/scheduler.py` | ~960 | DAG task scheduling, parallel execution |
+
+#### vCPU Runtime Components (Extracted for Maintainability)
+
+| Component | File | Lines | Purpose |
+|-----------|------|-------|---------|
+| **RecoveryExecutor** | `core/runtime/recovery_executor.py` | ~220 | Execute error recovery actions |
+| **ErrorHandlerRegistry** | `core/runtime/error_handler.py` | ~630 | Classify errors, decide recovery strategy |
+| **CheckpointManager** | `core/runtime/checkpoint_manager.py` | ~90 | Session state persistence |
+| **EmptyResultHandler** | `core/runtime/empty_result_handler.py` | ~120 | Handle Glob/Grep no-match cases |
+| **ExecutionState** | `core/runtime/execution_state.py` | ~260 | Centralized state management |
+| **DoomLoopDetector** | `core/runtime/doom_loop.py` | ~210 | Detect infinite loop patterns |
+| **Decoder** | `core/runtime/decoder.py` | ~200 | LLM response → ActionIR parsing |
+
+## Project Structure
+
+```
+src/nimbus/
+├── agentos.py              # AgentOS main entry
+├── adapters/               # LLM adapters
+│   └── pi_adapter.py       # pi-ai integration
+├── bridge/                 # External service bridges
+│   └── pi_ai_http.py       # pi-ai HTTP client
+├── core/
+│   ├── runtime/            # vCPU runtime components
+│   │   ├── vcpu.py         # vCPU execution engine (~1400 lines)
+│   │   ├── decoder.py      # Instruction decoder
+│   │   ├── recovery_executor.py    # Error recovery execution
+│   │   ├── error_handler.py        # Error classification & strategy
+│   │   ├── checkpoint_manager.py   # State persistence
+│   │   ├── empty_result_handler.py # Glob/Grep no-match handling
+│   │   ├── execution_state.py      # Centralized state
+│   │   ├── doom_loop.py            # Loop detection
+│   │   └── failure_reporter.py     # User-friendly error reports
+│   ├── memory/
+│   │   ├── mmu.py          # Memory management unit (~1100 lines)
+│   │   └── context.py      # Context types (Message, Frame, etc.)
+│   ├── scheduler.py        # DAG scheduler
+│   ├── protocol.py         # ActionIR, ToolResult, Fault types
+│   ├── errors.py           # Custom exceptions
+│   └── persistence.py      # Checkpoint models
+├── os/
+│   └── gate.py             # System call interface
+├── server/                 # HTTP API server
+│   ├── app.py              # FastAPI app
+│   ├── api.py              # REST endpoints
+│   ├── session_v2.py       # Session management (v2)
+│   └── compat/opencode.py  # OpenCode compatibility
+├── tools/                  # Built-in tools
+│   ├── read.py, edit.py, grep.py, sandbox.py
+│   └── ...
+└── cli/                    # Command-line interface
+    └── main.py
+
+tests/
+├── core/
+│   └── test_vcpu_error_handling.py  # 20 error handling tests
+├── e2e_append_message.py            # Message ordering tests
+├── e2e_session_persistence.py       # Session persistence tests
+└── ...
+```
+
+## Quick Start
+
+### Installation
+
+```bash
+# Basic installation
+pip install -e .
+
+# Full installation (with all dependencies)
+pip install -e ".[all]"
+```
+
+### Running the Server
+
+```bash
+# Start server (default port 4096)
+./nimbus start
+
+# Or with custom port
+nimbus serve --port 8080
+```
+
+### Running Tests
+
+```bash
+# All tests (454 test cases)
+pytest tests/ -v
+
+# Quick tests (skip slow/integration)
+pytest tests/ -v -m "not slow"
+```
+
+## Key Concepts
+
+### vCPU Execution Loop
+
+```
+┌─────────────────────────────────────────┐
+│              vCPU Cycle                 │
+│                                         │
+│   ┌─────────┐                           │
+│   │  THINK  │ ── LLM generates plan     │
+│   └────┬────┘                           │
+│        ▼                                │
+│   ┌─────────┐                           │
+│   │   ACT   │ ── Execute tool calls     │
+│   └────┬────┘                           │
+│        ▼                                │
+│   ┌─────────┐                           │
+│   │ OBSERVE │ ── Collect results        │
+│   └────┬────┘                           │
+│        │                                │
+│        ▼                                │
+│   Continue or Return                    │
+└─────────────────────────────────────────┘
+```
+
+### Memory Management (MMU)
+
+The MMU implements a **Hybrid Memory Architecture** designed for infinite session duration:
+
+**1. Memory Tiers:**
+
+| Tier | Purpose | Behavior |
+|------|---------|----------|
+| **Pinned** | System rules, Workspace info, **Env State** | Never compressed, always visible |
+| **Stack** | Conversation history | Auto-archived to disk when full |
+| **Frame** | Current task context | Refined on pop (removes noise) |
+
+**2. Infinite Context Strategy (Rolling Summary):**
+When the context window fills up (e.g., >200k tokens), the MMU performs a **"Distill & Archive"** operation:
+1.  **Distill**: An LLM generates an *Execution Summary* of the current context (Goals, Completed Steps, Next Actions).
+2.  **Archive**: The full raw message history is written to a file (e.g., `~/.nimbus/sessions/<id>/archive/part_timestamp.md`).
+3.  **Reset**: The active memory is cleared and replaced with:
+    *   A **Pointer** to the archive file.
+    *   The **Execution Summary** (as `assistant` role) to maintain cognitive continuity.
+
+**3. Smart Summary Budget (Prevents Unbounded Growth):**
+
+```
+summary_token_budget = pinned_budget × 30%
+summary_char_budget  = summary_token_budget × 2  (conservative for Chinese)
+```
+
+When merging summaries across compaction cycles:
+- First attempt: LLM generates summary with soft limit in prompt
+- If over budget: LLM re-compresses with explicit prioritization:
+  1. **Priority 1**: User-provided secrets (passwords, keys, configs)
+  2. **Priority 2**: Current task state, key decisions
+  3. **Priority 3**: Process details (can be omitted)
+
+This prevents the cascade growth problem where summaries grow unbounded with each compaction.
+
+**4. Message Ordering Safety:**
+
+When user injects a message during tool execution, MMU ensures valid OpenAI API message ordering:
+- If pending tool calls exist (assistant has `tool_calls` but no `tool` results yet)
+- MMU auto-inserts synthetic tool results before user message
+- Prevents: `assistant[tool_calls] → user → tool` (invalid)
+- Ensures: `assistant[tool_calls] → tool → user` (valid)
+
+**5. Tooling Safety Net:**
+If the Agent needs to recall specific details from the deep past, it can use the `ReadArchive` tool to access historical files referenced by the pointers.
+
+### Process Roles (Permission Isolation)
+
+| Role | Allowed Tools | Use Case |
+|------|---------------|----------|
+| `eye` | Read, ReadArchive, Glob, Grep | Code exploration |
+| `body` | Read, ReadArchive, Write, Edit, Bash | Implementation |
+| `mind` | Read, ReadArchive, Glob, Grep | Architecture design |
+| `tongue` | Read, Glob, Bash | Testing |
+| `nose` | Read, Glob, Grep | Code review |
+
+### Doom Loop Detection
+
+Prevents infinite loops by detecting repeated tool calls:
 
 ```python
-from math_toolkit import MathToolkit
-
-# 创建工具包实例
-toolkit = MathToolkit()
-
-# 基本运算
-print(toolkit.add(5, 3))        # 8
-print(toolkit.multiply(4, 6))   # 24
-print(toolkit.power(2, 8))      # 256.0
-
-# 高级功能
-print(toolkit.factorial(5))     # 120
-print(toolkit.fibonacci(10))    # [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
-
-# 获取信息
-print(toolkit.get_info())       # MathToolkit v1.0.0 - 数学工具包
+DOOM_LOOP_THRESHOLD = 3  # Same params 3x = abort
 ```
 
-## 🧪 运行测试
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/health` | GET | Health check |
+| `/api/v1/sessions` | POST | Create session |
+| `/api/v1/sessions/{id}/chat` | POST | Chat (SSE stream) |
+| `/session` | POST | Create session (OpenCode) |
+| `/session/{id}/message` | POST | Send message (OpenCode) |
+| `/v1/chat/completions` | POST | Chat completions (AI SDK v6) |
+
+## Configuration
+
+### LLM Configuration
+
+Create `llm.yaml` in project root:
+
+```yaml
+default_provider: anthropic
+
+providers:
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+    model: claude-sonnet-4-20250514
+
+  openai:
+    api_key: ${OPENAI_API_KEY}
+    model: gpt-4o
+```
+
+### Environment Variables
 
 ```bash
-# 运行单元测试
-python test_math_toolkit.py
-
-# 或者使用 unittest
-python -m unittest test_math_toolkit.py -v
+export ANTHROPIC_API_KEY="sk-..."
+export NIMBUS_LOG_LEVEL=DEBUG  # Enable debug logging
 ```
 
-## 📦 项目结构
+## Development
 
+### Code Style
+
+- **Formatter**: ruff (line-length=100)
+- **Type Checker**: mypy (strict mode)
+- **Python**: 3.10+ required
+
+```bash
+# Format code
+ruff format src/ tests/
+
+# Check types
+mypy src/nimbus/
 ```
-math-toolkit/
-├── math_toolkit.py        # 主模块文件
-├── test_math_toolkit.py   # 单元测试
-├── requirements.txt       # 项目依赖
-├── setup.py              # 安装脚本
-└── README.md             # 项目文档
+
+### Adding a New Tool
+
+```python
+# src/nimbus/tools/my_tool.py
+from nimbus.tools import tool
+
+@tool(
+    name="MyTool",
+    description="Does something useful",
+    parameters={
+        "param1": {"type": "string", "description": "First param"},
+    }
+)
+async def my_tool(param1: str, workspace: Path) -> str:
+    return f"Result: {param1}"
 ```
 
-## 🔧 API 参考
+## Troubleshooting
 
-### MathToolkit 类
+| Issue | Solution |
+|-------|----------|
+| "Unknown tool" | Check tool registration in AgentOS |
+| Context overflow | MMU auto-compresses, check logs |
+| Timeout errors | Adjust `RuntimeConfig.default_timeout` |
+| Doom loop abort | Review tool call patterns |
 
-#### 方法列表
+### Debug Logging
 
-- `add(a, b)` - 加法运算
-- `multiply(a, b)` - 乘法运算  
-- `power(base, exponent)` - 幂运算
-- `factorial(n)` - 阶乘计算（n >= 0）
-- `fibonacci(n)` - 生成前n个斐波那契数
-- `get_info()` - 获取工具包信息
+```bash
+export NIMBUS_LOG_LEVEL=DEBUG
+./nimbus start
+```
 
-#### 类型支持
+## License
 
-- 支持 `int` 和 `float` 类型
-- 包含完整的类型注解
-- 异常处理（如负数阶乘）
-
-## 🤝 贡献指南
-
-欢迎提交 Issue 和 Pull Request！
-
-## 📄 许可证
-
-MIT License
-
-## 🏷️ 标签
-
-`python` `math` `toolkit` `nimbus` `agent-framework` `demo`
-
----
-
-*此项目由 Nimbus Agent Framework 自动生成，展示了 AI Agent 的代码生成和项目管理能力。*
+MIT
