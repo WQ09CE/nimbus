@@ -639,7 +639,8 @@ class SessionManagerV2:
                     continue
 
                 # After finding user message, save subsequent messages
-                if found_user_msg:
+                # Skip ephemeral messages (internal system hints, not for user)
+                if found_user_msg and not msg.meta.get("ephemeral", False):
                     messages_to_save.append(msg)
 
             # Save each message

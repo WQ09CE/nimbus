@@ -21,6 +21,11 @@ from typing import Any, Dict, List, Literal, Optional
 # Message Format
 # =============================================================================
 
+# Conservative estimate for image tokens across different models
+# Claude: ~2764 (1080p), GPT-4V: ~1105 (high), Gemini: 258
+# We pick 1500 as a reasonable average
+IMAGE_TOKEN_ESTIMATE = 1500
+
 MessageRole = Literal["system", "user", "assistant", "tool"]
 
 
@@ -85,8 +90,11 @@ class Message:
         elif isinstance(self.content, list):
             total = 0
             for block in self.content:
-                if isinstance(block, dict) and "text" in block:
-                    total += estimate_text(block["text"])
+                if isinstance(block, dict):
+                    if "text" in block:
+                        total += estimate_text(block["text"])
+                    elif block.get("type") == "image":
+                        total += IMAGE_TOKEN_ESTIMATE
             return total
         return 0
 

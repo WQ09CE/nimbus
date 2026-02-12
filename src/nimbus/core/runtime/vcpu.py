@@ -55,8 +55,8 @@ from nimbus.os.gate import KernelGate
 
 # Tools that modify state and may indicate task progress.
 # State-modifying tools that change files/system state.
-# After successful Edit/Write, we inject a hint to remind the LLM to finish if done.
-# Note: Bash is excluded from hints because it's often used for read operations.
+# Note: We no longer inject continuation hints after these tools.
+# The LLM decides whether to verify based on the user's original request.
 STATE_MODIFYING_TOOLS = {"Edit", "Write"}
 
 # Doom loop detection threshold (from opencode's processor.ts)
@@ -144,7 +144,7 @@ class VCPUConfig:
     Attributes:
         max_iterations: Maximum Think-Act-Observe cycles before compaction
         default_timeout: Default timeout for tool execution (seconds)
-        max_consecutive_thoughts: Max thoughts before forcing action
+        max_consecutive_thoughts: Text-only responses before treating as final (1 = immediate stop)
         max_sub_call_depth: Maximum recursion depth for SUB_CALLs
         emit_step_events: Whether to emit step lifecycle events
         compact_on_limit: Whether to compact memory when hitting iteration limit
@@ -153,7 +153,7 @@ class VCPUConfig:
 
     max_iterations: int = 50
     default_timeout: float = 60.0
-    max_consecutive_thoughts: int = 1  # Auto-return on first text-only response
+    max_consecutive_thoughts: int = 1  # Auto-return on first text-only response (THOUGHT = final answer)
     max_sub_call_depth: int = 10
     emit_step_events: bool = True
     compact_on_limit: bool = True  # NEW: Trigger compaction instead of stopping
@@ -642,6 +642,16 @@ class VCPU:
                     f"⚠️ EMPTY RESPONSE #{self._state.consecutive_empty_responses} from LLM (Iteration {self._state.iteration}) "
                     f"- no content, no tool calls!"
                 )
+                
+                # Active Intervention: Poke the model if it's silent
+                # This helps wake up models (like Gemini) that get stuck after context injection
+                if self._state.consecutive_empty_responses >= 1:
+                     poke_msg = "[System] Your last response was empty. Please continue with the task."
+                     self.mmu.add_user_message(poke_msg)
+                     if self.mmu.current_frame.messages:
+                         self.mmu.current_frame.messages[-1].meta["ephemeral"] = True
+                     logger.info("👉 Poked silent model with system message")
+
                 logger.warning(
                     "   This may indicate: context too long, task too hard, or LLM confusion"
                 )
@@ -852,15 +862,24 @@ class VCPU:
                     self.tracer.record_fault(step_result.fault)
 
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            step_result.fault = Fault(
-                domain="KERNEL",
-                code="SYSTEM_ERROR",
-                message=str(e),
-                retryable=False,
-                context={"exception_type": type(e).__name__},
-            )
+            # Check for context overflow in exception message
+            error_msg = str(e)
+            if "prompt is too long" in error_msg or "context_length_exceeded" in error_msg:
+                 step_result.fault = Fault(
+                    domain="MEMORY",
+                    code="CONTEXT_OVERFLOW",
+                    message=error_msg,
+                    retryable=True, # Allow AgentOS to retry after compaction
+                    context={"error": error_msg}
+                 )
+            else:
+                 step_result.fault = Fault(
+                    domain="KERNEL",
+                    code="SYSTEM_ERROR",
+                    message=error_msg,
+                    retryable=False,
+                    context={"exception_type": type(e).__name__},
+                )
             if self.tracer:
                 self.tracer.record_fault(step_result.fault)
 
@@ -915,8 +934,17 @@ class VCPU:
         return ToolResult(status="OK", output="Subroutine called (simulated)")
 
     async def _handle_thought(self, action: ActionIR) -> ToolResult:
-        """Handle THOUGHT action."""
-        # 1. Pipeline splitting (non-blocking)
+        """Handle THOUGHT action.
+
+        Design principle: A text-only response (no tool calls) IS the AI's final answer.
+        The only exception is non-blocking thoughts from MixedResponseSplitter
+        (content + tool_calls split into separate actions).
+
+        With max_consecutive_thoughts=1 (default), the first standard THOUGHT
+        triggers _handle_return and stops the loop immediately.
+        """
+        # 1. Pipeline splitting (non-blocking) - from MixedResponseSplitter
+        # These are thought fragments that accompany tool calls, NOT final answers
         if action.meta and action.meta.get("non_blocking"):
              return ToolResult(
                  status="OK",
@@ -924,15 +952,14 @@ class VCPU:
                  is_final=False
              )
 
-        # 2. Update state (Standard thought)
+        # 2. Standard thought (text-only response) = Final answer
         self._state.on_thought()
 
-        # 3. Check limit
         if self._state.consecutive_thoughts >= self.config.max_consecutive_thoughts:
-             # Hit limit -> Treat as Final Return
+             # Treat as Final Return - this is the AI's answer
              return await self._handle_return(action)
 
-        # 4. Default (Continue Thinking) -> NON-FINAL
+        # Fallback: Only reached if max_consecutive_thoughts > 1 (not recommended)
         return ToolResult(
             status="OK",
             output=action.args.get("text"),
@@ -1207,15 +1234,11 @@ class VCPU:
         if result.fault and not output_str:
             output_str = f"[Error] {result.fault.message}"
 
-        # Inject hint for state-modifying tools on success - append to tool result
-        # This encourages verification after Edit/Write (actual state changes)
-        # Note: Bash is excluded because it's often used for read operations (ls, grep, etc.)
-        if action.name in ("Edit", "Write") and result.status == "OK":
-            output_str += (
-                "\n\n[Hint] File modified successfully. "
-                "If the task involves code or configuration, "
-                "consider testing it with Bash before finishing."
-            )
+        # Note: We no longer inject continuation hints after Edit/Write.
+        # The old hint ("consider testing with Bash before finishing") caused
+        # the LLM to make unnecessary extra tool calls even when the task was done.
+        # If verification is needed, the LLM should decide on its own based on
+        # the user's original request, not because of an injected hint.
 
         self.mmu.add_tool_result(tool_call_id=action.id, name=action.name, content=output_str)
 

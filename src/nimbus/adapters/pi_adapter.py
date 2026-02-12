@@ -138,6 +138,13 @@ class PiLLMAdapter:
         """将 vCPU 消息转换为 HTTP 客户端消息格式"""
         result = []
 
+        # Anthropic API requires conversation to end with a user message.
+        # If the last message is assistant (e.g. multi-thought mode), append
+        # a minimal user turn. This only affects the API payload, never stored.
+        if messages and messages[-1].get("role") == "assistant":
+            messages = list(messages)  # shallow copy to avoid mutating caller
+            messages.append({"role": "user", "content": "go on"})
+
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content")
@@ -261,9 +268,15 @@ class PiLLMAdapter:
                 elif event.type == "tool_call" and event.tool_call:
                     collected_tool_calls.append(event.tool_call)
                 elif event.type == "error":
-                    logger.error(f"Stream error: {event.error}")
-                    # Continue or raise? Usually raise if critical
-                    # But for now we just log, maybe partial content is useful
+                    error_msg = f"Stream error: {event.error}"
+                    logger.error(error_msg)
+                    # If it's a context length error, we must fail hard so vCPU can handle it (e.g. compact)
+                    if "context_length_exceeded" in str(event.error) or "prompt is too long" in str(event.error):
+                        raise RuntimeError(error_msg)
+                    
+                    # For other errors, we might want to return partial content if available
+                    if not full_content and not collected_tool_calls:
+                         raise RuntimeError(error_msg)
 
         except Exception as e:
             logger.error(f"HTTP API call failed: {e}")

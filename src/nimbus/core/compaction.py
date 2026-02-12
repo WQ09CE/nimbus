@@ -186,6 +186,20 @@ Summary:"""
             role = msg.get("role", "unknown")
             content = msg.get("content", "")
 
+            # Handle multimodal content (list of blocks)
+            if isinstance(content, list):
+                text_parts = []
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "text" or "text" in block:
+                            text_parts.append(block.get("text", ""))
+                        elif block.get("type") == "image":
+                            mime = block.get("mimeType", "image/unknown")
+                            text_parts.append(f"[Attached image: {mime}]")
+                    elif isinstance(block, str):
+                        text_parts.append(block)
+                content = "\n".join(text_parts)
+
             if role == "tool":
                 name = msg.get("name", "tool")
                 lines.append(f"[Tool: {name}]\n{content}")

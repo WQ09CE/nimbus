@@ -30,10 +30,12 @@ Design Principles (Simplified):
     2. Old history (summarized)
 """
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from nimbus.core.memory.context import (
+    IMAGE_TOKEN_ESTIMATE,
     Message,
     PinnedContext,
     StackFrame,
@@ -53,10 +55,11 @@ class MMUConfig:
     """
     Configuration for MMU.
     """
-    max_context_tokens: int = 100000  # Production ready: 100k context
+    max_context_tokens: int = 180000  # Increased to 180k (leaving 20k buffer for output)
     pinned_budget: int = 10000        # Generous space for system rules & goals
-    frame_budget: int = 90000         # Massive history window
-    compress_threshold: float = 0.9   # Trigger sliding at 90k tokens
+    frame_budget: int = 170000        # Massive history window (adjusted for 180k total)
+    compress_threshold: float = 0.9   # Trigger sliding at ~162k tokens
+    max_image_tokens: int = 10000     # Max tokens for image history (approx 3-6 images)
     keep_recent_messages: int = 20    # Keep more recent context
     auto_detect_failures: bool = True
     remove_failed_tool_calls: bool = True
@@ -394,6 +397,93 @@ class MMU:
     # Context Assembly (The "Smart Drop" Strategy)
     # =========================================================================
 
+    def _image_key(self, block: Dict[str, Any]) -> str:
+        """Generate unique key for an image block using content hash."""
+        data = block.get("data", "")
+        if isinstance(data, str) and data:
+            digest = hashlib.sha256(data.encode("ascii", errors="replace")).hexdigest()[:16]
+        else:
+            digest = ""
+        mime = block.get("mimeType", "")
+        return f"{mime}:{digest}"
+
+    def _downgrade_seen_images(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Replace duplicate or budget-exceeding images with text placeholders.
+        Strategy:
+        1. Scan backwards to find unique images.
+        2. Keep images until max_image_tokens budget is reached.
+        3. Drop all other images (duplicates or out-of-budget).
+        """
+        keep_indices = set()  # Set of (msg_idx, block_idx) to keep
+        seen_keys = set()
+        current_image_tokens = 0
+        
+        # First pass: Scan backwards (newest first)
+        for i in range(len(messages) - 1, -1, -1):
+            msg = messages[i]
+            content = msg.get("content")
+            if isinstance(content, list):
+                # Process blocks in reverse order too (bottom image is newest)
+                for j in range(len(content) - 1, -1, -1):
+                    block = content[j]
+                    if isinstance(block, dict) and block.get("type") == "image":
+                        key = self._image_key(block)
+                        
+                        # If already seen (newer version exists), skip (drop)
+                        if key in seen_keys:
+                            continue
+                            
+                        # If new unique image, check budget
+                        # Estimate token size (approx 1500)
+                        img_tokens = IMAGE_TOKEN_ESTIMATE 
+                        
+                        if current_image_tokens + img_tokens <= self.config.max_image_tokens:
+                            # Keep it
+                            keep_indices.add((i, j))
+                            seen_keys.add(key)
+                            current_image_tokens += img_tokens
+                        else:
+                            # Budget exceeded, drop (don't add to keep_indices)
+                            seen_keys.add(key)
+
+        # Second pass: Rebuild messages
+        result = []
+        for i, msg in enumerate(messages):
+            content = msg.get("content")
+            
+            if not isinstance(content, list):
+                result.append(msg)
+                continue
+                
+            new_content = []
+            changed = False
+            
+            for j, block in enumerate(content):
+                if isinstance(block, dict) and block.get("type") == "image":
+                    if (i, j) in keep_indices:
+                        # Keep original
+                        new_content.append(block)
+                    else:
+                        # Downgrade
+                        mime = block.get("mimeType", "image/unknown")
+                        new_content.append({
+                            "type": "text",
+                            "text": f"\n[📷 Image ({mime}) — Omitted to save tokens (duplicate or budget limit)]\n"
+                        })
+                        changed = True
+                else:
+                    new_content.append(block)
+            
+            if changed:
+                new_msg = dict(msg)
+                new_msg["content"] = new_content
+                result.append(new_msg)
+            else:
+                result.append(msg)
+                
+        return result
+
     def assemble_context(
         self,
         max_tokens: Optional[int] = None,
@@ -589,6 +679,9 @@ class MMU:
                 })
             for m in hot_messages:
                 messages.append(m.to_dict())
+
+        # Phase 2: Downgrade duplicate images to save tokens
+        messages = self._downgrade_seen_images(messages)
 
         return messages
 
