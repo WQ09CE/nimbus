@@ -294,6 +294,15 @@ async function handleComplete(req: ChatRequest, res: ServerResponse) {
             }));
             break;
 
+          case "thinking_delta":
+            // Forward thinking events as keepalive to prevent client-side read timeout.
+            // Opus models may think for 60-120s without producing text tokens.
+            res.write(formatSSE("thinking", {
+              id: responseId,
+              delta: event.delta,
+            }));
+            break;
+
           case "toolcall_end":
             res.write(formatSSE("tool_call", {
               id: responseId,

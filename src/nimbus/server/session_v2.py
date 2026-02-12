@@ -206,12 +206,22 @@ class SessionManagerV2:
                     else:
                         thinking = bool(thinking)
 
-                config = PiLLMConfig(
-                    provider=model_config.get("provider", "anthropic"),
-                    model_id=model_id,
-                    temperature=temperature,
-                    thinking=thinking,
-                )
+                timeout = model_config.get("timeout")
+                if timeout is not None:
+                    try:
+                        timeout = float(timeout)
+                    except (ValueError, TypeError):
+                        timeout = None
+
+                config_kwargs = {
+                    "provider": model_config.get("provider", "anthropic"),
+                    "model_id": model_id,
+                    "temperature": temperature,
+                    "thinking": thinking,
+                }
+                if timeout is not None:
+                    config_kwargs["timeout"] = timeout
+                config = PiLLMConfig(**config_kwargs)
                 adapter = PiLLMAdapter(config)
                 await adapter.__aenter__()
                 llm_client = adapter

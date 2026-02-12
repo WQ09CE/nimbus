@@ -85,7 +85,7 @@ class CompletionResult:
 class StreamEvent:
     """流式事件"""
 
-    type: str  # "delta" | "tool_call" | "done" | "error"
+    type: str  # "delta" | "tool_call" | "thinking" | "done" | "error"
     content: Optional[str] = None
     tool_call: Optional[ToolCall] = None
     finish_reason: Optional[str] = None
@@ -388,6 +388,13 @@ class PiAiHttpClient:
                                 thought_signature=tc.get("thoughtSignature"),
                             ),
                         )
+
+                    elif event_type == "thinking":
+                        # Keepalive: thinking events from Opus deep reasoning.
+                        # We yield them so the httpx read timeout resets.
+                        delta = data.get("delta", "")
+                        if delta:
+                            yield StreamEvent(type="thinking", content=delta)
 
                     elif event_type == "done":
                         yield StreamEvent(

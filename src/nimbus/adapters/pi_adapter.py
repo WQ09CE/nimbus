@@ -77,7 +77,7 @@ class PiLLMConfig:
     provider: str = "anthropic"  # 兼容旧接口
     model_id: str = "claude-sonnet-4-20250514"  # 兼容旧接口
     max_tokens: int = 8192
-    timeout: float = 120.0
+    timeout: float = 300.0  # 5min, for deep-thinking models (Opus)
     temperature: Optional[float] = None
     thinking: Optional[bool] = None
     stop: Optional[List[str]] = None
@@ -365,6 +365,10 @@ class PiLLMAdapter:
                     type="tool_call",
                     tool_call=tc_data,
                 )
+            elif event.type == "thinking":
+                # Thinking events act as keepalive (httpx timeout already reset
+                # by the stream iteration). No need to forward to caller.
+                pass
             elif event.type == "done":
                 yield LLMStreamEvent(type="stop", reason=event.finish_reason or "stop")
             elif event.type == "error":
