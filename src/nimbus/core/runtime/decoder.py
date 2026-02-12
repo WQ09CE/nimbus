@@ -88,11 +88,17 @@ class InstructionDecoder:
         """
         actions = []
 
-        # 1. Firewall: Check for text-based tool simulation (The "Gemini Patch")
-        if content:
-            self._check_hallucination(content)
+        # Note: Hallucination detection (text-based tool simulation) is handled by
+        # the pipeline's HallucinationSanitizer middleware, which strips suspicious
+        # patterns from content without throwing errors. The decoder no longer does
+        # hard hallucination checks here because:
+        # 1. The root cause (pi-ai-server metadata mismatch) has been fixed
+        # 2. Simple pattern matching causes false positives when models legitimately
+        #    discuss tool patterns in their responses
+        # 3. The Fault-based retry loop creates a worse UX than just letting the
+        #    (stripped) response through
 
-        # 2. Parse Native Tool Calls
+        # 1. Parse Native Tool Calls
         if tool_calls:
             for tc in tool_calls:
                 action = self._map_tool_call(tc)
@@ -106,13 +112,26 @@ class InstructionDecoder:
 
     def _check_hallucination(self, content: str) -> None:
         """
-        Check for text-based tool simulation patterns.
+        Check for text-based tool simulation patterns in pure-text responses.
+
+        Uses a two-tier approach to avoid false positives:
+        - Short text (≤ 300 chars): any pattern match triggers (likely a fake tool call)
+        - Long text (> 300 chars): only triggers if a pattern appears near the start,
+          indicating the response IS a fake tool call rather than a discussion ABOUT one.
 
         Raises:
             Fault: If hallucination pattern is detected
         """
+        stripped = content.strip()
+        is_short = len(stripped) <= 300
+
         for pattern in self.HALLUCINATION_PATTERNS:
-            if pattern in content:
+            if pattern not in content:
+                continue
+
+            # Short text with pattern = almost certainly a fake tool call
+            # Long text = only flag if pattern is near the beginning (first 100 chars)
+            if is_short or content.strip()[:100].find(pattern) >= 0:
                 raise Fault(
                     domain="LLM",
                     code="ILL_INSTRUCTION",

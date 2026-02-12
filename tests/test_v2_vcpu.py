@@ -550,10 +550,16 @@ class TestVCPUErrors:
     # Permission checking can be re-added as a separate middleware if needed.
 
     @pytest.mark.asyncio
-    async def test_hallucination_detection(self, decoder, gate, mmu, vcpu_config):
-        """Test that hallucination patterns are detected."""
+    async def test_hallucination_pattern_passes_through_as_thought(self, decoder, gate, mmu, vcpu_config):
+        """Test that text containing hallucination patterns is treated as normal THOUGHT.
+
+        Hallucination detection was moved out of the decoder to avoid false positives
+        when models legitimately discuss tool patterns. The pipeline's HallucinationSanitizer
+        (enabled per-model) provides soft defense by stripping patterns from content.
+        The decoder no longer throws Fault for pattern matches.
+        """
         llm = MockLLMClient(responses=[
-            # Response with hallucination pattern
+            # Response with hallucination pattern - should pass through as THOUGHT
             MockLLMResponse(content="[Called Read tool with file.txt]"),
         ])
 
@@ -565,12 +571,13 @@ class TestVCPUErrors:
             config=vcpu_config
         )
 
-        # Step once - should get a fault
         mmu.add_user_message("Read a file")
         step_result = await vcpu.step()
 
-        assert step_result.fault is not None
-        assert step_result.fault.code == "ILL_INSTRUCTION"
+        # No fault - treated as normal thought/text response
+        assert step_result.fault is None
+        assert len(step_result.actions) == 1
+        assert step_result.actions[0].kind == "THOUGHT"
 
 
 # =============================================================================

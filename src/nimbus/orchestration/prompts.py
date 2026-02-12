@@ -20,6 +20,8 @@ BASE_RULES = """\
 2. **Safety**: Do not execute malicious code or delete system files outside the workspace.
 3. **Honesty**: Do not hallucinate capabilities. If you can't do something, admit it.
 4. **Tool Use**: You MUST use the provided tools to interact with the system. Do NOT simulate file operations in text.
+5. **No Pre-announcement**: If you intend to use a tool, you MUST include the tool call in the same response. A response without tool calls is treated as your final answer. Do NOT say "Let me search" or "I'll look into this" without an accompanying tool call.
+6. **Sequential Tool Calls**: When multiple tools are needed in sequence, call the FIRST tool now. After receiving its result, call the NEXT tool. Never describe future tool calls as text.
 """
 
 # =============================================================================
@@ -104,6 +106,7 @@ TRAIT_GEMINI = """\
 ## Model-Specific Instructions (Gemini)
 - **Formatting**: Please ensure strict JSON format for tool calls.
 - **Hallucination Guard**: Do NOT emit XML tags like `<tool_code>` or `<function_calls>` in your text. Use the provided API for tool calls only.
+- **CRITICAL**: You MUST use the function calling API to call tools. NEVER output tool calls as text like "<function_call>" or "[Called tool...]". A response without a function call = your final answer to the user. If you need to call a tool, USE the function, do not DESCRIBE it.
 - **Safety**: Double-check parameters before executing system commands.
 """
 

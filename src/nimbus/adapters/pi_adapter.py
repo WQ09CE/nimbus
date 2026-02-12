@@ -184,14 +184,16 @@ class PiLLMAdapter:
                         except json.JSONDecodeError:
                             args = {}
 
-                    assistant_content.append(
-                        {
+                    tool_block = {
                             "type": "tool_use",
                             "id": tc.get("id"),
                             "name": func.get("name"),
                             "input": args,
-                        }
-                    )
+                    }
+                    # Preserve Gemini 3 thought signature for round-trip
+                    if tc.get("thought_signature"):
+                        tool_block["thought_signature"] = tc["thought_signature"]
+                    assistant_content.append(tool_block)
 
                 result.append(HttpMessage(role="assistant", content=assistant_content))
                 continue
@@ -294,8 +296,7 @@ class PiLLMAdapter:
             # { "id": tc.id, "type": "function", "function": { name, arguments } }
             # Here tc is already a dict from LLMStreamEvent
 
-            tool_calls.append(
-                {
+            tc_entry = {
                     "id": tc.get("id"),
                     "type": "function",
                     "function": {
@@ -310,7 +311,10 @@ class PiLLMAdapter:
                         else tc.get("arguments"),
                     },
                 }
-            )
+            # Preserve Gemini 3 thought signature for round-trip
+            if tc.get("thought_signature"):
+                tc_entry["thought_signature"] = tc["thought_signature"]
+            tool_calls.append(tc_entry)
 
         return VcpuLLMResponse(
             content=content if content else None,
@@ -349,13 +353,17 @@ class PiLLMAdapter:
             if event.type == "delta":
                 yield LLMStreamEvent(type="text", text=event.content or "")
             elif event.type == "tool_call" and event.tool_call:
+                tc_data = {
+                    "id": event.tool_call.id,
+                    "name": event.tool_call.name,
+                    "arguments": event.tool_call.arguments,
+                }
+                # Preserve Gemini 3 thought signature for round-trip
+                if event.tool_call.thought_signature:
+                    tc_data["thought_signature"] = event.tool_call.thought_signature
                 yield LLMStreamEvent(
                     type="tool_call",
-                    tool_call={
-                        "id": event.tool_call.id,
-                        "name": event.tool_call.name,
-                        "arguments": event.tool_call.arguments,
-                    },
+                    tool_call=tc_data,
                 )
             elif event.type == "done":
                 yield LLMStreamEvent(type="stop", reason=event.finish_reason or "stop")

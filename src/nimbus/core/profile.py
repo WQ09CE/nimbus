@@ -28,6 +28,7 @@ class AgentProfile:
 
     # Runtime Config
     max_iterations: int = 20
+    max_consecutive_thoughts: int = 1  # Text-only response = final answer, stop immediately
 
     @classmethod
     def create_standard(cls, model_id: str = "default") -> "AgentProfile":
@@ -39,7 +40,8 @@ class AgentProfile:
             role="standard",
             allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"], # Explicit list or "ALL"
             system_prompt=PromptManager.get_system_prompt("executor", model_id), # Behaves like an executor but standalone
-            max_iterations=50
+            max_iterations=50,
+            max_consecutive_thoughts=1
         )
 
     @classmethod
@@ -52,7 +54,8 @@ class AgentProfile:
             # Bash replaces CoreBash (Review P0)
             allowed_tools=["Read", "Bash", "Dispatch", "Verify", "ReviewCommittee", "Memo"],
             system_prompt=PromptManager.get_system_prompt("core", model_id),
-            max_iterations=30
+            max_iterations=30,
+            max_consecutive_thoughts=1
         )
 
     @classmethod
@@ -64,5 +67,6 @@ class AgentProfile:
             role="executor",
             allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
             system_prompt=PromptManager.get_system_prompt("executor", model_id),
-            max_iterations=20
+            max_iterations=20,
+            max_consecutive_thoughts=1
         )

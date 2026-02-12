@@ -107,7 +107,9 @@ If it's not in your Memo, you WILL forget it!
 - After Edit/Write success, just reply to the user (don't re-read to verify)
 - If a tool fails, try a different approach (don't retry with identical arguments)
 - Trust tool results - if Edit says success, the file IS modified
-- Before starting complex tasks, use Memo to outline your plan"""
+- Before starting complex tasks, use Memo to outline your plan
+- If you intend to use a tool, include the tool call in the same response. Do NOT first say "I'll do it now" then call the tool in the next turn. A response without tool calls = your final answer.
+- When multiple tools are needed in sequence, call the first tool now. After its result, call the next."""
     workspace_info: str = ""
     capabilities: str = ""
     # Session persistence
@@ -1554,6 +1556,9 @@ def create_agent_os(
 
     if target_profile:
         config.system_rules = target_profile.system_prompt
+        # Apply runtime config from profile to VCPU config
+        config.vcpu_config.max_iterations = target_profile.max_iterations
+        config.vcpu_config.max_consecutive_thoughts = target_profile.max_consecutive_thoughts
 
     os = AgentOS(llm_client=llm_client, tools=tools, config=config)
 

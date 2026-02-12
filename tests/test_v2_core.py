@@ -157,27 +157,27 @@ class TestInstructionDecoder:
         assert len(actions) == 1
         assert actions[0].kind == "RETURN"
 
-    def test_detect_hallucination(self):
+    def test_hallucination_patterns_pass_through_as_thought(self):
+        """Hallucination patterns in text are now treated as normal THOUGHT.
+
+        Detection was moved to the pipeline's HallucinationSanitizer (per-model).
+        The decoder no longer raises Fault for pattern matches to avoid false
+        positives when models discuss tool patterns in legitimate responses.
+        """
         decoder = InstructionDecoder()
 
-        with pytest.raises(Fault) as exc_info:
-            decoder.decode(content="[Called Read with file=/test.txt]", tool_calls=None)
-
-        assert exc_info.value.code == "ILL_INSTRUCTION"
-        assert "text-based tool simulation" in exc_info.value.message
-
-    def test_detect_hallucination_patterns(self):
-        decoder = InstructionDecoder()
-
+        # These used to raise Fault, now they pass through as THOUGHT
         patterns = [
+            "[Called Read with file=/test.txt]",
             "[Calling some_tool]",
             "[Tool: Read]",
             "```tool\nRead\n```",
         ]
 
         for pattern in patterns:
-            with pytest.raises(Fault):
-                decoder.decode(content=pattern, tool_calls=None)
+            actions = decoder.decode(content=pattern, tool_calls=None)
+            assert len(actions) == 1
+            assert actions[0].kind == "THOUGHT"
 
 
 # =============================================================================

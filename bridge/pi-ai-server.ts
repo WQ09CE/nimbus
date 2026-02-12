@@ -134,6 +134,32 @@ function convertToContext(req: ChatRequest): Context {
     messages: [],
   };
 
+  // Parse model string to extract provider, modelId, and api correctly.
+  // This is CRITICAL for Gemini 3: google-shared.ts AND transform-messages.ts both
+  // check isSameProviderAndModel (provider + api + model triple) to decide whether
+  // to keep tool calls as functionCall or degrade to "[Historical context: ...]" text.
+  // If ANY of the three don't match, tool calls become text, and Gemini mimics it.
+  const modelInfo = req.model ? parseModelString(req.model) : null;
+  const resolvedProvider = modelInfo?.provider || req.provider || "";
+  const resolvedModelId = modelInfo?.modelId || req.model || "";
+
+  // Resolve the actual api field from the model registry.
+  // transform-messages.ts requires: msg.api === model.api
+  let resolvedApi = "messages"; // fallback
+  if (modelInfo) {
+    try {
+      const modelObj = getModel(modelInfo.provider as any, modelInfo.modelId as any);
+      if (modelObj?.api) {
+        resolvedApi = modelObj.api;
+      }
+    } catch {
+      // Fallback to heuristic
+      if (resolvedProvider.includes("google")) resolvedApi = "google-gemini-cli";
+      else if (resolvedProvider.includes("anthropic")) resolvedApi = "anthropic-messages";
+      else if (resolvedProvider.includes("openai")) resolvedApi = "openai-codex-responses";
+    }
+  }
+
   // Extract system prompt
   const systemMsg = req.messages.find(m => m.role === "system");
   if (systemMsg && typeof systemMsg.content === "string") {
@@ -163,13 +189,18 @@ function convertToContext(req: ChatRequest): Context {
                 id: c.id,
                 name: c.name,
                 arguments: c.input || c.arguments || {},
+                // Preserve Gemini 3 thought signature for round-trip.
+                // Without this, google-shared.ts converts functionCalls to
+                // "[Historical context: ...]" text, which Gemini mimics.
+                ...(c.thought_signature ? { thoughtSignature: c.thought_signature } : {}),
+                ...(c.thoughtSignature ? { thoughtSignature: c.thoughtSignature } : {}),
               };
             }
             return c;
           }),
-        model: req.model || "",
-        provider: req.provider || "",
-        api: "messages",
+        model: resolvedModelId,
+        provider: resolvedProvider,
+        api: resolvedApi,
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
         stopReason: "stop",
         timestamp: Date.now(),
@@ -273,6 +304,10 @@ async function handleComplete(req: ChatRequest, res: ServerResponse) {
                   name: event.toolCall.name,
                   arguments: JSON.stringify(event.toolCall.arguments),
                 },
+                // Preserve Gemini 3 thought signature for round-trip.
+                // Without this, google-shared.ts degrades functionCalls to text
+                // which Gemini then mimics, causing the "hallucination" loop.
+                ...(event.toolCall.thoughtSignature ? { thoughtSignature: event.toolCall.thoughtSignature } : {}),
               },
             }));
             break;

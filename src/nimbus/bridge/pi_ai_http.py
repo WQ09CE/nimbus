@@ -67,6 +67,7 @@ class ToolCall:
     id: str
     name: str
     arguments: Dict[str, Any]
+    thought_signature: Optional[str] = None  # Gemini 3 thought signature for round-trip
 
 
 @dataclass
@@ -384,6 +385,7 @@ class PiAiHttpClient:
                                 id=tc.get("id", ""),
                                 name=func.get("name", ""),
                                 arguments=args,
+                                thought_signature=tc.get("thoughtSignature"),
                             ),
                         )
 

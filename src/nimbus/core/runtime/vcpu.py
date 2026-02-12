@@ -704,38 +704,44 @@ class VCPU:
             except Fault as f:
                 # If it's a hallucination fault from decoder (fallback), handle it
                 if f.code == "ILL_INSTRUCTION":
+                    # Defensive measure: handles genuine model hallucinations
+                    # (e.g. text-based tool simulation like "[Called tool...]").
+                    # Note: The main cause of Gemini "[Historical context:]" pattern
+                    # was fixed in pi-ai-server.ts (correct provider/model/api metadata).
+                    # This handler is kept as a safety net for edge cases.
                     self._state.hallucination_count = getattr(self._state, 'hallucination_count', 0) + 1
                     max_hallucinations = 3
                     if self._state.hallucination_count >= max_hallucinations:
                         logger.error(
                             f"🛑 Hallucination limit ({max_hallucinations}) reached. "
-                            f"Gemini cannot stop hallucinating. Forcing completion."
+                            f"Model cannot stop hallucinating. Forcing completion."
                         )
                         step_result.is_final = True
                         step_result.final_result = ToolResult(
-                            status="OK",
-                            output="(Task could not be completed - model produced invalid responses)",
+                            status="ERROR",
+                            output="抱歉，模型多次尝试均未能正确调用工具。请尝试：\n"
+                                   "1. 重新描述你的请求\n"
+                                   "2. 切换到其他模型（如 Claude 或 GPT）\n"
+                                   "3. 将复杂任务拆分为更小的步骤",
                             is_final=True,
                         )
                         self._state.is_done = True
                         step_result.timing_ms["total"] = (time.time_ns() - start_time) // 1_000_000
                         return step_result
-                    # Inject correction into context so LLM sees it next turn
-                    self.mmu.add_assistant_message("I need to use proper function calls.")
-                    if self.mmu.current_frame.messages:
-                        self.mmu.current_frame.messages[-1].meta["ephemeral"] = True
 
+                    # Inject a user-role correction (no fake assistant message)
                     self.mmu.add_user_message(
-                        "[System] You just output text instead of calling tools. "
-                        "Use the function calling API. Do NOT write tool calls as text. "
-                        "Call the tools directly."
+                        "[System] INVALID RESPONSE — you wrote a tool call as text instead of "
+                        "using the function calling API. Your next response MUST contain an "
+                        "actual function call (tool_call), not a text description. "
+                        "Continue with the task where you left off."
                     )
                     if self.mmu.current_frame.messages:
                         self.mmu.current_frame.messages[-1].meta["ephemeral"] = True
 
                     logger.warning(
-                        f"🛡️ Hallucination #{self._state.hallucination_count}: "
-                        f"injected correction into context"
+                        f"🛡️ Hallucination #{self._state.hallucination_count}/{max_hallucinations}: "
+                        f"injected correction"
                     )
                 step_result.fault = f
                 step_result.timing_ms["total"] = (time.time_ns() - start_time) // 1_000_000
@@ -1266,31 +1272,9 @@ class VCPU:
             action.args.get("output", action.args.get("content", action.args.get("text", ""))),
         )
 
-        # Hallucination firewall: if the THOUGHT content is a hallucinated tool call,
-        # discard it and let the loop continue (non-final) so LLM retries properly.
-        if action.kind == "THOUGHT" and result:
-            from nimbus.core.runtime.decoder import InstructionDecoder
-            for pattern in InstructionDecoder.HALLUCINATION_PATTERNS:
-                if pattern in result:
-                    logger.warning(
-                        f"🛡️ Hallucination firewall: THOUGHT contains '{pattern}', "
-                        f"discarding and retrying. Content: {str(result)[:100]}..."
-                    )
-                    # Add a nudge message so LLM knows to use real tool calls
-                    self.mmu.add_user_message(
-                        "[System] Your previous response contained text-formatted tool calls "
-                        "instead of actual function calls. Please use the provided tools directly. "
-                        "Do NOT output tool calls as text."
-                    )
-                    if self.mmu.current_frame.messages:
-                        self.mmu.current_frame.messages[-1].meta["ephemeral"] = True
-
-                    return ToolResult(
-                        status="OK",
-                        output="",
-                        is_final=False,  # Not final — let the loop continue
-                        meta={"hallucination_blocked": True},
-                    )
+        # Note: Hallucination detection is handled upstream in decoder._check_hallucination()
+        # with proper short/long text heuristics. No duplicate check here — it caused
+        # false positives when the model legitimately discussed tool patterns in its response.
 
         self._emit_event(
             "PROC_FINISHED",
