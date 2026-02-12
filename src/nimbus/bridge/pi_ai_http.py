@@ -46,7 +46,7 @@ def _truncate(s: str, max_len: int = 200) -> str:
 
 # 默认配置
 DEFAULT_BASE_URL = "http://localhost:3031"
-DEFAULT_TIMEOUT = 120.0  # 秒
+DEFAULT_TIMEOUT = 300.0  # 秒 (5min, matches Bash tool timeout for deep-thinking models like Opus)
 DEFAULT_MODEL = "anthropic/claude-opus-4-5"
 
 
