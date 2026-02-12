@@ -893,11 +893,13 @@ class MMU:
                 from nimbus.core.logging import get_logger
                 get_logger("memory.mmu").error(f"Summarization failed: {e}")
 
-        # 4. Apply Truncation -> DISABLED for Phase 3 Sliding Window
-        # We keep all messages in memory so the Agent can scroll back to them.
-        # frame.messages = messages_to_keep
+        # 4. Apply Truncation
+        # Phase 3 Sliding Window originally kept all messages for scroll-back,
+        # but ScrollHistory was replaced by Memo tool. Physical truncation is
+        # required to actually free token budget after compaction.
+        frame.messages = messages_to_keep
 
-        # We just clear markers to reset tool state tracking
+        # Clear markers to reset tool state tracking
         self.clear_markers()
 
         return "memory_compacted"

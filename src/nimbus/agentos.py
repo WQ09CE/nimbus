@@ -1258,28 +1258,48 @@ class AgentOS:
                 # Handle CONTEXT_OVERFLOW fault - trigger compaction and retry
                 if step_result.fault and step_result.fault.code == "CONTEXT_OVERFLOW":
                     ctx = step_result.fault.context or {}
+                    overflow_tokens = ctx.get("current_tokens") or 0
                     logger.info(
-                        f"[{process.pid}] Context overflow ({ctx.get('current_tokens')} tokens), "
+                        f"[{process.pid}] Context overflow ({overflow_tokens} tokens), "
                         f"triggering compaction..."
                     )
                     self._emit_event(
                         "COMPACTION_TRIGGERED",
                         process.pid,
-                        {"current_tokens": ctx.get("current_tokens"), "threshold": ctx.get("threshold")},
+                        {"current_tokens": overflow_tokens, "threshold": ctx.get("threshold")},
                     )
+
+                    # Measure tokens before compaction to verify effectiveness
+                    tokens_before = process.mmu.estimate_tokens()
                     success = await self._compaction_for_process(process.pid, process.mmu)
-                    if success:
-                        logger.info(f"[{process.pid}] Compaction successful, retrying step...")
+                    tokens_after = process.mmu.estimate_tokens()
+
+                    if success and tokens_after < tokens_before * 0.8:
+                        pct = (
+                            f"-{100 - tokens_after * 100 // tokens_before}%"
+                            if tokens_before > 0
+                            else f"freed {tokens_before - tokens_after}"
+                        )
+                        logger.info(
+                            f"[{process.pid}] Compaction effective: "
+                            f"{tokens_before} → {tokens_after} tokens "
+                            f"({pct}), retrying step..."
+                        )
                         continue  # Retry the step after compaction
                     else:
-                        logger.error(f"[{process.pid}] Compaction failed")
+                        reason = (
+                            f"tokens {tokens_before} → {tokens_after} (insufficient reduction)"
+                            if success
+                            else "compaction returned failure"
+                        )
+                        logger.error(f"[{process.pid}] Compaction ineffective: {reason}")
                         process.state = "FAILED"
                         return ToolResult(
                             status="ERROR",
                             fault=Fault(
                                 domain="MEMORY",
                                 code="COMPACTION_FAILED",
-                                message="Context overflow but compaction failed",
+                                message=f"Context overflow and compaction ineffective: {reason}",
                             ),
                         )
 

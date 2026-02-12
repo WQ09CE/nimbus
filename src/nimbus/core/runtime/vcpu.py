@@ -29,6 +29,7 @@ Key Responsibilities:
 
 import asyncio
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol
@@ -871,12 +872,37 @@ class VCPU:
             # Check for context overflow in exception message
             error_msg = str(e)
             if "prompt is too long" in error_msg or "context_length_exceeded" in error_msg:
+                 # Parse actual token count from API error message
+                 # Try multiple error message formats from different providers
+                 _actual_tokens = None
+                 # Anthropic: "prompt is too long: 200393 tokens > 200000 maximum"
+                 _match = re.search(r'(\d+)\s*tokens?\s*>', error_msg)
+                 if _match:
+                     _actual_tokens = int(_match.group(1))
+                 # OpenAI: "maximum context length is 128000 tokens... resulted in 150000 tokens"
+                 if not _actual_tokens:
+                     _match = re.search(r'resulted?\s+in\s+(\d+)\s*tokens', error_msg)
+                     if _match:
+                         _actual_tokens = int(_match.group(1))
+                 # Generic: find the largest number followed by "token(s)"
+                 if not _actual_tokens:
+                     _all = re.findall(r'(\d+)\s*tokens?', error_msg)
+                     if _all:
+                         _actual_tokens = max(int(x) for x in _all)
+                 # Fallback to estimate
+                 if not _actual_tokens:
+                     _actual_tokens = self.mmu.estimate_tokens()
+                     logger.warning(f"Could not parse token count from error, using estimate: {_actual_tokens}")
                  step_result.fault = Fault(
                     domain="MEMORY",
                     code="CONTEXT_OVERFLOW",
                     message=error_msg,
                     retryable=True, # Allow AgentOS to retry after compaction
-                    context={"error": error_msg}
+                    context={
+                        "error": error_msg,
+                        "current_tokens": _actual_tokens,
+                        "threshold": self.mmu.config.max_context_tokens,
+                    }
                  )
             else:
                  step_result.fault = Fault(
