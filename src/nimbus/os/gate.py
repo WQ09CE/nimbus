@@ -232,6 +232,11 @@ class KernelGate:
         # 3. Result Packaging
         duration_ms = (time.time_ns() - start_time) // 1_000_000
 
+        # Apply memory protection (truncation)
+        # We truncate here to ensure neither the log file nor the MMU sees
+        # the massive output string.
+        output = _truncate_output(output)
+
         status_emoji = "✅" if status == "OK" else "❌"
         if status == "OK":
             output_preview = str(output)
@@ -380,6 +385,62 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "Edit": ["file_path", "old_text", "new_text"],
     "Bash": ["command"],
 }
+
+
+# =============================================================================
+# Tool Output Truncation (Memory Protection)
+# =============================================================================
+
+# Hard limit for tool output (~50k tokens).
+# Prevents a single massive tool output (e.g. `cat huge.log`) from blowing up
+# the context window and crashing the MMU.
+# OpenClaw uses ~400k chars (100k tokens), but we are more conservative here
+# to ensure room for the rest of the context stack.
+MAX_TOOL_OUTPUT_CHARS = 200_000
+
+# When truncating, keep this many characters from the start.
+# This allows the Agent to verify file headers or see the error format.
+TRUNCATION_KEEP_CHARS = 2_000
+
+
+def _truncate_output(text: Any) -> Any:
+    """
+    Truncate large string outputs to protect memory.
+
+    Args:
+        text: The tool output (usually string, but could be any type)
+
+    Returns:
+        The truncated string if it was a large string, or the original object.
+    """
+    if not isinstance(text, str):
+        return text
+
+    if len(text) <= MAX_TOOL_OUTPUT_CHARS:
+        return text
+
+    original_len = len(text)
+    cut_point = TRUNCATION_KEEP_CHARS
+
+    # Attempt to cut at a newline for cleaner output
+    try:
+        # Look for the last newline within the keep limit
+        last_newline = text.rfind('\n', 0, TRUNCATION_KEEP_CHARS)
+        if last_newline > TRUNCATION_KEEP_CHARS * 0.8:  # Only if it's not too close to start
+            cut_point = last_newline
+    except Exception:
+        pass  # Fallback to strict length
+
+    head = text[:cut_point]
+
+    warning = (
+        f"\n\n⚠️ [Output Truncated] The tool output was too large ({original_len:,} chars) "
+        f"and has been truncated to the first {cut_point:,} chars.\n"
+        f"To see more, please use specific tools (e.g. `Read` with line numbers) "
+        f"or commands (e.g. `head`/`tail`/`grep`) to process the data."
+    )
+
+    return head + warning
 
 
 def _normalize_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:

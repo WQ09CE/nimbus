@@ -285,15 +285,40 @@ export function DataDisplay({ data, title, maxDepth = 2, currentDepth = 0, class
         return <a href={data} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline flex items-center gap-1">🔗 {data}</a>;
       }
       typeClass = "text-green-300/90";
-      // 长文本截断
-      if (data.length > 300 && currentDepth > 0) {
+      
+      // 长文本截断与折叠
+      const isTruncatedWarning = content.includes("⚠️ [Output Truncated]");
+      const MAX_PREVIEW_LENGTH = 500;
+      
+      if (content.length > MAX_PREVIEW_LENGTH) {
+        // eslint-disable-next-line react-hooks/rules-of-hooks
+        const [expanded, setExpanded] = useState(false);
+        const preview = content.slice(0, MAX_PREVIEW_LENGTH);
+        
         return (
-          <span className={typeClass}>
-            "{data.slice(0, 300)}..." <span className="text-gray-500 text-xs">({data.length} chars)</span>
-          </span>
+          <div className="flex flex-col gap-1">
+            <span className={`${typeClass} whitespace-pre-wrap break-all`}>
+              "{expanded ? content : preview}"
+              {!expanded && <span className="text-gray-500">...</span>}
+            </span>
+            <div className="flex items-center gap-2 mt-1">
+              <button 
+                onClick={() => setExpanded(!expanded)}
+                className="text-xs text-blue-400 hover:text-blue-300 hover:underline flex items-center gap-1"
+              >
+                {expanded ? "Collapse" : `Show all (${content.length.toLocaleString()} chars)`}
+              </button>
+              {isTruncatedWarning && !expanded && (
+                <span className="text-xs text-yellow-500/80 bg-yellow-500/10 px-1.5 rounded border border-yellow-500/20">
+                  ⚠️ Partially Truncated by System
+                </span>
+              )}
+            </div>
+          </div>
         );
       }
-      return <span className={typeClass}>"{data}"</span>;
+      
+      return <span className={`${typeClass} whitespace-pre-wrap break-all`}>"{content}"</span>;
     }
 
     return <span className={typeClass}>{content}</span>;

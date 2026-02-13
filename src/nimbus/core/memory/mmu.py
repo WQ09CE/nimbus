@@ -407,51 +407,59 @@ class MMU:
         mime = block.get("mimeType", "")
         return f"{mime}:{digest}"
 
-    def _downgrade_seen_images(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _optimize_context(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Replace duplicate or budget-exceeding images with text placeholders.
-        Strategy:
-        1. Scan backwards to find unique images.
-        2. Keep images until max_image_tokens budget is reached.
-        3. Drop all other images (duplicates or out-of-budget).
+        Optimize context by:
+        1. Downgrading duplicate/budget-exceeding images.
+        2. Truncating massive tool outputs in the view (preserving storage).
         """
-        keep_indices = set()  # Set of (msg_idx, block_idx) to keep
+        # --- Config Constants ---
+        VIEW_MAX_TOOL_CHARS = 10_000  # Max chars for tool output in context view (~2.5k tokens)
+
+        # 1. Image Downgrade Logic
+        keep_indices = set()
         seen_keys = set()
         current_image_tokens = 0
         
-        # First pass: Scan backwards (newest first)
+        # Scan backwards for images
         for i in range(len(messages) - 1, -1, -1):
             msg = messages[i]
             content = msg.get("content")
             if isinstance(content, list):
-                # Process blocks in reverse order too (bottom image is newest)
                 for j in range(len(content) - 1, -1, -1):
                     block = content[j]
                     if isinstance(block, dict) and block.get("type") == "image":
                         key = self._image_key(block)
+                        if key in seen_keys: continue
                         
-                        # If already seen (newer version exists), skip (drop)
-                        if key in seen_keys:
-                            continue
-                            
-                        # If new unique image, check budget
-                        # Estimate token size (approx 1500)
                         img_tokens = IMAGE_TOKEN_ESTIMATE 
-                        
                         if current_image_tokens + img_tokens <= self.config.max_image_tokens:
-                            # Keep it
                             keep_indices.add((i, j))
                             seen_keys.add(key)
                             current_image_tokens += img_tokens
                         else:
-                            # Budget exceeded, drop (don't add to keep_indices)
                             seen_keys.add(key)
 
-        # Second pass: Rebuild messages
+        # 2. Rebuild with Optimizations
         result = []
         for i, msg in enumerate(messages):
+            # --- Tool Output Truncation ---
+            if msg.get("role") == "tool":
+                content = msg.get("content")
+                if isinstance(content, str) and len(content) > VIEW_MAX_TOOL_CHARS:
+                    # Truncate string content
+                    # We keep the head and a warning
+                    new_content = content[:VIEW_MAX_TOOL_CHARS] + \
+                        f"\n... [Truncated {len(content)-VIEW_MAX_TOOL_CHARS:,} chars for context view] ..."
+                    
+                    # Clone message to avoid modifying the original list object
+                    new_msg = dict(msg)
+                    new_msg["content"] = new_content
+                    result.append(new_msg)
+                    continue
+
+            # --- Image Processing ---
             content = msg.get("content")
-            
             if not isinstance(content, list):
                 result.append(msg)
                 continue
@@ -462,10 +470,8 @@ class MMU:
             for j, block in enumerate(content):
                 if isinstance(block, dict) and block.get("type") == "image":
                     if (i, j) in keep_indices:
-                        # Keep original
                         new_content.append(block)
                     else:
-                        # Downgrade
                         mime = block.get("mimeType", "image/unknown")
                         new_content.append({
                             "type": "text",
@@ -696,8 +702,8 @@ class MMU:
             for m in hot_messages:
                 messages.append(m.to_dict())
 
-        # Phase 2: Downgrade duplicate images to save tokens
-        messages = self._downgrade_seen_images(messages)
+        # Phase 2: Optimize Context (Downgrade images, Truncate large tool outputs)
+        messages = self._optimize_context(messages)
 
         return messages
 

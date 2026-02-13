@@ -87,38 +87,61 @@ async def bash_command(
             cwd=str(work_dir),
         )
 
-        # Stream output
-        chunks = []
+        # Stream output with Ring Buffer optimization
+        # Instead of accumulating all chunks in memory, we only keep:
+        # 1. The head (first few KB) for context
+        # 2. The tail (last few KB) for most recent output
+        # Everything else goes to temp file if needed.
+        
+        HEAD_LIMIT = 4096  # Keep first 4KB
+        TAIL_LIMIT = 64 * 1024  # Keep last 64KB
+        
+        chunks = [] # Stores head
+        tail_buffer = bytearray() # Rolling buffer for tail
         total_bytes = 0
         temp_file_path = None
         temp_file = None
 
         async def read_stream(stream):
-            nonlocal total_bytes, temp_file_path, temp_file
+            nonlocal total_bytes, temp_file_path, temp_file, tail_buffer
 
             while True:
                 chunk = await stream.read(8192)
                 if not chunk:
                     break
 
-                chunks.append(chunk)
                 total_bytes += len(chunk)
 
-                # Create temp file if exceeds limit
+                # 1. Temp File Handling
                 if total_bytes > DEFAULT_MAX_BYTES and temp_file_path is None:
                     temp_file_path = tempfile.mktemp(suffix=".log", prefix="pi-bash-")
                     temp_file = open(temp_file_path, "wb")
-                    # Write all buffered chunks
+                    # Write existing head chunks
                     for c in chunks:
                         temp_file.write(c)
+                    # Write current tail buffer
+                    temp_file.write(tail_buffer)
 
-                # Write to temp file if we have one
                 if temp_file:
                     temp_file.write(chunk)
 
-                # Stream partial output
+                # 2. Memory Management (Head/Tail)
+                if len(chunks) * 8192 < HEAD_LIMIT:
+                    # Still filling head
+                    chunks.append(chunk)
+                else:
+                    # Update tail buffer
+                    tail_buffer.extend(chunk)
+                    if len(tail_buffer) > TAIL_LIMIT:
+                        # Keep only the last TAIL_LIMIT bytes
+                        # Slice efficiently
+                        del tail_buffer[:-TAIL_LIMIT]
+
+                # Stream partial output (Throttle this in production)
                 if on_update:
-                    full_text = b"".join(chunks).decode("utf-8", errors="replace")
+                    # Construct current view
+                    current_view = b"".join(chunks) + tail_buffer
+                    full_text = current_view.decode("utf-8", errors="replace")
                     truncation = truncate_tail(full_text)
                     on_update(truncation["content"])
 
@@ -146,19 +169,52 @@ async def bash_command(
             temp_file.close()
 
         # Build final output
-        full_output = b"".join(chunks).decode("utf-8", errors="replace")
-        truncation = truncate_tail(full_output)
+        # Reconstruct from Head + Tail (Memory Safe)
+        full_output = b"".join(chunks) + tail_buffer
+        
+        is_internal_truncated = False
+        # If we dropped data in the middle (between head and tail), insert a marker
+        if total_bytes > len(full_output):
+             is_internal_truncated = True
+             dropped = total_bytes - len(full_output)
+             marker = f"\n\n... [Skipped {dropped} bytes of intermediate output] ...\n\n".encode("utf-8")
+             # Insert marker between head (chunks) and tail (tail_buffer)
+             full_output = b"".join(chunks) + marker + tail_buffer
+
+        full_text = full_output.decode("utf-8", errors="replace")
+        
+        if is_internal_truncated:
+            # We already truncated strategically (Ring Buffer).
+            # Do NOT call truncate_tail(), as it might blindly cut the Head we preserved.
+            truncation = {
+                "content": full_text,
+                "truncated": True,
+                "total_lines": -1, # Unknown/Irrelevant
+                "output_lines": full_text.count('\n') + 1
+            }
+        else:
+            truncation = truncate_tail(full_text)
 
         output_text = truncation["content"] or "(no output)"
 
         # Add truncation notice
-        if truncation["truncated"]:
-            start_line = truncation["total_lines"] - truncation["output_lines"] + 1
-            end_line = truncation["total_lines"]
-            output_text += (
-                f"\n\n[Showing lines {start_line}-{end_line} of {truncation['total_lines']}. "
-                f"Full output: {temp_file_path}]"
-            )
+        if truncation.get("truncated") or temp_file_path:
+            extra_info = ""
+            if truncation.get("truncated"):
+                total_lines = truncation.get("total_lines", 0)
+                if total_lines > 0:
+                    # Normal tail truncation
+                    start_line = total_lines - truncation.get("output_lines", 0) + 1
+                    end_line = total_lines
+                    extra_info = f"Showing lines {start_line}-{end_line} of {total_lines}."
+                else:
+                    # Ring buffer truncation (Head + Tail)
+                    extra_info = "Output partially truncated (showing head + tail)."
+            
+            if temp_file_path:
+                extra_info += f" Full output saved to: {temp_file_path}"
+                
+            output_text += f"\n\n[{extra_info}]"
 
         # Add exit code info if non-zero (don't raise - let LLM see the error)
         if process.returncode != 0:
