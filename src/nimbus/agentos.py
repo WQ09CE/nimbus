@@ -950,34 +950,47 @@ class AgentOS:
         }
 
     async def _check_compaction(self, process: Process) -> None:
+        """Proactive auto-compaction: compact before step() when tokens exceed threshold."""
         if not process.mmu:
             return
 
-        # V2 MMU (Infinite Context) handles memory internally via assemble_context slicing.
-        # We don't want external compaction to delete messages from the stack.
-        # So we disable this legacy check.
-        return
+        mmu = process.mmu
+        current_tokens = mmu.estimate_tokens()
+        max_tokens = self.config.mmu_config.max_context_tokens
+        threshold = int(max_tokens * self.config.mmu_config.compress_threshold)  # 90%
 
-        # Legacy logic commented out:
-        # current_tokens = process.mmu.estimate_tokens()
-        # max_tokens = self.config.mmu_config.max_context_tokens
+        if current_tokens < threshold:
+            return
 
-        # if self._compaction_engine.should_compact(
-        #     [msg for frame in process.mmu._stack for msg in frame.messages],
-        #     max_tokens,
-        # ):
-        #     self._emit_event(
-        #         "AUTO_COMPACTION_START",
-        #         process.pid,
-        #         {
-        #             "tokens": current_tokens,
-        #             "max_tokens": max_tokens,
-        #         },
-        #     )
+        # Guard: too few messages → sliding window handles it
+        total_messages = sum(len(f.messages) for f in mmu._stack)
+        if total_messages < 10:
+            return
 
-        #     await self.compact(session_id=process.pid)
+        # Guard: max compactions reached
+        vcpu = process.vcpu
+        if vcpu and vcpu._state.compaction_count >= vcpu.config.max_compactions:
+            return
 
-        #     self._emit_event("AUTO_COMPACTION_END", process.pid, {})
+        # Execute
+        logger.info(f"[{process.pid}] Auto-compaction: {current_tokens} tokens "
+                    f"({current_tokens*100//max_tokens}% of {max_tokens}), {total_messages} msgs")
+        self._emit_event("AUTO_COMPACTION_TRIGGERED", process.pid,
+                         {"current_tokens": current_tokens, "threshold": threshold})
+
+        tokens_before = current_tokens
+        success = await self._compaction_for_process(process.pid, mmu)
+        tokens_after = mmu.estimate_tokens()
+
+        if success:
+            if vcpu:
+                vcpu._state.compaction_count += 1
+            pct = 100 - (tokens_after * 100 // tokens_before) if tokens_before else 0
+            logger.info(f"[{process.pid}] Auto-compaction done: "
+                        f"{tokens_before}→{tokens_after} tokens (-{pct}%)")
+        else:
+            logger.warning(f"[{process.pid}] Auto-compaction failed, sliding window fallback")
+        # Never crash — sliding window is the ultimate safety net
 
     async def _compaction_for_process(self, pid: str, mmu: MMU) -> bool:
         try:
@@ -1021,6 +1034,16 @@ class AgentOS:
                 return truncated + "...[已压缩]"
 
             # Create a summarizer that uses the LLM to generate a summary
+            # Read Memo content to include in summary (so passwords/key info survive)
+            memo_context = ""
+            if hasattr(mmu, '_memo_manager') and mmu._memo_manager:
+                try:
+                    memo_content = mmu._memo_manager.read()
+                    if memo_content and memo_content.strip():
+                        memo_context = memo_content.strip()
+                except Exception:
+                    pass
+
             async def generate_summary(messages: list) -> str:
                 """Generate a summary of the conversation using LLM."""
                 try:
@@ -1037,6 +1060,10 @@ class AgentOS:
                         f"[{m.role.upper()}]: {str(m.content)[:500]}"
                         for m in messages[-20:]  # Last 20 messages
                     )
+
+                    # Append Memo content so summarizer preserves key info from notes
+                    if memo_context:
+                        context += f"\n\n【用户备忘录 Memo】\n{memo_context[:500]}"
 
                     # Calculate target length based on whether we're merging
                     target_chars = summary_char_budget
@@ -1562,6 +1589,18 @@ def create_agent_os(
             skill_paths=skill_paths or [],
         )
 
+    # Allow overriding limits via environment variables (for testing compaction)
+    import os as _os
+    _max_ctx = _os.environ.get("NIMBUS_MAX_CONTEXT_TOKENS")
+    if _max_ctx:
+        config.mmu_config.max_context_tokens = int(_max_ctx)
+        config.mmu_config.frame_budget = max(int(_max_ctx) - config.mmu_config.pinned_budget, 1000)
+        logger.info(f"MMU override: max_context_tokens={config.mmu_config.max_context_tokens}, frame_budget={config.mmu_config.frame_budget}")
+    _max_iter = _os.environ.get("NIMBUS_MAX_ITERATIONS")
+    if _max_iter:
+        config.vcpu_config.max_iterations = int(_max_iter)
+        logger.info(f"VCPU override: max_iterations={config.vcpu_config.max_iterations}")
+
     # Handle profile overrides
     target_profile = None
     if isinstance(profile, str):
@@ -1577,7 +1616,9 @@ def create_agent_os(
     if target_profile:
         config.system_rules = target_profile.system_prompt
         # Apply runtime config from profile to VCPU config
-        config.vcpu_config.max_iterations = target_profile.max_iterations
+        # (env var overrides take precedence over profile defaults)
+        if not _max_iter:
+            config.vcpu_config.max_iterations = target_profile.max_iterations
         config.vcpu_config.max_consecutive_thoughts = target_profile.max_consecutive_thoughts
 
     os = AgentOS(llm_client=llm_client, tools=tools, config=config)

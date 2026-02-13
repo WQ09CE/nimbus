@@ -12,6 +12,7 @@ Design Principles:
 - Each frame has its own message history (isolation)
 """
 
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -25,6 +26,14 @@ from typing import Any, Dict, List, Literal, Optional
 # Claude: ~2764 (1080p), GPT-4V: ~1105 (high), Gemini: 258
 # We pick 1500 as a reasonable average
 IMAGE_TOKEN_ESTIMATE = 1500
+
+# Per-message overhead: role marker, separators, formatting tokens
+# Standard across OpenAI/Anthropic APIs (~4 tokens per message)
+MESSAGE_OVERHEAD = 4
+
+# Fixed overhead per tool call: id (~3 tokens), type (~1), function name (~2),
+# JSON structure tokens (~4)
+TOOL_CALL_OVERHEAD = 10
 
 MessageRole = Literal["system", "user", "assistant", "tool"]
 
@@ -66,37 +75,76 @@ class Message:
             d["tool_calls"] = self.tool_calls
         return d
 
-    def token_estimate(self) -> int:
+    @staticmethod
+    def _estimate_text(text: str) -> int:
         """
-        Token estimate with language awareness.
+        Estimate token count for a text string with language awareness.
 
         Ratios (per expert review):
         - English: ~4 chars/token
         - Chinese: ~1.5-2 chars/token (more conservative: 1.5)
         - Code: ~3 chars/token (keywords, symbols)
         """
+        if not text:
+            return 0
+        # Count Chinese characters
+        chinese_chars = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+        other_chars = len(text) - chinese_chars
+        # Chinese: 1.5 chars/token, Other: 4 chars/token
+        return int(chinese_chars / 1.5) + (other_chars // 4)
 
-        def estimate_text(text: str) -> int:
-            if not text:
-                return 0
-            # Count Chinese characters
-            chinese_chars = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
-            other_chars = len(text) - chinese_chars
-            # Chinese: 1.5 chars/token, Other: 4 chars/token
-            return int(chinese_chars / 1.5) + (other_chars // 4)
-
+    def _estimate_content(self) -> int:
+        """Estimate tokens from message content (text and image blocks)."""
         if isinstance(self.content, str):
-            return estimate_text(self.content)
+            return self._estimate_text(self.content)
         elif isinstance(self.content, list):
             total = 0
             for block in self.content:
                 if isinstance(block, dict):
                     if "text" in block:
-                        total += estimate_text(block["text"])
+                        total += self._estimate_text(block["text"])
                     elif block.get("type") == "image":
                         total += IMAGE_TOKEN_ESTIMATE
             return total
         return 0
+
+    def _estimate_tool_calls(self) -> int:
+        """Estimate tokens from tool_calls payloads."""
+        if not self.tool_calls:
+            return 0
+        total = 0
+        for tc in self.tool_calls:
+            # Each tool call has id, type, function structure
+            total += TOOL_CALL_OVERHEAD
+            if isinstance(tc, dict):
+                func = tc.get("function", {})
+                if isinstance(func, dict):
+                    # Function name tokens
+                    name = func.get("name", "")
+                    if name:
+                        total += self._estimate_text(name)
+                    # Arguments JSON tokens
+                    args = func.get("arguments", "")
+                    if isinstance(args, str):
+                        total += self._estimate_text(args)
+                    elif isinstance(args, dict):
+                        total += self._estimate_text(json.dumps(args))
+        return total
+
+    def token_estimate(self) -> int:
+        """
+        Token estimate with language awareness and structural overhead.
+
+        Accounts for:
+        - Per-message overhead (role, separators, formatting)
+        - Content text (English/Chinese aware)
+        - Image blocks
+        - Tool call payloads (id, function name, arguments JSON)
+        """
+        tokens = MESSAGE_OVERHEAD
+        tokens += self._estimate_content()
+        tokens += self._estimate_tool_calls()
+        return tokens
 
 
 # =============================================================================
@@ -156,21 +204,13 @@ class PinnedContext:
         return Message(role="system", content=content, meta={"pinned": True})
 
     def token_estimate(self) -> int:
-        """Token estimate with language awareness."""
-
-        def estimate_text(text: str) -> int:
-            if not text:
-                return 0
-            chinese_chars = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
-            other_chars = len(text) - chinese_chars
-            return int(chinese_chars / 1.5) + (other_chars // 4)
-
-        total = estimate_text(self.system_rules)
-        total += estimate_text(self.workspace_info)
-        total += estimate_text(self.env_state)
-        total += estimate_text(self.capabilities)
+        """Token estimate with language awareness. Reuses Message._estimate_text."""
+        total = Message._estimate_text(self.system_rules)
+        total += Message._estimate_text(self.workspace_info)
+        total += Message._estimate_text(self.env_state)
+        total += Message._estimate_text(self.capabilities)
         for anchor in self.custom_anchors:
-            total += estimate_text(anchor)
+            total += Message._estimate_text(anchor)
         return total
 
     def add_anchor(self, content: str) -> None:

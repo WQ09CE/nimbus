@@ -9,7 +9,7 @@ Covers:
 """
 
 import pytest
-from nimbus.core.memory.context import Message, IMAGE_TOKEN_ESTIMATE
+from nimbus.core.memory.context import Message, IMAGE_TOKEN_ESTIMATE, MESSAGE_OVERHEAD
 from nimbus.core.memory.mmu import MMU, MMUConfig
 
 
@@ -21,29 +21,29 @@ class TestImageTokenEstimate:
     """Phase 1: token_estimate correctly accounts for image tokens."""
 
     def test_single_image_block(self):
-        """A message with one image should include IMAGE_TOKEN_ESTIMATE."""
+        """A message with one image should include IMAGE_TOKEN_ESTIMATE + overhead."""
         msg = Message(role="user", content=[
             {"type": "image", "data": "base64data", "mimeType": "image/png"}
         ])
-        assert msg.token_estimate() == IMAGE_TOKEN_ESTIMATE
+        assert msg.token_estimate() == IMAGE_TOKEN_ESTIMATE + MESSAGE_OVERHEAD
 
     def test_text_plus_image(self):
-        """Mixed text + image: tokens = text_tokens + IMAGE_TOKEN_ESTIMATE."""
+        """Mixed text + image: tokens = text_tokens + IMAGE_TOKEN_ESTIMATE + overhead."""
         msg = Message(role="user", content=[
             {"type": "text", "text": "a" * 100},  # 100/4 = 25 tokens
             {"type": "image", "data": "base64data", "mimeType": "image/png"}
         ])
         estimate = msg.token_estimate()
-        assert estimate == 25 + IMAGE_TOKEN_ESTIMATE
+        assert estimate == 25 + IMAGE_TOKEN_ESTIMATE + MESSAGE_OVERHEAD
 
     def test_multiple_images(self):
-        """Multiple images: each adds IMAGE_TOKEN_ESTIMATE."""
+        """Multiple images: each adds IMAGE_TOKEN_ESTIMATE, plus message overhead."""
         msg = Message(role="user", content=[
             {"type": "image", "data": "img1", "mimeType": "image/png"},
             {"type": "image", "data": "img2", "mimeType": "image/jpeg"},
             {"type": "image", "data": "img3", "mimeType": "image/png"},
         ])
-        assert msg.token_estimate() == IMAGE_TOKEN_ESTIMATE * 3
+        assert msg.token_estimate() == IMAGE_TOKEN_ESTIMATE * 3 + MESSAGE_OVERHEAD
 
     def test_no_image_blocks(self):
         """List content with only text blocks: no image tokens."""
@@ -51,18 +51,18 @@ class TestImageTokenEstimate:
             {"type": "text", "text": "Hello world"},
         ])
         estimate = msg.token_estimate()
-        assert estimate > 0
+        assert estimate > MESSAGE_OVERHEAD  # Has text content beyond overhead
         assert estimate < IMAGE_TOKEN_ESTIMATE  # Just text, no image
 
-    def test_string_content_unchanged(self):
-        """String content should still work as before (backward compat)."""
+    def test_string_content_with_overhead(self):
+        """String content includes message overhead."""
         msg = Message(role="user", content="a" * 100)
-        assert msg.token_estimate() == 25
+        assert msg.token_estimate() == 25 + MESSAGE_OVERHEAD
 
-    def test_empty_content(self):
-        """Empty/None content should return 0."""
+    def test_empty_content_has_overhead(self):
+        """Even empty/None content returns message overhead."""
         msg = Message(role="user", content=None)
-        assert msg.token_estimate() == 0
+        assert msg.token_estimate() == MESSAGE_OVERHEAD
 
 
 # =============================================================================

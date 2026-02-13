@@ -108,7 +108,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
   };
 
   return (
-    <div className={`flex gap-4 mb-6 ${isUser ? "flex-row-reverse" : "flex-row"} group`}>
+    <div data-testid={isUser ? "message-user" : "message-assistant"} className={`flex gap-4 mb-6 ${isUser ? "flex-row-reverse" : "flex-row"} group`}>
       {/* Avatar */}
       <div className="mt-1">
         {isUser ? <UserAvatar /> : <AiAvatar />}

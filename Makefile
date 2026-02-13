@@ -7,7 +7,7 @@
 #   make dev        # 开发模式 (前台)
 #
 
-.PHONY: start stop restart status logs dev install test clean help
+.PHONY: start stop restart status logs dev install test clean help test-e2e test-e2e-integration test-e2e-all
 
 # 默认目标
 help:
@@ -79,6 +79,18 @@ clean:
 	rm -rf .pytest_cache/
 	find . -name "*.pyc" -delete
 	@echo "Cleaned up!"
+
+# E2E 测试 (tier1 - 快速冒烟测试)
+test-e2e:
+	cd web-ui && npx playwright test --project=tier1
+
+# E2E 集成测试 (tier2 - 完整集成测试)
+test-e2e-integration:
+	cd web-ui && npx playwright test --project=tier2
+
+# E2E 全部测试
+test-e2e-all:
+	cd web-ui && npx playwright test
 
 # 只启动后端 (不启动 web-ui)
 start-backend:

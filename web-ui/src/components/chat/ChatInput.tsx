@@ -437,6 +437,7 @@ export const ChatInput = React.memo(function ChatInput({
               {/* Textarea */}
               <textarea
                 ref={textareaRef}
+                data-testid="chat-input"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
@@ -462,6 +463,7 @@ export const ChatInput = React.memo(function ChatInput({
                 {isStreaming ? (
                   <button
                     type="button"
+                    data-testid="stop-button"
                     onClick={onInterrupt}
                     disabled={isInterrupting}
                     className={`
@@ -481,6 +483,7 @@ export const ChatInput = React.memo(function ChatInput({
                 ) : (
                   <button
                     type="submit"
+                    data-testid="send-button"
                     disabled={!hasContent || disabled}
                     className={`
                       p-2 rounded-xl transition-all duration-300 flex items-center justify-center w-10 h-10

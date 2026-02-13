@@ -85,7 +85,7 @@ export function ToolCard({ tool, defaultExpanded }: ToolCardProps) {
   }
 
   return (
-    <div className={`
+    <div data-testid="tool-card" className={`
       group/card overflow-hidden rounded-lg border transition-all duration-200 relative
       ${isExpanded
         ? `bg-[#0d1117] ${style.border}`

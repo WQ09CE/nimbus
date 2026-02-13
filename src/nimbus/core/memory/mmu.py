@@ -545,6 +545,16 @@ class MMU:
                 pass  # Memo read failed, continue without it
 
         remaining_budget = max_tokens - token_count
+
+        # Debug: Log budget allocation
+        from nimbus.core.logging import get_logger as _get_logger
+        _mmu_logger = _get_logger("memory.mmu")
+        _mmu_logger.debug(
+            f"📊 assemble_context budget: max={max_tokens}, "
+            f"pinned+state+memo={token_count}, remaining={remaining_budget}, "
+            f"stream_msgs={sum(len(f.messages) for f in self._stack)}"
+        )
+
         if remaining_budget < 500:
             # Emergency: Pinned context too large
             return messages
@@ -596,6 +606,12 @@ class MMU:
 
         # Adjust remaining budget for History Window
         history_budget = remaining_budget - hot_tokens
+
+        _mmu_logger.debug(
+            f"📊 hot: {len(hot_messages)}/{total_msgs} msgs, {hot_tokens} tokens "
+            f"(budget={int(remaining_budget*0.5)}), "
+            f"history_budget={history_budget}"
+        )
 
         # --- 3. Historical Window ---
         # The window ends at: total - len(hot_messages)
@@ -722,16 +738,14 @@ class MMU:
         return total
 
     def needs_compression(self) -> bool:
-        """
-        Check if context needs compression.
-        
-        With Sliding Window Memory (Phase 3), we theoretically NEVER need compression
-        because assemble_context() automatically slices the history to fit the window.
-        
-        However, we might still want to trigger summarization periodically.
-        For now, we return False to disable the old "Stop & Archive" flow.
-        """
-        return False
+        """Safety net: fires inside VCPU.step() if proactive check missed."""
+        current_tokens = self.estimate_tokens()
+        safety_threshold = int(self.config.max_context_tokens *
+                              min(self.config.compress_threshold + 0.05, 0.98))
+        if current_tokens <= safety_threshold:
+            return False
+        total_messages = sum(len(f.messages) for f in self._stack)
+        return total_messages >= 10
 
     def rollback_incomplete_turn(self) -> int:
         """Rollback pending tool calls if interrupted."""

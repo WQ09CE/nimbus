@@ -79,6 +79,7 @@ export default function Home() {
                 <span className="text-[10px] uppercase tracking-wider text-blue-400 font-semibold px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/20">Beta</span>
                 {session && (
                   <button
+                    data-testid="session-panel-trigger"
                     onClick={() => setShowSessionPanel(true)}
                     className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors group"
                   >
@@ -120,6 +121,7 @@ export default function Home() {
               </svg>
             </button>
             <button
+              data-testid="new-chat-button"
               onClick={() => createNewSession(true)}
               className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg shadow-lg shadow-blue-600/20 transition-all hover:scale-[1.02] active:scale-[0.98]"
             >
@@ -142,7 +144,7 @@ export default function Home() {
           >
             {/* Error */}
             {error && (
-              <div className="mb-4 p-3 bg-red-900/20 border border-red-800 rounded text-red-400 text-sm animate-in fade-in slide-in-from-top-2">
+              <div data-testid="error-banner" className="mb-4 p-3 bg-red-900/20 border border-red-800 rounded text-red-400 text-sm animate-in fade-in slide-in-from-top-2">
                 <span className="font-semibold">Error:</span> {error}
                 <button
                   onClick={clearError}
@@ -163,7 +165,7 @@ export default function Home() {
 
             {/* Welcome Screen */}
             {messages.length === 0 && !isStreaming && !isLoading && (
-              <div className="flex flex-col items-center justify-center h-full text-center animate-in zoom-in-95 duration-500">
+              <div data-testid="welcome-screen" className="flex flex-col items-center justify-center h-full text-center animate-in zoom-in-95 duration-500">
                 <div className="w-16 h-16 bg-gradient-to-tr from-blue-600 to-cyan-500 rounded-2xl flex items-center justify-center shadow-2xl shadow-blue-500/20 mb-6">
                   <span className="text-3xl">☁️</span>
                 </div>

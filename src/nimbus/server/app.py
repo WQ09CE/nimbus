@@ -72,16 +72,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Initialize default AgentOS for /api/chat endpoint
     from pathlib import Path
 
-    from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
     from nimbus.agentos import AgentOS, AgentOSConfig
     from nimbus.core.runtime.vcpu import VCPUConfig
 
-    pi_url = os.environ.get("PI_AI_URL", "http://localhost:3031")
-    model = os.environ.get("NIMBUS_MODEL", "google-antigravity/gemini-3-pro-high")
+    if os.environ.get("NIMBUS_LLM") == "mock":
+        # Deterministic mock adapter for integration testing (no external LLM)
+        from nimbus.testing.mock_llm import MockLLMAdapter
 
-    pi_config = PiLLMConfig(base_url=pi_url, model=model)
-    llm = PiLLMAdapter(pi_config)
-    await llm.start()
+        llm = MockLLMAdapter()
+        await llm.start()
+        model = "mock/deterministic"
+        logger.info("Using MockLLMAdapter (NIMBUS_LLM=mock)")
+    else:
+        from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+
+        pi_url = os.environ.get("PI_AI_URL", "http://localhost:3031")
+        model = os.environ.get("NIMBUS_MODEL", "google-antigravity/gemini-3-pro-high")
+
+        pi_config = PiLLMConfig(base_url=pi_url, model=model)
+        llm = PiLLMAdapter(pi_config)
+        await llm.start()
 
     # Config skills path
     skill_paths = [Path("examples/skills")]

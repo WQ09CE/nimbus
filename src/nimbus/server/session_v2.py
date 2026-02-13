@@ -335,16 +335,26 @@ class SessionManagerV2:
         return agent_os
 
     async def _get_shared_llm_client(self):
-        """Get or create shared PiLLMAdapter."""
+        """Get or create shared LLM client (respects NIMBUS_LLM=mock)."""
         if self._shared_llm_client is None:
-            from nimbus.adapters.pi_adapter import PiLLMAdapter
+            import os
 
-            # Create and start shared client
-            # Using defaults which point to anthropic/claude-sonnet
-            adapter = PiLLMAdapter()
-            await adapter.__aenter__()
-            self._shared_llm_client = adapter
-            logger.info("🤖 Shared PiLLMAdapter initialized")
+            if os.environ.get("NIMBUS_LLM") == "mock":
+                from nimbus.testing.mock_llm import MockLLMAdapter
+
+                adapter = MockLLMAdapter()
+                await adapter.start()
+                self._shared_llm_client = adapter
+                logger.info("🤖 Shared MockLLMAdapter initialized (NIMBUS_LLM=mock)")
+            else:
+                from nimbus.adapters.pi_adapter import PiLLMAdapter
+
+                # Create and start shared client
+                # Using defaults which point to anthropic/claude-sonnet
+                adapter = PiLLMAdapter()
+                await adapter.__aenter__()
+                self._shared_llm_client = adapter
+                logger.info("🤖 Shared PiLLMAdapter initialized")
 
         return self._shared_llm_client
 

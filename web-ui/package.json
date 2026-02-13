@@ -9,7 +9,14 @@
     "lint": "next lint",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage"
+    "test:coverage": "jest --coverage",
+    "test:e2e": "npx playwright test --project=tier1",
+    "test:e2e:integration": "npx playwright test --project=tier2",
+    "test:e2e:real-llm": "npx playwright test --project=tier3",
+    "test:e2e:memory": "npx playwright test --project=tier3 e2e/tier3/memory-retention.spec.ts",
+    "test:e2e:all": "npx playwright test",
+    "test:e2e:ui": "npx playwright test --ui",
+    "test:e2e:report": "npx playwright show-report"
   },
   "dependencies": {
     "clsx": "^2.1.1",

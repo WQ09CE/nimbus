@@ -46,22 +46,22 @@ class TestMessage:
 
     def test_token_estimate_english(self):
         msg = Message(role="user", content="a" * 100)
-        # 100 chars / 4 = 25 tokens
-        assert msg.token_estimate() == 25
+        # 100 chars / 4 = 25 tokens + 4 overhead = 29
+        assert msg.token_estimate() == 29
 
     def test_token_estimate_chinese(self):
         # 中文字符使用更保守的估算：1.5 chars/token
         msg = Message(role="user", content="你好世界")  # 4 Chinese chars
-        # 4 chars / 1.5 ≈ 2.67 → int(2.67) = 2
+        # 4 chars / 1.5 ≈ 2.67 → int(2.67) = 2, + 4 overhead = 6
         estimate = msg.token_estimate()
-        assert estimate >= 2  # 中文应该估算更多 tokens
+        assert estimate >= 6  # 中文应该估算更多 tokens
 
     def test_token_estimate_mixed(self):
         # 混合中英文
         msg = Message(role="user", content="Hello 你好 World")  # 5 en + 2 zh + 5 en
         estimate = msg.token_estimate()
-        # 中文 2 chars / 1.5 ≈ 1, 英文 12 chars / 4 = 3
-        assert estimate >= 3
+        # 中文 2 chars / 1.5 ≈ 1, 英文 12 chars / 4 = 3, + 4 overhead = 8
+        assert estimate >= 7
 
 
 # =============================================================================
@@ -295,10 +295,20 @@ class TestMMU:
         config = MMUConfig(max_context_tokens=100, compress_threshold=0.5)
         mmu = MMU(config=config)
 
-        # Add content to exceed threshold
-        mmu.add_user_message("x" * 400)  # ~100 tokens, exceeds 50 (50%)
+        # Safety net fires at compress_threshold + 0.05 = 55% with >=10 messages
+        # Add 10+ messages to exceed both token threshold and message minimum
+        for i in range(10):
+            mmu.add_user_message("x" * 40)  # ~10 tokens each = ~100 total, exceeds 55
 
         assert mmu.needs_compression() is True
+
+    def test_needs_compression_too_few_messages(self):
+        config = MMUConfig(max_context_tokens=100, compress_threshold=0.5)
+        mmu = MMU(config=config)
+
+        # Even if tokens exceed threshold, <10 messages → False (sliding window handles it)
+        mmu.add_user_message("x" * 400)  # ~100 tokens, exceeds threshold
+        assert mmu.needs_compression() is False
 
     def test_get_state(self):
         mmu = MMU(process_id="proc-001")
