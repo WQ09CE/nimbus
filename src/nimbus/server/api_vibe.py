@@ -381,7 +381,8 @@ async def run_agent_flow(
     yield sse_format(emit_event(task_id, "run_log", data="Agent run starting..."))
 
     # Setup LLM
-    pi_url = os.environ.get("PI_AI_URL", "http://localhost:3031")
+    from nimbus.config import get_config
+    pi_url = get_config().pi_ai_url
     model = payload.get("model") or "anthropic/claude-sonnet-4-20250514"
 
     pi_config = PiLLMConfig(base_url=pi_url, model=model)

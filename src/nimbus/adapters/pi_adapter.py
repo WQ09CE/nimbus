@@ -72,7 +72,7 @@ class PiLLMConfig:
     2. provider + model_id: 分开指定 (会自动合并)
     """
 
-    base_url: str = "http://localhost:3031"
+    base_url: str = ""  # Will use get_config().pi_ai_url if empty
     model: str = ""  # 完整模型名 (provider/model_id)
     provider: str = "anthropic"  # 兼容旧接口
     model_id: str = "claude-sonnet-4-20250514"  # 兼容旧接口
@@ -81,6 +81,11 @@ class PiLLMConfig:
     temperature: Optional[float] = None
     thinking: Optional[bool] = None
     stop: Optional[List[str]] = None
+
+    def __post_init__(self):
+        if not self.base_url:
+            from nimbus.config import get_config
+            self.base_url = get_config().pi_ai_url
 
     def get_model(self) -> str:
         """获取完整的模型名"""

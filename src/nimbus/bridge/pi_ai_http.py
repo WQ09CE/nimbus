@@ -45,7 +45,7 @@ def _truncate(s: str, max_len: int = 200) -> str:
 
 
 # 默认配置
-DEFAULT_BASE_URL = "http://localhost:3031"
+DEFAULT_BASE_URL = ""  # Will use get_config().pi_ai_url if empty
 DEFAULT_TIMEOUT = 300.0  # 秒 (5min, matches Bash tool timeout for deep-thinking models like Opus)
 DEFAULT_MODEL = "anthropic/claude-opus-4-5"
 
@@ -106,6 +106,9 @@ class PiAiHttpClient:
         default_model: str = DEFAULT_MODEL,
         session_id: Optional[str] = None,
     ):
+        if not base_url:
+            from nimbus.config import get_config
+            base_url = get_config().pi_ai_url
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.default_model = default_model

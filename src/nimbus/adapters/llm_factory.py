@@ -16,7 +16,7 @@ from loguru import logger
 
 async def create_llm_client(
     model: str,
-    base_url: str = "http://localhost:3031",
+    base_url: str = "",
     timeout: float = 120.0,
     temperature: Optional[float] = None,
     thinking: Optional[bool] = None,
@@ -67,26 +67,7 @@ def get_default_review_models() -> list[str]:
     """
     Get default models for the Review Committee.
 
-    Reads from ~/.nimbus/config.json if available,
-    otherwise returns hardcoded defaults.
+    Reads from central config (which loads ~/.nimbus/config.json + env).
     """
-    import json
-    from pathlib import Path
-
-    config_path = Path.home() / ".nimbus" / "config.json"
-    if config_path.exists():
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-            models = config.get("review_committee", {}).get("models", [])
-            if models:
-                return models
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    # Defaults (provider prefixes must match pi-ai bridge naming)
-    return [
-        "anthropic/claude-opus-4-6",
-        "openai-codex/gpt-5.3-codex",
-        "google-antigravity/gemini-3-pro-high",
-    ]
+    from nimbus.config import get_config
+    return list(get_config().review_models)

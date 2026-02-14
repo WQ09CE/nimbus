@@ -138,7 +138,8 @@ async def _run_task(
         from nimbus.core.runtime.vcpu import VCPUConfig
 
         # Create LLM adapter using pi-ai HTTP service
-        pi_url = os.environ.get("PI_AI_URL", "http://localhost:3031")
+        from nimbus.config import get_config
+        pi_url = get_config().pi_ai_url
         pi_config = PiLLMConfig(
             base_url=pi_url,
             model=model,
