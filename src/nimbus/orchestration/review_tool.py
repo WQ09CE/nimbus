@@ -73,31 +73,7 @@ REVIEW_TOOL_DEF = {
 # Review Prompt Template
 # =============================================================================
 
-REVIEWER_PROMPT_TEMPLATE = """You are an expert code/architecture reviewer.
-You are one of several reviewers on an AI Review Committee. Your identity: {model_name}
-
-## Review Focus: {focus}
-
-## Content to Review
-
-{content}
-
-## Instructions
-
-Provide a thorough, structured review:
-
-1. **Overall Assessment** — Score (1-10) with one-line summary
-2. **Strengths** — What's done well (be specific, cite sections)
-3. **Issues Found** — List each issue with:
-   - Severity: 🔴 Critical / 🟡 Major / 🔵 Minor
-   - Location: which section/function/line
-   - Description: what's wrong
-   - Suggestion: how to fix
-4. **Architecture/Design Observations** — Higher-level insights
-5. **Actionable Recommendations** — Top 3 things to improve, prioritized
-
-Be honest, specific, and constructive. Don't pad with generic praise.
-If the content is excellent, say so briefly and focus on subtle improvements."""
+from nimbus.orchestration.prompts import REVIEWER_PROMPT_TEMPLATE, REVIEWER_SYSTEM_RULES  # noqa: E402
 
 
 # =============================================================================
@@ -174,7 +150,7 @@ class ReviewTool:
                 llm_client=llm,
                 max_iterations=1,       # Pure reasoning, single turn
                 tools_override=[],      # No tools needed
-                system_rules="You are an expert code reviewer. Respond with a thorough, structured review.",
+                system_rules=REVIEWER_SYSTEM_RULES,
             )
             pids.append((model, pid))
             logger.info(f"  📋 Spawned reviewer: {model} → {pid}")

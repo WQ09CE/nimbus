@@ -111,12 +111,8 @@ class FailureReporter:
         让 LLM 基于对话上下文生成一个友好的、总结性的失败报告。
         """
         # 构建提示
-        system_prompt = (
-            "You are a helpful AI assistant. The task has failed due to an error. "
-            "Generate a brief, friendly response explaining what happened and "
-            "suggesting next steps. Keep it conversational and under 100 words. "
-            "Do NOT use markdown formatting. Respond in the same language as the user's goal."
-        )
+        from nimbus.orchestration.prompts import FAILURE_REPORT_SYSTEM_PROMPT
+        system_prompt = FAILURE_REPORT_SYSTEM_PROMPT
 
         user_prompt = (
             f'The user asked: "{ctx.goal}"\n\n'
