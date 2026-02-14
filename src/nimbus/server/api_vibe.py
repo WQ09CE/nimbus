@@ -382,8 +382,9 @@ async def run_agent_flow(
 
     # Setup LLM
     from nimbus.config import get_config
-    pi_url = get_config().pi_ai_url
-    model = payload.get("model") or "anthropic/claude-sonnet-4-20250514"
+    cfg = get_config()
+    pi_url = cfg.pi_ai_url
+    model = payload.get("model") or cfg.default_model
 
     pi_config = PiLLMConfig(base_url=pi_url, model=model)
     llm = PiLLMAdapter(pi_config)

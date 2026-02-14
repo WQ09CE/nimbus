@@ -74,8 +74,8 @@ class PiLLMConfig:
 
     base_url: str = ""  # Will use get_config().pi_ai_url if empty
     model: str = ""  # 完整模型名 (provider/model_id)
-    provider: str = "anthropic"  # 兼容旧接口
-    model_id: str = "claude-sonnet-4-20250514"  # 兼容旧接口
+    provider: str = ""  # 兼容旧接口
+    model_id: str = ""  # 兼容旧接口
     max_tokens: int = 8192
     timeout: float = 300.0  # 5min, for deep-thinking models (Opus)
     temperature: Optional[float] = None
@@ -83,9 +83,17 @@ class PiLLMConfig:
     stop: Optional[List[str]] = None
 
     def __post_init__(self):
+        from nimbus.config import get_config
+        cfg = get_config()
         if not self.base_url:
-            from nimbus.config import get_config
-            self.base_url = get_config().pi_ai_url
+            self.base_url = cfg.pi_ai_url
+        # Resolve default model from central config
+        if not self.model and not self.provider and not self.model_id:
+            self.model = cfg.default_model
+        if not self.provider:
+            self.provider = "anthropic"
+        if not self.model_id:
+            self.model_id = "claude-sonnet-4-20250514"
 
     def get_model(self) -> str:
         """获取完整的模型名"""

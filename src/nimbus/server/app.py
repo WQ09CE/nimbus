@@ -87,8 +87,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
 
         from nimbus.config import get_config
-        pi_url = get_config().pi_ai_url
-        model = os.environ.get("NIMBUS_MODEL", "google-antigravity/gemini-3-pro-high")
+        cfg = get_config()
+        pi_url = cfg.pi_ai_url
+        model = cfg.default_model
 
         pi_config = PiLLMConfig(base_url=pi_url, model=model)
         llm = PiLLMAdapter(pi_config)
