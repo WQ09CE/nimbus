@@ -1,4 +1,7 @@
 """
+
+pytestmark = pytest.mark.skip(reason="Requires running server")
+
 End-to-End Tests for Nimbus with Pi-AI Integration
 
 This module tests the complete pipeline using pi-ai as the LLM backend:

@@ -4,7 +4,10 @@ API SDK Chat 端点完整测试
 模拟前端 Vercel AI SDK 的聊天行为，诊断对话历史问题。
 """
 
+import pytest
 import asyncio
+
+pytestmark = pytest.mark.skip(reason="Requires running server")
 import json
 from typing import Any, Dict, List
 

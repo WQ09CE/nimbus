@@ -1,0 +1,86 @@
+{
+  "scenario": "simple-chat",
+  "description": "User sends 'Hello', agent replies with a simple text greeting. Exercises: connected -> message_start -> heartbeat(THOUGHT) -> message chunks -> dag_complete.",
+  "session": {
+    "id": "test-session-001",
+    "status": "active",
+    "created_at": "2026-01-01T00:00:00Z",
+    "memory_type": "tiered",
+    "planner_type": "dag",
+    "message_count": 0
+  },
+  "messages_history": [],
+  "sse_events": [
+    {
+      "delay_ms": 50,
+      "event": "connected",
+      "data": {
+        "session_id": "test-session-001",
+        "timestamp": "2026-01-01T00:00:01.000Z"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message_start",
+      "data": {
+        "role": "assistant"
+      }
+    },
+    {
+      "delay_ms": 100,
+      "event": "heartbeat",
+      "data": {
+        "kind": "THOUGHT"
+      }
+    },
+    {
+      "delay_ms": 200,
+      "event": "step_start",
+      "data": {
+        "iteration": 1
+      }
+    },
+    {
+      "delay_ms": 50,
+      "event": "message",
+      "data": {
+        "content": "Hello! "
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "I'm Nimbus, "
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "your AI assistant. "
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "How can I "
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "help you today?"
+      }
+    },
+    {
+      "delay_ms": 50,
+      "event": "dag_complete",
+      "data": {
+        "status": "OK"
+      }
+    }
+  ]
+}

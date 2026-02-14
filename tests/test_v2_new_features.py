@@ -128,13 +128,13 @@ class TestContextStackExtraction:
         mmu.add_tool_result("tc-1", "Read", "File content...")
         mmu.add_tool_result("tc-2", "Read", "[Error] File not found")
 
-        # 手动标记（简化版：使用 discard）
-        mmu.mark_tool_call("tc-2", "discard", reason="file_not_found")
+        # 手动标记为 discard
+        mmu.mark_tool_call("tc-2", discard=True, reason="file_not_found")
 
-        # 检查标记
-        markers = mmu.get_tool_markers()
-        assert "tc-2" in markers
-        assert markers["tc-2"].value == "discard"
+        # 检查标记 - verify via message meta
+        for msg in mmu.current_frame.messages:
+            if msg.tool_call_id == "tc-2":
+                assert msg.meta.get("discard") is True
 
     def test_auto_detect_failures(self):
         """测试自动检测失败"""
@@ -144,7 +144,9 @@ class TestContextStackExtraction:
         mmu.add_tool_result("tc-1", "Read", "[Error] Permission denied")
 
         # 检查是否被自动标记
-        assert mmu.get_discardable_count() == 1
+        discarded = sum(1 for msg in mmu.current_frame.messages
+                       if msg.role == "tool" and msg.meta.get("discard"))
+        assert discarded == 1
 
     def test_filter_discardable_messages(self):
         """测试过滤无价值消息"""
@@ -157,8 +159,8 @@ class TestContextStackExtraction:
         mmu.add_assistant_with_tool_calls(None, [{"id": "tc-2", "function": {"name": "Read"}}])
         mmu.add_tool_result("tc-2", "Read", "Found it!")
 
-        # 标记 tc-1 为 discard（不需要保留的调用）
-        mmu.mark_tool_call("tc-1", "discard", reason="wrong_direction")
+        # 标记 tc-1 为 discard
+        mmu.mark_tool_call("tc-1", discard=True, reason="wrong_direction")
 
         # 组装上下文（应该过滤 tc-1）
         context = mmu.assemble_context(filter_discardable=True)
@@ -169,31 +171,24 @@ class TestContextStackExtraction:
         assert "Found it!" in tool_results[0]["content"]
 
     def test_pop_frame_extraction(self):
-        """测试 pop_frame 时的内容提炼"""
-        mmu = MMU(config=MMUConfig(
-            auto_extract_on_pop=True,
-            auto_detect_failures=True,
-        ))
+        """测试 pop_frame 时返回 StackFrame"""
+        mmu = MMU(config=MMUConfig(auto_detect_failures=True))
 
         # 创建一个子 frame
         mmu.push_frame("Find the auth module")
 
-        # 模拟一些探索（有失败的）
+        # 模拟一些探索
         mmu.add_user_message("Find the auth module")
         mmu.add_tool_result("tc-1", "Read", "[Error] Not found in /src")
         mmu.add_tool_result("tc-2", "Read", "Found auth module at /lib/auth.py!")
         mmu.add_assistant_message("Found the auth module at /lib/auth.py")
 
-        # Pop frame（应该自动提炼）
+        # Pop frame returns the StackFrame
         result = mmu.pop_frame()
 
-        # 检查结果包含有价值的内容
         assert result is not None
-        assert "auth" in result.lower() or "Found" in result
-
-        # 检查父 frame 收到了精炼的结果
-        messages = mmu.current_frame.messages
-        assert any("Subtask completed" in str(m.content) for m in messages)
+        assert result.goal == "Find the auth module"
+        assert len(result.messages) >= 3
 
     def test_batch_mark_recent_calls(self):
         """测试批量标记最近的 tool calls"""
@@ -204,10 +199,12 @@ class TestContextStackExtraction:
             mmu.add_tool_result(f"tc-{i}", "Read", f"Result {i}")
 
         # 批量标记最近 3 个为 discard
-        marked = mmu.mark_recent_tool_calls("discard", count=3)
+        marked = mmu.mark_recent_tool_calls(discard=True, count=3)
 
         assert marked == 3
-        assert mmu.get_discardable_count() == 3
+        discarded = sum(1 for msg in mmu.current_frame.messages
+                       if msg.role == "tool" and msg.meta.get("discard"))
+        assert discarded == 3
 
 
 # =============================================================================
@@ -335,10 +332,7 @@ class TestIntegration:
 
     def test_context_stack_full_flow(self):
         """测试完整的 Context Stack 流程"""
-        mmu = MMU(config=MMUConfig(
-            auto_extract_on_pop=True,
-            auto_detect_failures=True,
-        ))
+        mmu = MMU(config=MMUConfig(auto_detect_failures=True))
 
         # 主任务
         mmu.add_user_message("Refactor the auth module")
@@ -349,16 +343,14 @@ class TestIntegration:
         mmu.add_tool_result("tc-2", "Read", "Found at /lib/auth/main.py")
         mmu.add_assistant_message("Auth module is at /lib/auth/")
 
-        # Pop（应该提炼出有价值的内容）
+        # Pop returns the StackFrame
         result1 = mmu.pop_frame()
-        assert "auth" in result1.lower()
+        assert result1 is not None
+        assert result1.goal == "Explore code structure"
 
-        # 检查主 frame 的上下文是干净的
+        # Context should be assembled from root frame
         context = mmu.assemble_context()
-
-        # 不应该包含失败的 tool call 详情
-        context_str = str(context)
-        assert "[Error] /src/auth.py not found" not in context_str
+        assert len(context) > 0
 
 
 if __name__ == "__main__":

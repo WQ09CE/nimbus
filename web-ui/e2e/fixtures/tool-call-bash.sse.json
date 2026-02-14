@@ -1,0 +1,110 @@
+{
+  "scenario": "tool-call-bash",
+  "description": "User asks agent to run 'echo hello'. Agent calls Bash tool and returns the result. Exercises: connected -> message_start -> step_start -> tool_call(Bash) -> tool_result -> message chunks -> dag_complete.",
+  "session": {
+    "id": "test-session-002",
+    "status": "active",
+    "created_at": "2026-01-01T00:00:00Z",
+    "memory_type": "tiered",
+    "planner_type": "dag",
+    "message_count": 0
+  },
+  "messages_history": [],
+  "sse_events": [
+    {
+      "delay_ms": 50,
+      "event": "connected",
+      "data": {
+        "session_id": "test-session-002",
+        "timestamp": "2026-01-01T00:00:01.000Z"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message_start",
+      "data": {
+        "role": "assistant"
+      }
+    },
+    {
+      "delay_ms": 100,
+      "event": "step_start",
+      "data": {
+        "iteration": 1
+      }
+    },
+    {
+      "delay_ms": 80,
+      "event": "tool_call",
+      "data": {
+        "action_id": "action-001",
+        "tool": "Bash",
+        "args": {
+          "command": "echo hello",
+          "description": "Print hello to stdout"
+        },
+        "args_keys": ["command", "description"]
+      }
+    },
+    {
+      "delay_ms": 200,
+      "event": "tool_result",
+      "data": {
+        "action_id": "action-001",
+        "tool": "Bash",
+        "status": "OK",
+        "output": "hello\n",
+        "duration_ms": 45
+      }
+    },
+    {
+      "delay_ms": 100,
+      "event": "step_start",
+      "data": {
+        "iteration": 2
+      }
+    },
+    {
+      "delay_ms": 50,
+      "event": "message",
+      "data": {
+        "content": "The command "
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "`echo hello` "
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "executed successfully "
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "and printed "
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "\"hello\" to stdout."
+      }
+    },
+    {
+      "delay_ms": 50,
+      "event": "dag_complete",
+      "data": {
+        "status": "OK"
+      }
+    }
+  ]
+}

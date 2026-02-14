@@ -26,12 +26,12 @@ async def test_skill_loading():
     
     agent_os = AgentOS(llm_client=MockLLM(), config=config)
     
-    # Verify tools are registered
-    tools = agent_os._tools.list_tools()
+    # Verify tools are registered (skills go into _skill_tools, use composite view)
+    tools = agent_os._composite_tools.list_tools()
     assert "Greet" in tools
     
-    # Execute the Greet tool via function registry
-    greet_func = agent_os._tools._tools["Greet"]
+    # Execute the Greet tool via skill tool registry
+    _, greet_func = agent_os._skill_tools._tools["Greet"]
     
     # Test normal execution
     result = await greet_func(name="Alice")

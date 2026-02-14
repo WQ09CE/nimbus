@@ -52,11 +52,16 @@ Thumbs.db
 .nimbus/
 .checkpoints/
 .wukong/
+.nexus/
 
 # Node.js (for pi-ai-server)
 node_modules/
 package.json
 package-lock.json
+
+# Type checking
+.mypy_cache/
+.ruff_cache/
 
 # Sandbox test workspace
 tests/sandbox/workspace/
@@ -66,3 +71,6 @@ tests/sandbox/workspace/
 
 # Test job results
 jobs/
+
+# Build artifacts
+dist/

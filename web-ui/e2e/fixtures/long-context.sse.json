@@ -1,0 +1,379 @@
+{
+  "scenario": "long-context",
+  "description": "Simulates a long assistant response with 5 tool calls and 25+ message chunks. Exercises: connected -> message_start -> step_start -> 5x (tool_call + tool_result) -> 25+ message chunks -> dag_complete. Used for long-context stress testing.",
+  "session": {
+    "id": "test-session-long-001",
+    "status": "active",
+    "created_at": "2026-01-01T00:00:00Z",
+    "memory_type": "tiered",
+    "planner_type": "dag",
+    "message_count": 0
+  },
+  "messages_history": [],
+  "sse_events": [
+    {
+      "delay_ms": 50,
+      "event": "connected",
+      "data": {
+        "session_id": "test-session-long-001",
+        "timestamp": "2026-01-01T00:00:01.000Z"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message_start",
+      "data": {
+        "role": "assistant"
+      }
+    },
+    {
+      "delay_ms": 100,
+      "event": "heartbeat",
+      "data": {
+        "kind": "THOUGHT"
+      }
+    },
+    {
+      "delay_ms": 150,
+      "event": "step_start",
+      "data": {
+        "iteration": 1
+      }
+    },
+
+    {
+      "delay_ms": 60,
+      "event": "tool_call",
+      "data": {
+        "action_id": "action-lc-001",
+        "tool": "Read",
+        "args": {
+          "file_path": "/workspace/src/config.py"
+        },
+        "args_keys": ["file_path"]
+      }
+    },
+    {
+      "delay_ms": 100,
+      "event": "tool_result",
+      "data": {
+        "action_id": "action-lc-001",
+        "tool": "Read",
+        "status": "OK",
+        "output": "     1\tDATABASE_URL = \"sqlite:///app.db\"\n     2\tDEBUG = True\n     3\tSECRET_KEY = \"dev-secret\"\n     4\tMAX_CONNECTIONS = 10\n",
+        "duration_ms": 8
+      }
+    },
+
+    {
+      "delay_ms": 80,
+      "event": "tool_call",
+      "data": {
+        "action_id": "action-lc-002",
+        "tool": "Read",
+        "args": {
+          "file_path": "/workspace/src/models.py"
+        },
+        "args_keys": ["file_path"]
+      }
+    },
+    {
+      "delay_ms": 100,
+      "event": "tool_result",
+      "data": {
+        "action_id": "action-lc-002",
+        "tool": "Read",
+        "status": "OK",
+        "output": "     1\tfrom sqlalchemy import Column, Integer, String\n     2\tfrom sqlalchemy.ext.declarative import declarative_base\n     3\t\n     4\tBase = declarative_base()\n     5\t\n     6\tclass User(Base):\n     7\t    __tablename__ = 'users'\n     8\t    id = Column(Integer, primary_key=True)\n     9\t    name = Column(String(100))\n    10\t    email = Column(String(200))\n",
+        "duration_ms": 10
+      }
+    },
+
+    {
+      "delay_ms": 80,
+      "event": "tool_call",
+      "data": {
+        "action_id": "action-lc-003",
+        "tool": "Glob",
+        "args": {
+          "pattern": "**/*.py"
+        },
+        "args_keys": ["pattern"]
+      }
+    },
+    {
+      "delay_ms": 80,
+      "event": "tool_result",
+      "data": {
+        "action_id": "action-lc-003",
+        "tool": "Glob",
+        "status": "OK",
+        "output": "src/config.py\nsrc/models.py\nsrc/app.py\nsrc/utils.py\nsrc/routes.py\ntests/test_app.py\ntests/test_models.py",
+        "duration_ms": 15
+      }
+    },
+
+    {
+      "delay_ms": 80,
+      "event": "tool_call",
+      "data": {
+        "action_id": "action-lc-004",
+        "tool": "Edit",
+        "args": {
+          "file_path": "/workspace/src/config.py",
+          "old_string": "DEBUG = True",
+          "new_string": "DEBUG = False"
+        },
+        "args_keys": ["file_path", "old_string", "new_string"]
+      }
+    },
+    {
+      "delay_ms": 80,
+      "event": "tool_result",
+      "data": {
+        "action_id": "action-lc-004",
+        "tool": "Edit",
+        "status": "OK",
+        "output": "Successfully edited /workspace/src/config.py (1 replacement made)",
+        "duration_ms": 6
+      }
+    },
+
+    {
+      "delay_ms": 80,
+      "event": "tool_call",
+      "data": {
+        "action_id": "action-lc-005",
+        "tool": "Bash",
+        "args": {
+          "command": "cd /workspace && python -m pytest tests/ -v",
+          "description": "Run the test suite to verify changes"
+        },
+        "args_keys": ["command", "description"]
+      }
+    },
+    {
+      "delay_ms": 150,
+      "event": "tool_result",
+      "data": {
+        "action_id": "action-lc-005",
+        "tool": "Bash",
+        "status": "OK",
+        "output": "============================= test session starts ==============================\ncollected 8 items\n\ntests/test_app.py::test_health_check PASSED\ntests/test_app.py::test_create_user PASSED\ntests/test_app.py::test_get_users PASSED\ntests/test_models.py::test_user_model PASSED\ntests/test_models.py::test_user_repr PASSED\ntests/test_models.py::test_user_email PASSED\ntests/test_models.py::test_user_name PASSED\ntests/test_models.py::test_user_id PASSED\n\n============================= 8 passed in 1.23s ===============================",
+        "duration_ms": 1230
+      }
+    },
+
+    {
+      "delay_ms": 100,
+      "event": "step_start",
+      "data": {
+        "iteration": 2
+      }
+    },
+
+    {
+      "delay_ms": 40,
+      "event": "message",
+      "data": {
+        "content": "## Project Analysis"
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": " Complete\n\n"
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "I've thoroughly analyzed "
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "your project structure "
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "and made the necessary "
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "changes. Here is "
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "a detailed summary:\n\n"
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "### Files Reviewed\n\n"
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "1. **`config.py`** - "
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "Application configuration "
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "with database URL, "
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "debug flag, and secrets\n"
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "2. **`models.py`** - "
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "SQLAlchemy ORM models "
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "with User entity\n\n"
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "### Changes Made\n\n"
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "- Set `DEBUG = False` "
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "in `config.py` for "
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "production readiness\n"
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "- Verified all 7 Python "
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "files in the project\n"
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "- Ran the full test "
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "suite: **8 tests passed**\n\n"
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "### Test Results\n\n"
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "```\n8 passed in 1.23s\n```\n\n"
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "All tests are green. "
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "The project is ready "
+      }
+    },
+    {
+      "delay_ms": 20,
+      "event": "message",
+      "data": {
+        "content": "for deployment."
+      }
+    },
+    {
+      "delay_ms": 50,
+      "event": "dag_complete",
+      "data": {
+        "status": "OK"
+      }
+    }
+  ]
+}

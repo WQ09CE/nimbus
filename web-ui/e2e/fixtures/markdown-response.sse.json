@@ -1,0 +1,212 @@
+{
+  "scenario": "markdown-response",
+  "description": "Agent returns a response with rich Markdown formatting: headings, code blocks, bullet lists, and inline code. Exercises: connected -> message_start -> message chunks(markdown) -> dag_complete.",
+  "session": {
+    "id": "test-session-005",
+    "status": "active",
+    "created_at": "2026-01-01T00:00:00Z",
+    "memory_type": "tiered",
+    "planner_type": "dag",
+    "message_count": 0
+  },
+  "messages_history": [],
+  "sse_events": [
+    {
+      "delay_ms": 50,
+      "event": "connected",
+      "data": {
+        "session_id": "test-session-005",
+        "timestamp": "2026-01-01T00:00:01.000Z"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message_start",
+      "data": {
+        "role": "assistant"
+      }
+    },
+    {
+      "delay_ms": 200,
+      "event": "step_start",
+      "data": {
+        "iteration": 1
+      }
+    },
+    {
+      "delay_ms": 50,
+      "event": "message",
+      "data": {
+        "content": "## Getting Started"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": " with Python\n\n"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "Here are the key steps"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": " to set up your project:\n\n"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "### 1. Create a virtual"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": " environment\n\n"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "```bash\npython -m venv .venv"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "\nsource .venv/bin/activate"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "\n```\n\n"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "### 2. Install dependencies"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "\n\nRun `pip install"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": " -r requirements.txt`"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": " to install all packages.\n\n"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "### 3. Project structure\n\n"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "- **`src/`** - Source code\n"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "- **`tests/`** - Unit tests\n"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "- **`docs/`** - Documentation\n\n"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "Here is a sample `main.py`:\n\n"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "```python\ndef main():\n"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "    print(\"Hello, world!\")\n\n"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "if __name__ == \"__main__\":\n"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "    main()\n```\n\n"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "> **Note**: Make sure you have"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": " Python 3.10+ installed."
+      }
+    },
+    {
+      "delay_ms": 50,
+      "event": "dag_complete",
+      "data": {
+        "status": "OK"
+      }
+    }
+  ]
+}

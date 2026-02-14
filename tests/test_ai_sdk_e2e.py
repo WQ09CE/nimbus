@@ -3,7 +3,10 @@
 Tests the /api/chat endpoint with multi-turn conversations.
 """
 
+import pytest
 import asyncio
+
+pytestmark = pytest.mark.skip(reason="Requires running server")
 import json
 import sys
 

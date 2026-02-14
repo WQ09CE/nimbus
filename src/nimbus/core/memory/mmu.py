@@ -296,7 +296,8 @@ class MMU:
         for msg in reversed(frame.messages):
             if msg.role == "assistant" and msg.tool_calls:
                 for tc in msg.tool_calls:
-                    if tc.get("id") == tool_call_id:
+                    tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                    if tc_id == tool_call_id:
                         if discard:
                              discard_list = msg.meta.get("discard_tool_calls", [])
                              if tool_call_id not in discard_list:
@@ -406,6 +407,10 @@ class MMU:
             digest = ""
         mime = block.get("mimeType", "")
         return f"{mime}:{digest}"
+
+    def _downgrade_seen_images(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Downgrade duplicate/budget-exceeding images (alias for _optimize_context image logic)."""
+        return self._optimize_context(messages)
 
     def _optimize_context(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -568,7 +573,20 @@ class MMU:
         # --- Prepare Stream ---
         stream_messages = []
         for frame in self._stack:
-            stream_messages.extend(frame.to_context_messages())
+            for msg in frame.to_context_messages():
+                # Filter out discarded messages if requested
+                if filter_discardable and msg.meta.get("discard"):
+                    continue
+                # Filter out assistant messages with all tool calls discarded
+                if filter_discardable and msg.role == "assistant" and msg.tool_calls:
+                    discard_list = msg.meta.get("discard_tool_calls", [])
+                    all_discarded = all(
+                        (tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)) in discard_list
+                        for tc in msg.tool_calls
+                    )
+                    if all_discarded:
+                        continue
+                stream_messages.append(msg)
         total_msgs = len(stream_messages)
 
         # --- 2. Hot Context (Always Visible) ---

@@ -1,0 +1,30 @@
+{
+  "scenario": "error-response",
+  "description": "Backend encounters an error during processing. Exercises: connected -> error event with message. Frontend should display the error to the user.",
+  "session": {
+    "id": "test-session-003",
+    "status": "active",
+    "created_at": "2026-01-01T00:00:00Z",
+    "memory_type": "tiered",
+    "planner_type": "dag",
+    "message_count": 0
+  },
+  "messages_history": [],
+  "sse_events": [
+    {
+      "delay_ms": 50,
+      "event": "connected",
+      "data": {
+        "session_id": "test-session-003",
+        "timestamp": "2026-01-01T00:00:01.000Z"
+      }
+    },
+    {
+      "delay_ms": 100,
+      "event": "error",
+      "data": {
+        "message": "LLM provider returned 503: Service temporarily unavailable. Please retry in a few seconds."
+      }
+    }
+  ]
+}

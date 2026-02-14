@@ -480,7 +480,7 @@ def retry(max_attempts=3, delay=1.0, exceptions=(Exception,)):
 
 
 @dataclass
-class TestResult:
+class CLITestResult:
     """Test result."""
     name: str
     passed: bool
@@ -507,7 +507,7 @@ class AgentOSTestFramework:
         self.model = model
         self.agent_os = None
         self.llm = None
-        self.results: List[TestResult] = []
+        self.results: List[CLITestResult] = []
 
     async def setup(self) -> bool:
         """Initialize AgentOS."""
@@ -647,7 +647,7 @@ CRITICAL RULES:
         description: str,
         messages: List[str],
         validators: List[Callable[[Dict], bool]] = None,
-    ) -> TestResult:
+    ) -> CLITestResult:
         """Run a single test case."""
         console.print(f"\n[bold]Test: {name}[/bold]")
         console.print(f"[dim]{description}[/dim]")
@@ -665,7 +665,7 @@ CRITICAL RULES:
 
                 if response["status"] != "OK":
                     duration = (datetime.now() - start_time).total_seconds() * 1000
-                    result = TestResult(
+                    result = CLITestResult(
                         name=name,
                         passed=False,
                         message=f"Step {i+1} failed: {response.get('error', 'Unknown error')}",
@@ -686,7 +686,7 @@ CRITICAL RULES:
                 for validator in validators:
                     if not validator(all_responses[-1]):
                         duration = (datetime.now() - start_time).total_seconds() * 1000
-                        result = TestResult(
+                        result = CLITestResult(
                             name=name,
                             passed=False,
                             message="Validation failed",
@@ -697,7 +697,7 @@ CRITICAL RULES:
                         return result
 
             duration = (datetime.now() - start_time).total_seconds() * 1000
-            result = TestResult(
+            result = CLITestResult(
                 name=name,
                 passed=True,
                 message="All steps passed",
@@ -709,7 +709,7 @@ CRITICAL RULES:
 
         except Exception as e:
             duration = (datetime.now() - start_time).total_seconds() * 1000
-            result = TestResult(
+            result = CLITestResult(
                 name=name,
                 passed=False,
                 message=f"Exception: {e}",
@@ -719,7 +719,7 @@ CRITICAL RULES:
             self._print_result(result)
             return result
 
-    def _print_result(self, result: TestResult):
+    def _print_result(self, result: CLITestResult):
         """Print test result."""
         if result.passed:
             console.print(f"  [bold green]PASSED[/bold green] ({result.duration_ms:.0f}ms)")
@@ -731,7 +731,7 @@ CRITICAL RULES:
     # Test Cases
     # =========================================================================
 
-    async def test_simple_chat(self) -> TestResult:
+    async def test_simple_chat(self) -> CLITestResult:
         """Test simple chat without tools."""
         return await self.run_test(
             name="simple_chat",
@@ -740,7 +740,7 @@ CRITICAL RULES:
             validators=[lambda r: r["status"] == "OK" and r["output"] is not None],
         )
 
-    async def test_read_file(self) -> TestResult:
+    async def test_read_file(self) -> CLITestResult:
         """Test reading a file."""
         test_file = self.workspace / "pyproject.toml"
         return await self.run_test(
@@ -754,7 +754,7 @@ CRITICAL RULES:
     # Example: bash "find . -name '*.py'" for glob
     # Example: bash "grep -r 'pattern' ." for grep
 
-    async def test_code_understanding(self) -> TestResult:
+    async def test_code_understanding(self) -> CLITestResult:
         """Test code understanding."""
         return await self.run_test(
             name="code_understanding",
@@ -765,7 +765,7 @@ CRITICAL RULES:
             validators=[lambda r: r["status"] == "OK"],
         )
 
-    async def test_multi_turn_chat(self) -> TestResult:
+    async def test_multi_turn_chat(self) -> CLITestResult:
         """Test multi-turn conversation."""
         return await self.run_test(
             name="multi_turn_chat",
@@ -777,7 +777,7 @@ CRITICAL RULES:
             validators=[lambda r: r["status"] == "OK"],
         )
 
-    async def test_bash_command(self) -> TestResult:
+    async def test_bash_command(self) -> CLITestResult:
         """Test bash command execution."""
         return await self.run_test(
             name="bash_command",
@@ -786,7 +786,7 @@ CRITICAL RULES:
             validators=[lambda r: r["status"] == "OK"],
         )
 
-    async def test_complex_task(self) -> TestResult:
+    async def test_complex_task(self) -> CLITestResult:
         """Test a more complex task requiring multiple tools."""
         return await self.run_test(
             name="complex_task",
@@ -801,7 +801,7 @@ CRITICAL RULES:
     # Scenario Tests - 情境模拟测试
     # =========================================================================
 
-    async def scenario_bug_detection(self) -> TestResult:
+    async def scenario_bug_detection(self) -> CLITestResult:
         """场景: 发现代码中的 Bug。"""
         sandbox = SANDBOX_DIR
         return await self.run_test(
@@ -819,7 +819,7 @@ CRITICAL RULES:
             ],
         )
 
-    async def scenario_bug_fix(self) -> TestResult:
+    async def scenario_bug_fix(self) -> CLITestResult:
         """场景: 修复代码中的 Bug。"""
         sandbox = SANDBOX_DIR
         buggy_file = sandbox / "buggy_code" / "logic_error.py"
@@ -835,7 +835,7 @@ CRITICAL RULES:
             validators=[lambda r: r["status"] == "OK"],
         )
 
-    async def scenario_code_review(self) -> TestResult:
+    async def scenario_code_review(self) -> CLITestResult:
         """场景: 代码审查，识别代码异味。"""
         sandbox = SANDBOX_DIR
         return await self.run_test(
@@ -853,7 +853,7 @@ CRITICAL RULES:
             ],
         )
 
-    async def scenario_code_refactor(self) -> TestResult:
+    async def scenario_code_refactor(self) -> CLITestResult:
         """场景: 重构代码，消除重复。"""
         sandbox = SANDBOX_DIR
         target_file = sandbox / "refactor_target" / "duplicated_code.py"
@@ -868,7 +868,7 @@ CRITICAL RULES:
             validators=[lambda r: r["status"] == "OK"],
         )
 
-    async def scenario_understand_project(self) -> TestResult:
+    async def scenario_understand_project(self) -> CLITestResult:
         """场景: 理解项目结构。"""
         sandbox = SANDBOX_DIR
         project_dir = sandbox / "mini_project"
@@ -885,7 +885,7 @@ CRITICAL RULES:
             ],
         )
 
-    async def scenario_add_feature(self) -> TestResult:
+    async def scenario_add_feature(self) -> CLITestResult:
         """场景: 添加新功能。"""
         sandbox = SANDBOX_DIR
         service_file = sandbox / "mini_project" / "service.py"
@@ -900,7 +900,7 @@ CRITICAL RULES:
             validators=[lambda r: r["status"] == "OK"],
         )
 
-    async def scenario_write_tests(self) -> TestResult:
+    async def scenario_write_tests(self) -> CLITestResult:
         """场景: 为代码编写测试。"""
         sandbox = SANDBOX_DIR
         utils_file = sandbox / "mini_project" / "utils.py"
@@ -914,7 +914,7 @@ CRITICAL RULES:
             validators=[lambda r: r["status"] == "OK"],
         )
 
-    async def scenario_analyze_type_issues(self) -> TestResult:
+    async def scenario_analyze_type_issues(self) -> CLITestResult:
         """场景: 分析类型问题。"""
         sandbox = SANDBOX_DIR
         return await self.run_test(
@@ -931,7 +931,7 @@ CRITICAL RULES:
             ],
         )
 
-    async def scenario_document_api(self) -> TestResult:
+    async def scenario_document_api(self) -> CLITestResult:
         """场景: 编写 API 文档。"""
         sandbox = SANDBOX_DIR
         api_file = sandbox / "needs_docs" / "api.py"
@@ -945,7 +945,7 @@ CRITICAL RULES:
             validators=[lambda r: r["status"] == "OK"],
         )
 
-    async def scenario_find_dependencies(self) -> TestResult:
+    async def scenario_find_dependencies(self) -> CLITestResult:
         """场景: 分析代码依赖关系。"""
         sandbox = SANDBOX_DIR
         project_dir = sandbox / "mini_project"
@@ -960,7 +960,7 @@ CRITICAL RULES:
             validators=[lambda r: r["status"] == "OK"],
         )
 
-    async def scenario_split_function(self) -> TestResult:
+    async def scenario_split_function(self) -> CLITestResult:
         """场景: 拆分过长的函数。"""
         sandbox = SANDBOX_DIR
         long_func_file = sandbox / "refactor_target" / "long_function.py"
@@ -979,7 +979,7 @@ CRITICAL RULES:
             ],
         )
 
-    async def scenario_multi_file_search(self) -> TestResult:
+    async def scenario_multi_file_search(self) -> CLITestResult:
         """场景: 跨文件搜索。"""
         sandbox = SANDBOX_DIR
         return await self.run_test(

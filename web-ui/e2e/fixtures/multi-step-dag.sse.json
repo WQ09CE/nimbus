@@ -1,0 +1,162 @@
+{
+  "scenario": "multi-step-dag",
+  "description": "Agent executes a multi-step task: Read a file, then Edit it. Exercises: connected -> message_start -> step_start -> tool_call(Read) -> tool_result -> tool_call(Edit) -> tool_result -> message chunks -> dag_complete.",
+  "session": {
+    "id": "test-session-004",
+    "status": "active",
+    "created_at": "2026-01-01T00:00:00Z",
+    "memory_type": "tiered",
+    "planner_type": "dag",
+    "message_count": 0
+  },
+  "messages_history": [],
+  "sse_events": [
+    {
+      "delay_ms": 50,
+      "event": "connected",
+      "data": {
+        "session_id": "test-session-004",
+        "timestamp": "2026-01-01T00:00:01.000Z"
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message_start",
+      "data": {
+        "role": "assistant"
+      }
+    },
+    {
+      "delay_ms": 100,
+      "event": "heartbeat",
+      "data": {
+        "kind": "THOUGHT"
+      }
+    },
+    {
+      "delay_ms": 150,
+      "event": "step_start",
+      "data": {
+        "iteration": 1
+      }
+    },
+    {
+      "delay_ms": 80,
+      "event": "tool_call",
+      "data": {
+        "action_id": "action-010",
+        "tool": "Read",
+        "args": {
+          "file_path": "/workspace/src/main.py"
+        },
+        "args_keys": ["file_path"]
+      }
+    },
+    {
+      "delay_ms": 150,
+      "event": "tool_result",
+      "data": {
+        "action_id": "action-010",
+        "tool": "Read",
+        "status": "OK",
+        "output": "     1\tdef main():\n     2\t    print(\"hello world\")\n     3\t\n     4\tif __name__ == \"__main__\":\n     5\t    main()\n",
+        "duration_ms": 12
+      }
+    },
+    {
+      "delay_ms": 200,
+      "event": "heartbeat",
+      "data": {
+        "iteration": 1
+      }
+    },
+    {
+      "delay_ms": 100,
+      "event": "tool_call",
+      "data": {
+        "action_id": "action-011",
+        "tool": "Edit",
+        "args": {
+          "file_path": "/workspace/src/main.py",
+          "old_string": "    print(\"hello world\")",
+          "new_string": "    print(\"hello, nimbus!\")"
+        },
+        "args_keys": ["file_path", "old_string", "new_string"]
+      }
+    },
+    {
+      "delay_ms": 120,
+      "event": "tool_result",
+      "data": {
+        "action_id": "action-011",
+        "tool": "Edit",
+        "status": "OK",
+        "output": "Successfully edited /workspace/src/main.py (1 replacement made)",
+        "duration_ms": 8
+      }
+    },
+    {
+      "delay_ms": 100,
+      "event": "step_start",
+      "data": {
+        "iteration": 2
+      }
+    },
+    {
+      "delay_ms": 50,
+      "event": "message",
+      "data": {
+        "content": "I've updated "
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "the file "
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "`/workspace/src/main.py`. "
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "The greeting message "
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "has been changed from "
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "\"hello world\" to "
+      }
+    },
+    {
+      "delay_ms": 30,
+      "event": "message",
+      "data": {
+        "content": "\"hello, nimbus!\"."
+      }
+    },
+    {
+      "delay_ms": 50,
+      "event": "dag_complete",
+      "data": {
+        "status": "OK"
+      }
+    }
+  ]
+}

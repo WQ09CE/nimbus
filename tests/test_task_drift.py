@@ -1,4 +1,7 @@
 """
+
+pytestmark = pytest.mark.skip(reason="Requires running server")
+
 Task Drift & Infinite Context Stress Test
 
 This script evaluates the Agent's ability to maintain focus ("Task Adherence")
@@ -21,6 +24,7 @@ Evaluation:
     3. Did the Agent hallucinate or lose track of files it already read?
 """
 
+import pytest
 import asyncio
 import os
 import shutil

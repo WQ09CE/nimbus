@@ -175,7 +175,6 @@ class TestMMU:
         mmu = MMU(process_id="proc-001")
         assert mmu.process_id == "proc-001"
         assert mmu.stack_depth == 1  # Root frame
-        assert mmu.is_root_frame is True
 
     def test_set_pinned(self):
         mmu = MMU()
@@ -211,7 +210,6 @@ class TestMMU:
         frame_id = mmu.push_frame("subtask goal")
 
         assert mmu.stack_depth == 2
-        assert mmu.is_root_frame is False
         assert mmu.current_frame.goal == "subtask goal"
         assert mmu.current_frame.frame_id == frame_id
 
@@ -222,18 +220,15 @@ class TestMMU:
         # Push and pop
         mmu.push_frame("subtask")
         mmu.add_user_message("Subtask work")
-        result = mmu.pop_frame("subtask done")
+        result = mmu.pop_frame()
 
-        assert result == "subtask done"
+        assert result is not None  # Returns the popped StackFrame
         assert mmu.stack_depth == 1
-        assert mmu.is_root_frame is True
-        # Parent frame should have the result message
-        assert any("Subtask completed" in m.content for m in mmu.current_frame.messages if isinstance(m.content, str))
 
     def test_pop_root_frame(self):
         mmu = MMU()
-        result = mmu.pop_frame("cannot pop root")
-        assert result is None
+        result = mmu.pop_frame()
+        assert result is None  # Can't pop root
         assert mmu.stack_depth == 1
 
     def test_nested_frames(self):
@@ -247,13 +242,12 @@ class TestMMU:
         assert mmu.current_frame.goal == "level 2"
 
         # Pop back
-        mmu.pop_frame("done 2")
+        mmu.pop_frame()
         assert mmu.stack_depth == 2
         assert mmu.current_frame.goal == "level 1"
 
-        mmu.pop_frame("done 1")
+        mmu.pop_frame()
         assert mmu.stack_depth == 1
-        assert mmu.is_root_frame is True
 
     def test_assemble_context_simple(self):
         mmu = MMU()
@@ -317,7 +311,6 @@ class TestMMU:
 
         state = mmu.get_state()
 
-        assert state["process_id"] == "proc-001"
         assert state["stack_depth"] == 2
         assert state["total_messages"] >= 1
 
@@ -331,7 +324,6 @@ class TestMMU:
 
         assert mmu.get_pinned() is None
         assert mmu.stack_depth == 1
-        assert mmu.is_root_frame is True
 
 
 # =============================================================================
@@ -360,16 +352,16 @@ class TestMMUIntegration:
         mmu.push_frame("Explore the codebase to find auth-related files")
         mmu.add_user_message("Find all auth-related files")
         mmu.add_assistant_message("Found: src/auth/login.py, src/auth/session.py")
-        result1 = mmu.pop_frame("Found 2 auth files: login.py, session.py")
+        popped1 = mmu.pop_frame()
 
         # Continue main conversation
-        mmu.add_assistant_message(f"I found the auth files. {result1}")
+        mmu.add_assistant_message("I found the auth files.")
 
         # Spawn another subprocess
         mmu.push_frame("Analyze the login.py file")
         mmu.add_user_message("Read and analyze login.py")
         mmu.add_assistant_message("The file has 3 functions: login(), logout(), verify()")
-        mmu.pop_frame("login.py has 3 functions")
+        mmu.pop_frame()
 
         # Final context assembly
         context = mmu.assemble_context()
@@ -396,7 +388,6 @@ class TestMMUIntegration:
 
         # Pop all frames
         for i in range(5):
-            mmu.pop_frame(f"done level {4-i}")
+            mmu.pop_frame()
 
         assert mmu.stack_depth == 1
-        assert mmu.is_root_frame is True

@@ -961,6 +961,11 @@ class VCPU:
     def _compaction_count(self) -> int:
         return self._state.compaction_count
 
+    @property
+    def _doom_loop_count(self) -> int:
+        """Read-only property delegating to DoomLoopDetector.loop_count."""
+        return self._doom_detector.loop_count
+
     async def _handle_sub_call(self, action: ActionIR) -> ToolResult:
         """Handle SUB_CALL action (Simulated)."""
         return ToolResult(status="OK", output="Subroutine called (simulated)")
