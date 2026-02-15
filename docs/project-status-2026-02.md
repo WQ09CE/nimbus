@@ -33,8 +33,7 @@ src/nimbus/                 # 29,500 行
 ├── cli/           (8 files, 1,250 lines)    # CLI 命令行
 ├── orchestration/ (6 files, 1,236 lines)    # 多 Agent 编排
 ├── storage/       (2 files, 1,240 lines)    # 持久化存储
-├── bridge/        (3 files, 879 lines)      # pi-ai 桥接
-├── adapters/      (3 files, 518 lines)      # LLM 适配器
+├── adapters/      (3 files, 518 lines)      # LLM 适配器 (DirectAdapter)
 ├── os/            (2 files, 504 lines)      # Gate 系统调用
 ├── skills/        (5 files, 333 lines)      # Skill 热加载系统
 ├── testing/       (2 files, 408 lines)      # Mock LLM 工具
@@ -61,7 +60,7 @@ src/nimbus/                 # 29,500 行
 | 组件 | 位置 | 说明 |
 |------|------|------|
 | **Web UI** | `web-ui/` | Next.js + Tailwind，聊天界面 + Debug 面板 |
-| **Bridge** | `bridge/` | pi-ai-server.ts，连接 pi AI SDK |
+| **Bridge** | `bridge/` | (已废弃) 旧 pi-ai-server.ts，已被 DirectAdapter 替代 |
 | **Harbor** | `nimbus_harbor/` | Agent 评测任务集（4 个 Docker 化 task） |
 | **Deploy** | `deploy/` | systemd/launchd/nginx 配置 |
 | **Skills** | `skills/` | 可热加载的技能包（当前：web-search） |
@@ -69,16 +68,17 @@ src/nimbus/                 # 29,500 行
 
 ## 三、LLM 模型配置现状
 
-项目中有 **多个模型默认值**，分散在不同入口，尚未统一：
+模型配置已通过 `NimbusConfig` 统一管理（`src/nimbus/config.py`），遵循分层加载策略：
 
-| 入口 | 默认模型 | 说明 |
-|------|---------|------|
-| `bridge/pi_ai_http.py` | `anthropic/claude-opus-4-5` | HTTP 直连 pi-ai |
-| `server/app.py` | `google-antigravity/gemini-3-pro-high` | Web UI 后端 (env: `NIMBUS_MODEL`) |
-| `server/api_vibe.py` | `anthropic/claude-sonnet-4-20250514` | Vibe coding API |
-| `bridge/pi_client.py` | `claude-sonnet-4-20250514` | 旧 bridge |
-| `core/config.py` (新) | `claude-sonnet-4-20250514` | 配置文件 |
-| `core/config.py` (旧) | `claude-3-5-sonnet` | 旧版配置 |
+**加载优先级**: 代码默认值 < `~/.nimbus/config.json` < 环境变量
+
+| 配置方式 | 示例 | 说明 |
+|---------|------|------|
+| `NimbusConfig.default_model` | `google/gemini-3-flash-preview` | 代码默认值 |
+| `~/.nimbus/config.json` | `{"llm": {"default_model": "..."}}` | 用户配置文件 |
+| `NIMBUS_MODEL` 环境变量 | `anthropic/claude-sonnet-4-20250514` | 环境变量覆盖 |
+
+**LLM 适配器**: 使用 `DirectAdapter`（基于 LiteLLM）直接调用各厂商 API，无需外部桥接服务。通过 `create_llm_client()` 工厂函数创建。
 
 **模型能力清单** (`core/models/manifest.py`) 定义了三个模型族的特性：
 - **GPT 系列**（默认）：原生 tool calling，不需要名称修正
@@ -180,8 +180,8 @@ src/nimbus/                 # 29,500 行
 
 ## 六、已知问题与待完善
 
-### 6.1 模型配置分散
-多个入口各自硬编码默认模型，应统一为一个配置源。
+### 6.1 ~~模型配置分散~~ (已解决)
+已通过 `NimbusConfig` (`src/nimbus/config.py`) 统一为单一配置源，所有入口均使用 `get_config().default_model`。
 
 ### 6.2 Session 持久化未完成
 `checkpoint_manager.py` 和 SQLite 存储已就绪，但 `session_v2.py` 未对接 Hibernate/Wake 流程。
@@ -191,8 +191,8 @@ src/nimbus/                 # 29,500 行
 - `src/nimbus/data/agents/` — 有 YAML 配置但未被使用
 
 ### 6.4 旧代码残留
-- `core/memory_legacy.py` — 旧版记忆管理，已被 `core/memory/mmu.py` 取代
-- `core/config.py` 中有新旧两套 LLM 配置 class
+- `core/memory_legacy.py` -- 旧版记忆管理，已被 `core/memory/mmu.py` 取代
+- `bridge/` 目录 -- 旧 pi-ai-server (TypeScript)，已被 `DirectAdapter` (LiteLLM) 替代
 
 ### 6.5 E2E 测试覆盖
 - 20+ 个 e2e 测试脚本（`tests/e2e_*.py`）是独立脚本，非 pytest 格式
@@ -206,7 +206,7 @@ nimbus/
 ├── src/nimbus/         # Python 源码 (97 files, ~29.5k lines)
 ├── tests/              # 测试 (472 passed, 21 skipped)
 ├── web-ui/             # Next.js Web 界面
-├── bridge/             # pi-ai-server TypeScript 桥接
+├── bridge/             # (已废弃) 旧 pi-ai-server，已被 DirectAdapter 替代
 ├── examples/           # 示例代码 (18 个)
 ├── nimbus_harbor/      # Agent 评测 (4 个 Docker task)
 ├── pi-extension/       # Pi coding agent 扩展

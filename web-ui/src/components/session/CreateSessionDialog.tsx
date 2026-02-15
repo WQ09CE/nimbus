@@ -22,10 +22,23 @@ export interface CreateSessionConfig {
 }
 
 const DEFAULT_MODELS = {
+    google: [
+        "gemini-3-flash-preview",
+        "gemini-3-pro-preview",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.0-flash-exp",
+        "gemini-1.5-pro",
+        "gemini-1.5-flash",
+    ],
+    anthropic: [
+        "claude-opus-4-6",
+        "claude-sonnet-4-20250514",
+        "claude-3-5-sonnet-20241022",
+        "claude-3-opus-20240229",
+    ],
     openai: ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"],
-    anthropic: ["claude-3-5-sonnet-20240620", "claude-3-opus-20240229"],
     deepseek: ["deepseek-chat", "deepseek-coder"],
-    google: ["gemini-1.5-pro", "gemini-1.5-flash"],
     ollama: ["llama3", "mistral", "qwen2"],
 };
 
@@ -38,8 +51,8 @@ export function CreateSessionDialog({ isOpen, onClose, onCreate }: CreateSession
 
     // LLM Config
     const [showAdvanced, setShowAdvanced] = useState(false);
-    const [provider, setProvider] = useState("openai");
-    const [model, setModel] = useState("gpt-4o");
+    const [provider, setProvider] = useState("google");
+    const [model, setModel] = useState("gemini-3-flash-preview");
     const [temperature, setTemperature] = useState(0.7);
     const [thinking, setThinking] = useState(false);
 
@@ -54,8 +67,8 @@ export function CreateSessionDialog({ isOpen, onClose, onCreate }: CreateSession
             if (saved) {
                 try {
                     const config = JSON.parse(saved);
-                    setProvider(config.provider || "openai");
-                    setModel(config.model || "gpt-4o");
+                    setProvider(config.provider || "google");
+                    setModel(config.model || "gemini-3-flash-preview");
                     setTemperature(config.temperature ?? 0.7);
                     setThinking(config.thinking ?? false);
                     setAgentMode(config.agent_mode || "standard");
@@ -172,10 +185,11 @@ export function CreateSessionDialog({ isOpen, onClose, onCreate }: CreateSession
                                             }}
                                             className="w-full bg-[#1c1c1c] border border-gray-600 rounded px-2 py-2 text-xs text-gray-200 focus:border-blue-500 focus:outline-none"
                                         >
-                                            {Object.keys(DEFAULT_MODELS).map(p => (
-                                                <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
+                                            {["google", "anthropic", "openai", "deepseek", "ollama", "custom"].map(p => (
+                                                <option key={p} value={p}>
+                                                    {p === "custom" ? "Custom" : p.charAt(0).toUpperCase() + p.slice(1)}
+                                                </option>
                                             ))}
-                                            <option value="custom">Custom</option>
                                         </select>
                                     </div>
                                     <div>

@@ -85,7 +85,7 @@ class LLMResponse(Protocol):      # ALU 返回值
     tool_calls: Optional[List]     # 工具调用
 ```
 
-任何实现了 `LLMClient` 的对象都可以作为 ALU 插入 vCPU，当前实现是 `PiLLMAdapter`。
+任何实现了 `LLMClient` 的对象都可以作为 ALU 插入 vCPU，当前主要实现是 `DirectAdapter`（基于 LiteLLM，直接调用各厂商 LLM API）。
 
 ---
 

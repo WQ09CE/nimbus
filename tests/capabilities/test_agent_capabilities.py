@@ -96,7 +96,7 @@ async def run_agent(workspace: Path, instruction: str, timeout_sec: float = 120.
     """
     import os as os_module
 
-    from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+    from nimbus.adapters.llm_factory import create_llm_client
     from nimbus.agentos import AgentOS, AgentOSConfig
     from nimbus.tools import register_default_tools
 
@@ -104,13 +104,9 @@ async def run_agent(workspace: Path, instruction: str, timeout_sec: float = 120.
     adapter = None
 
     try:
-        # Create LLM client via pi-ai
-        llm_config = PiLLMConfig(
-            base_url=os_module.environ.get("PI_AI_URL", "http://localhost:3031"),
-            model=os_module.environ.get("ANTHROPIC_MODEL", "anthropic/claude-sonnet-4-20250514"),
-        )
-        adapter = PiLLMAdapter(config=llm_config)
-        await adapter.start()
+        # Create LLM client via DirectAdapter (LiteLLM)
+        model = os_module.environ.get("NIMBUS_MODEL", "google/gemini-3-pro-preview")
+        adapter = await create_llm_client(model=model)
 
         # Create config with workspace
         config = AgentOSConfig(

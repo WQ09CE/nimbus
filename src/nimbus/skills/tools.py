@@ -54,11 +54,11 @@ class ScriptTool:
 
         try:
             # We use asyncio.create_subprocess_exec for non-blocking execution
+            # Execute in current working directory (not skill directory) to support relative paths
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=str(self.root_path) # Execute in skill directory context
             )
 
             stdout, stderr = await process.communicate()

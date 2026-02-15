@@ -16,7 +16,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # 端口配置
-PI_AI_PORT=${PI_AI_PORT:-3031}
 NIMBUS_PORT=${NIMBUS_PORT:-4096}
 WEBUI_PORT=${WEBUI_PORT:-3000}
 WEBUI_STAGING_PORT=$((WEBUI_PORT + 1))
@@ -90,32 +89,6 @@ check_dependencies() {
 # ============================================================================
 # 服务管理
 # ============================================================================
-
-start_pi_ai() {
-    if check_port $PI_AI_PORT; then
-        log_ok "pi-ai already running on :$PI_AI_PORT"
-        return 0
-    fi
-    
-    log_info "Starting pi-ai server..."
-    
-    # 检查依赖
-    if [ ! -d "node_modules/@mariozechner/pi-ai" ]; then
-        log_info "Installing @mariozechner/pi-ai..."
-        npm install @mariozechner/pi-ai 2>/dev/null
-    fi
-    
-    # 启动服务 (使用 screen 完全脱离终端)
-    echo -e "\n\n========== $(date '+%Y-%m-%d %H:%M:%S') pi-ai starting ==========\n" >> "$LOG_DIR/pi-ai.log"
-    screen -dmS nimbus-pi-ai bash -c "npx tsx bridge/pi-ai-server.ts >> '$LOG_DIR/pi-ai.log' 2>&1"
-    
-    if wait_for_port $PI_AI_PORT 10; then
-        log_ok "pi-ai started on :$PI_AI_PORT"
-    else
-        log_error "Failed to start pi-ai. Check $LOG_DIR/pi-ai.log"
-        return 1
-    fi
-}
 
 start_nimbus() {
     if check_port $NIMBUS_PORT; then
@@ -206,7 +179,6 @@ cmd_start() {
     echo "🚀 Starting Nimbus Stack..."
     echo "═══════════════════════════════════════"
     
-    start_pi_ai || exit 1
     start_nimbus || exit 1
     
     # Web UI 是可选的
@@ -227,7 +199,6 @@ cmd_stop() {
     
     stop_service $WEBUI_PORT "web-ui"
     stop_service $NIMBUS_PORT "nimbus"
-    stop_service $PI_AI_PORT "pi-ai"
     
     echo ""
     echo "✅ All services stopped"
@@ -238,14 +209,6 @@ cmd_status() {
     echo ""
     echo "📊 Nimbus Stack Status"
     echo "═══════════════════════════════════════"
-    
-    # pi-ai
-    if check_port $PI_AI_PORT; then
-        local pid=$(get_pid_on_port $PI_AI_PORT)
-        echo -e "  pi-ai    ${GREEN}●${NC} running  :$PI_AI_PORT  (pid: $pid)"
-    else
-        echo -e "  pi-ai    ${RED}○${NC} stopped"
-    fi
     
     # nimbus
     if check_port $NIMBUS_PORT; then
@@ -270,9 +233,6 @@ cmd_logs() {
     local service=${1:-all}
     
     case $service in
-        pi-ai|pi)
-            tail -f "$LOG_DIR/pi-ai.log"
-            ;;
         nimbus|n)
             tail -f "$LOG_DIR/nimbus.log"
             ;;
@@ -282,11 +242,8 @@ cmd_logs() {
         all|*)
             # 使用 multitail 如果可用，否则显示最后几行
             if command -v multitail &> /dev/null; then
-                multitail "$LOG_DIR/pi-ai.log" "$LOG_DIR/nimbus.log" "$LOG_DIR/webui.log"
+                multitail "$LOG_DIR/nimbus.log" "$LOG_DIR/webui.log"
             else
-                echo "=== pi-ai ==="
-                tail -20 "$LOG_DIR/pi-ai.log" 2>/dev/null || echo "(no logs)"
-                echo ""
                 echo "=== nimbus ==="
                 tail -20 "$LOG_DIR/nimbus.log" 2>/dev/null || echo "(no logs)"
                 echo ""
@@ -448,11 +405,10 @@ cmd_help() {
     echo "  deploy-ui         Safe rebuild & deploy web-ui (build + health check)"
     echo "  reload-ui         Restart web-ui without rebuild (quick restart)"
     echo "  status            Show service status"
-    echo "  logs [service]    View logs (pi-ai|nimbus|webui|all)"
+    echo "  logs [service]    View logs (nimbus|webui|all)"
     echo "  help              Show this help"
     echo ""
     echo "Environment:"
-    echo "  PI_AI_PORT=$PI_AI_PORT"
     echo "  NIMBUS_PORT=$NIMBUS_PORT"
     echo "  WEBUI_PORT=$WEBUI_PORT"
     echo "  WEBUI_STAGING_PORT=$WEBUI_STAGING_PORT"

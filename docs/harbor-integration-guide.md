@@ -1,6 +1,6 @@
 # Nimbus + Harbor 集成指南
 
-> 记录日期: 2026-02-05
+> 记录日期: 2026-02-15
 >
 > 本文档记录 Nimbus Agent 与 Harbor 评估框架的集成测试全过程，包括架构设计、部署流程、Bug 修复和测试结果。
 
@@ -21,15 +21,18 @@
 
 ## 1. 架构概览
 
-Nimbus 与 Harbor 的集成采用 **Host-Container 分离架构**：LLM 服务运行在宿主机，Agent 执行逻辑运行在 Docker 容器内部。
+Nimbus 与 Harbor 的集成采用 **Host-Container 分离架构**：LLM 调用通过 `DirectAdapter`（LiteLLM）直接在容器内完成，Agent 执行逻辑也运行在 Docker 容器内部。
 
 ```
 Host 机器 (macOS)                     Docker 容器
 ====================                  ====================
-pi-ai server (port 3031)  <-------->  nimbus agent (httpx)
+Harbor 框架                           nimbus agent (DirectAdapter)
   |                                      |
   v                                      v
-LLM API (Claude/GPT)                 任务执行 (Read/Write/Edit/Bash)
+构建 wheel + 注入脚本                 LLM API (via LiteLLM)
+                                         |
+                                         v
+                                      任务执行 (Read/Write/Edit/Bash)
                                          |
                                          v
                                       输出结果 -> Harbor 评估
@@ -40,7 +43,7 @@ LLM API (Claude/GPT)                 任务执行 (Read/Write/Edit/Bash)
 1. Harbor 根据数据集创建 Docker 容器
 2. `NimbusAgent.setup()` 将 nimbus wheel 上传到容器并安装
 3. `NimbusAgent.run()` 在容器中执行嵌入式 Agent 脚本，调用 `AgentOS.run()`
-4. Agent 通过 httpx 连接宿主机的 pi-ai server 获取 LLM 响应
+4. Agent 通过 `DirectAdapter`（LiteLLM）直接调用 LLM API
 5. Agent 使用工具 (Read/Write/Edit/Bash) 在容器内完成任务
 6. Harbor 收集容器状态，执行验证脚本，计算 pass rate
 
@@ -51,31 +54,24 @@ LLM API (Claude/GPT)                 任务执行 (Read/Write/Edit/Bash)
 | `nimbus_harbor/nimbus_agent.py` | 宿主机 | Harbor adapter，管理容器生命周期 |
 | `nimbus-0.2.0-py3-none-any.whl` | 上传到容器 | Nimbus 核心库 (AgentOS/Tools/Adapters) |
 | `/tmp/nimbus_agent.py` | 容器内 | 嵌入式 Agent 脚本 (动态生成) |
-| pi-ai server | 宿主机 :3031 | LLM 代理服务 |
+| `DirectAdapter` (LiteLLM) | 容器内 | 直接调用 LLM API，无需外部桥接服务 |
 
 ---
 
 ## 2. Docker 环境配置
 
-### 2.1 Host Gateway IP 差异
+### 2.1 API 密钥传递
 
-不同的 Docker 运行时，容器内访问宿主机的方式不同：
-
-| 运行时 | Host Gateway IP | 配置方式 |
-|--------|----------------|----------|
-| **Colima** | `192.168.5.2` | 当前默认值 |
-| **Docker Desktop** | `host.docker.internal` | 通过 `PI_AI_HOST` 环境变量覆盖 |
-
-在 `nimbus_agent.py` 中，默认使用 Colima 的 IP：
+容器内的 `DirectAdapter` 需要 LLM API 密钥。通过环境变量注入：
 
 ```python
-PI_AI_HOST: str = os.environ.get("PI_AI_HOST", "192.168.5.2")
-```
-
-如果使用 Docker Desktop，需要设置环境变量：
-
-```bash
-export PI_AI_HOST=host.docker.internal
+# nimbus_agent.py 中注入环境变量到容器
+env_vars = {
+    "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
+    "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY", ""),
+    "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY", ""),
+    "NIMBUS_MODEL": os.environ.get("NIMBUS_MODEL", "anthropic/claude-sonnet-4-20250514"),
+}
 ```
 
 ### 2.2 容器环境不统一
@@ -153,7 +149,8 @@ Wheel 包含 `src/nimbus/` 下的所有核心代码，包括：
 - `nimbus.agentos` - AgentOS 核心
 - `nimbus.core` - VCPU / MMU / 运行时
 - `nimbus.tools` - 内置工具 (Read/Write/Edit/Bash)
-- `nimbus.adapters` - LLM 适配器 (PiLLMAdapter)
+- `nimbus.adapters` - LLM 适配器 (DirectAdapter)
+- `nimbus.config` - 全局配置 (NimbusConfig)
 
 ### 3.3 部署到容器
 
@@ -195,14 +192,15 @@ await environment.exec(f"echo '{encoded_script}' | base64 -d > /tmp/nimbus_agent
 嵌入式脚本使用 Nimbus 公开 API：
 
 ```python
-from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+from nimbus.adapters.direct_adapter import DirectAdapter
+from nimbus.adapters.types import LLMConfig
 from nimbus.agentos import AgentOS, AgentOSConfig
 from nimbus.core.runtime.vcpu import VCPUConfig
 from nimbus.tools import register_default_tools
 
-# 创建 LLM 适配器 (连接宿主机 pi-ai)
-config = PiLLMConfig(base_url=PI_AI_URL, model=MODEL)
-llm = PiLLMAdapter(config)
+# 创建 LLM 适配器 (直接调用 LLM API)
+config = LLMConfig(model=MODEL)
+llm = DirectAdapter(config)
 
 # 创建 AgentOS 并注册工具
 vcpu_config = VCPUConfig(max_iterations=MAX_ITERATIONS)
@@ -238,7 +236,7 @@ nimbus_log_path.write_text(log_result.stdout)
 
 **文件**: `vcpu.py:1393`
 
-**问题**: VCPU 调用 `self.alu.complete()` 方法，但 `PiLLMAdapter` 实现的是 `chat()` 方法。
+**问题**: VCPU 调用 `self.alu.complete()` 方法，但 LLM 适配器实现的是 `chat()` 方法。
 
 **修复**: 将调用从 `self.alu.complete()` 改为 `self.alu.chat()`，匹配 LLMClient Protocol 定义。
 
@@ -252,7 +250,7 @@ response = await self.alu.chat(messages, tools=tools)
 
 ### 5.2 工具格式转换问题
 
-**问题**: Nimbus 内部工具格式 `{name, parameters}` 与 pi-ai 期望的 OpenAI 格式 `{type: "function", function: {...}}` 不匹配。
+**问题**: Nimbus 内部工具格式 `{name, parameters}` 与 OpenAI 格式 `{type: "function", function: {...}}` 不匹配。
 
 **Nimbus 内部格式**:
 ```json
@@ -265,7 +263,7 @@ response = await self.alu.chat(messages, tools=tools)
 }
 ```
 
-**OpenAI / pi-ai 期望格式**:
+**OpenAI / LiteLLM 期望格式**:
 ```json
 {
   "type": "function",
@@ -280,7 +278,7 @@ response = await self.alu.chat(messages, tools=tools)
 }
 ```
 
-**修复**: 在 `PiLLMAdapter` 中增加工具格式转换逻辑，将 Nimbus 内部格式适配为 OpenAI 格式后再发送给 pi-ai。
+**修复**: 在 `DirectAdapter._convert_tools()` 中自动将 Nimbus 内部格式适配为 OpenAI 格式后再发送给 LiteLLM。
 
 ### 5.3 硬编码工作目录
 
@@ -365,7 +363,7 @@ EvoEval 是 Python 函数生成任务，每个 task 要求 agent 根据 docstrin
 
 ### 8.1 前置条件
 
-1. pi-ai server 运行在宿主机端口 3031
+1. LLM API 密钥已配置（`ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `OPENAI_API_KEY`）
 2. Docker 运行时 (Colima 或 Docker Desktop) 已启动
 3. Harbor 已安装 (`uv` 环境)
 
@@ -422,17 +420,7 @@ NIMBUS_MODEL=anthropic/claude-sonnet-4 \
   --agent-import-path nimbus_harbor.nimbus_agent:NimbusAgent
 ```
 
-### 8.6 使用 Docker Desktop
-
-```bash
-# 覆盖 Host Gateway IP
-PI_AI_HOST=host.docker.internal \
-  uv run harbor run \
-  -d "evoeval@1.0" \
-  --agent-import-path nimbus_harbor.nimbus_agent:NimbusAgent
-```
-
-### 8.7 查看日志
+### 8.6 查看日志
 
 Harbor 的日志目录通常在运行输出中指定。Nimbus 的日志会保存为：
 
@@ -449,6 +437,8 @@ Harbor 的日志目录通常在运行输出中指定。Nimbus 的日志会保存
 | `nimbus_harbor/tasks/` | 自定义测试 task 目录 |
 | `pyproject.toml` | Wheel 构建配置 |
 | `src/nimbus/agentos.py` | AgentOS 核心 |
-| `src/nimbus/adapters/pi_adapter.py` | Pi-AI LLM 适配器 |
+| `src/nimbus/config.py` | 全局配置 (NimbusConfig) |
+| `src/nimbus/adapters/direct_adapter.py` | DirectAdapter (LiteLLM) |
+| `src/nimbus/adapters/llm_factory.py` | LLM 客户端工厂 |
 | `src/nimbus/tools/` | 内置工具实现 |
 | `src/nimbus/core/runtime/vcpu.py` | VCPU 运行时 |

@@ -13,7 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+from nimbus.adapters.direct_adapter import DirectAdapter
+from nimbus.adapters.types import LLMConfig
 from nimbus.core.session_pool import SessionPool
 from nimbus.storage.sqlite import SQLiteStorage
 
@@ -42,20 +43,19 @@ async def test_e2e_real_llm_session_lifecycle(clean_env):
     # --- Setup ---
     print("\n[Setup] Connecting to pi-ai server...")
 
-    # Create Pi LLM Adapter
-    llm_config = PiLLMConfig(
-        base_url="http://localhost:3031",
+    # Create DirectAdapter (LiteLLM)
+    llm_config = LLMConfig(
         model="anthropic/claude-sonnet-4-20250514",  # Fast model for testing
         timeout=60.0,
     )
-    llm = PiLLMAdapter(llm_config)
+    llm = DirectAdapter(llm_config)
     await llm.start()
 
     # Verify connection
     health = await llm.health_check()
     if not health:
-        pytest.skip("pi-ai server not available")
-    print("   ✓ Connected to pi-ai server")
+        pytest.skip("LLM adapter not available (missing API keys?)")
+    print("   ✓ LLM adapter ready")
 
     # --- Phase 1: Start Task ---
     print("\n[Phase 1] Starting Task...")

@@ -15,8 +15,7 @@ class TestNimbusConfigDefaults:
 
     def test_defaults(self):
         config = NimbusConfig()
-        assert config.pi_ai_url == "http://localhost:3031"
-        assert config.default_model == "anthropic/claude-sonnet-4-20250514"
+        assert config.default_model == "google/gemini-3-flash-preview"
         assert config.max_tokens == 8192
         assert config.timeout == 300.0
         assert config.temperature is None
@@ -31,7 +30,6 @@ class TestNimbusConfigJson:
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({
             "llm": {
-                "pi_ai_url": "http://myhost:9999",
                 "default_model": "openai/gpt-5",
                 "max_tokens": 4096,
                 "timeout": 60.0,
@@ -43,7 +41,6 @@ class TestNimbusConfigJson:
             },
         }))
         config = NimbusConfig.load(config_path=config_file)
-        assert config.pi_ai_url == "http://myhost:9999"
         assert config.default_model == "openai/gpt-5"
         assert config.max_tokens == 4096
         assert config.timeout == 60.0
@@ -53,20 +50,20 @@ class TestNimbusConfigJson:
 
     def test_missing_json_uses_defaults(self, tmp_path):
         config = NimbusConfig.load(config_path=tmp_path / "nonexistent.json")
-        assert config.pi_ai_url == "http://localhost:3031"
+        assert config.default_model == "google/gemini-3-flash-preview"
 
     def test_invalid_json_uses_defaults(self, tmp_path):
         bad_file = tmp_path / "config.json"
         bad_file.write_text("not json{{{")
         config = NimbusConfig.load(config_path=bad_file)
-        assert config.pi_ai_url == "http://localhost:3031"
+        assert config.default_model == "google/gemini-3-flash-preview"
 
     def test_partial_json(self, tmp_path):
         config_file = tmp_path / "config.json"
-        config_file.write_text(json.dumps({"llm": {"pi_ai_url": "http://x:1"}}))
+        config_file.write_text(json.dumps({"llm": {"max_tokens": 2048}}))
         config = NimbusConfig.load(config_path=config_file)
-        assert config.pi_ai_url == "http://x:1"
-        assert config.default_model == "anthropic/claude-sonnet-4-20250514"
+        assert config.max_tokens == 2048
+        assert config.default_model == "google/gemini-3-flash-preview"
 
 
 class TestNimbusConfigEnv:
@@ -74,19 +71,17 @@ class TestNimbusConfigEnv:
 
     def test_env_overrides_json(self, tmp_path):
         config_file = tmp_path / "config.json"
-        config_file.write_text(json.dumps({"llm": {"pi_ai_url": "http://json:1"}}))
-        with patch.dict(os.environ, {"PI_AI_URL": "http://env:2"}):
+        config_file.write_text(json.dumps({"llm": {"default_model": "openai/gpt-4"}}))
+        with patch.dict(os.environ, {"NIMBUS_MODEL": "google/gemini-pro"}):
             config = NimbusConfig.load(config_path=config_file)
-        assert config.pi_ai_url == "http://env:2"
+        assert config.default_model == "google/gemini-pro"
 
     def test_env_overrides_defaults(self, tmp_path):
         with patch.dict(os.environ, {
-            "PI_AI_URL": "http://env:3",
             "NIMBUS_MODEL": "google/gemini-pro",
             "NIMBUS_MAX_TOKENS": "2048",
         }):
             config = NimbusConfig.load(config_path=tmp_path / "nope.json")
-        assert config.pi_ai_url == "http://env:3"
         assert config.default_model == "google/gemini-pro"
         assert config.max_tokens == 2048
 

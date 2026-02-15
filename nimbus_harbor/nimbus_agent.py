@@ -2,15 +2,14 @@
 Harbor Agent adapter for Nimbus.
 
 Usage:
-    # Connect to host's pi-ai server (default, recommended for local testing)
+    # Run with DirectAdapter (LiteLLM, recommended)
     harbor run -p harbor/tasks/simple-coding-test --agent-import-path harbor.nimbus_agent:NimbusAgent
 
     # Or with registered dataset
     harbor run -d "terminal-bench@2.0" --agent-import-path harbor.nimbus_agent:NimbusAgent
 
-This adapter connects to the pi-ai server running on the HOST machine
-(via host.docker.internal), eliminating the need to start services inside
-the container.
+This adapter runs a self-contained agent loop inside Harbor's container
+environment, using DirectAdapter (LiteLLM) to call LLM providers directly.
 """
 import asyncio
 import base64
@@ -28,36 +27,27 @@ class NimbusAgent(BaseAgent):
     """Nimbus Agent adapter for Harbor evaluation framework.
 
     This adapter runs a self-contained agent loop inside Harbor's container
-    environment, connecting to the pi-ai LLM server on the host machine.
+    environment, using DirectAdapter (LiteLLM) to call LLM providers directly.
 
     Architecture:
-        Host Machine                    Docker Container
-        ============                    ================
-        pi-ai server (3031) <-------- nimbus agent (httpx)
-                                         |
-                                         v
-                                      task execution (Read/Write/Edit/Bash)
+        Docker Container
+        ================
+        nimbus agent (DirectAdapter/LiteLLM) ---> LLM API (Anthropic/Google/OpenAI)
+            |
+            v
+        task execution (Read/Write/Edit/Bash)
 
     Environment Variables (set on host or passed to container):
-        PI_AI_HOST: Host for pi-ai server (default: host.docker.internal)
-        PI_AI_PORT: Port for pi-ai server (default: 3031)
         NIMBUS_MODEL: Model to use (default: anthropic/claude-sonnet-4-5)
     """
 
     SUPPORTS_ATIF: bool = False  # Nimbus does not support ATIF trajectory format yet
 
     # Configuration (can be overridden via environment variables)
-    # For Colima: use 192.168.5.2 (the host gateway IP)
-    # For Docker Desktop: use host.docker.internal
-    PI_AI_HOST: str = os.environ.get("PI_AI_HOST", "192.168.5.2")
-    PI_AI_PORT: int = int(os.environ.get("PI_AI_PORT", "3031"))
     NIMBUS_MODEL: str = os.environ.get("NIMBUS_MODEL", "anthropic/claude-sonnet-4-5")
 
     # Timeout settings
-    SERVICE_HEALTH_TIMEOUT: int = 5
     TASK_EXECUTION_TIMEOUT: int = 1800  # 30 minutes (terminal-bench tasks need up to 1800s)
-    MAX_HEALTH_RETRIES: int = 10
-    HEALTH_RETRY_INTERVAL: float = 1.0
     MAX_ITERATIONS: int = 50  # match nimbus core default
 
     def __init__(
@@ -82,7 +72,6 @@ class NimbusAgent(BaseAgent):
             *args,
             **kwargs,
         )
-        self._pi_ai_url = f"http://{self.PI_AI_HOST}:{self.PI_AI_PORT}"
 
     @staticmethod
     def name() -> str:
@@ -96,72 +85,32 @@ class NimbusAgent(BaseAgent):
     async def setup(self, environment: BaseEnvironment) -> None:
         """Set up Nimbus Agent in the container environment.
 
-        This setup connects to the HOST's pi-ai server instead of starting
-        one inside the container.
+        Uses DirectAdapter (LiteLLM) for direct LLM API calls --
+        no external bridge server needed.
 
         Steps:
-        1. Verify connectivity to host's pi-ai server
-        2. Install basic Python dependencies (httpx only)
-        3. Verify httpx is working
+        1. Ensure Python3 and pip are available
+        2. Install nimbus wheel
+        3. Verify nimbus works
 
         Args:
             environment: Harbor container environment
 
         Raises:
-            RuntimeError: If pi-ai server is not accessible
+            RuntimeError: If nimbus cannot be installed
         """
-        self.logger.info("Setting up Nimbus agent (connecting to host pi-ai)...")
-        self.logger.info(f"Pi-AI URL: {self._pi_ai_url}")
+        self.logger.info("Setting up Nimbus agent (DirectAdapter/LiteLLM)...")
 
-        # Step 1: Check connectivity to host's pi-ai server
-        await self._verify_pi_ai_connection(environment)
-
-        # Step 2: Ensure Python3 and pip are available
+        # Step 1: Ensure Python3 and pip are available
         await self._ensure_python_env(environment)
 
-        # Step 3: Install nimbus wheel
+        # Step 2: Install nimbus wheel
         await self._setup_python_env(environment)
 
-        # Step 4: Verify nimbus works
+        # Step 3: Verify nimbus works
         await self._verify_nimbus(environment)
 
         self.logger.info("Nimbus agent setup complete!")
-
-    async def _verify_pi_ai_connection(self, environment: BaseEnvironment) -> None:
-        """Verify connectivity to the host's pi-ai server.
-
-        Raises:
-            RuntimeError: If pi-ai server is not accessible
-        """
-        self.logger.info(f"Checking pi-ai server at {self._pi_ai_url}...")
-
-        # Try multiple health check methods (different containers have different tools)
-        health_cmds = [
-            f'python3 -c "import urllib.request; urllib.request.urlopen(\'{self._pi_ai_url}/health\', timeout=3); print(\'OK\')"',
-            f'python -c "import urllib.request; urllib.request.urlopen(\'{self._pi_ai_url}/health\', timeout=3); print(\'OK\')"',
-            f"curl -sf {self._pi_ai_url}/health",
-            f"wget -q -O - {self._pi_ai_url}/health",
-            f"nc -z {self.PI_AI_HOST} {self.PI_AI_PORT}",
-            f'bash -c "echo > /dev/tcp/{self.PI_AI_HOST}/{self.PI_AI_PORT}"',
-        ]
-
-        for attempt in range(self.MAX_HEALTH_RETRIES):
-            for cmd in health_cmds:
-                result = await self._exec_logged(
-                    environment, cmd, timeout_sec=self.SERVICE_HEALTH_TIMEOUT
-                )
-                if result.return_code == 0:
-                    self.logger.info("Pi-AI server is accessible!")
-                    return
-
-            self.logger.debug(f"Pi-AI not ready (attempt {attempt + 1}/{self.MAX_HEALTH_RETRIES})")
-            await asyncio.sleep(self.HEALTH_RETRY_INTERVAL)
-
-        raise RuntimeError(
-            f"Cannot connect to pi-ai server at {self._pi_ai_url}\n"
-            "Please ensure pi-ai is running on the host machine:\n"
-            "  ./nimbus start  (or)  ./scripts/start-pi-ai.sh"
-        )
 
     async def _ensure_python_env(self, environment: BaseEnvironment) -> None:
         """Ensure Python3 and pip are available in the container.
@@ -295,7 +244,7 @@ class NimbusAgent(BaseAgent):
 
         result = await self._exec_logged(
             environment,
-            'python3 -c "from nimbus.agentos import AgentOS; from nimbus.adapters.pi_adapter import PiLLMAdapter; print(\'Nimbus OK\')"'
+            'python3 -c "from nimbus.agentos import AgentOS; from nimbus.adapters.direct_adapter import DirectAdapter; from nimbus.adapters.types import LLMConfig; print(\'Nimbus OK\')"'
         )
 
         if result.return_code != 0:
@@ -340,13 +289,13 @@ import asyncio
 import os
 import base64
 
-PI_AI_URL = "{self._pi_ai_url}"
 MODEL = "{self.NIMBUS_MODEL}"
 MAX_ITERATIONS = {self.MAX_ITERATIONS}
 INSTRUCTION_B64 = "{instruction_b64}"
 
 async def main():
-    from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+    from nimbus.adapters.direct_adapter import DirectAdapter
+    from nimbus.adapters.types import LLMConfig
     from nimbus.agentos import AgentOS, AgentOSConfig
     from nimbus.core.runtime.vcpu import VCPUConfig
     from nimbus.tools import register_default_tools
@@ -363,9 +312,9 @@ async def main():
     instruction = base64.b64decode(INSTRUCTION_B64).decode("utf-8")
     print(f"Task: {{instruction[:200]}}...")
 
-    # Create LLM adapter connecting to host pi-ai server
-    config = PiLLMConfig(base_url=PI_AI_URL, model=MODEL)
-    llm = PiLLMAdapter(config)
+    # Create LLM adapter (direct via LiteLLM)
+    config = LLMConfig(model=MODEL)
+    llm = DirectAdapter(config)
     await llm.start()
 
     try:

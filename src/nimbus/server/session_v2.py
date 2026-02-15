@@ -189,8 +189,6 @@ class SessionManagerV2:
         # Create default LLM client if not provided
         if llm_client is None:
             if model_config:
-                from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
-
                 # Parse parameters
                 temperature = model_config.get("temperature")
                 if temperature is not None:
@@ -213,18 +211,19 @@ class SessionManagerV2:
                     except (ValueError, TypeError):
                         timeout = None
 
-                config_kwargs = {
-                    "provider": model_config.get("provider", "anthropic"),
-                    "model_id": model_id,
-                    "temperature": temperature,
-                    "thinking": thinking,
-                }
-                if timeout is not None:
-                    config_kwargs["timeout"] = timeout
-                config = PiLLMConfig(**config_kwargs)
-                adapter = PiLLMAdapter(config)
-                await adapter.__aenter__()
-                llm_client = adapter
+                # Construct full model name (provider/model_id)
+                provider = model_config.get("provider", "google")
+                full_model = f"{provider}/{model_id}"
+
+                # Use factory to create DirectAdapter
+                from nimbus.adapters.llm_factory import create_llm_client
+
+                llm_client = await create_llm_client(
+                    model=full_model,
+                    temperature=temperature,
+                    thinking=thinking,
+                    timeout=timeout if timeout is not None else 120.0,
+                )
             else:
                 llm_client = await self._get_shared_llm_client()
 
@@ -347,14 +346,16 @@ class SessionManagerV2:
                 self._shared_llm_client = adapter
                 logger.info("🤖 Shared MockLLMAdapter initialized (NIMBUS_LLM=mock)")
             else:
-                from nimbus.adapters.pi_adapter import PiLLMAdapter
+                from nimbus.adapters.llm_factory import create_llm_client
+                from nimbus.config import get_config
 
-                # Create and start shared client
-                # Using defaults which point to anthropic/claude-sonnet
-                adapter = PiLLMAdapter()
-                await adapter.__aenter__()
+                cfg = get_config()
+                model = cfg.default_model
+
+                # Use factory to create LLM (uses DirectAdapter)
+                adapter = await create_llm_client(model=model)
                 self._shared_llm_client = adapter
-                logger.info("🤖 Shared PiLLMAdapter initialized")
+                logger.info(f"🤖 Shared DirectAdapter initialized (model={model})")
 
         return self._shared_llm_client
 
@@ -819,7 +820,7 @@ class SessionManagerV2:
             self._sessions.clear()
 
         if self._shared_llm_client:
-            logger.info("🔌 Closing shared PiLLMAdapter")
+            logger.info("🔌 Closing shared LLM adapter")
             await self._shared_llm_client.__aexit__(None, None, None)
             self._shared_llm_client = None
 

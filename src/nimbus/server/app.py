@@ -84,16 +84,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         model = "mock/deterministic"
         logger.info("Using MockLLMAdapter (NIMBUS_LLM=mock)")
     else:
-        from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
-
+        from nimbus.adapters.llm_factory import create_llm_client
         from nimbus.config import get_config
+
         cfg = get_config()
-        pi_url = cfg.pi_ai_url
         model = cfg.default_model
 
-        pi_config = PiLLMConfig(base_url=pi_url, model=model)
-        llm = PiLLMAdapter(pi_config)
-        await llm.start()
+        # Use factory to create LLM (uses LiteLLM / DirectAdapter)
+        llm = await create_llm_client(model=model)
 
     # Config skills path
     skill_paths = [Path("examples/skills")]
@@ -190,10 +188,7 @@ def create_app() -> FastAPI:
 
     app.include_router(router, prefix="/api/v1")
 
-    # Register OpenCode compatible routes (no prefix)
-    from .compat import opencode_router
-
-    app.include_router(opencode_router, tags=["opencode"])
+    # OpenCode compatibility layer removed
 
     # Register AI SDK compatible routes (Vercel AI SDK Data Protocol)
     from .api_ai_sdk import router as ai_sdk_router

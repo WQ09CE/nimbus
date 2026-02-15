@@ -2,7 +2,7 @@
 Mock LLM Adapter for Nimbus integration testing.
 
 Provides a deterministic, rule-based LLM replacement that implements
-the same interface as PiLLMAdapter. Activated via NIMBUS_LLM=mock.
+the same LLMClient interface (chat/start/stop). Activated via NIMBUS_LLM=mock.
 
 Rules (priority order):
 1. /^hello|hi|hey/i            -> text reply
@@ -177,8 +177,8 @@ class MockLLMAdapter:
     """
     Deterministic, rule-based LLM adapter for integration testing.
 
-    Implements the same interface as PiLLMAdapter so it can be swapped
-    in via NIMBUS_LLM=mock without changing any other code.
+    Implements the same LLMClient interface (chat/start/stop) so it can
+    be swapped in via NIMBUS_LLM=mock without changing any other code.
 
     Features:
     - Pattern-matched deterministic responses
@@ -190,7 +190,7 @@ class MockLLMAdapter:
     def __init__(self) -> None:
         self._started = False
 
-    # -- Lifecycle (mirrors PiLLMAdapter) --
+    # -- Lifecycle (mirrors LLMClient protocol) --
 
     async def __aenter__(self) -> "MockLLMAdapter":
         await self.start()

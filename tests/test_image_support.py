@@ -6,15 +6,11 @@ Tests the data transformation chain:
     → session_v2 passes to agentos
     → agentos passes to mmu
     → mmu stores in Message
-    → pi_adapter converts to HTTP format
-    → pi_ai_http sends to pi-ai-server
 
 These are unit tests that don't require a running server.
 """
 
 import pytest
-import json
-
 
 class TestAttachmentModel:
     """Test AttachmentCreate model with new mime_type field."""
@@ -263,94 +259,4 @@ class TestMessageTypeCompatibility:
         assert d == {"role": "user", "content": content}
 
 
-class TestPiAdapterMessageConversion:
-    """Test that pi_adapter correctly handles multimodal content."""
 
-    def test_convert_string_content(self):
-        """String content: should produce HttpMessage with string content."""
-        from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
-
-        adapter = PiLLMAdapter(PiLLMConfig())
-        messages = [{"role": "user", "content": "Hello"}]
-        http_msgs = adapter._convert_messages_to_http(messages)
-        assert len(http_msgs) == 1
-        assert http_msgs[0].role == "user"
-        assert http_msgs[0].content == "Hello"
-
-    def test_convert_list_content(self):
-        """List content: should produce HttpMessage with list content (transparent passthrough)."""
-        from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
-
-        adapter = PiLLMAdapter(PiLLMConfig())
-        content = [
-            {"type": "text", "text": "What is this?"},
-            {"type": "image", "data": "base64data", "mimeType": "image/png"},
-        ]
-        messages = [{"role": "user", "content": content}]
-        http_msgs = adapter._convert_messages_to_http(messages)
-        assert len(http_msgs) == 1
-        assert http_msgs[0].role == "user"
-        assert isinstance(http_msgs[0].content, list)
-        assert http_msgs[0].content[0]["type"] == "text"
-        assert http_msgs[0].content[1]["type"] == "image"
-        assert http_msgs[0].content[1]["data"] == "base64data"
-
-    def test_convert_mixed_messages(self):
-        """Mixed: text-only + multimodal messages in same conversation."""
-        from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
-
-        adapter = PiLLMAdapter(PiLLMConfig())
-        messages = [
-            {"role": "user", "content": "Hi"},
-            {"role": "assistant", "content": "Hello! How can I help?"},
-            {"role": "user", "content": [
-                {"type": "text", "text": "What's in this image?"},
-                {"type": "image", "data": "abc", "mimeType": "image/jpeg"},
-            ]},
-        ]
-        http_msgs = adapter._convert_messages_to_http(messages)
-        assert len(http_msgs) == 3
-        assert isinstance(http_msgs[0].content, str)
-        assert isinstance(http_msgs[2].content, list)
-
-
-class TestPiAiHttpMessageBuild:
-    """Test that pi_ai_http correctly serializes list content."""
-
-    def test_build_request_string_content(self):
-        from nimbus.bridge.pi_ai_http import Message, PiAiHttpClient
-
-        client = PiAiHttpClient()
-        messages = [Message(role="user", content="Hello")]
-        req = client._build_request(messages, model="test/model")
-        assert req["messages"][0]["content"] == "Hello"
-
-    def test_build_request_list_content(self):
-        from nimbus.bridge.pi_ai_http import Message, PiAiHttpClient
-
-        client = PiAiHttpClient()
-        content = [
-            {"type": "text", "text": "Describe this"},
-            {"type": "image", "data": "base64data", "mimeType": "image/png"},
-        ]
-        messages = [Message(role="user", content=content)]
-        req = client._build_request(messages, model="test/model")
-        assert isinstance(req["messages"][0]["content"], list)
-        assert req["messages"][0]["content"][1]["type"] == "image"
-
-    def test_build_request_preserves_all_fields(self):
-        """Ensure mimeType and data fields are preserved in serialization."""
-        from nimbus.bridge.pi_ai_http import Message, PiAiHttpClient
-
-        client = PiAiHttpClient()
-        content = [
-            {"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"},
-        ]
-        messages = [Message(role="user", content=content)]
-        req = client._build_request(messages, model="test/model")
-        img_block = req["messages"][0]["content"][0]
-        assert img_block["data"] == "iVBORw0KGgo="
-        assert img_block["mimeType"] == "image/png"
-        # Verify it's valid JSON
-        json_str = json.dumps(req)
-        assert "iVBORw0KGgo=" in json_str

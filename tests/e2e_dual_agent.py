@@ -26,7 +26,8 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
-from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+from nimbus.adapters.direct_adapter import DirectAdapter
+from nimbus.adapters.types import LLMConfig
 from nimbus.orchestration import DualAgentOrchestrator, OrchestratorConfig
 
 
@@ -50,14 +51,14 @@ def cleanup_workspace(ws: Path):
         print(f"⚠️  Cleanup failed: {e}")
 
 
-async def create_adapter() -> PiLLMAdapter:
-    """Create and verify pi-ai adapter."""
-    adapter = PiLLMAdapter(PiLLMConfig())
+async def create_adapter() -> DirectAdapter:
+    """Create and verify LLM adapter."""
+    adapter = DirectAdapter(LLMConfig())
     await adapter.start()
     healthy = await adapter.health_check()
     if not healthy:
         await adapter.stop()
-        raise RuntimeError("pi-ai server not running on localhost:3031")
+        raise RuntimeError("LLM adapter health check failed (missing API keys?)")
     return adapter
 
 
@@ -407,18 +408,17 @@ async def main():
 
     # Check pi-ai
     try:
-        adapter = PiLLMAdapter()
+        adapter = DirectAdapter(LLMConfig())
         await adapter.start()
         ok = await adapter.health_check()
         await adapter.stop()
         if not ok:
             raise RuntimeError()
     except Exception:
-        print("\n❌ pi-ai server not running on localhost:3031")
-        print("Start it with: ./scripts/start-pi-ai.sh")
+        print("\n❌ LLM adapter health check failed (missing API keys?)")
         return 1
 
-    print("✅ pi-ai server is healthy\n")
+    print("✅ LLM adapter is healthy\n")
 
     tests_to_run = [ALL_TESTS[args.test]] if args.test else list(ALL_TESTS.values())
     passed = 0

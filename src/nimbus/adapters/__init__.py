@@ -1,22 +1,17 @@
 """
-Nimbus Adapters - 适配外部系统
+Nimbus Adapters - LLM integration adapters
 
-目前支持:
-- Pi Adapter: 使用 pi-ai HTTP 服务
+Currently supported:
+- DirectAdapter: Direct API calls via LiteLLM (primary)
+- MockAdapter: For testing
 """
 
-from .pi_adapter import (
-    LLMStreamEvent,
-    PiLLMAdapter,
-    PiLLMConfig,
-    VcpuLLMResponse,
-    create_pi_adapter,
-)
+from .types import LLMConfig, LLMStreamEvent, VcpuLLMResponse
+from .direct_adapter import DirectAdapter
 
 __all__ = [
-    "PiLLMAdapter",
-    "PiLLMConfig",
+    "LLMConfig",
     "VcpuLLMResponse",
     "LLMStreamEvent",
-    "create_pi_adapter",
+    "DirectAdapter",
 ]

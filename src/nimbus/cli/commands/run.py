@@ -22,7 +22,7 @@ def run_command(
         help="The task instruction to execute",
     ),
     model: str = typer.Option(
-        "anthropic/claude-sonnet-4-20250514",
+        "google/gemini-3-flash-preview",
         "--model",
         "-m",
         help="Model to use (provider/model format)",
@@ -133,18 +133,14 @@ async def _run_task(
 
     try:
         # Import here to avoid circular imports
-        from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
         from nimbus.agentos import AgentOS, AgentOSConfig
         from nimbus.core.runtime.vcpu import VCPUConfig
 
-        # Create LLM adapter using pi-ai HTTP service
-        from nimbus.config import get_config
-        pi_url = get_config().pi_ai_url
-        pi_config = PiLLMConfig(
-            base_url=pi_url,
-            model=model,
-        )
-        llm = PiLLMAdapter(pi_config)
+        # Create LLM adapter using factory (LiteLLM)
+        from nimbus.adapters.llm_factory import create_llm_client
+
+        # Create LLM client
+        llm = await create_llm_client(model=model)
 
         # Start the adapter
         await llm.start()

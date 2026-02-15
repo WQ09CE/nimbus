@@ -22,22 +22,23 @@ async def create_llm_client(
     thinking: Optional[bool] = None,
 ):
     """
-    Create and start a PiLLMAdapter for the given model.
+    Create and start a DirectAdapter (LiteLLM) for the given model.
 
     Args:
         model: Model identifier in "provider/model_id" format
             e.g. "anthropic/claude-sonnet-4-20250514"
                  "openai/gpt-4o"
                  "google/gemini-2.5-pro"
-        base_url: Pi-AI bridge URL (default: http://localhost:3031)
+        base_url: Optional base URL override
         timeout: Request timeout in seconds
         temperature: Optional temperature override
         thinking: Optional thinking mode (Claude extended thinking)
 
     Returns:
-        Started PiLLMAdapter ready for chat() calls
+        Started DirectAdapter ready for chat() calls
     """
-    from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+    from nimbus.adapters.direct_adapter import DirectAdapter
+    from nimbus.adapters.types import LLMConfig
 
     # Parse provider/model_id
     if "/" in model:
@@ -47,7 +48,7 @@ async def create_llm_client(
         provider = "anthropic"
         model_id = model
 
-    config = PiLLMConfig(
+    config = LLMConfig(
         base_url=base_url,
         provider=provider,
         model_id=model_id,
@@ -56,10 +57,10 @@ async def create_llm_client(
         thinking=thinking,
     )
 
-    adapter = PiLLMAdapter(config)
+    adapter = DirectAdapter(config)
     await adapter.__aenter__()
 
-    logger.info(f"🤖 Created LLM client: {provider}/{model_id}")
+    logger.info(f"🤖 Created DirectLLM client: {provider}/{model_id}")
     return adapter
 
 

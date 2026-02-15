@@ -238,16 +238,31 @@ models_router = APIRouter(prefix="/api", tags=["vibe"])
 @models_router.get("/models")
 async def list_models():
     """List available models."""
-    # Return model IDs that pi-ai supports
-    return {
-        "models": [
-            "anthropic/claude-sonnet-4-20250514",
-            "anthropic/claude-opus-4-20250514",
-            "anthropic/claude-3-5-sonnet-20241022",
-            "openai/gpt-4o",
-            "openai/gpt-4o-mini",
-        ]
-    }
+    from nimbus.adapters.llm_factory import create_llm_client
+    from nimbus.config import get_config
+
+    try:
+        cfg = get_config()
+        # Create a temporary DirectAdapter to get model list
+        llm = await create_llm_client(model=cfg.default_model)
+        models_list = await llm.list_models()
+        await llm.stop()
+
+        # Extract just the IDs for vibe-coding-ide format
+        return {
+            "models": [m["id"] for m in models_list]
+        }
+    except Exception as e:
+        logger.error(f"Failed to list models: {e}")
+        # Fallback to basic list
+        return {
+            "models": [
+                "google/gemini-3-flash-preview",
+                "google/gemini-3-pro-preview",
+                "anthropic/claude-sonnet-4-20250514",
+                "openai/gpt-4o",
+            ]
+        }
 
 
 @router.post("/", response_model=RunResponse)
@@ -374,21 +389,20 @@ async def run_agent_flow(
     import os
 
     from nimbus import AgentOS, AgentOSConfig
-    from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
     from nimbus.core.runtime.vcpu import VCPUConfig
     from nimbus.tools import register_default_tools
 
     yield sse_format(emit_event(task_id, "run_log", data="Agent run starting..."))
 
     # Setup LLM
+    from nimbus.adapters.llm_factory import create_llm_client
     from nimbus.config import get_config
+
     cfg = get_config()
-    pi_url = cfg.pi_ai_url
     model = payload.get("model") or cfg.default_model
 
-    pi_config = PiLLMConfig(base_url=pi_url, model=model)
-    llm = PiLLMAdapter(pi_config)
-    await llm.start()
+    # Use factory to create LLM (uses LiteLLM / DirectAdapter)
+    llm = await create_llm_client(model=model)
 
     try:
         # Create agent
@@ -448,7 +462,17 @@ User request: {query}"""
                 )
                 tool_name = event.get("name") or current_tool.get("name", "unknown")
                 arguments = event.get("args") or current_tool.get("arguments", {})
-                output = event.get("content", "")
+                
+                # Ensure output is JSON serializable
+                raw_output = event.get("content", "")
+                if hasattr(raw_output, "to_dict"):
+                    output = raw_output.to_dict()
+                elif hasattr(raw_output, "__dict__"):
+                    output = str(raw_output)
+                elif isinstance(raw_output, (str, int, float, bool, list, dict, type(None))):
+                    output = raw_output
+                else:
+                    output = str(raw_output)
 
                 yield tool_completed_sse(task_id, tool_id, tool_name, arguments, output)
 
@@ -460,7 +484,28 @@ User request: {query}"""
 
             elif event_type == "done":
                 result = event.get("result", {})
-                output = result.get("output", "") if isinstance(result, dict) else str(result)
+                
+                # Ensure output is JSON serializable
+                if hasattr(result, "output"):
+                    raw_output = result.output
+                elif isinstance(result, dict):
+                    raw_output = result.get("output", "")
+                else:
+                    raw_output = str(result)
+                
+                # Unwrap if raw_output is a ToolResult object
+                if hasattr(raw_output, "output"):
+                    raw_output = raw_output.output
+
+                if hasattr(raw_output, "to_dict"):
+                    output = raw_output.to_dict()
+                elif hasattr(raw_output, "__dict__"):
+                    output = str(raw_output)
+                elif isinstance(raw_output, (str, int, float, bool, list, dict, type(None))):
+                    output = raw_output
+                else:
+                    output = str(raw_output)
+                
                 yield sse_format(emit_event(task_id, "agent_output", data=output))
                 return
 

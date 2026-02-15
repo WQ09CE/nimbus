@@ -36,7 +36,8 @@ from typing import List, Dict, Any
 from nimbus.agentos import AgentOS, AgentOSConfig, Process
 from nimbus.core.runtime.vcpu import VCPUConfig
 from nimbus.core.memory.mmu import MMUConfig
-from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+from nimbus.adapters.direct_adapter import DirectAdapter
+from nimbus.adapters.types import LLMConfig
 
 # =============================================================================
 # Configuration
@@ -144,13 +145,12 @@ async def run_stress_test():
     shutil.rmtree(".nimbus/traces", ignore_errors=True)
 
     # Configure
-    pi_url = os.environ.get("PI_AI_URL", "http://localhost:3031")
     # Use a known working model for the test to ensure stability
     model = os.environ.get("NIMBUS_TEST_MODEL", "anthropic/claude-sonnet-4-20250514")
     
     print(f"   Model: {model}")
     
-    llm = PiLLMAdapter(PiLLMConfig(base_url=pi_url, model=model))
+    llm = DirectAdapter(LLMConfig(model=model))
     
     config = AgentOSConfig(
         max_processes=1,

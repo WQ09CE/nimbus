@@ -6,7 +6,6 @@ Loading priority: code defaults → ~/.nimbus/config.json → environment variab
 Usage:
     from nimbus.config import get_config
 
-    url = get_config().pi_ai_url
     model = get_config().default_model
 """
 
@@ -23,16 +22,16 @@ CONFIG_PATH = Path.home() / ".nimbus" / "config.json"
 class NimbusConfig:
     """Global configuration with layered loading."""
 
-    # Pi-AI Bridge
-    pi_ai_url: str = "http://localhost:3031"
-
     # Default model (provider/model_id format)
-    default_model: str = "anthropic/claude-sonnet-4-20250514"
+    default_model: str = "google/gemini-3-flash-preview"
 
     # LLM parameters
     max_tokens: int = 8192
     timeout: float = 300.0
     temperature: Optional[float] = None
+    
+    # Provider Keys
+    gemini_api_key: Optional[str] = None
 
     # Nimbus Server
     server_port: int = 4096
@@ -68,8 +67,6 @@ class NimbusConfig:
 def _apply_json(config: NimbusConfig, data: dict) -> None:
     """Apply config.json values to config."""
     llm = data.get("llm", {})
-    if v := llm.get("pi_ai_url"):
-        config.pi_ai_url = v
     if v := llm.get("default_model"):
         config.default_model = v
     if v := llm.get("max_tokens"):
@@ -78,6 +75,11 @@ def _apply_json(config: NimbusConfig, data: dict) -> None:
         config.timeout = float(v)
     if "temperature" in llm and llm["temperature"] is not None:
         config.temperature = float(llm["temperature"])
+    
+    if providers := llm.get("providers"):
+        if gemini := providers.get("gemini"):
+            if api_key := gemini.get("api_key"):
+                config.gemini_api_key = api_key
 
     server = data.get("server", {})
     if v := server.get("port"):
@@ -90,8 +92,6 @@ def _apply_json(config: NimbusConfig, data: dict) -> None:
 
 def _apply_env(config: NimbusConfig) -> None:
     """Apply environment variable overrides."""
-    if v := os.environ.get("PI_AI_URL"):
-        config.pi_ai_url = v
     if v := os.environ.get("NIMBUS_MODEL"):
         config.default_model = v
     if v := os.environ.get("NIMBUS_MAX_TOKENS"):
@@ -100,6 +100,11 @@ def _apply_env(config: NimbusConfig) -> None:
         config.timeout = float(v)
     if v := os.environ.get("NIMBUS_SERVER_PORT"):
         config.server_port = int(v)
+    
+    if v := os.environ.get("GEMINI_API_KEY"):
+        config.gemini_api_key = v
+    elif v := os.environ.get("GOOGLE_API_KEY"):
+        config.gemini_api_key = v
 
 
 # Singleton

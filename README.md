@@ -7,13 +7,13 @@
 **Nimbus** 是一个模块化 AI Agent 框架（v0.2.0 Alpha），采用冯·诺伊曼启发的架构设计。核心组件：**vCPU**（Think-Act-Observe 执行循环）、**MMU**（上下文记忆管理）、**Gate**（权限隔离的工具访问），通过 **AgentOS** 统一编排。
 
 **核心能力：**
-- 🖥️ OS-like 架构 (vCPU / MMU / Gate / Process)
-- 🧠 无限上下文支持（滑动窗口 + LLM 压缩 + 归档）
-- 📊 DAG 并行任务调度
-- 🔒 角色权限隔离的子 Agent 系统
-- 🔌 多协议 API（REST / OpenCode / AI SDK v6 / Vibe）
-- 🔧 Skill 热加载系统
-- 🌐 Web UI（Next.js 聊天界面 + Debug 面板）
+- OS-like 架构 (vCPU / MMU / Gate / Process)
+- 无限上下文支持（滑动窗口 + LLM 压缩 + 归档）
+- DAG 并行任务调度
+- 角色权限隔离的子 Agent 系统
+- 多协议 API（REST / OpenCode / AI SDK v6 / Vibe）
+- Skill 热加载系统
+- Web UI（Next.js 聊天界面 + Debug 面板）
 
 ## Architecture
 
@@ -50,6 +50,12 @@
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
+│                     DirectAdapter (LiteLLM)                      │
+│      Claude (Anthropic)  │  GPT (OpenAI)  │  Gemini (Google)    │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
 │                     HTTP Server (FastAPI)                        │
 │   /api/v1/*  │  /session/*  │  /v1/chat/completions  │  /vibe  │
 └─────────────────────────────────────────────────────────────────┘
@@ -67,6 +73,7 @@
 nimbus/
 ├── src/nimbus/              # Python 源码 (97 files, ~29.5k lines)
 │   ├── agentos.py           # AgentOS 主入口 (1,687 lines)
+│   ├── config.py            # 全局配置 (NimbusConfig 单例)
 │   ├── core/
 │   │   ├── runtime/
 │   │   │   ├── vcpu.py              # vCPU 执行引擎 (1,704 lines)
@@ -87,15 +94,16 @@ nimbus/
 │   ├── tools/                       # Read, Write, Edit, Bash, Memo...
 │   ├── os/gate.py                   # 权限隔离的系统调用
 │   ├── server/                      # FastAPI HTTP 服务
-│   ├── bridge/                      # pi-ai HTTP/WebSocket 桥接
-│   ├── adapters/                    # LLM 适配器 (Pi, Mock)
+│   ├── adapters/                    # LLM 适配器 (Direct, Mock)
+│   │   ├── direct_adapter.py        # DirectAdapter (LiteLLM)
+│   │   ├── llm_factory.py           # LLM 客户端工厂
+│   │   └── types.py                 # LLMConfig, VcpuLLMResponse
 │   ├── orchestration/               # 多 Agent 编排
 │   ├── skills/                      # Skill 热加载引擎
 │   ├── cli/                         # 命令行工具
 │   └── storage/                     # SQLite 持久化
 ├── tests/                   # 472 passed, 21 skipped
 ├── web-ui/                  # Next.js Web 界面
-├── bridge/                  # pi-ai-server (TypeScript)
 ├── examples/                # 示例代码 (18 个)
 ├── nimbus_harbor/           # Agent 评测任务集
 ├── skills/                  # 可热加载技能包
@@ -118,6 +126,43 @@ pip install -e .
 pip install -e ".[all]"
 ```
 
+### Configuration
+
+Nimbus 使用 `DirectAdapter`（基于 LiteLLM）直接调用 LLM API，无需额外的桥接服务。
+
+配置 API 密钥：
+
+```bash
+# Anthropic (Claude)
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# Google (Gemini)
+export GEMINI_API_KEY="..."
+
+# OpenAI (GPT)
+export OPENAI_API_KEY="sk-..."
+```
+
+选择模型：
+
+```bash
+# 通过环境变量
+export NIMBUS_MODEL="anthropic/claude-sonnet-4-20250514"
+
+# 或通过配置文件 ~/.nimbus/config.json
+cat > ~/.nimbus/config.json << 'EOF'
+{
+  "llm": {
+    "default_model": "google/gemini-3-flash-preview",
+    "max_tokens": 8192,
+    "timeout": 300
+  }
+}
+EOF
+```
+
+配置优先级：代码默认值 < `~/.nimbus/config.json` < 环境变量
+
 ### Running
 
 ```bash
@@ -129,6 +174,28 @@ make dev
 
 # 仅启动 server
 nimbus serve --port 8080
+```
+
+### Programmatic Usage
+
+```python
+from nimbus.adapters.llm_factory import create_llm_client
+from nimbus.agentos import AgentOS, AgentOSConfig
+from nimbus.core.runtime.vcpu import VCPUConfig
+from nimbus.tools import register_default_tools
+from pathlib import Path
+
+# 创建 LLM 客户端 (DirectAdapter)
+llm = await create_llm_client("anthropic/claude-sonnet-4-20250514")
+
+# 创建 AgentOS 并注册工具
+vcpu_config = VCPUConfig(max_iterations=50)
+agent_config = AgentOSConfig(vcpu_config=vcpu_config)
+agent = AgentOS(llm_client=llm, config=agent_config)
+register_default_tools(agent, workspace=Path.cwd())
+
+# 执行任务
+result = await agent.run("Read the README and summarize it")
 ```
 
 ### Testing
@@ -148,17 +215,17 @@ make test-e2e
 
 ### vCPU 执行循环
 
-vCPU 在每个迭代中执行 Think → Act → Observe 循环：
+vCPU 在每个迭代中执行 Think -> Act -> Observe 循环：
 
-1. **Think** — 将上下文发送给 LLM，获取下一步计划
-2. **Act** — 通过 Gate 执行工具调用（权限检查 + 超时控制）
-3. **Observe** — 收集结果，更新上下文，决定继续或返回
+1. **Think** -- 将上下文发送给 LLM，获取下一步计划
+2. **Act** -- 通过 Gate 执行工具调用（权限检查 + 超时控制）
+3. **Observe** -- 收集结果，更新上下文，决定继续或返回
 
 内置安全机制：
-- **Doom Loop 检测** — 连续 3 次相同调用自动中止
-- **错误自动恢复** — ErrorHandlerRegistry 分类错误并尝试修复
-- **幻觉纠正** — 检测 LLM 文本模拟 tool call 并注入校正指令
-- **工具名修正** — 自动修复 LLM 大小写错误（`read` → `Read`）
+- **Doom Loop 检测** -- 连续 3 次相同调用自动中止
+- **错误自动恢复** -- ErrorHandlerRegistry 分类错误并尝试修复
+- **幻觉纠正** -- 检测 LLM 文本模拟 tool call 并注入校正指令
+- **工具名修正** -- 自动修复 LLM 大小写错误（`read` -> `Read`）
 
 ### MMU 记忆管理
 
@@ -222,23 +289,43 @@ tools:
 | `/v1/chat/completions` | POST | Chat Completions（AI SDK v6） |
 | `/vibe/chat` | POST | Vibe coding API |
 
-## LLM 支持
+## LLM Support
 
-通过 `pi-ai-server` 桥接层调用 LLM，支持：
+通过 `DirectAdapter`（基于 LiteLLM）直接调用 LLM API，无需中间桥接服务：
 
 | 模型 | 状态 | 说明 |
 |------|------|------|
-| Claude (Anthropic) | ✅ 完整支持 | 默认模型，原生 tool calling |
-| GPT-4o (OpenAI) | ✅ 完整支持 | 原生 tool calling |
-| Gemini (Google) | ✅ 支持 | 需要额外的幻觉检测和名称修正 |
-| Ollama (本地) | ⚠️ 实验性 | 示例代码可用 |
+| Claude (Anthropic) | 完整支持 | 默认模型，原生 tool calling |
+| GPT-4o (OpenAI) | 完整支持 | 原生 tool calling |
+| Gemini (Google) | 支持 | 需要额外的幻觉检测和名称修正 |
+| Ollama (本地) | 实验性 | 通过 LiteLLM 的 Ollama 支持 |
 
 配置方式：
 ```bash
 export NIMBUS_MODEL="anthropic/claude-sonnet-4-20250514"
 # 或
-export NIMBUS_MODEL="google-antigravity/gemini-3-pro-high"
+export NIMBUS_MODEL="google/gemini-3-flash-preview"
+# 或
+export NIMBUS_MODEL="openai/gpt-4o"
 ```
+
+### Migration from Pi-AI Bridge
+
+如果你之前使用 `PiLLMAdapter` + `pi-ai-server` (Node.js)，现已迁移到 `DirectAdapter`：
+
+| 旧方案 (Pi-AI Bridge) | 新方案 (DirectAdapter) |
+|------------------------|----------------------|
+| 需要启动 `pi-ai-server` (Node.js) | 无需额外服务，Python 直接调用 |
+| `PiLLMAdapter` + `PiLLMConfig` | `DirectAdapter` + `LLMConfig` |
+| `bridge/pi-ai-server.ts` | 已移除，由 LiteLLM 替代 |
+| `PI_AI_URL` 环境变量 | 不再需要 |
+| 工具格式需手动转换 | LiteLLM 自动处理 |
+
+迁移步骤：
+1. 安装 LiteLLM 依赖：`pip install -e ".[all]"`
+2. 设置 LLM API 密钥环境变量（见上方 Configuration 段落）
+3. 将代码中的 `PiLLMAdapter` 替换为 `DirectAdapter`（或使用 `create_llm_client()` 工厂函数）
+4. 移除 `pi-ai-server` 的启动步骤
 
 ## Development
 
@@ -298,6 +385,7 @@ mkdir -p skills/my-skill/scripts
 | [advanced-usage.md](docs/advanced-usage.md) | 高级用法 |
 | [skills-development.md](docs/skills-development.md) | Skill 开发指南 |
 | [troubleshooting-guide.md](docs/troubleshooting-guide.md) | 故障排查 |
+| [harbor-integration-guide.md](docs/harbor-integration-guide.md) | Harbor 集成指南 |
 | [TODO.md](docs/TODO.md) | 待办事项 |
 
 ## License

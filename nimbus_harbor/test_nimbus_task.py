@@ -19,7 +19,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from nimbus.agentos import AgentOS
-from nimbus.adapters.pi_adapter import PiLLMAdapter, PiLLMConfig
+from nimbus.adapters.direct_adapter import DirectAdapter
+from nimbus.adapters.types import LLMConfig
 
 
 async def main():
@@ -46,12 +47,12 @@ async def main():
 
         # Initialize Nimbus
         print("\n🚀 Initializing Nimbus agent...")
-        config = PiLLMConfig(model="anthropic/claude-sonnet-4-20250514")
-        adapter = PiLLMAdapter(config=config)
+        config = LLMConfig(model="anthropic/claude-sonnet-4-20250514")
+        adapter = DirectAdapter(config=config)
 
         try:
             await adapter.start()
-            print("   ✓ Pi-AI adapter started")
+            print("   ✓ DirectAdapter started")
 
             agent = AgentOS(llm_client=adapter)
             print("   ✓ AgentOS initialized")
