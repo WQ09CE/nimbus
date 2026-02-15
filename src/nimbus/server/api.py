@@ -364,17 +364,17 @@ async def inject_message(
         # This ensures the history strictly reflects what the vCPU actually processed.
         return {"status": "injected", "message": "Message injected into execution loop"}
     else:
-        # Fallback: If session is not running, we MUST save it manually
-        # because the vCPU won't pick it up dynamically.
+        # Process is not RUNNING (already finished or not started).
+        # inject_message did NOT touch inbox, so we are the sole writer.
+        # Persist to storage + MMU so the message appears in next turn.
         import uuid
         message_id = f"msg_{uuid.uuid4().hex[:12]}"
         await storage.add_message(
             message_id=message_id,
             session_id=session_id,
             role="user",
-            content=f"[Intervention] {data.content}",
+            content=data.content,
         )
-        # Also write to MMU so the message appears in next turn's context
         try:
             agent_os = await session_manager.get_or_create_agent(session_id)
             process = agent_os.get_process(session_id)

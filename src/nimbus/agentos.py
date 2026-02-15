@@ -1150,17 +1150,24 @@ class AgentOS:
         return signalled
 
     def inject_message(self, pid: str, message: "str | list") -> bool:
+        """Inject a user message into a running process's inbox.
+
+        Returns True if message was accepted (process is RUNNING and will consume it).
+        Returns False if process doesn't exist or is not RUNNING.
+        When False is returned, inbox is NOT modified — caller is responsible for
+        persisting the message via storage/MMU directly.
+        """
         process = self._processes.get(pid)
         if not process:
             return False
 
         if process.state != "RUNNING":
-            logger.warning(f"[{pid}] Process not running (state={process.state}), inject as pending")
-            process.inbox.append(message)
-            return False  # Signal caller that process is not running
+            logger.warning(f"[{pid}] Process not running (state={process.state}), cannot inject")
+            return False
 
         process.inbox.append(message)
-        logger.info(f"[{pid}] Message injected into inbox: {message[:50]}...")
+        preview = str(message)[:50] if isinstance(message, list) else message[:50]
+        logger.info(f"[{pid}] Message injected into inbox: {preview}...")
         return True
 
     async def _run_process(self, process: Process) -> ToolResult:

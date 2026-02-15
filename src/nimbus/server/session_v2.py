@@ -587,18 +587,18 @@ class SessionManagerV2:
             await self._save_conversation_to_storage(session_id, agent_os, message)
 
             # Check for late-arriving injected messages (race condition fix)
-            # Between _run_process finishing and dag_complete being sent,
-            # the frontend may still send inject requests (isStreaming is still true).
+            # There's a narrow window where inject_message() succeeds (state was still
+            # RUNNING) but _run_process already exited its loop. Those messages sit in
+            # inbox unconsumed. Atomic-swap and persist them here.
             process = agent_os.get_process(session_id)
             if process and process.inbox:
-                late_messages = list(process.inbox)
-                process.inbox.clear()
+                # Atomic swap — no await between read and clear
+                late_messages, process.inbox = process.inbox, []
                 logger.warning(
                     f"[stream_chat] Found {len(late_messages)} late-arriving message(s) "
-                    f"in inbox after process finished. Converting to new chat turn."
+                    f"in inbox after process finished. Persisting to storage + MMU."
                 )
                 for late_msg in late_messages:
-                    # Save to storage so they won't be lost
                     msg_id = f"msg_{uuid.uuid4().hex[:12]}"
                     await self._storage.add_message(
                         message_id=msg_id,
@@ -606,10 +606,23 @@ class SessionManagerV2:
                         role="user",
                         content=late_msg,
                     )
-                    # Also add to MMU so next turn has context
                     if process.mmu:
                         process.mmu.add_user_message(late_msg)
                     logger.info(f"[stream_chat] Saved late message: {late_msg[:50]}...")
+                # Re-check: more messages may have arrived during the await calls above
+                if process.inbox:
+                    extras, process.inbox = process.inbox, []
+                    for extra_msg in extras:
+                        msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+                        await self._storage.add_message(
+                            message_id=msg_id,
+                            session_id=session_id,
+                            role="user",
+                            content=extra_msg,
+                        )
+                        if process.mmu:
+                            process.mmu.add_user_message(extra_msg)
+                        logger.info(f"[stream_chat] Saved extra late message: {extra_msg[:50]}...")
 
             # Save session checkpoint (for persistence/restore)
             try:
