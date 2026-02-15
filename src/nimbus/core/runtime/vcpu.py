@@ -408,8 +408,7 @@ class VCPU:
                     should_graceful_terminate = (
                         self._state.consecutive_errors >= 5
                         or self._state.doom_loop_count
-                        >= 1  # First doom loop triggers graceful termination
-                        or step_result.fault.code == "DOOM_LOOP"
+                        >= 2  # Second doom loop triggers graceful termination
                         or step_result.fault.code == "EMPTY_RESPONSE_LOOP"  # LLM stuck
                     )
 
@@ -1223,32 +1222,59 @@ class VCPU:
         doom_result = self._doom_detector.check(action.name, action.args)
 
         if doom_result.is_loop:
-            # Doom loop detected!
+            self._state.doom_loop_count += 1
+
             self._emit_event(
                 "DOOM_LOOP_DETECTED",
                 {
                     "tool": action.name,
                     "args": action.args,
                     "consecutive_count": doom_result.consecutive_count,
+                    "doom_loop_count": self._state.doom_loop_count,
                 },
             )
 
-            # Override the result with doom loop error
-            return ToolResult(
-                status="ERROR",
-                output=self._failure_reporter.format_doom_loop_error(
-                    tool_name=action.name,
-                    threshold=doom_result.consecutive_count,
-                    guidance=doom_result.guidance or "",
-                ),
-                is_final=False,  # Give LLM a chance to gracefully report
-                fault=Fault(
-                    domain="RUNTIME",
-                    code="DOOM_LOOP",
-                    message=f"Operation failed: {action.name} unsuccessful after {doom_result.consecutive_count} attempts",
-                    retryable=False,
-                ),
-            )
+            if self._state.doom_loop_count == 1:
+                # First doom loop: warn but allow recovery
+                from nimbus.core.logging import get_logger
+                logger = get_logger("kernel.vcpu")
+                logger.warning(
+                    f"Doom loop detected (1st time) for {action.name}, "
+                    f"injecting recovery hint and continuing"
+                )
+                return ToolResult(
+                    status="ERROR",
+                    output=(
+                        f"⚠️ DOOM LOOP DETECTED: You've made {doom_result.consecutive_count} identical failing "
+                        f"calls to {action.name}. STOP and change your approach.\n\n"
+                        f"{doom_result.guidance or ''}\n\n"
+                        f"Read the file again before retrying."
+                    ),
+                    is_final=False,
+                    fault=Fault(
+                        domain="RUNTIME",
+                        code="DOOM_LOOP",
+                        message=f"Operation failed: {action.name} unsuccessful after {doom_result.consecutive_count} attempts (recoverable, 1st occurrence)",
+                        retryable=True,  # Allow recovery on first doom loop
+                    ),
+                )
+            else:
+                # Second+ doom loop: non-recoverable
+                return ToolResult(
+                    status="ERROR",
+                    output=self._failure_reporter.format_doom_loop_error(
+                        tool_name=action.name,
+                        threshold=doom_result.consecutive_count,
+                        guidance=doom_result.guidance or "",
+                    ),
+                    is_final=False,
+                    fault=Fault(
+                        domain="RUNTIME",
+                        code="DOOM_LOOP",
+                        message=f"Operation failed: {action.name} unsuccessful after {doom_result.consecutive_count} attempts (2nd doom loop, non-recoverable)",
+                        retryable=False,
+                    ),
+                )
 
         # Try error recovery BEFORE adding to memory (so failed attempts don't pollute context)
         if result.fault:

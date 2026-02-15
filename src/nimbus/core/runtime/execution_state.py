@@ -60,6 +60,9 @@ class ExecutionState:
     # 路径解析计数（用于文件查找恢复）
     path_not_found_count: int = 0
 
+    # Doom loop 累计计数（跨检测周期）
+    doom_loop_count: int = 0
+
     # 中断控制
     interruption_requested: bool = False
 
@@ -75,6 +78,7 @@ class ExecutionState:
         self.compaction_count = 0
         self.tool_failure_counts.clear()
         self.path_not_found_count = 0
+        self.doom_loop_count = 0
         self.interruption_requested = False
 
     def start_execution(self) -> None:
@@ -204,6 +208,7 @@ class ExecutionState:
             "max_compactions": self.max_compactions,
             "tool_failure_counts": dict(self.tool_failure_counts),
             "path_not_found_count": self.path_not_found_count,
+            "doom_loop_count": self.doom_loop_count,
         }
 
     @classmethod
@@ -245,6 +250,7 @@ class ExecutionState:
             max_compactions=self.max_compactions,
             tool_failure_counts=dict(self.tool_failure_counts),
             path_not_found_count=self.path_not_found_count,
+            doom_loop_count=self.doom_loop_count,
         )
 
     def restore_from_snapshot(self, snapshot: ExecutionStateModel) -> None:
@@ -261,3 +267,4 @@ class ExecutionState:
         self.max_compactions = snapshot.max_compactions
         self.tool_failure_counts = dict(snapshot.tool_failure_counts)
         self.path_not_found_count = snapshot.path_not_found_count
+        self.doom_loop_count = snapshot.doom_loop_count

@@ -152,6 +152,8 @@ export async function* apiStream(
   let buffer = "";
 
   try {
+    let currentEvent = "message";
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) {
@@ -163,8 +165,6 @@ export async function* apiStream(
       buffer += chunk;
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
-
-      let currentEvent = "message";
 
       for (const line of lines) {
         if (line.trim() === "") continue;

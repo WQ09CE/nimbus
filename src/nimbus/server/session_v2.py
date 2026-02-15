@@ -586,6 +586,31 @@ class SessionManagerV2:
             # Save assistant messages to storage
             await self._save_conversation_to_storage(session_id, agent_os, message)
 
+            # Check for late-arriving injected messages (race condition fix)
+            # Between _run_process finishing and dag_complete being sent,
+            # the frontend may still send inject requests (isStreaming is still true).
+            process = agent_os.get_process(session_id)
+            if process and process.inbox:
+                late_messages = list(process.inbox)
+                process.inbox.clear()
+                logger.warning(
+                    f"[stream_chat] Found {len(late_messages)} late-arriving message(s) "
+                    f"in inbox after process finished. Converting to new chat turn."
+                )
+                for late_msg in late_messages:
+                    # Save to storage so they won't be lost
+                    msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+                    await self._storage.add_message(
+                        message_id=msg_id,
+                        session_id=session_id,
+                        role="user",
+                        content=late_msg,
+                    )
+                    # Also add to MMU so next turn has context
+                    if process.mmu:
+                        process.mmu.add_user_message(late_msg)
+                    logger.info(f"[stream_chat] Saved late message: {late_msg[:50]}...")
+
             # Save session checkpoint (for persistence/restore)
             try:
                 process = agent_os.get_process(session_id)

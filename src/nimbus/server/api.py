@@ -374,6 +374,15 @@ async def inject_message(
             role="user",
             content=f"[Intervention] {data.content}",
         )
+        # Also write to MMU so the message appears in next turn's context
+        try:
+            agent_os = await session_manager.get_or_create_agent(session_id)
+            process = agent_os.get_process(session_id)
+            if process and process.mmu:
+                process.mmu.add_user_message(data.content)
+                logger.info(f"[inject] Late message written to MMU for {session_id}")
+        except Exception as e:
+            logger.warning(f"[inject] Could not write late message to MMU: {e}")
         return {"status": "queued", "message": "Session not active, message saved to history"}
 
 

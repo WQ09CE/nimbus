@@ -53,7 +53,7 @@ REVIEW_TOOL_DEF = {
                 "description": (
                     "Comma-separated model list to use as reviewers. "
                     "Default: reads from ~/.nimbus/config.json or uses "
-                    "anthropic/claude-opus-4-6,openai-codex/gpt-5.3-codex,google-antigravity/gemini-3-pro-high"
+                    "anthropic/claude-opus-4-6,openai-codex/gpt-5.3-codex,google/gemini-3-pro-preview"
                 ),
             },
             "title": {

@@ -10,16 +10,13 @@ Example:
 """
 
 from pathlib import Path
-from typing import Any, List, Optional
-
-from .sandbox import SandboxError
+from typing import Any, Optional
 
 
 async def write_file(
     file_path: str,
     content: str,
     workspace: Optional[Path] = None,
-    allowed_paths: Optional[List[Path]] = None,
     **kwargs: Any,
 ) -> str:
     """
@@ -30,13 +27,11 @@ async def write_file(
         file_path: Path to file (relative or absolute)
         content: Content to write
         workspace: Workspace root for relative paths
-        allowed_paths: Additional allowed paths outside workspace (e.g. ~/.nimbus/)
 
     Returns:
         Success message with byte count
 
     Raises:
-        SandboxError: If path escapes workspace and allowed_paths
         PermissionError: If cannot write to path
     """
     path_obj = Path(file_path)
@@ -45,26 +40,6 @@ async def write_file(
 
     if path_obj.is_absolute():
         resolved_path = path_obj.resolve()
-
-        in_workspace = False
-        try:
-            resolved_path.relative_to(workspace.resolve())
-            in_workspace = True
-        except ValueError:
-            pass
-
-        in_allowed = False
-        if not in_workspace and allowed_paths:
-            for ap in allowed_paths:
-                try:
-                    resolved_path.relative_to(ap.resolve())
-                    in_allowed = True
-                    break
-                except ValueError:
-                    continue
-
-        if not in_workspace and not in_allowed:
-            raise SandboxError(file_path, workspace, f"Path outside workspace: {file_path}")
     else:
         resolved_path = (workspace / file_path).resolve()
 

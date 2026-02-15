@@ -37,6 +37,9 @@ class NimbusConfig:
     anthropic_oauth_path: str = "~/.pi/agent/auth.json"
     anthropic_use_oauth: bool = True  # 默认启用（有 auth.json 就用）
 
+    # OpenAI Codex OAuth
+    codex_use_oauth: bool = True  # 默认启用
+
     # Nimbus Server
     server_port: int = 4096
 
@@ -44,7 +47,7 @@ class NimbusConfig:
     review_models: list = field(default_factory=lambda: [
         "anthropic/claude-opus-4-6",
         "openai-codex/gpt-5.3-codex",
-        "google-antigravity/gemini-3-pro-high",
+        "google/gemini-3-pro-preview",
     ])
 
     @classmethod
@@ -89,6 +92,9 @@ def _apply_json(config: NimbusConfig, data: dict) -> None:
                 config.anthropic_oauth_path = oauth_path
             if "use_oauth" in anthropic:
                 config.anthropic_use_oauth = bool(anthropic["use_oauth"])
+        if codex := providers.get("openai-codex"):
+            if "use_oauth" in codex:
+                config.codex_use_oauth = bool(codex["use_oauth"])
 
     server = data.get("server", {})
     if v := server.get("port"):
@@ -119,6 +125,9 @@ def _apply_env(config: NimbusConfig) -> None:
         config.anthropic_oauth_path = v
     if v := os.environ.get("NIMBUS_ANTHROPIC_USE_OAUTH"):
         config.anthropic_use_oauth = v.lower() not in ("0", "false", "no")
+
+    if v := os.environ.get("NIMBUS_CODEX_USE_OAUTH"):
+        config.codex_use_oauth = v.lower() not in ("0", "false", "no")
 
 
 # Singleton

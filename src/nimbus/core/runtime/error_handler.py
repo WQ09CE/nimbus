@@ -357,27 +357,28 @@ class EditStringNotFoundHandler(ErrorHandler):
         workspace: Optional[str] = None,
     ) -> RecoveryAction:
         file_path = args.get("file_path", args.get("path", ""))
-        old_string = args.get("old_string", "")[:50]  # 截断以便显示
 
         if attempt == 1:
-            # 第一次：自动读取文件当前内容
+            # First attempt: Inject precise diagnostic hint
+            # (edit.py's ValueError now includes fuzzy diff diagnostics)
+            # Transparently pass the error message with actionable advice
+            hint = (
+                f"Edit failed: {error_msg}\n\n"
+                f"Action: Use Read to re-read {file_path}, then retry Edit with the correct old_string. "
+                f"Pay attention to the diff above — it shows exactly what's different."
+            )
+            return RecoveryAction.inject(hint)
+
+        elif attempt == 2:
+            # Second attempt: auto-Read the target file
             return RecoveryAction.auto_execute(
                 tool="Read",
                 args={"file_path": file_path},
-                hint=f"✏️ Could not find '{old_string}...' in file. Current content:",
-            )
-
-        elif attempt == 2:
-            # 第二次：Grep 搜索类似内容
-            search_term = old_string.split()[0] if old_string.split() else old_string[:10]
-            return RecoveryAction.auto_execute(
-                tool="Grep",
-                args={"pattern": search_term, "path": file_path},
-                hint=f"🔍 Searching for similar content in {file_path}:",
+                hint=f"✏️ Edit still failing. Re-reading {file_path} for you:",
             )
 
         else:
-            # 第三次：建议
+            # Third attempt and beyond: keep existing generic hint
             return RecoveryAction.inject(
                 f"✏️ Edit failed: string not found after {attempt} attempts.\n\n"
                 f"Possible reasons:\n"

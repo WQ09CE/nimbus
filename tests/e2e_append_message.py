@@ -22,16 +22,13 @@ class MockLLMResponse:
     tool_calls: Optional[List[Any]] = None
 
 
-@dataclass
-class MockToolCall:
-    id: str = "call_1"
-    function: Any = None
-
-
-@dataclass
-class MockFunction:
-    name: str = ""
-    arguments: str = "{}"
+def _make_tool_call(call_id: str, name: str, arguments: str) -> Dict[str, Any]:
+    """Create a tool_call dict matching the format expected by MMU (same as real LLM clients)."""
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": arguments},
+    }
 
 
 class MockLLMClient:
@@ -54,12 +51,7 @@ class MockLLMClient:
         if self.call_count == 1:
             return MockLLMResponse(
                 tool_calls=[
-                    MockToolCall(
-                        id="call_1",
-                        function=MockFunction(
-                            name="Bash", arguments='{"command": "echo hello"}'
-                        ),
-                    )
+                    _make_tool_call("call_1", "Bash", '{"command": "echo hello"}'),
                 ]
             )
 
@@ -67,24 +59,14 @@ class MockLLMClient:
         if self.call_count == 2:
             return MockLLMResponse(
                 tool_calls=[
-                    MockToolCall(
-                        id="call_2",
-                        function=MockFunction(
-                            name="Bash", arguments='{"command": "echo world"}'
-                        ),
-                    )
+                    _make_tool_call("call_2", "Bash", '{"command": "echo world"}'),
                 ]
             )
 
         # Final call: return result
         return MockLLMResponse(
             tool_calls=[
-                MockToolCall(
-                    id="call_final",
-                    function=MockFunction(
-                        name="return_result", arguments='{"result": "done"}'
-                    ),
-                )
+                _make_tool_call("call_final", "return_result", '{"result": "done"}'),
             ]
         )
 

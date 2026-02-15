@@ -59,13 +59,13 @@ class DispatchToolConfig:
         "claude": "anthropic/claude-opus-4-6",
         "opus": "anthropic/claude-opus-4-6",
         "sonnet": "anthropic/claude-sonnet-4-5",
-        "gpt": "openai-codex/gpt-5.3-codex",
-        "gpt5": "openai-codex/gpt-5.3-codex",
-        "gpt-5.3": "openai-codex/gpt-5.3-codex",
-        "codex": "openai-codex/gpt-5.3-codex",
-        "gemini": "google-antigravity/gemini-3-pro-high",
-        "gemini3": "google-antigravity/gemini-3-pro-high",
-        "gemini-pro": "google-antigravity/gemini-3-pro-high",
+        "gpt": "openai-codex/gpt-4o",
+        "gpt4o": "openai-codex/gpt-4o",
+        "gpt-4o": "openai-codex/gpt-4o",
+        "codex": "openai-codex/gpt-4o",
+        "gemini": "google/gemini-3-pro-preview",
+        "gemini3": "google/gemini-3-pro-preview",
+        "gemini-pro": "google/gemini-3-pro-preview",
     })
 
 

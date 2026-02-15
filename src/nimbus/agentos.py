@@ -1154,6 +1154,11 @@ class AgentOS:
         if not process:
             return False
 
+        if process.state != "RUNNING":
+            logger.warning(f"[{pid}] Process not running (state={process.state}), inject as pending")
+            process.inbox.append(message)
+            return False  # Signal caller that process is not running
+
         process.inbox.append(message)
         logger.info(f"[{pid}] Message injected into inbox: {message[:50]}...")
         return True

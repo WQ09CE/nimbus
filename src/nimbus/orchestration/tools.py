@@ -50,8 +50,8 @@ DISPATCH_TOOL_DEF = {
                 "type": "string",
                 "description": (
                     "Optional: specify which LLM model the Executor should use. "
-                    "Aliases: 'claude'→claude-opus-4-6, 'sonnet'→claude-sonnet-4-5, 'gpt'→gpt-5.3-codex, 'gemini'→gemini-3-pro-high. "
-                    "Or use full model ID like 'openai-codex/gpt-5.3-codex'. "
+                    "Aliases: 'claude'→claude-opus-4-6, 'sonnet'→claude-sonnet-4-5, 'gpt'→gpt-4o, 'gemini'→gemini-3-pro-high. "
+                    "Or use full model ID like 'openai-codex/gpt-4o'. "
                     "Default: same model as Core Agent."
                 ),
             },

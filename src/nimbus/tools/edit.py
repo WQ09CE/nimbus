@@ -17,7 +17,6 @@ Example:
 from pathlib import Path
 from typing import Any, Optional
 
-from .sandbox import Sandbox, SandboxError
 from .utils import (
     detect_line_ending,
     fuzzy_find_text,
@@ -60,7 +59,6 @@ async def edit_file(
         Success message with diff preview
 
     Raises:
-        SandboxError: If path escapes workspace
         FileNotFoundError: If file doesn't exist
         ValueError: If text not found or appears multiple times
     """
@@ -78,14 +76,10 @@ async def edit_file(
     if workspace is None:
         workspace = path_obj.parent if path_obj.is_absolute() else Path.cwd()
 
-    # Validate with sandbox
-    sandbox = Sandbox(workspace)
-    try:
-        resolved_path = sandbox.validate(file_path)
-    except SandboxError:
-        raise
-    except FileNotFoundError:
-        raise FileNotFoundError(f"File not found: {file_path}")
+    if path_obj.is_absolute():
+        resolved_path = path_obj.resolve()
+    else:
+        resolved_path = (workspace / file_path).resolve()
 
     if not resolved_path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
@@ -112,10 +106,48 @@ async def edit_file(
     match_result = fuzzy_find_text(normalized_content, normalized_old_text)
 
     if not match_result["found"]:
-        raise ValueError(
-            f"Could not find the exact text in {file_path}. "
-            "The old text must match exactly including all whitespace and newlines."
-        )
+        # Find closest matching block for diagnostic diff
+        from difflib import SequenceMatcher, unified_diff
+
+        closest = None
+        old_lines = normalized_old_text.splitlines()
+        content_lines = normalized_content.splitlines()
+
+        # Search for the first non-empty line of old_text in file content
+        first_line = next((l.strip() for l in old_lines if l.strip()), "")
+        if first_line and content_lines:
+            best_ratio = 0.0
+            best_idx = -1
+            for i, line in enumerate(content_lines):
+                ratio = SequenceMatcher(None, first_line, line.strip()).ratio()
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_idx = i
+
+            if best_ratio >= 0.4 and best_idx >= 0:
+                block_size = len(old_lines)
+                end = min(best_idx + block_size, len(content_lines))
+                closest = "\n".join(content_lines[best_idx:end])
+
+        if closest:
+            diff_lines = list(unified_diff(
+                normalized_old_text.splitlines(keepends=True),
+                closest.splitlines(keepends=True),
+                fromfile="your old_string",
+                tofile="actual content in file",
+                n=2,
+            ))
+            diff_text = "".join(diff_lines[:30])  # Cap at 30 lines
+            raise ValueError(
+                f"Could not find the exact text to replace in {file_path}.\n"
+                f"Closest match found (similarity diff):\n{diff_text}\n"
+                f"Check for whitespace, indentation, or content differences."
+            )
+        else:
+            raise ValueError(
+                f"Could not find the exact text to replace in {file_path}. "
+                f"No similar text found. The content may have changed — use Read to re-read the file."
+            )
 
     # Count occurrences using fuzzy-normalized content
     fuzzy_content = normalize_for_fuzzy_match(normalized_content)

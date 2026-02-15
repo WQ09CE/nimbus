@@ -67,6 +67,7 @@ class ExecutionStateModel(BaseModel):
     max_compactions: int
     tool_failure_counts: Dict[str, int]
     path_not_found_count: int
+    doom_loop_count: int = 0
 
 class SessionCheckpointModel(BaseModel):
     """Top-level session checkpoint"""

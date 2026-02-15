@@ -1,20 +1,28 @@
 """
-Direct Adapter for Nimbus — Dual-Channel Streaming
+Direct Adapter for Nimbus — Three-Channel Streaming
 
-Two channels:
+Three channels:
   1. Anthropic Native (OAuth) — used when the model is Claude and OAuth
      credentials are available.  Calls the Anthropic SDK directly with
      stealth headers for Claude-Code identity.
-  2. LiteLLM (default) — used for all other providers (Gemini, OpenAI, etc.)
+  2. OpenAI Codex (OAuth) — used when the model is an openai-codex model
+     and Codex OAuth credentials are available.  Calls the OpenAI SDK
+     directly with ChatGPT subscription credentials.
+  3. LiteLLM (default) — used for all other providers (Gemini, OpenAI, etc.)
      and as a fallback when no OAuth token is present.
 """
 
+import asyncio
+import base64
 import json
 import logging
 import os
+import platform
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
+
+import httpx
 
 import litellm
 from litellm import acompletion
@@ -28,17 +36,28 @@ logger = logging.getLogger(__name__)
 # Configure LiteLLM
 litellm.drop_params = True
 
+# Codex Responses API constants
+CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
+CODEX_MAX_RETRIES = 3
+CODEX_RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
+CODEX_RETRY_BASE_DELAY = 1.0
+
 
 class DirectAdapter:
     """
-    Direct Adapter with dual-channel streaming.
+    Direct Adapter with three-channel streaming.
 
     Channel 1 — Anthropic Native (OAuth):
         When the current model is a Claude model *and* valid OAuth credentials
         exist, requests go directly through the ``anthropic`` Python SDK with
         Claude-Code stealth headers.
 
-    Channel 2 — LiteLLM (default):
+    Channel 2 — OpenAI Codex (OAuth):
+        When the current model is an openai-codex model *and* valid Codex OAuth
+        credentials exist, requests go directly through the ``openai`` Python
+        SDK with ChatGPT subscription credentials.
+
+    Channel 3 — LiteLLM (default):
         For every other case (Gemini, OpenAI, Claude without OAuth, ...) the
         request is routed through LiteLLM.
     """
@@ -48,6 +67,7 @@ class DirectAdapter:
         self._model = self.config.get_model()
         self._ensure_api_keys()
         self._init_anthropic_oauth()
+        self._init_openai_codex_oauth()
 
     def _ensure_api_keys(self):
         """Ensure API keys are loaded from NimbusConfig."""
@@ -78,9 +98,33 @@ class DirectAdapter:
                     self._anthropic_oauth_path,
                 )
 
+    def _init_openai_codex_oauth(self):
+        """Initialize OpenAI Codex OAuth state from NimbusConfig."""
+        from nimbus.adapters.openai_codex_oauth import load_oauth_token
+
+        cfg = get_config()
+        self._codex_auth: dict | None = None
+
+        if cfg.codex_use_oauth:
+            # Codex tokens also live in the same auth.json
+            auth_path = Path(cfg.anthropic_oauth_path).expanduser()
+            auth = load_oauth_token(auth_path)
+            if auth is not None:
+                self._codex_auth = auth
+                logger.info("OpenAI Codex OAuth loaded from %s", auth_path)
+            else:
+                logger.debug(
+                    "Codex OAuth enabled but no openai-codex token in %s",
+                    auth_path,
+                )
+
     def _is_anthropic_model(self) -> bool:
         """Check if current model is an Anthropic model."""
         return "claude" in self._model.lower()
+
+    def _is_openai_codex_model(self) -> bool:
+        """Check if current model uses OpenAI Codex (ChatGPT subscription)."""
+        return "openai-codex" in self._model.lower()
 
     async def __aenter__(self) -> "DirectAdapter":
         return self
@@ -102,7 +146,8 @@ class DirectAdapter:
             os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         )
         has_anthropic = self._anthropic_auth is not None
-        return has_gemini or has_anthropic
+        has_codex = self._codex_auth is not None
+        return has_gemini or has_anthropic or has_codex
 
     def _convert_tools(self, tools: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
         """Convert tools to OpenAI format (LiteLLM expects this)."""
@@ -194,6 +239,9 @@ class DirectAdapter:
         """
         if self._is_anthropic_model() and self._anthropic_auth is not None:
             async for event in self._stream_anthropic_native(messages, tools):
+                yield event
+        elif self._is_openai_codex_model() and self._codex_auth is not None:
+            async for event in self._stream_openai_native(messages, tools):
                 yield event
         else:
             async for event in self._stream_litellm(messages, tools):
@@ -428,7 +476,354 @@ class DirectAdapter:
             yield LLMStreamEvent(type="error", error=str(e))
 
     # ------------------------------------------------------------------
-    # Channel 2: LiteLLM (default)
+    # Channel 2: OpenAI Codex — Responses API (OAuth)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_account_id_from_jwt(token: str) -> str:
+        """Extract chatgpt_account_id from a JWT access token."""
+        try:
+            payload_b64 = token.split(".")[1]
+            # Add padding if needed
+            padding = 4 - len(payload_b64) % 4
+            if padding != 4:
+                payload_b64 += "=" * padding
+            payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+            return payload["https://api.openai.com/auth"]["chatgpt_account_id"]
+        except Exception:
+            return ""
+
+    def _build_codex_headers(self, access_token: str) -> dict:
+        """Build HTTP headers for the Codex Responses API."""
+        return {
+            "Authorization": f"Bearer {access_token}",
+            "chatgpt-account-id": self._extract_account_id_from_jwt(access_token),
+            "OpenAI-Beta": "responses=experimental",
+            "originator": "pi",
+            "User-Agent": f"nimbus/0.2 ({platform.system()})",
+            "accept": "text/event-stream",
+            "content-type": "application/json",
+        }
+
+    def _convert_messages_to_responses_api(
+        self, messages: list
+    ) -> tuple[str, list]:
+        """
+        Convert OpenAI-format messages to Responses API format.
+
+        Returns (instructions_str, input_list).
+        """
+        system_parts: list[str] = []
+        input_items: list[dict] = []
+
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "") or ""
+
+            if role == "system":
+                if content:
+                    system_parts.append(content)
+                continue
+
+            if role == "user":
+                input_items.append({
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": content}],
+                })
+                continue
+
+            if role == "assistant":
+                tool_calls = msg.get("tool_calls")
+                if not tool_calls:
+                    # Plain assistant message
+                    input_items.append({
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": content}],
+                    })
+                else:
+                    # Assistant message with tool calls
+                    if content:
+                        input_items.append({
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": content}],
+                        })
+                    for tc in tool_calls:
+                        func = tc.get("function", {})
+                        tc_id = tc.get("id", "")
+                        # Responses API requires id to start with "fc"
+                        fc_id = tc_id if tc_id.startswith("fc") else f"fc_{tc_id}"
+                        arguments = func.get("arguments", "")
+                        if isinstance(arguments, dict):
+                            arguments = json.dumps(arguments)
+                        input_items.append({
+                            "type": "function_call",
+                            "id": fc_id,
+                            "call_id": tc_id,
+                            "name": func.get("name", ""),
+                            "arguments": arguments,
+                        })
+                continue
+
+            if role == "tool":
+                input_items.append({
+                    "type": "function_call_output",
+                    "call_id": msg.get("tool_call_id", ""),
+                    "output": content,
+                })
+                continue
+
+        instructions = "\n\n".join(system_parts)
+        return instructions, input_items
+
+    def _convert_tools_to_responses_api(
+        self, tools: list | None
+    ) -> list | None:
+        """
+        Convert OpenAI nested tool format to Responses API flat format.
+
+        Input:  {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
+        Output: {"type": "function", "name": ..., "description": ..., "parameters": ...}
+        """
+        if not tools:
+            return None
+
+        result = []
+        for tool in tools:
+            if tool.get("type") == "function" and "function" in tool:
+                func = tool["function"]
+                result.append({
+                    "type": "function",
+                    "name": func.get("name", ""),
+                    "description": func.get("description", ""),
+                    "parameters": func.get("parameters", {}),
+                })
+            elif "name" in tool:
+                # Nimbus simplified format
+                result.append({
+                    "type": "function",
+                    "name": tool.get("name", ""),
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("parameters", {}),
+                })
+        return result if result else None
+
+    async def _parse_sse_lines(
+        self, aiter_bytes
+    ) -> AsyncIterator[tuple[str, str]]:
+        """
+        Parse raw bytes from an httpx streaming response into SSE events.
+
+        Yields (event_type, data_string) tuples.
+        """
+        buffer = ""
+        event_type = "message"
+        data_lines: list[str] = []
+
+        async for raw_bytes in aiter_bytes:
+            buffer += raw_bytes.decode("utf-8", errors="replace")
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.rstrip("\r")
+
+                if line.startswith("event:"):
+                    event_type = line[len("event:"):].strip()
+                elif line.startswith("data:"):
+                    data_str = line[len("data:"):].strip()
+                    if data_str == "[DONE]":
+                        continue
+                    data_lines.append(data_str)
+                elif line == "":
+                    # Blank line = event boundary
+                    if data_lines:
+                        yield event_type, "\n".join(data_lines)
+                    event_type = "message"
+                    data_lines = []
+
+        # Flush remaining data if buffer ends without trailing newline
+        if data_lines:
+            yield event_type, "\n".join(data_lines)
+
+    async def _stream_openai_native(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> AsyncIterator[LLMStreamEvent]:
+        """
+        Stream via the ChatGPT Codex Responses API with OAuth credentials.
+        """
+        from nimbus.adapters.openai_codex_oauth import check_and_refresh
+
+        # Refresh / validate OAuth token
+        try:
+            access_token = check_and_refresh(
+                self._codex_auth,
+                Path(get_config().anthropic_oauth_path).expanduser(),
+            )
+        except RuntimeError as exc:
+            logger.error("Codex OAuth token refresh failed: %s", exc)
+            yield LLMStreamEvent(type="error", error=str(exc))
+            return
+
+        # Build model id (strip provider prefix)
+        model_id = self._model
+        if model_id.startswith("openai-codex/"):
+            model_id = model_id[len("openai-codex/"):]
+
+        # Build headers
+        headers = self._build_codex_headers(access_token)
+
+        # Convert messages and tools to Responses API format
+        instructions, input_items = self._convert_messages_to_responses_api(messages)
+        codex_tools = self._convert_tools_to_responses_api(self._convert_tools(tools))
+
+        # Build request body
+        body: dict[str, Any] = {
+            "model": model_id,
+            "store": False,
+            "stream": True,
+            "input": input_items,
+            "tools": codex_tools or [],
+            "tool_choice": "auto",
+            "parallel_tool_calls": True,
+            "text": {"verbosity": "medium"},
+            "include": [
+                "reasoning.encrypted_content",
+            ],
+        }
+        if instructions:
+            body["instructions"] = instructions
+        # Note: Codex Responses API does not support temperature parameter
+
+        # Retry loop
+        for attempt in range(CODEX_MAX_RETRIES):
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(300.0, connect=30.0)
+                ) as client:
+                    async with client.stream(
+                        "POST", CODEX_RESPONSES_URL, headers=headers, json=body
+                    ) as resp:
+                        if resp.status_code >= 400:
+                            resp_body = (await resp.aread()).decode("utf-8", errors="replace")
+                            logger.error(
+                                "Codex API %d response: %s\nRequest body: %s",
+                                resp.status_code, resp_body[:2000],
+                                json.dumps(body, ensure_ascii=False, default=str)[:2000],
+                            )
+                            if resp.status_code in CODEX_RETRY_STATUS_CODES and attempt < CODEX_MAX_RETRIES - 1:
+                                delay = CODEX_RETRY_BASE_DELAY * (2 ** attempt)
+                                logger.warning(
+                                    "Codex API %d, retrying in %.1fs (attempt %d/%d)",
+                                    resp.status_code, delay,
+                                    attempt + 1, CODEX_MAX_RETRIES,
+                                )
+                                await asyncio.sleep(delay)
+                                continue
+                        resp.raise_for_status()
+
+                        # SSE state machine
+                        pending_calls: dict[str, dict] = {}
+
+                        async for event_type, data_str in self._parse_sse_lines(
+                            resp.aiter_bytes()
+                        ):
+                            if not data_str:
+                                continue
+                            try:
+                                data = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                continue
+
+                            logger.debug(
+                                "SSE event=%s data=%s",
+                                event_type, data_str[:500],
+                            )
+
+                            if event_type == "response.output_text.delta":
+                                yield LLMStreamEvent(
+                                    type="text",
+                                    text=data.get("delta", ""),
+                                )
+
+                            elif event_type == "response.output_item.added":
+                                item = data.get("item", {})
+                                if item.get("type") == "function_call":
+                                    item_id = item.get("id", "")
+                                    call_id = item.get("call_id", item_id)
+                                    pending_calls[item_id] = {
+                                        "id": call_id,
+                                        "name": item.get("name", ""),
+                                        "arguments": "",
+                                    }
+
+                            elif event_type == "response.function_call_arguments.delta":
+                                item_id = data.get("item_id", data.get("call_id", ""))
+                                if item_id in pending_calls:
+                                    pending_calls[item_id]["arguments"] += data.get(
+                                        "delta", ""
+                                    )
+
+                            elif event_type == "response.output_item.done":
+                                item = data.get("item", {})
+                                if item.get("type") == "function_call":
+                                    item_id = item.get("id", "")
+                                    tc = pending_calls.pop(item_id, None)
+                                    if tc:
+                                        try:
+                                            args = (
+                                                json.loads(tc["arguments"])
+                                                if tc["arguments"]
+                                                else {}
+                                            )
+                                        except (json.JSONDecodeError, TypeError):
+                                            args = tc["arguments"]
+                                        yield LLMStreamEvent(
+                                            type="tool_call",
+                                            tool_call={
+                                                "id": tc["id"],
+                                                "name": tc["name"],
+                                                "arguments": args,
+                                            },
+                                        )
+
+                            elif event_type == "response.completed":
+                                yield LLMStreamEvent(type="stop", reason="stop")
+
+                            elif event_type in ("error", "response.failed"):
+                                err = data.get("error")
+                                if isinstance(err, dict):
+                                    err_msg = err.get("message", str(data))
+                                else:
+                                    err_msg = str(data)
+                                yield LLMStreamEvent(type="error", error=err_msg)
+
+                    return  # Success, exit retry loop
+
+            except httpx.HTTPStatusError as e:
+                if (
+                    e.response.status_code in CODEX_RETRY_STATUS_CODES
+                    and attempt < CODEX_MAX_RETRIES - 1
+                ):
+                    delay = CODEX_RETRY_BASE_DELAY * (2 ** attempt)
+                    logger.warning(
+                        "Codex API %d, retrying in %.1fs (attempt %d/%d)",
+                        e.response.status_code, delay,
+                        attempt + 1, CODEX_MAX_RETRIES,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                logger.error("Codex API error: %s", e)
+                yield LLMStreamEvent(type="error", error=str(e))
+                return
+            except Exception as e:
+                logger.error("Codex streaming error: %s", e)
+                yield LLMStreamEvent(type="error", error=str(e))
+                return
+
+    # ------------------------------------------------------------------
+    # Channel 3: LiteLLM (default)
     # ------------------------------------------------------------------
 
     async def _stream_litellm(
@@ -540,6 +935,13 @@ class DirectAdapter:
             {"id": "openai/gpt-4o", "object": "model", "owned_by": "openai"},
             {"id": "openai/gpt-4-turbo", "object": "model", "owned_by": "openai"},
             {"id": "openai/gpt-3.5-turbo", "object": "model", "owned_by": "openai"},
+        ])
+
+        # OpenAI Codex models (ChatGPT subscription)
+        models.extend([
+            {"id": "openai-codex/gpt-5.3-codex", "object": "model", "owned_by": "openai-codex"},
+            {"id": "openai-codex/gpt-4o", "object": "model", "owned_by": "openai-codex"},
+            {"id": "openai-codex/o3-mini", "object": "model", "owned_by": "openai-codex"},
         ])
 
         return models

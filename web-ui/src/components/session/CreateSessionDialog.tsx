@@ -38,6 +38,7 @@ const DEFAULT_MODELS = {
         "claude-3-opus-20240229",
     ],
     openai: ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"],
+    "openai-codex": ["gpt-5.3-codex", "gpt-4o", "o3-mini"],
     deepseek: ["deepseek-chat", "deepseek-coder"],
     ollama: ["llama3", "mistral", "qwen2"],
 };
@@ -185,7 +186,7 @@ export function CreateSessionDialog({ isOpen, onClose, onCreate }: CreateSession
                                             }}
                                             className="w-full bg-[#1c1c1c] border border-gray-600 rounded px-2 py-2 text-xs text-gray-200 focus:border-blue-500 focus:outline-none"
                                         >
-                                            {["google", "anthropic", "openai", "deepseek", "ollama", "custom"].map(p => (
+                                            {["google", "anthropic", "openai", "openai-codex", "deepseek", "ollama", "custom"].map(p => (
                                                 <option key={p} value={p}>
                                                     {p === "custom" ? "Custom" : p.charAt(0).toUpperCase() + p.slice(1)}
                                                 </option>
