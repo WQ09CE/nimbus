@@ -33,6 +33,10 @@ class NimbusConfig:
     # Provider Keys
     gemini_api_key: Optional[str] = None
 
+    # Anthropic OAuth
+    anthropic_oauth_path: str = "~/.pi/agent/auth.json"
+    anthropic_use_oauth: bool = True  # 默认启用（有 auth.json 就用）
+
     # Nimbus Server
     server_port: int = 4096
 
@@ -80,6 +84,11 @@ def _apply_json(config: NimbusConfig, data: dict) -> None:
         if gemini := providers.get("gemini"):
             if api_key := gemini.get("api_key"):
                 config.gemini_api_key = api_key
+        if anthropic := providers.get("anthropic"):
+            if oauth_path := anthropic.get("oauth_path"):
+                config.anthropic_oauth_path = oauth_path
+            if "use_oauth" in anthropic:
+                config.anthropic_use_oauth = bool(anthropic["use_oauth"])
 
     server = data.get("server", {})
     if v := server.get("port"):
@@ -105,6 +114,11 @@ def _apply_env(config: NimbusConfig) -> None:
         config.gemini_api_key = v
     elif v := os.environ.get("GOOGLE_API_KEY"):
         config.gemini_api_key = v
+
+    if v := os.environ.get("NIMBUS_ANTHROPIC_OAUTH_PATH"):
+        config.anthropic_oauth_path = v
+    if v := os.environ.get("NIMBUS_ANTHROPIC_USE_OAUTH"):
+        config.anthropic_use_oauth = v.lower() not in ("0", "false", "no")
 
 
 # Singleton
