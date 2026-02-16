@@ -542,6 +542,24 @@ class MMU:
             token_count += summary_msg.token_estimate()
             messages.append(summary_msg.to_dict())
 
+        # --- Global Memo (跨会话知识) ---
+        GLOBAL_MEMO_TOKEN_CAP = 2000
+        if hasattr(self, '_global_memo_manager') and self._global_memo_manager:
+            try:
+                global_content = self._global_memo_manager.read()
+                if global_content and global_content.strip():
+                    global_msg = Message(
+                        role="system",
+                        content=f"🌐 [Global Memo - 跨会话知识]:\n{global_content}",
+                        meta={"type": "global_memo"}
+                    )
+                    global_tokens = min(global_msg.token_estimate(), GLOBAL_MEMO_TOKEN_CAP)
+                    if token_count + global_tokens < max_tokens:
+                        messages.append(global_msg.to_dict())
+                        token_count += global_tokens
+            except Exception:
+                pass
+
         # --- Memo (好记性不如烂笔头) ---
         # Auto-inject memo content if MemoManager is attached
         if hasattr(self, '_memo_manager') and self._memo_manager:
@@ -553,7 +571,10 @@ class MMU:
                         content=f"📝 [Your Memo - 你的记忆笔记]:\n{memo_content}",
                         meta={"type": "memo"}
                     )
+                    SESSION_MEMO_TOKEN_CAP = 5000
                     memo_tokens = memo_msg.token_estimate()
+                    if memo_tokens > SESSION_MEMO_TOKEN_CAP:
+                        memo_tokens = SESSION_MEMO_TOKEN_CAP
                     if token_count + memo_tokens < max_tokens:
                         messages.append(memo_msg.to_dict())
                         token_count += memo_tokens

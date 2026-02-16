@@ -18,10 +18,10 @@ from typing import Optional
 MEMO_TOOL_DEF = {
     "name": "Memo",
     "description": (
-        "Read or update your personal memo file (.nimbus/memo.md). "
-        "This is your ONLY long-term memory - anything not written here WILL BE FORGOTTEN. "
-        "Use it to track: current task progress, important file paths, key decisions, "
-        "variable names, error patterns, and next steps. "
+        "Read or update your memo files. "
+        "Two scopes: 'session' (default) for current session notes, "
+        "'global' for cross-session project knowledge that persists forever. "
+        "Anything not written here WILL BE FORGOTTEN. "
         "The memo content is always visible at the top of your context."
     ),
     "parameters": {
@@ -40,6 +40,14 @@ MEMO_TOOL_DEF = {
             "content": {
                 "type": "string",
                 "description": "Content to write/append (required for write/append actions)"
+            },
+            "scope": {
+                "type": "string",
+                "enum": ["session", "global"],
+                "description": (
+                    "'session' (default) - current session memo, lost after session ends; "
+                    "'global' - persistent memo across all sessions, for project-level knowledge"
+                )
             }
         },
         "required": ["action"]
@@ -67,7 +75,12 @@ class MemoManager:
 
     def _init_memo(self):
         """Initialize memo with a template."""
-        template = """# 📝 Session Memo
+        if self.memo_file.exists():
+            return
+        if self.session_id == "global":
+            template = "# Project Knowledge\n\n<!-- Cross-session persistent memory -->\n"
+        else:
+            template = """# 📝 Session Memo
 
 > 这是你的"烂笔头"。任何重要的事情，如果不写在这里，下一轮对话就会消失。
 
@@ -131,11 +144,13 @@ def create_memo_tool(workspace: Path, session_id: str = "default"):
     Factory function to create a memo tool instance bound to a specific session.
 
     Returns:
-        Tuple of (tool_definition, tool_function)
+        Tuple of (tool_definition, tool_function, session_manager, global_manager)
     """
-    manager = MemoManager(workspace, session_id)
+    session_manager = MemoManager(workspace, session_id)
+    global_manager = MemoManager(workspace, "global")
 
-    async def memo_tool(action: str, content: str = None) -> str:
-        return manager.execute(action, content)
+    async def memo_tool(action: str, content: str = None, scope: str = "session") -> str:
+        mgr = global_manager if scope == "global" else session_manager
+        return mgr.execute(action, content)
 
-    return MEMO_TOOL_DEF, memo_tool, manager
+    return MEMO_TOOL_DEF, memo_tool, session_manager, global_manager

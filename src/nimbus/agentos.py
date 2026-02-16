@@ -415,10 +415,11 @@ class AgentOS:
         # Create Memo tool (bound to workspace and session)
         # Note: workspace_info is a display string like "Workspace: .", not a path
         workspace = Path.cwd()
-        memo_def, memo_func, memo_manager = create_memo_tool(workspace, pid)
+        memo_def, memo_func, session_manager, global_manager = create_memo_tool(workspace, pid)
 
-        # Store memo manager for later access (e.g., prepending memo to context)
-        mmu._memo_manager = memo_manager
+        # Store memo managers for later access (e.g., prepending memo to context)
+        mmu._memo_manager = session_manager
+        mmu._global_memo_manager = global_manager
 
         gate = self._create_gate(pid, _role, local_tools={
             "Memo": memo_func
@@ -683,8 +684,9 @@ class AgentOS:
 
             # Create Memo tool (bound to workspace and session)
             workspace = Path.cwd()
-            memo_def, memo_func, memo_manager = create_memo_tool(workspace, session_id)
-            mmu._memo_manager = memo_manager
+            memo_def, memo_func, session_manager, global_manager = create_memo_tool(workspace, session_id)
+            mmu._memo_manager = session_manager
+            mmu._global_memo_manager = global_manager
 
             gate = self._create_gate(session_id, "chat", local_tools={
                 "Memo": memo_func
@@ -796,8 +798,9 @@ class AgentOS:
 
         # Create Memo tool (bound to workspace and session)
         workspace = Path.cwd()
-        memo_def, memo_func, memo_manager = create_memo_tool(workspace, session_id)
-        mmu._memo_manager = memo_manager
+        memo_def, memo_func, session_manager, global_manager = create_memo_tool(workspace, session_id)
+        mmu._memo_manager = session_manager
+        mmu._global_memo_manager = global_manager
 
         gate = self._create_gate(session_id, "chat", local_tools={
             "Memo": memo_func
@@ -1015,6 +1018,16 @@ class AgentOS:
                 except Exception:
                     pass
 
+            # Read Global Memo to include in summary
+            global_memo_context = ""
+            if hasattr(mmu, '_global_memo_manager') and mmu._global_memo_manager:
+                try:
+                    gc = mmu._global_memo_manager.read()
+                    if gc and gc.strip():
+                        global_memo_context = gc.strip()[:300]
+                except Exception:
+                    pass
+
             async def generate_summary(messages: list) -> str:
                 """Generate a summary of the conversation using LLM."""
                 try:
@@ -1035,6 +1048,9 @@ class AgentOS:
                     # Append Memo content so summarizer preserves key info from notes
                     if memo_context:
                         context += f"\n\n【用户备忘录 Memo】\n{memo_context[:500]}"
+
+                    if global_memo_context:
+                        context += f"\n\n【全局知识 Global Memo】\n{global_memo_context}"
 
                     # Calculate target length based on whether we're merging
                     target_chars = summary_char_budget
