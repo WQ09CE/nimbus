@@ -22,6 +22,7 @@ export interface Session {
   message_count: number;
   agent_mode?: string;
   llm_config?: Record<string, string>;
+  first_message_preview?: string;
 }
 
 export interface SessionCreateRequest {

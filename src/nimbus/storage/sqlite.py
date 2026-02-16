@@ -215,7 +215,8 @@ class SQLiteStorage:
                 """
                 SELECT s.*,
                     (SELECT MAX(created_at) FROM messages WHERE session_id = s.id) as last_message_at,
-                    (SELECT COUNT(*) FROM messages WHERE session_id = s.id) as message_count
+                    (SELECT COUNT(*) FROM messages WHERE session_id = s.id) as message_count,
+                    (SELECT SUBSTR(m.content, 1, 80) FROM messages m WHERE m.session_id = s.id AND m.role = 'user' ORDER BY m.created_at ASC LIMIT 1) as first_message_preview
                 FROM sessions s
                 WHERE s.status = ?
                 ORDER BY s.updated_at DESC

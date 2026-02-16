@@ -86,6 +86,7 @@ class SessionResponse(BaseModel):
     last_message_at: Optional[datetime] = None
     message_count: int = 0
     llm_config: Optional[Dict[str, str]] = None
+    first_message_preview: Optional[str] = None
 
 
 class SessionDetail(SessionResponse):

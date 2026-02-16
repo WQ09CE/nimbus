@@ -359,6 +359,34 @@ class SessionManagerV2:
 
         return self._shared_llm_client
 
+    async def _auto_generate_title(self, session_id: str, user_message: str):
+        """用 LLM 根据首条消息自动生成 session 标题。"""
+        try:
+            session = await self._storage.get_session(session_id)
+            current_name = session.get("name") or ""
+            if current_name and not current_name.startswith("New Chat"):
+                return
+
+            llm = await self._get_shared_llm_client()
+
+            has_chinese = any("\u4e00" <= c <= "\u9fff" for c in user_message)
+            if has_chinese:
+                prompt = f"请用一个简短的标题（5-15个字）概括这个对话的主题，只返回标题本身：\n\n{user_message[:200]}"
+            else:
+                prompt = f"Generate a short title (3-8 words) for this conversation. Return only the title:\n\n{user_message[:200]}"
+
+            messages = [{"role": "user", "content": prompt}]
+            response = await llm.chat(messages, tools=[])
+
+            if response.content:
+                title = response.content.strip().strip('"').strip("'")
+                if len(title) > 50:
+                    title = title[:50]
+                await self._storage.update_session(session_id, name=title)
+                logger.info(f"Auto-titled session {session_id}: {title}")
+        except Exception as e:
+            logger.warning(f"Auto-title failed for {session_id}: {e}")
+
     def _create_default_llm_client(self):
         """DEPRECATED: Create default LLM client (v2-compatible)."""
         # Use v1 LLM client wrapped in adapter for v2 compatibility

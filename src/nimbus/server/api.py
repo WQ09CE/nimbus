@@ -468,6 +468,16 @@ async def chat(
             logger.info("📞 Calling stream_chat...")
             await session_manager.stream_chat(session_id, chat_content)
             logger.info("✅ stream_chat completed")
+
+            # Auto-title: 仅在首轮对话后触发
+            try:
+                msgs = await storage.get_messages(session_id, limit=3)
+                if len(msgs) <= 2:  # 1 user + 1 assistant = 首轮对话
+                    asyncio.create_task(
+                        session_manager._auto_generate_title(session_id, data.content)
+                    )
+            except Exception as title_err:
+                logger.warning(f"Auto-title check failed: {title_err}")
         except asyncio.CancelledError:
             # Client disconnected - this is expected, not an error
             logger.info(f"🛑 stream_chat cancelled for session {session_id} (client disconnected)")

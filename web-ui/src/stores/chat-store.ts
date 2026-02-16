@@ -640,6 +640,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
               currentActivity: "完成",
               lastHeartbeat: Date.now()
             });
+            // Auto-refresh session to pick up auto-generated title
+            if (messages.length <= 1) {
+              setTimeout(async () => {
+                try {
+                  const { getSession } = await import("@/lib/api/sessions");
+                  const updated = await getSession(currentSession.id);
+                  set({ session: updated });
+                } catch {}
+              }, 3000);
+            }
             // Stream completed successfully, exit loop
             shouldContinue = false;
             break;

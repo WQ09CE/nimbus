@@ -41,9 +41,11 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
     setLoading(true);
     try {
       const list = await listSessions();
-      setSessions(list.sort((a, b) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      ));
+      setSessions(list.sort((a, b) => {
+        const aTime = a.last_message_at || a.created_at;
+        const bTime = b.last_message_at || b.created_at;
+        return new Date(bTime).getTime() - new Date(aTime).getTime();
+      }));
     } catch (err) {
       console.error("Failed to fetch sessions:", err);
     } finally {
@@ -119,13 +121,26 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
     });
   };
 
-  const formatDate = (dateStr: string) => {
+  const formatRelativeTime = (dateStr: string) => {
     const date = new Date(dateStr);
     const now = new Date();
-    const isToday = date.toDateString() === now.toDateString();
-    return isToday
-      ? date.toLocaleTimeString("zh-CN", { hour: '2-digit', minute: '2-digit' })
-      : date.toLocaleDateString("zh-CN", { month: '2-digit', day: '2-digit' });
+    const diffMs = now.getTime() - date.getTime();
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffHr = Math.floor(diffMs / 3600000);
+    const diffDay = Math.floor(diffMs / 86400000);
+
+    if (diffMin < 1) return "刚刚";
+    if (diffMin < 60) return `${diffMin}分钟前`;
+    if (diffHr < 24) return `${diffHr}小时前`;
+    if (diffDay < 7) return `${diffDay}天前`;
+    return date.toLocaleDateString("zh-CN", { month: '2-digit', day: '2-digit' });
+  };
+
+  const getShortModelName = (modelId: string) => {
+    const parts = modelId.split("-");
+    if (modelId.includes("gemini")) return `gemini-${parts.find(p => ["flash","pro"].includes(p)) || parts[1]}`;
+    if (modelId.includes("claude")) return `${parts[1]}-${parts[2]}`;
+    return modelId.length > 12 ? modelId.slice(0, 12) : modelId;
   };
 
   if (!isOpen) return null;
@@ -135,7 +150,7 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
       <div className="fixed inset-0 bg-black/60 z-40 backdrop-blur-sm" onClick={onClose} />
 
       {/* Sidebar Panel */}
-      <div className="fixed top-0 left-0 bottom-0 w-[400px] bg-[#1a1a1a] border-r border-[#333] z-50 shadow-2xl flex flex-col transform transition-transform duration-300 animate-in slide-in-from-left">
+      <div className="fixed top-0 left-0 bottom-0 w-full md:w-[400px] bg-[#1a1a1a] border-r border-[#333] z-50 shadow-2xl flex flex-col transform transition-transform duration-300 animate-in slide-in-from-left">
 
         {/* Header */}
         <div className="px-5 py-4 border-b border-[#333] flex items-center justify-between bg-[#1f1f1f]">
@@ -231,9 +246,15 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
                           {displayName}
                         </h3>
                         <span className="text-[10px] text-gray-600 font-mono whitespace-nowrap shrink-0">
-                          {formatDate(session.created_at)}
+                          {formatRelativeTime(session.last_message_at || session.created_at)}
                         </span>
                       </div>
+
+                      {session.first_message_preview && (
+                        <p className="text-xs text-gray-500 truncate mt-0.5 leading-snug">
+                          {session.first_message_preview}
+                        </p>
+                      )}
 
                       <div className="flex items-center gap-2">
                         {/* Simplified Status: Only show pill for non-active, otherwise just dot if needed or strict styling */}
@@ -249,6 +270,15 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
                           `}>
                             {status.label}
                           </div>
+                        )}
+
+                        {session.llm_config?.model_id && (
+                          <>
+                            <span className="text-gray-700 mx-0.5">·</span>
+                            <span className="text-[10px] text-gray-500 bg-gray-800 px-1.5 py-0.5 rounded font-mono">
+                              {getShortModelName(session.llm_config.model_id)}
+                            </span>
+                          </>
                         )}
 
                         {session.workspace_path && (

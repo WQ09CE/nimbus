@@ -10,7 +10,7 @@ interface CreateSessionDialogProps {
 }
 
 export interface CreateSessionConfig {
-    name: string;
+    name?: string;
     workspace_path?: string;
     agent_mode: string;
     llm_config: {
@@ -81,12 +81,10 @@ export function CreateSessionDialog({ isOpen, onClose, onCreate }: CreateSession
     }, [isOpen]);
 
     const handleSubmit = async () => {
-        if (!name.trim()) return;
-
         setLoading(true);
         try {
             const config: CreateSessionConfig = {
-                name: name.trim(),
+                name: name.trim() || undefined,
                 workspace_path: workspacePath.trim() || undefined,
                 agent_mode: agentMode,
                 llm_config: {
@@ -141,7 +139,7 @@ export function CreateSessionDialog({ isOpen, onClose, onCreate }: CreateSession
                                 type="text"
                                 value={name}
                                 onChange={e => setName(e.target.value)}
-                                placeholder="例如: 重构用户模块"
+                                placeholder="可选，留空则根据首条消息自动生成"
                                 className="w-full bg-[#2a2a2a] border border-gray-600 rounded-lg px-3 py-2.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
                                 autoFocus
                                 onKeyDown={e => e.key === "Enter" && handleSubmit()}
@@ -271,7 +269,7 @@ export function CreateSessionDialog({ isOpen, onClose, onCreate }: CreateSession
                     </button>
                     <button
                         onClick={handleSubmit}
-                        disabled={!name.trim() || loading}
+                        disabled={loading}
                         className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg font-medium transition-all shadow-lg shadow-blue-500/20"
                     >
                         {loading ? "创建中..." : "创建会话"}

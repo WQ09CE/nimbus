@@ -32,4 +32,5 @@ def _format_session_response(session: Dict[str, Any]) -> SessionResponse:
         message_count=session.get("message_count", 0),
         agent_mode=agent_mode,
         llm_config=model_config,
+        first_message_preview=session.get("first_message_preview"),
     )
