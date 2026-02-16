@@ -444,3 +444,21 @@ body::before {
     @apply px-2 py-2;
   }
 }
+
+/* Mobile touch optimization */
+@media (max-width: 767px) {
+  /* Prevent double-tap zoom */
+  * {
+    touch-action: manipulation;
+  }
+
+  /* Ensure minimum touch target size */
+  button, a, [role="button"] {
+    min-height: 36px;
+  }
+
+  /* Prevent iOS auto-zoom on focus */
+  input, textarea, select {
+    font-size: 16px !important;
+  }
+}

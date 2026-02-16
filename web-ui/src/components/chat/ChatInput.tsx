@@ -326,7 +326,7 @@ export const ChatInput = React.memo(function ChatInput({
   // ========================================================================
 
   return (
-    <div className="flex-shrink-0 z-20 pb-8 px-4 pointer-events-none">
+    <div className="flex-shrink-0 z-20 pb-4 md:pb-8 px-2 md:px-4 pointer-events-none">
       <div className="max-w-4xl mx-auto pointer-events-auto">
         <form
           onSubmit={handleSubmit}
@@ -449,7 +449,7 @@ export const ChatInput = React.memo(function ChatInput({
                   w-full bg-transparent border-none focus:ring-0
                   text-gray-100 placeholder-gray-500 text-[16px] leading-relaxed
                   py-4 pr-2 font-sans
-                  resize-none max-h-[200px] overflow-y-auto
+                  resize-none max-h-[120px] md:max-h-[200px] overflow-y-auto
                   min-h-[60px]
                 `}
                 style={{
@@ -504,7 +504,7 @@ export const ChatInput = React.memo(function ChatInput({
           </div>
 
           {/* Bottom hints */}
-          <div className="flex justify-between items-center mt-2 px-3 opacity-0 group-focus-within:opacity-100 transition-opacity duration-300">
+          <div className="hidden md:flex justify-between items-center mt-2 px-3 opacity-0 group-focus-within:opacity-100 transition-opacity duration-300">
             <div className="flex gap-4">
               <div className="text-[10px] text-gray-500 font-medium flex gap-1.5 items-center">
                 <span className="bg-gray-800 px-1 rounded border border-gray-700">⏎</span>

@@ -67,23 +67,23 @@ export default function Home() {
       </div>
 
       {/* Header */}
-      <header className="flex-shrink-0 z-20 px-6 py-4 bg-gray-950/80 border-b border-white/5">
-        <div className="max-w-6xl mx-auto flex items-center justify-between">
+      <header className="flex-shrink-0 z-20 px-3 md:px-6 py-3 md:py-4 bg-gray-950/80 border-b border-white/5">
+        <div className="md:max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-cyan-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
               <span className="text-xl">☁️</span>
             </div>
             <div>
-              <h1 className="text-lg font-bold bg-gradient-to-r from-blue-100 to-blue-300 bg-clip-text text-transparent">Nimbus</h1>
+              <h1 className="text-lg font-bold bg-gradient-to-r from-blue-100 to-blue-300 bg-clip-text text-transparent hidden md:inline">Nimbus</h1>
               <div className="flex items-center gap-2">
-                <span className="text-[10px] uppercase tracking-wider text-blue-400 font-semibold px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/20">Beta</span>
+                <span className="text-[10px] uppercase tracking-wider text-blue-400 font-semibold px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/20 hidden md:inline">Beta</span>
                 {session && (
                   <button
                     data-testid="session-panel-trigger"
                     onClick={() => setShowSessionPanel(true)}
                     className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors group"
                   >
-                    <span className="truncate max-w-[150px]">
+                    <span className="truncate max-w-[120px] md:max-w-[200px]">
                       {session.name || session.id.slice(0, 8)}
                     </span>
                     <span className="opacity-0 group-hover:opacity-100 transition-opacity">▼</span>
@@ -93,7 +93,7 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5 md:gap-3">
             {session && (
               <ModelSelector
                 session={session}
@@ -140,7 +140,7 @@ export default function Home() {
           {/* Messages */}
           <div
             ref={messagesContainerRef}
-            className="flex-1 overflow-y-auto px-6 py-4 scroll-smooth custom-scrollbar"
+            className="flex-1 overflow-y-auto px-3 md:px-6 py-4 scroll-smooth custom-scrollbar"
           >
             {/* Error */}
             {error && (
@@ -172,7 +172,7 @@ export default function Home() {
                 <h2 className="text-2xl font-bold bg-gradient-to-br from-white to-gray-400 bg-clip-text text-transparent mb-3">
                   Nimbus Agent
                 </h2>
-                <div className="grid grid-cols-2 gap-3 max-w-lg mt-8">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-lg mt-8">
                   <div className="p-4 bg-white/5 border border-white/5 rounded-xl hover:bg-white/10 transition-colors cursor-default text-left">
                     <div className="text-blue-400 mb-2">📄</div>
                     <h3 className="text-sm font-medium text-gray-200 mb-1">File Operations</h3>
@@ -207,7 +207,7 @@ export default function Home() {
           <WorkingIndicator />
 
           {/* Input Area */}
-          <div className="flex-shrink-0 p-6 pt-0 bg-transparent">
+          <div className="flex-shrink-0 p-3 md:p-6 pt-0 bg-transparent">
             <ChatInput
               onSend={sendMessage}
               onInterrupt={interruptMessage}
@@ -222,15 +222,22 @@ export default function Home() {
           <StreamingScroller containerRef={messagesContainerRef} />
         </main>
 
+        {/* Mobile backdrop */}
+        {showFilePanel && (
+          <div className="fixed inset-0 bg-black/50 z-20 md:hidden" onClick={() => setShowFilePanel(false)} />
+        )}
+
         {/* File Explorer Sidebar */}
         <div
           className={`
-            bg-[#1e1e1e] border-l border-[#333] transition-all duration-300 ease-in-out flex flex-col 
-            ${showFilePanel ? 'w-80 opacity-100 translate-x-0' : 'w-0 opacity-0 overflow-hidden border-l-0 translate-x-full'}
+            ${showFilePanel
+              ? 'fixed inset-y-0 right-0 w-[85%] z-30 md:relative md:inset-auto md:w-80 opacity-100 translate-x-0'
+              : 'w-0 opacity-0 overflow-hidden translate-x-full'}
+            bg-[#1e1e1e] border-l border-[#333] transition-all duration-300 ease-in-out flex flex-col
           `}
         >
           {session && (
-            <div className="h-full w-80">
+            <div className="h-full w-full md:w-80">
               <FileExplorer sessionId={session.id} />
             </div>
           )}

@@ -122,7 +122,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
       </div>
 
       {/* Content Container */}
-      <div className={`flex flex-col max-w-[85%] ${isUser ? "items-end" : "items-start"}`}>
+      <div className={`flex flex-col max-w-[95%] md:max-w-[85%] ${isUser ? "items-end" : "items-start"}`}>
 
         {/* Name & Time (Optional, show on hover or always subtle) */}
         <div className={`flex items-center gap-2 mb-1 px-1 text-[10px] text-gray-500 ${isUser ? "flex-row-reverse" : "flex-row"}`}>
@@ -137,7 +137,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
         {/* Bubble */}
         <div
           className={`
-            relative px-5 py-3.5 shadow-md
+            relative px-3 md:px-5 py-2.5 md:py-3.5 shadow-md
             ${isUser
               ? "bg-blue-600 text-white rounded-2xl rounded-tr-sm"
               : "bg-gray-900/60 backdrop-blur-md border border-white/5 text-gray-100 rounded-2xl rounded-tl-sm"
