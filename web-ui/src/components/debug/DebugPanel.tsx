@@ -26,9 +26,8 @@ interface DebugContext {
   messages: ContextMessage[];
 }
 
-const API_BASE = typeof window !== "undefined" 
-  ? `${window.location.protocol}//${window.location.hostname}:4096`
-  : "http://localhost:4096";
+// Use relative URL — Next.js rewrites proxy /debug/* to nimbus server
+const API_BASE = "";
 
 export function DebugPanel() {
   const { session, isStreaming } = useChatStore();

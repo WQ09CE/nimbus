@@ -749,6 +749,13 @@ class SessionManagerV2:
         """Convert v2 Event to SSE event."""
         event_type = event.type.lower()
 
+        # Debug: Log tool events for SSE tracing
+        if event_type in ("tool_started", "tool_finished"):
+            logger.info(
+                f"SSE emit: {event_type} -> pid={event.pid}, session={session_id}, "
+                f"tool={event.data.get('tool', '?')}, action_id={event.data.get('action_id', '?')}"
+            )
+
         # Detect sub-agent (executor) events by comparing pid with session_id.
         # Core/chat processes use session_id as pid; executor processes use "proc-xxx".
         is_sub_agent = event.pid != session_id
@@ -801,11 +808,18 @@ class SessionManagerV2:
             self._sub_tool_buffer[session_id] = []
 
         # Emit to SSE hub
-        await self._sse_hub.publish(
+        sent_count = await self._sse_hub.publish(
             session_id,
             sse_type,
             event.data,
         )
+
+        # Debug: Log tool event delivery
+        if sse_type in ("tool_call", "tool_result"):
+            logger.info(
+                f"SSE delivered: {sse_type} -> {sent_count} connections, "
+                f"tool={event.data.get('tool', '?')}"
+            )
 
     async def interrupt_session(self, session_id: str) -> Dict[str, Any]:
         """

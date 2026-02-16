@@ -81,6 +81,13 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
     }
   }, [hasDispatch]);
 
+  // Auto-expand tools during streaming
+  useEffect(() => {
+    if (isStreaming && tools.length > 0) {
+      setShowTools(true);
+    }
+  }, [isStreaming, tools.length]);
+
   if (isSystem) {
     return (
       <div className="flex justify-center my-6">

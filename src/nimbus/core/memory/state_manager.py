@@ -85,19 +85,32 @@ class StateManager:
         # or keywords in stdout/stderr
         output_lower = output.lower()
 
-        # Keywords indicating failure
-        failure_keywords = ["failed", "error", "exception", "traceback", "fatal"]
-        # Keywords indicating success (stronger signal)
-        success_keywords = ["passed", "success", "ok"]
+        # Look for test runner summary patterns (last few lines are most relevant)
+        # Typical patterns: "2 failed", "FAILED", "1 error", "FATAL:", "tests failed"
+        lines = output_lower.strip().splitlines()
+        # Focus on last 10 lines where test runners print summaries
+        tail = "\n".join(lines[-10:]) if lines else ""
 
-        # Simple logic: If it says 'failed' explicitly, it's a fail.
-        # Note: This can be improved with regex for specific runners (pytest, jest)
-        if any(k in output_lower for k in failure_keywords):
+        # Failure patterns: match test runner summary formats
+        failure_patterns = [
+            " failed",      # "2 failed", "tests failed"
+            " error",       # "1 error"
+            "fatal:",       # "FATAL: ..."
+            "failure",      # "FAILURE", "Build failure"
+        ]
+        # Success patterns
+        success_patterns = [
+            " passed",      # "10 passed"
+            "success",      # "Build success"
+            "all tests",    # "all tests passed"
+            " ok",          # "tests ok", but not "token" etc.
+        ]
+
+        if any(p in tail for p in failure_patterns):
             self.last_cmd_status = f"🔴 FAILED: {cmd[:30]}..."
-        elif any(k in output_lower for k in success_keywords):
+        elif any(p in tail for p in success_patterns):
             self.last_cmd_status = f"🟢 PASSED: {cmd[:30]}..."
         else:
-            # Ambiguous
             self.last_cmd_status = f"⚪ EXECUTED: {cmd[:30]}..."
 
     def render(self) -> str:

@@ -1,23 +1,37 @@
 /**
  * Nimbus API Client
- * 
- * Connects to Nimbus server @ localhost:4096
- * Uses /api/v1/* endpoints with SSE streaming
+ *
+ * Uses /api/v1/* endpoints with SSE streaming.
+ * Regular requests are proxied through Next.js rewrites to nimbus server (port 4096).
+ * SSE streaming requests bypass the proxy to avoid response buffering.
+ * Set NEXT_PUBLIC_API_URL to override (e.g. for direct connection).
  */
 
 import { logger } from "../logger";
 
 const getApiBase = () => {
+  // Explicit override (e.g. for development with separate API server)
   if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
+  // Default: use relative URL — Next.js rewrites proxy /api/v1/* to nimbus server
+  // This works for both local and external access (only port 3000 needed)
+  return "";
+};
+
+const getStreamBase = () => {
+  // For SSE streaming, bypass Next.js proxy to avoid response buffering.
+  // Next.js rewrites buffer the entire SSE response, breaking real-time streaming.
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
+  // In browser context, connect directly to nimbus backend
   if (typeof window !== "undefined") {
-    // Browser: use current hostname + port 4096
-    return `${window.location.protocol}//${window.location.hostname}:4096`;
+    const nimbusPort = process.env.NEXT_PUBLIC_NIMBUS_PORT || "4096";
+    return `http://${window.location.hostname}:${nimbusPort}`;
   }
-  // SSR / Server
+  // Server-side fallback
   return "http://localhost:4096";
 };
 
 const API_BASE = getApiBase();
+const STREAM_BASE = getStreamBase();
 
 export class ApiError extends Error {
   constructor(
@@ -119,7 +133,7 @@ export async function* apiStream(
   signal?: AbortSignal,
   method: string = "POST"
 ): AsyncGenerator<{ type: string; data: unknown }> {
-  const url = `${API_BASE}${endpoint}`;
+  const url = `${STREAM_BASE}${endpoint}`;
   const reqId = generateRequestId();
   logger.info(`[API] Stream ${method} ${url} (req_id=${reqId})`);
 
@@ -189,4 +203,4 @@ export async function* apiStream(
   }
 }
 
-export { API_BASE };
+export { API_BASE, STREAM_BASE };

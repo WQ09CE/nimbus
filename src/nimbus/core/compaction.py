@@ -588,10 +588,10 @@ class ContextStackAwareCompaction:
                 continue
             content = msg.content if isinstance(msg.content, str) else ""
             # 只检测明确的错误（per expert review）
-            if content.startswith("[Error]") or content.startswith("Error:"):
+            if content.startswith("[Error]"):
                 self.mark_tool_call(msg.tool_call_id, valuable=False, reason="error_prefix")
                 marked_count += 1
-            elif "Exception:" in content or "Traceback" in content:
+            elif content.lstrip().startswith("Traceback (most recent call last)"):
                 self.mark_tool_call(msg.tool_call_id, valuable=False, reason="exception")
                 marked_count += 1
         return marked_count

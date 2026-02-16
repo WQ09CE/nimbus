@@ -746,7 +746,11 @@ class AgentOS:
 
             self._session_mgr.append_message(Message(role="user", content=message))
 
-        self.inject_message(process.pid, message)
+        if process.state == "RUNNING":
+            self.inject_message(process.pid, message)
+        else:
+            # Process not RUNNING (PENDING/SUCCEEDED) — add directly to inbox
+            process.inbox.append(message)
 
         if process.state != "RUNNING":
             process.state = "RUNNING"

@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import platform
+import re
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
@@ -41,6 +42,13 @@ CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
 CODEX_MAX_RETRIES = 3
 CODEX_RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
 CODEX_RETRY_BASE_DELAY = 1.0
+
+
+def _sanitize_tool_id(id_str: str) -> str:
+    """Sanitize tool ID to match Anthropic's pattern: ^[a-zA-Z0-9_-]+$"""
+    if not id_str:
+        return "tool_0"
+    return re.sub(r'[^a-zA-Z0-9_-]', '_', id_str)
 
 
 class DirectAdapter:
@@ -68,6 +76,9 @@ class DirectAdapter:
         self._ensure_api_keys()
         self._init_anthropic_oauth()
         self._init_openai_codex_oauth()
+        # Cached Anthropic SDK client (reused across calls, rebuilt on token change)
+        self._anthropic_client: Any = None
+        self._anthropic_client_token: str | None = None
 
     def _ensure_api_keys(self):
         """Ensure API keys are loaded from NimbusConfig."""
@@ -292,7 +303,7 @@ class DirectAdapter:
                         args = args_raw
                     content_blocks.append({
                         "type": "tool_use",
-                        "id": tc.get("id", ""),
+                        "id": _sanitize_tool_id(tc.get("id", "")),
                         "name": func.get("name", ""),
                         "input": args,
                     })
@@ -303,7 +314,7 @@ class DirectAdapter:
             if role == "tool":
                 tool_result_block = {
                     "type": "tool_result",
-                    "tool_use_id": msg.get("tool_call_id", ""),
+                    "tool_use_id": _sanitize_tool_id(msg.get("tool_call_id", "")),
                     "content": msg.get("content", ""),
                 }
                 raw_messages.append({
@@ -424,10 +435,15 @@ class DirectAdapter:
         if self.config.temperature is not None:
             kwargs["temperature"] = self.config.temperature
 
-        client = anthropic.AsyncAnthropic(
-            auth_token=access_token,
-            default_headers=STEALTH_HEADERS,
-        )
+        # Reuse client if token hasn't changed
+        if self._anthropic_client is None or self._anthropic_client_token != access_token:
+            self._anthropic_client = anthropic.AsyncAnthropic(
+                auth_token=access_token,
+                default_headers=STEALTH_HEADERS,
+                timeout=httpx.Timeout(timeout=120.0, connect=10.0),
+            )
+            self._anthropic_client_token = access_token
+        client = self._anthropic_client
 
         try:
             current_tool: dict | None = None
@@ -692,8 +708,7 @@ class DirectAdapter:
                 "reasoning.encrypted_content",
             ],
         }
-        if instructions:
-            body["instructions"] = instructions
+        body["instructions"] = instructions if instructions else "You are a helpful assistant."
         # Note: Codex Responses API does not support temperature parameter
 
         # Retry loop

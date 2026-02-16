@@ -4,10 +4,21 @@ const nextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
-  // 允许跨域开发请求
-  // experimental: {
-  //   allowedDevOrigins: ["127.0.0.1:3000", "localhost:3000", "0.0.0.0:3000"],
-  // },
+  // Proxy API requests to nimbus server (port 4096)
+  // This allows external access via port 3000 only — no need to expose port 4096
+  async rewrites() {
+    const nimbusUrl = process.env.NIMBUS_API_URL || "http://localhost:4096";
+    return [
+      {
+        source: "/api/v1/:path*",
+        destination: `${nimbusUrl}/api/v1/:path*`,
+      },
+      {
+        source: "/debug/:path*",
+        destination: `${nimbusUrl}/debug/:path*`,
+      },
+    ];
+  },
   webpack: (config, { dev, isServer }) => {
     return config;
   },

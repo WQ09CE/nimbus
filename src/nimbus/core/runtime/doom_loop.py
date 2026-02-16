@@ -127,6 +127,23 @@ class DoomLoopDetector:
         self._recent_calls: List[Tuple[str, str]] = []
         self._loop_count = 0  # 累计检测到的 doom loop 次数
 
+    def _normalize_args_for_comparison(self, tool_name: str, args: Dict) -> Dict:
+        """Normalize args for doom loop comparison.
+
+        For some tools, only key parameters matter for loop detection.
+        E.g., Read with same file_path but different limit is still a loop.
+        """
+        if tool_name == "Read":
+            # Only file_path matters for doom detection
+            return {"file_path": args.get("file_path", "")}
+        if tool_name == "Edit":
+            # file_path + old_string are the key parameters
+            return {
+                "file_path": args.get("file_path", ""),
+                "old_string": args.get("old_string", ""),
+            }
+        return args
+
     def check(self, tool_name: str, args: Dict) -> DoomLoopResult:
         """
         检查是否进入 doom loop
@@ -138,8 +155,9 @@ class DoomLoopDetector:
         Returns:
             DoomLoopResult，包含是否检测到 doom loop 及相关信息
         """
-        # 序列化参数以便比较
-        args_json = json.dumps(args, sort_keys=True)
+        # 归一化参数后序列化以便比较
+        normalized_args = self._normalize_args_for_comparison(tool_name, args)
+        args_json = json.dumps(normalized_args, sort_keys=True)
         current_call = (tool_name, args_json)
 
         # 记录此次调用

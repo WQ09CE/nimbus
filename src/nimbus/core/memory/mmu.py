@@ -307,7 +307,12 @@ class MMU:
 
     def _auto_detect_tool_failure(self, tool_call_id: str, content: str) -> bool:
         """Detect explicit failures."""
-        if content.startswith("[Error]") or "Traceback" in content:
+        if content.startswith("[Error]"):
+            self.mark_tool_call(tool_call_id, discard=True, reason="auto_detected_failure")
+            return True
+        # Only match actual Python tracebacks, not source code containing "Traceback"
+        stripped = content.lstrip()
+        if stripped.startswith("Traceback (most recent call last)"):
             self.mark_tool_call(tool_call_id, discard=True, reason="auto_detected_failure")
             return True
         return False
@@ -577,15 +582,24 @@ class MMU:
                 # Filter out discarded messages if requested
                 if filter_discardable and msg.meta.get("discard"):
                     continue
-                # Filter out assistant messages with all tool calls discarded
+                # Filter out assistant messages with discarded tool calls
                 if filter_discardable and msg.role == "assistant" and msg.tool_calls:
                     discard_list = msg.meta.get("discard_tool_calls", [])
-                    all_discarded = all(
-                        (tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)) in discard_list
-                        for tc in msg.tool_calls
-                    )
-                    if all_discarded:
-                        continue
+                    if discard_list:
+                        valid_calls = [
+                            tc for tc in msg.tool_calls
+                            if (tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)) not in discard_list
+                        ]
+                        if not valid_calls and not msg.content:
+                            continue  # All discarded and no text -> skip entirely
+                        if len(valid_calls) < len(msg.tool_calls):
+                            # Partial discard: create new message with only valid tool calls
+                            msg = Message(
+                                role=msg.role,
+                                content=msg.content,
+                                tool_calls=valid_calls if valid_calls else None,
+                                meta=msg.meta,
+                            )
                 stream_messages.append(msg)
         total_msgs = len(stream_messages)
 

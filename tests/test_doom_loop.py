@@ -119,6 +119,56 @@ class TestDoomLoopDetector:
         assert not r2.is_loop
         assert not r3.is_loop
 
+    def test_read_same_file_different_limit_triggers_loop(self):
+        """Read with same file_path but different limit should trigger doom loop."""
+        detector = DoomLoopDetector(threshold=3)
+
+        r1 = detector.check("Read", {"file_path": "docs/design.md", "limit": 50})
+        r2 = detector.check("Read", {"file_path": "docs/design.md", "limit": 100})
+        r3 = detector.check("Read", {"file_path": "docs/design.md", "offset": 10})
+
+        assert not r1.is_loop
+        assert not r2.is_loop
+        assert r3.is_loop
+        assert r3.tool_name == "Read"
+
+    def test_read_different_files_no_loop(self):
+        """Read with different file_path should not trigger doom loop."""
+        detector = DoomLoopDetector(threshold=3)
+
+        r1 = detector.check("Read", {"file_path": "a.py", "limit": 50})
+        r2 = detector.check("Read", {"file_path": "b.py", "limit": 50})
+        r3 = detector.check("Read", {"file_path": "c.py", "limit": 50})
+
+        assert not r1.is_loop
+        assert not r2.is_loop
+        assert not r3.is_loop
+
+    def test_edit_same_file_and_old_string_different_new_string_triggers_loop(self):
+        """Edit with same file_path+old_string but different new_string should trigger loop."""
+        detector = DoomLoopDetector(threshold=3)
+
+        r1 = detector.check("Edit", {"file_path": "a.py", "old_string": "foo", "new_string": "bar"})
+        r2 = detector.check("Edit", {"file_path": "a.py", "old_string": "foo", "new_string": "baz"})
+        r3 = detector.check("Edit", {"file_path": "a.py", "old_string": "foo", "new_string": "qux"})
+
+        assert not r1.is_loop
+        assert not r2.is_loop
+        assert r3.is_loop
+        assert r3.tool_name == "Edit"
+
+    def test_non_normalized_tool_still_requires_exact_match(self):
+        """Tools without normalization (e.g., Bash) should still require exact args match."""
+        detector = DoomLoopDetector(threshold=3)
+
+        r1 = detector.check("Bash", {"command": "ls", "timeout": 1000})
+        r2 = detector.check("Bash", {"command": "ls", "timeout": 2000})
+        r3 = detector.check("Bash", {"command": "ls", "timeout": 3000})
+
+        assert not r1.is_loop
+        assert not r2.is_loop
+        assert not r3.is_loop
+
 
 class TestDoomLoopResult:
     """Test DoomLoopResult helpers."""
