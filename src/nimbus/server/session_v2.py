@@ -72,7 +72,19 @@ class SessionManagerV2:
             config_overrides=config_overrides,
         )
         logger.info(f"✨ Created session {session_id} ({agent_mode})")
+
+        # Pre-warm AgentOS in background
+        asyncio.create_task(self._prewarm_agent(session_id))
+
         return session
+
+    async def _prewarm_agent(self, session_id: str) -> None:
+        """Pre-warm AgentOS for a session in background."""
+        try:
+            await self.get_or_create_agent(session_id)
+            logger.info(f"Pre-warmed AgentOS for session {session_id}")
+        except Exception as e:
+            logger.warning(f"Pre-warm failed for {session_id}: {e}")
 
     async def update_session(self, session_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
         """Update session configuration."""
@@ -360,14 +372,22 @@ class SessionManagerV2:
         return self._shared_llm_client
 
     async def _auto_generate_title(self, session_id: str, user_message: str):
-        """用 LLM 根据首条消息自动生成 session 标题。"""
+        """用 LLM 根据首条消息自动生成 session 标题。使用 flash 模型避免与用户请求竞争 rate limit。"""
         try:
             session = await self._storage.get_session(session_id)
             current_name = session.get("name") or ""
             if current_name and not current_name.startswith("New Chat"):
                 return
 
-            llm = await self._get_shared_llm_client()
+            # Use a lightweight flash model for title generation to avoid
+            # competing with the user's main request for rate limits.
+            llm = None
+            try:
+                from nimbus.adapters.llm_factory import create_llm_client
+                llm = await create_llm_client("google/gemini-2.0-flash", timeout=30.0)
+            except Exception as e:
+                logger.warning(f"Failed to create flash client for title generation, falling back to shared: {e}")
+                llm = await self._get_shared_llm_client()
 
             has_chinese = any("\u4e00" <= c <= "\u9fff" for c in user_message)
             if has_chinese:
@@ -411,7 +431,7 @@ class SessionManagerV2:
         Yields SSE events in the format expected by the API.
         """
         # Wait a bit to ensure SSE connection is established (fix race condition)
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.05)
 
         logger.info(f"[stream_chat] Starting for session {session_id}")
 
