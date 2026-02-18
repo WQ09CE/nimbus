@@ -147,30 +147,30 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
 
   return (
     <>
-      <div className="fixed inset-0 bg-black/60 z-40 backdrop-blur-sm" onClick={onClose} />
+      <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40" onClick={onClose} />
 
       {/* Sidebar Panel */}
-      <div className="fixed top-0 left-0 bottom-0 w-full md:w-[400px] bg-[#1a1a1a] border-r border-[#333] z-50 shadow-2xl flex flex-col transform transition-transform duration-300 animate-in slide-in-from-left">
+      <div className="fixed top-0 left-0 bottom-0 w-full md:w-[400px] bg-nimbus-bg/95 backdrop-blur-xl border-r border-nimbus-border z-50 shadow-2xl flex flex-col transform transition-transform duration-300 animate-in slide-in-from-left">
 
         {/* Header */}
-        <div className="px-5 py-4 border-b border-[#333] flex items-center justify-between bg-[#1f1f1f]">
+        <div className="px-5 py-4 border-b border-nimbus-border flex items-center justify-between bg-nimbus-bg/80">
           <div>
-            <h2 className="text-lg font-semibold text-gray-100 tracking-tight">Sessions</h2>
-            <p className="text-[11px] text-gray-500 font-mono mt-0.5 uppercase tracking-wider">
+            <h2 className="text-lg font-semibold text-nimbus-text tracking-tight">Sessions</h2>
+            <p className="text-[11px] text-nimbus-text-dim font-mono mt-0.5 uppercase tracking-wider">
               {sessions.length} Conversations
             </p>
           </div>
           <div className="flex gap-2">
             <button
               onClick={() => setIsSelectMode(!isSelectMode)}
-              className={`p-2 rounded-lg transition-colors ${isSelectMode ? 'bg-[#333] text-white' : 'text-gray-400 hover:bg-[#333]'}`}
+              className={`p-2 rounded-lg transition-colors ${isSelectMode ? 'bg-nimbus-surface text-white' : 'text-gray-400 hover:bg-nimbus-surface'}`}
               title="批量管理"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" /></svg>
             </button>
             <button
               onClick={() => setShowCreateDialog(true)}
-              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-lg transition-colors shadow-lg shadow-blue-500/20 flex items-center gap-1.5"
+              className="px-3 py-1.5 bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/30 shadow-lg shadow-sky-400/10 text-sky-300 text-xs font-medium rounded-lg transition-colors flex items-center gap-1.5"
             >
               <span>+</span> New
             </button>
@@ -179,7 +179,7 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
 
         {/* Batch Actions Bar */}
         {isSelectMode && (
-          <div className="px-4 py-2 bg-[#2a2a2a] border-b border-[#333] flex justify-between items-center animate-in slide-in-from-top-2">
+          <div className="px-4 py-2 bg-nimbus-surface border-b border-nimbus-border flex justify-between items-center animate-in slide-in-from-top-2">
             <span className="text-xs text-gray-400">Selected: {selectedIds.size}</span>
             <button
               onClick={handleBatchDelete}
@@ -195,7 +195,7 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
         <div className="flex-1 overflow-y-auto custom-scrollbar">
           {loading ? (
             <div className="flex justify-center py-12">
-              <div className="w-6 h-6 border-2 border-gray-600 border-t-blue-500 rounded-full animate-spin" />
+              <div className="w-6 h-6 border-2 border-nimbus-border border-t-sky-400 rounded-full animate-spin" />
             </div>
           ) : sessions.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-64 text-gray-500 px-8 text-center">
@@ -203,13 +203,13 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
               <p className="text-sm">No conversations yet.</p>
               <button
                 onClick={() => setShowCreateDialog(true)}
-                className="mt-4 text-blue-400 hover:text-blue-300 text-xs font-medium"
+                className="mt-4 text-nimbus-accent hover:text-nimbus-accent-soft text-xs font-medium"
               >
                 Start a new chat
               </button>
             </div>
           ) : (
-            <div className="divide-y divide-[#252525]">
+            <div className="divide-y divide-nimbus-border">
               {sessions.map(session => {
                 const isActive = currentSession?.id === session.id;
                 const status = STATUS_CONFIG[session.status as SessionStatus] || STATUS_CONFIG.active;
@@ -224,8 +224,8 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
                     onClick={() => isSelectMode ? toggleSelect(session.id) : (() => { switchSession(session); onClose(); })()}
                     className={`
                       group relative px-4 py-3 cursor-pointer transition-all duration-200
-                      ${isActive ? 'bg-blue-500/10 border-l-2 border-l-blue-500' : 'hover:bg-[#252525] border-l-2 border-l-transparent'}
-                      ${isSelected ? 'bg-[#2a2a2a]' : ''}
+                      ${isActive ? 'bg-sky-400/10 border-l-2 border-l-sky-400' : 'hover:bg-nimbus-surface-hover border-l-2 border-l-transparent'}
+                      ${isSelected ? 'bg-nimbus-surface' : ''}
                     `}
                   >
                     {/* Select Checkbox */}
@@ -235,14 +235,14 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
                           type="checkbox"
                           checked={isSelected}
                           onChange={() => toggleSelect(session.id)}
-                          className="w-4 h-4 rounded border-gray-600 bg-[#1a1a1a] text-blue-500 focus:ring-offset-0"
+                          className="w-4 h-4 rounded border-gray-600 bg-nimbus-bg text-sky-400 focus:ring-offset-0"
                         />
                       </div>
                     )}
 
                     <div className={isSelectMode ? "pl-6" : ""}>
                       <div className="flex justify-between items-baseline mb-1">
-                        <h3 className={`text-sm font-medium pr-2 truncate leading-snug max-w-[200px] ${isActive ? 'text-blue-400' : 'text-gray-200'}`}>
+                        <h3 className={`text-sm font-medium pr-2 truncate leading-snug max-w-[200px] ${isActive ? 'text-nimbus-accent' : 'text-gray-200'}`}>
                           {displayName}
                         </h3>
                         <span className="text-[10px] text-gray-600 font-mono whitespace-nowrap shrink-0">
@@ -299,7 +299,7 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
 
                     {/* Hover Actions */}
                     {!isSelectMode && (
-                      <div className="absolute right-2 top-1/2 -translate-y-1/2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-[#1a1a1a] shadow-[-10px_0_20px_#1a1a1a] pl-2">
+                      <div className="absolute right-2 top-1/2 -translate-y-1/2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-nimbus-bg shadow-[-10px_0_20px_#0c1220] pl-2">
                         <button
                           onClick={(e) => handleDeleteSession(session.id, e)}
                           className="p-1.5 text-gray-500 hover:text-red-400 transition-colors rounded-md hover:bg-red-500/10"
@@ -317,7 +317,7 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
         </div>
 
         {/* Footer */}
-        <div className="p-4 border-t border-[#333] bg-[#1f1f1f] text-xs text-center text-gray-600">
+        <div className="p-4 border-t border-nimbus-border bg-nimbus-bg/80 text-xs text-center text-gray-600">
           Nimbus v0.5.0 • Local Agent Server
         </div>
       </div>

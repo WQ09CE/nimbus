@@ -3,9 +3,10 @@
 @tailwind utilities;
 
 :root {
-  --foreground-rgb: 229, 231, 235;
-  --background-start-rgb: 0, 0, 0;
-  --background-end-rgb: 0, 0, 0;
+  --nimbus-bg: #0c1220;
+  --nimbus-surface: rgba(148,163,184,0.06);
+  --nimbus-accent: #7dd3fc;
+  --nimbus-border: rgba(148,163,184,0.12);
 }
 
 * {
@@ -22,16 +23,16 @@ body {
 }
 
 body {
-  color: rgb(var(--foreground-rgb));
-  background-color: #030712; /* gray-950 */
-  background-image: 
-    radial-gradient(at 0% 0%, rgba(56, 189, 248, 0.1) 0px, transparent 50%),
-    radial-gradient(at 100% 0%, rgba(124, 58, 237, 0.1) 0px, transparent 50%),
-    radial-gradient(at 50% 100%, rgba(14, 165, 233, 0.05) 0px, transparent 50%);
+  color: #e2e8f0;
+  background-color: #0c1220;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 20% 40%, rgba(125,211,252,0.08), transparent),
+    radial-gradient(ellipse 60% 80% at 80% 20%, rgba(196,181,253,0.06), transparent),
+    radial-gradient(ellipse 100% 60% at 50% 100%, rgba(125,211,252,0.04), transparent);
   background-attachment: fixed;
 }
 
-/* Subtle grid pattern overlay */
+/* Subtle fog overlay */
 body::before {
   content: "";
   position: fixed;
@@ -39,13 +40,11 @@ body::before {
   left: 0;
   width: 100%;
   height: 100%;
-  background-image: 
-    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-  background-size: 50px 50px;
+  background-image:
+    radial-gradient(circle at 50% 50%, rgba(148,163,184,0.03) 0%, transparent 50%);
   pointer-events: none;
   z-index: -1;
-  mask-image: linear-gradient(to bottom, transparent, black 10%, black 90%, transparent);
+  opacity: 0.5;
 }
 
 /* Custom scrollbar for dark theme */
@@ -55,21 +54,21 @@ body::before {
 }
 
 ::-webkit-scrollbar-track {
-  background: #000;
+  background: #0c1220;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #333;
+  background: rgba(148,163,184,0.15);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #555;
+  background: rgba(148,163,184,0.25);
 }
 
 /* Selection */
 ::selection {
-  background: rgba(59, 130, 246, 0.3);
+  background: rgba(125,211,252,0.3);
   color: white;
 }
 
@@ -81,19 +80,19 @@ body::before {
 
 /* Headers */
 .markdown-content .markdown-h1 {
-  @apply text-2xl font-bold text-blue-300 mb-4 mt-6 first:mt-0 border-b border-gray-700 pb-2;
+  @apply text-2xl font-bold text-sky-300 mb-4 mt-6 first:mt-0 border-b border-gray-700 pb-2;
 }
 
 .markdown-content .markdown-h2 {
-  @apply text-xl font-bold text-blue-300 mb-3 mt-5 first:mt-0 border-b border-gray-800 pb-1;
+  @apply text-xl font-bold text-sky-300 mb-3 mt-5 first:mt-0 border-b border-gray-800 pb-1;
 }
 
 .markdown-content .markdown-h3 {
-  @apply text-lg font-semibold text-blue-300 mb-2 mt-4 first:mt-0;
+  @apply text-lg font-semibold text-sky-300 mb-2 mt-4 first:mt-0;
 }
 
 .markdown-content .markdown-h4 {
-  @apply text-base font-semibold text-blue-300 mb-2 mt-3 first:mt-0;
+  @apply text-base font-semibold text-sky-300 mb-2 mt-3 first:mt-0;
 }
 
 /* Text */
@@ -102,7 +101,7 @@ body::before {
 }
 
 .markdown-content .markdown-link {
-  @apply text-blue-400 hover:text-blue-300 underline transition-all duration-200 hover:bg-blue-900/20 px-1 py-0.5 rounded;
+  @apply text-sky-400 hover:text-sky-300 underline transition-all duration-200 hover:bg-sky-900/20 px-1 py-0.5 rounded;
 }
 
 /* Lists */
@@ -142,7 +141,7 @@ body::before {
 
 /* Blockquotes */
 .markdown-content .markdown-blockquote {
-  @apply border-l-4 border-blue-500/50 pl-4 py-3 mb-4 text-gray-300 italic bg-blue-900/10 rounded-r-lg backdrop-blur-sm;
+  @apply border-l-4 border-sky-400/50 pl-4 py-3 mb-4 text-gray-300 italic bg-sky-900/10 rounded-r-lg backdrop-blur-sm;
 }
 
 /* Horizontal Rules */
@@ -366,7 +365,7 @@ body::before {
 }
 
 .markdown-content .inline-code {
-  @apply bg-gray-800/70 text-blue-300 px-2 py-1 rounded text-sm font-mono border border-gray-600/50 backdrop-blur-sm;
+  @apply bg-gray-800/70 text-sky-300 px-2 py-1 rounded text-sm font-mono border border-gray-600/50 backdrop-blur-sm;
 }
 
 /* Text Formatting */

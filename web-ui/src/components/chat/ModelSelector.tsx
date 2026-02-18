@@ -108,11 +108,11 @@ export function ModelSelector({ session, onChange }: ModelSelectorProps) {
         <div className="relative text-left" ref={containerRef}>
             <button
                 onClick={() => setIsOpen(!isOpen)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[#333] hover:border-gray-600 bg-[#1c1c1c] hover:bg-[#252525] transition-all group"
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-nimbus-border hover:border-sky-400/30 bg-nimbus-surface hover:bg-nimbus-surface-hover backdrop-blur-lg transition-all group"
                 title="Change Model"
             >
-                <span className="text-[10px] uppercase font-bold text-gray-500 group-hover:text-gray-400">Model</span>
-                <span className="text-xs font-medium text-blue-400 group-hover:text-blue-300 truncate max-w-[150px]">
+                <span className="text-[10px] uppercase font-bold text-nimbus-text-dim group-hover:text-nimbus-text">Model</span>
+                <span className="text-xs font-medium text-nimbus-accent group-hover:text-nimbus-accent-soft truncate max-w-[150px]">
                     {loading ? "Updating..." : displayName}
                 </span>
                 <svg
@@ -124,10 +124,10 @@ export function ModelSelector({ session, onChange }: ModelSelectorProps) {
             </button>
 
             {isOpen && (
-                <div className="absolute right-0 mt-2 w-72 max-h-[400px] overflow-y-auto bg-[#1c1c1c] border border-[#333] rounded-lg shadow-2xl z-50 animate-in fade-in slide-in-from-top-2 custom-scrollbar">
-                    <div className="sticky top-0 bg-[#1c1c1c]/95 backdrop-blur px-3 py-2 border-b border-[#333] text-[10px] font-bold text-gray-500 uppercase flex justify-between z-10">
+                <div className="absolute right-0 mt-2 w-72 max-h-[400px] overflow-y-auto bg-nimbus-bg/95 backdrop-blur-xl border border-nimbus-border rounded-lg shadow-2xl z-50 animate-in fade-in slide-in-from-top-2 custom-scrollbar">
+                    <div className="sticky top-0 bg-nimbus-bg/95 backdrop-blur px-3 py-2 border-b border-nimbus-border text-[10px] font-bold text-gray-500 uppercase flex justify-between z-10">
                         <span>Select Model</span>
-                        {loading && <span className="text-blue-500 animate-pulse">Loading...</span>}
+                        {loading && <span className="text-nimbus-accent animate-pulse">Loading...</span>}
                     </div>
 
                     <div className="p-1 space-y-0.5">
@@ -149,7 +149,7 @@ export function ModelSelector({ session, onChange }: ModelSelectorProps) {
                                         onClick={() => handleSelect(model.id)}
                                         className={`
                       w-full text-left px-3 py-2.5 rounded-md text-xs transition-colors flex items-center justify-between group
-                      ${isSelected ? "bg-blue-500/10 text-blue-400" : "text-gray-300 hover:bg-[#2a2a2a] hover:text-white"}
+                      ${isSelected ? "bg-sky-400/10 text-nimbus-accent" : "text-gray-300 hover:bg-nimbus-surface-hover hover:text-white"}
                     `}
                                     >
                                         <div className="flex flex-col gap-0.5 overflow-hidden">
@@ -157,7 +157,7 @@ export function ModelSelector({ session, onChange }: ModelSelectorProps) {
                                             <span className="text-[10px] text-gray-500 font-mono opacity-70 group-hover:opacity-100 truncate">{model.id}</span>
                                         </div>
                                         {isSelected && (
-                                            <svg className="w-3.5 h-3.5 text-blue-500 shrink-0 ml-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <svg className="w-3.5 h-3.5 text-nimbus-accent shrink-0 ml-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                                             </svg>
                                         )}

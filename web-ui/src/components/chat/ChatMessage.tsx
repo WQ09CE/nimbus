@@ -27,8 +27,8 @@ interface MergedTool {
 // Helper for user avatar
 function UserAvatar() {
   return (
-    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shrink-0 shadow-lg shadow-blue-500/20">
-      <span className="text-xs text-white font-bold">U</span>
+    <div className="w-8 h-8 rounded-full bg-nimbus-surface backdrop-blur-lg border border-sky-400/30 flex items-center justify-center shrink-0 shadow-lg shadow-sky-400/10">
+      <span className="text-xs text-sky-300 font-bold">U</span>
     </div>
   );
 }
@@ -36,8 +36,8 @@ function UserAvatar() {
 // Helper for AI avatar
 function AiAvatar() {
   return (
-    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center shrink-0 shadow-lg shadow-cyan-500/20">
-      <span className="text-xs text-white">☁️</span>
+    <div className="w-8 h-8 rounded-full bg-nimbus-surface backdrop-blur-lg border border-nimbus-border flex items-center justify-center shrink-0 shadow-lg shadow-sky-400/10">
+      <span className="text-xs">☁️</span>
     </div>
   );
 }
@@ -91,7 +91,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
   if (isSystem) {
     return (
       <div className="flex justify-center my-6">
-        <div className="px-4 py-1.5 rounded-full bg-gray-900/50 border border-gray-800 text-xs text-gray-500 font-medium flex items-center gap-2 backdrop-blur-sm">
+        <div className="px-4 py-1.5 rounded-full bg-nimbus-surface border border-nimbus-border text-xs text-gray-500 font-medium flex items-center gap-2 backdrop-blur-sm">
           <span>⚡</span>
           <span>{message.content}</span>
         </div>
@@ -139,8 +139,8 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
           className={`
             relative px-3 md:px-5 py-2.5 md:py-3.5 shadow-md
             ${isUser
-              ? "bg-blue-600 text-white rounded-2xl rounded-tr-sm"
-              : "bg-gray-900/60 backdrop-blur-md border border-white/5 text-gray-100 rounded-2xl rounded-tl-sm"
+              ? "bg-sky-500/15 border border-sky-400/20 backdrop-blur-md text-nimbus-text rounded-2xl rounded-tr-sm"
+              : "bg-nimbus-surface backdrop-blur-xl border border-nimbus-border text-gray-100 rounded-2xl rounded-tl-sm"
             }
           `}
         >
@@ -201,7 +201,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
                 <div className={hasContent ? "mt-3" : undefined}>
                   <button
                     onClick={() => setShowTools(!showTools)}
-                    className="flex items-center gap-2 text-xs font-medium text-blue-400 bg-blue-500/10 px-2 py-1 rounded hover:bg-blue-500/20 transition-colors border border-blue-500/10"
+                    className="flex items-center gap-2 text-xs font-medium text-nimbus-accent bg-nimbus-surface px-2 py-1 rounded hover:bg-nimbus-surface-hover transition-colors border border-nimbus-border"
                   >
                     <span className="text-[10px]">{showTools ? "▼" : "▶"}</span>
                     <span>Used {tools.length} Tools</span>
@@ -211,7 +211,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
                   </button>
 
                   {showTools && (
-                    <div className="mt-2 space-y-2 border-l-2 border-gray-800 pl-2">
+                    <div className="mt-2 space-y-2 border-l-2 border-nimbus-border pl-2">
                       {tools.map((tool, i) => (
                         <ToolCard key={getToolKey(tool, i)} tool={tool} />
                       ))}

@@ -69,7 +69,7 @@ export default function Home() {
 
   if (!mounted) {
     return (
-      <div className="h-screen bg-black flex items-center justify-center">
+      <div className="h-screen bg-nimbus-bg flex items-center justify-center">
         <div className="text-gray-500 font-mono">Loading...</div>
       </div>
     );
@@ -79,21 +79,21 @@ export default function Home() {
     <div className="h-screen flex flex-col font-sans overflow-hidden relative">
       {/* Ambient Glow Effects */}
       <div className="fixed inset-0 pointer-events-none z-0">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-500/10 rounded-full blur-[120px]" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-500/10 rounded-full blur-[120px]" />
+        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-sky-400/[0.06] rounded-full blur-[160px]" />
+        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-violet-400/[0.04] rounded-full blur-[160px]" />
       </div>
 
       {/* Header */}
-      <header className="flex-shrink-0 z-20 px-3 md:px-6 py-3 md:py-4 bg-gray-950/80 border-b border-white/5">
+      <header className="flex-shrink-0 z-20 px-3 md:px-6 py-3 md:py-4 bg-nimbus-bg/80 backdrop-blur-xl border-b border-nimbus-border">
         <div className="md:max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-cyan-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
+            <div className="w-10 h-10 rounded-xl bg-nimbus-surface backdrop-blur-lg border border-nimbus-border flex items-center justify-center shadow-lg shadow-sky-500/10">
               <span className="text-xl">☁️</span>
             </div>
             <div>
-              <h1 className="text-lg font-bold bg-gradient-to-r from-blue-100 to-blue-300 bg-clip-text text-transparent hidden md:inline">Nimbus</h1>
+              <h1 className="text-lg font-bold bg-gradient-to-r from-sky-100 to-sky-300 bg-clip-text text-transparent hidden md:inline font-display">Nimbus</h1>
               <div className="flex items-center gap-2">
-                <span className="text-[10px] uppercase tracking-wider text-blue-400 font-semibold px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/20 hidden md:inline">Beta</span>
+                <span className="text-[10px] uppercase tracking-wider text-nimbus-accent font-semibold px-1.5 py-0.5 rounded bg-nimbus-surface border border-nimbus-border hidden md:inline">Beta</span>
                 {session && (
                   <button
                     data-testid="session-panel-trigger"
@@ -120,7 +120,7 @@ export default function Home() {
 
             <button
               onClick={() => setShowFilePanel(!showFilePanel)}
-              className={`p-2 rounded-lg transition-all ${showFilePanel ? 'text-blue-400 bg-blue-500/10' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
+              className={`p-2 rounded-lg transition-all ${showFilePanel ? 'text-nimbus-accent bg-nimbus-surface' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
               title="Files"
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -140,10 +140,10 @@ export default function Home() {
             <button
               data-testid="new-chat-button"
               onClick={() => createNewSession(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg shadow-lg shadow-blue-600/20 transition-all hover:scale-[1.02] active:scale-[0.98]"
+              className="flex items-center gap-2 px-4 py-2 bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/30 text-sky-300 text-sm font-medium rounded-lg shadow-lg shadow-sky-400/10 transition-all hover:scale-[1.02] active:scale-[0.98]"
             >
               <span>New Chat</span>
-              <span className="text-blue-200 text-xs bg-blue-700/50 px-1.5 rounded">⌘K</span>
+              <span className="text-sky-300/60 text-xs bg-sky-500/10 px-1.5 rounded">⌘K</span>
             </button>
           </div>
         </div>
@@ -183,30 +183,30 @@ export default function Home() {
             {/* Welcome Screen */}
             {messages.length === 0 && !isStreaming && !isLoading && (
               <div data-testid="welcome-screen" className="flex flex-col items-center justify-center h-full text-center animate-in zoom-in-95 duration-500">
-                <div className="w-16 h-16 bg-gradient-to-tr from-blue-600 to-cyan-500 rounded-2xl flex items-center justify-center shadow-2xl shadow-blue-500/20 mb-6">
+                <div className="w-16 h-16 bg-nimbus-surface backdrop-blur-lg border border-nimbus-border rounded-2xl flex items-center justify-center shadow-2xl shadow-sky-500/10 mb-6">
                   <span className="text-3xl">☁️</span>
                 </div>
-                <h2 className="text-2xl font-bold bg-gradient-to-br from-white to-gray-400 bg-clip-text text-transparent mb-3">
+                <h2 className="text-2xl font-bold bg-gradient-to-br from-sky-100 to-slate-400 bg-clip-text text-transparent mb-3 font-display">
                   Nimbus Agent
                 </h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-lg mt-8">
-                  <div className="p-4 bg-white/5 border border-white/5 rounded-xl hover:bg-white/10 transition-colors cursor-default text-left">
-                    <div className="text-blue-400 mb-2">📄</div>
+                  <div className="p-4 bg-nimbus-surface border border-nimbus-border rounded-xl hover:bg-nimbus-surface-hover backdrop-blur-sm transition-colors cursor-default text-left">
+                    <div className="text-sky-400 mb-2">📄</div>
                     <h3 className="text-sm font-medium text-gray-200 mb-1">File Operations</h3>
                     <p className="text-xs text-gray-500">Read, write, edit files workspace</p>
                   </div>
-                  <div className="p-4 bg-white/5 border border-white/5 rounded-xl hover:bg-white/10 transition-colors cursor-default text-left">
-                    <div className="text-purple-400 mb-2">⚡</div>
+                  <div className="p-4 bg-nimbus-surface border border-nimbus-border rounded-xl hover:bg-nimbus-surface-hover backdrop-blur-sm transition-colors cursor-default text-left">
+                    <div className="text-violet-400/80 mb-2">⚡</div>
                     <h3 className="text-sm font-medium text-gray-200 mb-1">Code Execution</h3>
                     <p className="text-xs text-gray-500">Run scripts and commands safely</p>
                   </div>
-                  <div className="p-4 bg-white/5 border border-white/5 rounded-xl hover:bg-white/10 transition-colors cursor-default text-left">
-                    <div className="text-emerald-400 mb-2">🔍</div>
+                  <div className="p-4 bg-nimbus-surface border border-nimbus-border rounded-xl hover:bg-nimbus-surface-hover backdrop-blur-sm transition-colors cursor-default text-left">
+                    <div className="text-emerald-400/80 mb-2">🔍</div>
                     <h3 className="text-sm font-medium text-gray-200 mb-1">Search</h3>
                     <p className="text-xs text-gray-500">Web search and knowledge retrieval</p>
                   </div>
-                  <div className="p-4 bg-white/5 border border-white/5 rounded-xl hover:bg-white/10 transition-colors cursor-default text-left">
-                    <div className="text-amber-400 mb-2">🧠</div>
+                  <div className="p-4 bg-nimbus-surface border border-nimbus-border rounded-xl hover:bg-nimbus-surface-hover backdrop-blur-sm transition-colors cursor-default text-left">
+                    <div className="text-amber-400/80 mb-2">🧠</div>
                     <h3 className="text-sm font-medium text-gray-200 mb-1">Reasoning</h3>
                     <p className="text-xs text-gray-500">Complex task planning and execution</p>
                   </div>
@@ -250,7 +250,7 @@ export default function Home() {
             ${showFilePanel
               ? 'fixed inset-y-0 right-0 w-[85%] z-30 md:relative md:inset-auto md:w-80 opacity-100 translate-x-0'
               : 'w-0 opacity-0 overflow-hidden translate-x-full'}
-            bg-[#1e1e1e] border-l border-[#333] transition-all duration-300 ease-in-out flex flex-col
+            bg-nimbus-bg/95 backdrop-blur-xl border-l border-nimbus-border transition-all duration-300 ease-in-out flex flex-col
           `}
         >
           {session && (
