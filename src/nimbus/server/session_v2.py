@@ -43,9 +43,23 @@ class SessionManagerV2:
         self._max_sessions = max_sessions
         self._sessions: Dict[str, AgentOS] = {}  # session_id -> AgentOS
         self._dispatch_tools: Dict[str, Any] = {}  # session_id -> DispatchTool (dual_agent mode only)
+        self._active_tasks: Dict[str, asyncio.Task] = {}  # session_id -> running task
         self._lock = asyncio.Lock()
         self._shared_llm_client = None
         self._sub_tool_buffer: Dict[str, list] = {}  # session_id -> list of sub-tool events
+
+    def register_task(self, session_id: str, task: asyncio.Task):
+        """Register a running task for a session."""
+        self._active_tasks[session_id] = task
+
+    def unregister_task(self, session_id: str):
+        """Unregister a completed task for a session."""
+        self._active_tasks.pop(session_id, None)
+
+    def is_session_running(self, session_id: str) -> bool:
+        """Check if a session has an active running task."""
+        task = self._active_tasks.get(session_id)
+        return task is not None and not task.done()
 
     async def create_session(
         self,
@@ -882,6 +896,14 @@ class SessionManagerV2:
         try:
             # Request interrupt via AgentOS (Phase 2 Kernel)
             interrupted = agent_os.interrupt(session_id)
+
+            # Also cancel the asyncio task to force-stop the agent
+            # (cooperative interrupt only takes effect at next iteration boundary,
+            # but user expects immediate stop)
+            task = self._active_tasks.get(session_id)
+            if task and not task.done():
+                task.cancel()
+                logger.info(f"🛑 Cancelled active task for session {session_id}")
 
             # Create and save checkpoint
             checkpoint_info = None

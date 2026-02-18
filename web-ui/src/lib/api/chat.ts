@@ -126,3 +126,16 @@ export async function* streamChat(
     yield event as ChatEvent;
   }
 }
+
+/**
+ * Subscribe to SSE events for a running session (reconnection)
+ */
+export async function* subscribeToEvents(
+  sessionId: string,
+  signal?: AbortSignal
+): AsyncGenerator<ChatEvent> {
+  const endpoint = `/api/v1/sessions/${sessionId}/events`;
+  for await (const event of apiStream(endpoint, undefined, signal, "GET")) {
+    yield event as ChatEvent;
+  }
+}

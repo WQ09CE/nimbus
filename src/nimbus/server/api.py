@@ -479,8 +479,8 @@ async def chat(
             except Exception as title_err:
                 logger.warning(f"Auto-title check failed: {title_err}")
         except asyncio.CancelledError:
-            # Client disconnected - this is expected, not an error
-            logger.info(f"🛑 stream_chat cancelled for session {session_id} (client disconnected)")
+            # Only triggered by explicit interrupt, NOT by client disconnect
+            logger.info(f"🛑 stream_chat cancelled for session {session_id}")
             # Emit cancelled event so frontend knows
             try:
                 await sse_hub.publish(
@@ -508,9 +508,12 @@ async def chat(
                 )
             except Exception as pub_err:
                 error_logger.error(f"❌ Failed to publish error event: {pub_err}")
+        finally:
+            session_manager.unregister_task(session_id)
 
     # Create task and keep reference to prevent GC
     task = asyncio.create_task(run_chat())
+    session_manager.register_task(session_id, task)
 
     # Log task creation
     logger.info(f"✅ Created background task for session {session_id}: {task}")
@@ -525,27 +528,25 @@ async def chat(
 
     task.add_done_callback(task_done_callback)
 
-    # Wrap SSE stream to detect client disconnect and cancel task
+    # Wrap SSE stream to detect client disconnect
     async def stream_with_disconnect_detection():
-        """SSE stream that cancels background task when client disconnects."""
+        """SSE stream - agent task continues in background when client disconnects."""
         try:
             async for event in sse_hub.subscribe(session_id):
                 # Check if client disconnected
                 if await request.is_disconnected():
-                    logger.warning(
-                        f"🔌 Client disconnected, cancelling task for session {session_id}"
+                    logger.info(
+                        f"🔌 Client disconnected for session {session_id}, "
+                        f"agent continues in background"
                     )
-                    task.cancel()
-                    break
+                    break  # Just break, do NOT cancel the task
                 yield event
         except asyncio.CancelledError:
             logger.info(f"⚠️ SSE stream cancelled for session {session_id}")
-            task.cancel()
+            # Do NOT cancel the task - let agent continue
         finally:
-            # Ensure task is cancelled if stream ends for any reason
-            if not task.done():
-                logger.info(f"🛑 Cancelling background task for session {session_id}")
-                task.cancel()
+            # Do NOT cancel the task - let agent finish in background
+            pass
 
     # Return SSE stream (subscribe is an async generator)
     return StreamingResponse(
@@ -601,6 +602,49 @@ async def get_messages(
         )
 
     return MessageList(items=items)
+
+
+# =============================================================================
+# Session Status & Event Reconnection APIs
+# =============================================================================
+
+
+@router.get("/sessions/{session_id}/status")
+async def get_session_status(
+    session_id: str,
+    session_manager=Depends(get_session_manager),
+):
+    """Check if a session has an active running task."""
+    running = session_manager.is_session_running(session_id)
+    return {"session_id": session_id, "running": running}
+
+
+@router.get("/sessions/{session_id}/events")
+async def subscribe_events(
+    session_id: str,
+    request: Request,
+    session_manager=Depends(get_session_manager),
+    sse_hub=Depends(get_sse_hub),
+):
+    """Subscribe to SSE events for a running session (for reconnection)."""
+    if not session_manager.is_session_running(session_id):
+        raise HTTPException(status_code=404, detail="No active task for this session")
+
+    async def event_stream():
+        async for event in sse_hub.subscribe(session_id):
+            if await request.is_disconnected():
+                break
+            yield event
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # =============================================================================

@@ -50,6 +50,23 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Auto-recover when page becomes visible (iOS app switch, desktop tab switch)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        const state = useChatStore.getState();
+        const currentSession = state.session;
+        if (currentSession && !state.isStreaming) {
+          console.log("[Page] Visibility restored, reloading session...");
+          state.loadSession(currentSession.id);
+        }
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, []);
+
   if (!mounted) {
     return (
       <div className="h-screen bg-black flex items-center justify-center">

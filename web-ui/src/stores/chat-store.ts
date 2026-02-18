@@ -97,6 +97,7 @@ interface ChatState {
   switchSession: (session: Session | null) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   sendMessage: (content: string, attachments?: ChatAttachment[]) => Promise<void>;
+  reconnectToSession: (sessionId: string) => Promise<void>;
   interruptMessage: () => void;
   clearError: () => void;
   reset: () => void;
@@ -301,6 +302,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
       console.log("[Store] Parsed messages:", messages);
       set({ messages, isLoading: false });
       console.log(`[Store] Loaded ${messages.length} messages for session ${session.id}`);
+
+      // Check if session has an active task (agent still running)
+      try {
+        const { getSessionStatus } = await import("@/lib/api/sessions");
+        const status = await getSessionStatus(session.id);
+        if (status.running) {
+          console.log("[Store] Session has active task, reconnecting...");
+          // Reconnect in background
+          setTimeout(() => get().reconnectToSession(session.id), 100);
+        }
+      } catch (err) {
+        // Status check failed, not critical
+        console.warn("[Store] Failed to check session status:", err);
+      }
     } catch (err) {
       console.error("[Store] Failed to load messages:", err);
       set({ isLoading: false });
@@ -719,6 +734,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
           isInterrupting: false,
           error: null, // Don't set error for user cancellation
         });
+      } else if (
+        err instanceof TypeError &&
+        (err.message.includes("Load failed") ||
+         err.message.includes("Failed to fetch") ||
+         err.message.includes("network"))
+      ) {
+        // Network error (e.g., iOS Safari kills fetch when switching apps)
+        // Don't show error — visibility change handler will recover
+        console.info("[Store] Network disconnected, agent continues in background");
+        set({
+          isStreaming: false,
+          streamingContent: "",
+          streamingToolCalls: [],
+          streamingToolResults: [],
+          thinkingIteration: null,
+          currentActivity: null,
+          lastHeartbeat: null,
+          streamAbortController: null,
+          isInterrupting: false,
+          error: null,
+        });
       } else {
         // Real error occurred
         const errorMessage = err instanceof Error ? err.message : "Failed to send message";
@@ -738,13 +774,203 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  reconnectToSession: async (sessionId: string) => {
+    const { session } = get();
+    if (!session || session.id !== sessionId) return;
+
+    const abortController = new AbortController();
+
+    set({
+      isStreaming: true,
+      streamingContent: "",
+      streamingToolCalls: [],
+      streamingToolResults: [],
+      currentActivity: "重新连接中...",
+      lastHeartbeat: Date.now(),
+      streamAbortController: abortController,
+    });
+
+    try {
+      const { subscribeToEvents } = await import("@/lib/api/chat");
+      let assistantContent = "";
+      const toolCalls: ToolCall[] = [];
+      const toolResults: ToolResult[] = [];
+
+      for await (const event of subscribeToEvents(sessionId, abortController.signal)) {
+        const { type, data } = event;
+
+        switch (type) {
+          case "connected":
+            set({ currentActivity: "已重新连接", lastHeartbeat: Date.now() });
+            break;
+
+          case "message": {
+            let newContent = "";
+            if (typeof data === "string") {
+              newContent = data;
+            } else if (typeof data === "object" && data && "content" in data) {
+              const c = (data as { content?: unknown }).content;
+              if (typeof c === "string") newContent = c;
+            }
+            if (newContent) {
+              assistantContent += newContent;
+              set({
+                streamingContent: assistantContent,
+                currentActivity: "生成回复中...",
+                lastHeartbeat: Date.now(),
+              });
+            }
+            break;
+          }
+
+          case "tool_call":
+            if (data && typeof data === "object") {
+              const d = data as Record<string, unknown>;
+              toolCalls.push({
+                id: (d.action_id || d.id || "") as string,
+                name: (d.tool || d.name || "unknown") as string,
+                arguments: (d.args || d.arguments || {}) as Record<string, unknown>,
+                agentType: "core",
+              });
+              set({
+                streamingContent: assistantContent,
+                streamingToolCalls: [...toolCalls],
+                currentActivity: `执行工具: ${d.tool || d.name}`,
+                lastHeartbeat: Date.now(),
+              });
+            }
+            break;
+
+          case "tool_result":
+            if (data && typeof data === "object") {
+              const d = data as Record<string, unknown>;
+              const fault = d.fault as { message: string } | undefined;
+              toolResults.push({
+                id: (d.action_id || d.id || "") as string,
+                name: (d.tool || d.name || "unknown") as string,
+                result: d.output !== undefined ? d.output : d.result,
+                error: d.status === "ERROR" ? (fault ? fault.message : "Error") : undefined,
+                duration: d.duration_ms as number | undefined,
+              });
+              set({
+                streamingToolResults: [...toolResults],
+                currentActivity: "工具执行完成",
+                lastHeartbeat: Date.now(),
+              });
+            }
+            break;
+
+          case "step_start":
+            if (assistantContent || toolCalls.length > 0) {
+              const stepMsg: Message = {
+                id: `assistant-reconnect-${Date.now()}`,
+                role: "assistant",
+                content: assistantContent,
+                toolCalls: toolCalls.length > 0 ? [...toolCalls] : undefined,
+                toolResults: toolResults.length > 0 ? [...toolResults] : undefined,
+                timestamp: Date.now(),
+              };
+              set(state => ({
+                messages: [...state.messages, stepMsg],
+                streamingContent: "",
+                streamingToolCalls: [],
+                streamingToolResults: [],
+              }));
+              assistantContent = "";
+              toolCalls.length = 0;
+              toolResults.length = 0;
+            }
+            break;
+
+          case "heartbeat":
+            set({ lastHeartbeat: Date.now(), currentActivity: "正在思考..." });
+            break;
+
+          case "dag_complete":
+            // Agent finished - reload all messages from DB for complete view
+            try {
+              const { getSessionMessages } = await import("@/lib/api/sessions");
+              const serverMessages = await getSessionMessages(sessionId);
+              // Reload the full session to get complete message history
+              if (serverMessages.length > 0) {
+                await get().switchSession(session);
+              }
+            } catch {
+              // Fallback: just finalize what we have
+            }
+            set({
+              isStreaming: false,
+              streamingContent: "",
+              streamingToolCalls: [],
+              streamingToolResults: [],
+              currentActivity: null,
+              lastHeartbeat: null,
+              streamAbortController: null,
+            });
+            return;
+
+          case "error":
+            set({
+              isStreaming: false,
+              streamingContent: "",
+              streamingToolCalls: [],
+              streamingToolResults: [],
+              currentActivity: null,
+              error: typeof data === "string" ? data : "Stream error",
+              streamAbortController: null,
+            });
+            return;
+        }
+      }
+
+      // Stream ended without dag_complete (agent finished while we were connecting)
+      // Reload messages from DB
+      await get().switchSession(session);
+      set({
+        isStreaming: false,
+        streamingContent: "",
+        streamingToolCalls: [],
+        streamingToolResults: [],
+        currentActivity: null,
+        streamAbortController: null,
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        set({
+          isStreaming: false,
+          currentActivity: null,
+          streamAbortController: null,
+        });
+      } else {
+        // Reconnect failed - not critical, user can refresh
+        console.warn("[Store] Reconnect failed:", err);
+        set({
+          isStreaming: false,
+          currentActivity: null,
+          streamAbortController: null,
+        });
+      }
+    }
+  },
+
   clearError: () => set({ error: null }),
 
   interruptMessage: () => {
-    const { streamAbortController, isStreaming } = get();
+    const { streamAbortController, isStreaming, session } = get();
 
     if (isStreaming && streamAbortController) {
       set({ isInterrupting: true });
+
+      // Call server-side interrupt to cancel the agent task
+      if (session) {
+        import("@/lib/api/sessions").then(({ interruptSession }) => {
+          interruptSession(session.id).catch(err => {
+            console.warn("[Store] Server-side interrupt failed:", err);
+          });
+        });
+      }
+
+      // Abort the client-side SSE stream
       streamAbortController.abort();
     }
   },

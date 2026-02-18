@@ -198,3 +198,10 @@ export async function listModels(): Promise<Model[]> {
   const resp = await apiGet<{ models: Model[] }>("/api/v1/models");
   return resp.models || [];
 }
+
+/**
+ * Check if a session has a running task
+ */
+export async function getSessionStatus(sessionId: string): Promise<{ running: boolean }> {
+  return apiGet<{ running: boolean }>(`/api/v1/sessions/${sessionId}/status`);
+}
