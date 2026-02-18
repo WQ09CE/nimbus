@@ -160,6 +160,66 @@ class DirectAdapter:
         has_codex = self._codex_auth is not None
         return has_gemini or has_anthropic or has_codex
 
+    @staticmethod
+    def _convert_image_block(block: dict, target: str) -> dict:
+        """
+        Convert a single Nimbus image block to a target LLM format.
+
+        Nimbus internal format:
+            {"type": "image", "data": "<base64>", "mimeType": "image/png"}
+
+        *target* is one of ``"anthropic"``, ``"openai"``, ``"responses"``.
+        Text blocks are returned unchanged (for anthropic/openai) or
+        remapped to the appropriate type (for responses).
+        """
+        btype = block.get("type", "")
+
+        if btype == "image":
+            mime = block.get("mimeType", "image/png")
+            data = block.get("data", "")
+            if target == "anthropic":
+                return {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": mime,
+                        "data": data,
+                    },
+                }
+            elif target == "openai":
+                return {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime};base64,{data}",
+                    },
+                }
+            elif target == "responses":
+                return {
+                    "type": "input_image",
+                    "image_url": f"data:{mime};base64,{data}",
+                }
+
+        # text block
+        if target == "responses":
+            return {"type": "input_text", "text": block.get("text", "")}
+
+        # anthropic / openai: text blocks pass through unchanged
+        return block
+
+    @staticmethod
+    def _convert_content_blocks(content, target: str):
+        """
+        If *content* is a list, convert every block to *target* format.
+        If it is a plain string, return it unchanged.
+
+        Returns str | list.
+        """
+        if isinstance(content, list):
+            return [
+                DirectAdapter._convert_image_block(b, target) for b in content
+            ]
+        return content
+
     def _convert_tools(self, tools: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
         """Convert tools to OpenAI format (LiteLLM expects this)."""
         if not tools:
@@ -324,9 +384,10 @@ class DirectAdapter:
                 continue
 
             # ---- user / plain assistant ----
+            raw_content = msg.get("content", "") or ""
             raw_messages.append({
                 "role": role,
-                "content": msg.get("content", "") or "",
+                "content": self._convert_content_blocks(raw_content, "anthropic"),
             })
 
         # Merge consecutive same-role messages (Anthropic API requirement)
@@ -542,10 +603,18 @@ class DirectAdapter:
                 continue
 
             if role == "user":
-                input_items.append({
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": content}],
-                })
+                raw_content = msg.get("content", "") or ""
+                if isinstance(raw_content, list):
+                    converted = self._convert_content_blocks(raw_content, "responses")
+                    input_items.append({
+                        "role": "user",
+                        "content": converted,
+                    })
+                else:
+                    input_items.append({
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": raw_content}],
+                    })
                 continue
 
             if role == "assistant":
@@ -861,12 +930,16 @@ class DirectAdapter:
         elif "claude" in model and "anthropic/" not in model:
              model = f"anthropic/{model}"
 
-        # Clean messages
+        # Clean messages and convert image blocks to OpenAI format
         clean_messages = []
         for m in messages:
             msg = m.copy()
             if msg.get("content") is None:
                 msg["content"] = ""
+            elif isinstance(msg.get("content"), list):
+                msg["content"] = self._convert_content_blocks(
+                    msg["content"], "openai"
+                )
             clean_messages.append(msg)
 
         try:
