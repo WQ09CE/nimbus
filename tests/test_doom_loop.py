@@ -119,14 +119,27 @@ class TestDoomLoopDetector:
         assert not r2.is_loop
         assert not r3.is_loop
 
-    def test_read_same_file_different_limit_triggers_loop(self):
-        """Read with same file_path but different limit should trigger doom loop."""
+    def test_read_same_file_different_offset_no_loop(self):
+        """Read with same file_path but different offset should NOT trigger doom loop (paginated reads)."""
+        detector = DoomLoopDetector(threshold=3)
+
+        r1 = detector.check("Read", {"file_path": "docs/design.md", "limit": 80})
+        r2 = detector.check("Read", {"file_path": "docs/design.md", "offset": 81, "limit": 100})
+        r3 = detector.check("Read", {"file_path": "docs/design.md", "offset": 181})
+
+        assert not r1.is_loop
+        assert not r2.is_loop
+        assert not r3.is_loop
+
+    def test_read_same_file_same_offset_triggers_loop(self):
+        """Read with same file_path and same offset should trigger doom loop."""
         detector = DoomLoopDetector(threshold=3)
 
         r1 = detector.check("Read", {"file_path": "docs/design.md", "limit": 50})
         r2 = detector.check("Read", {"file_path": "docs/design.md", "limit": 100})
-        r3 = detector.check("Read", {"file_path": "docs/design.md", "offset": 10})
+        r3 = detector.check("Read", {"file_path": "docs/design.md", "limit": 200})
 
+        # All three have offset=0 (default), so they are the same read position
         assert not r1.is_loop
         assert not r2.is_loop
         assert r3.is_loop

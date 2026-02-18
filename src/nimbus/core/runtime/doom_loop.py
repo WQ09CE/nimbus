@@ -134,8 +134,11 @@ class DoomLoopDetector:
         E.g., Read with same file_path but different limit is still a loop.
         """
         if tool_name == "Read":
-            # Only file_path matters for doom detection
-            return {"file_path": args.get("file_path", "")}
+            # file_path + offset define the read position; different offsets = paginated reads, not loops
+            return {
+                "file_path": args.get("file_path", ""),
+                "offset": args.get("offset", 0),
+            }
         if tool_name == "Edit":
             # file_path + old_string are the key parameters
             return {

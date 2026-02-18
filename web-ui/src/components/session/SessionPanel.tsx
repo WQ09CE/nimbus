@@ -8,9 +8,11 @@ import {
   deleteSessions,
   interruptSession,
   resumeSession,
+  updateSession,
 } from "@/lib/api/sessions";
 import { useChatStore } from "@/stores";
 import { CreateSessionDialog, CreateSessionConfig } from "./CreateSessionDialog";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 interface SessionPanelProps {
   isOpen: boolean;
@@ -36,6 +38,16 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
   // Batch selection state
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isSelectMode, setIsSelectMode] = useState(false);
+
+  // Confirm dialog state
+  const [confirmDialog, setConfirmDialog] = useState<{ type: "single" | "batch"; id?: string } | null>(null);
+
+  // Search state
+  const [searchQuery, setSearchQuery] = useState("");
+
+  // Rename state
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
 
   const fetchSessions = useCallback(async () => {
     setLoading(true);
@@ -78,10 +90,12 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
     }
   };
 
-  const handleDeleteSession = async (id: string, e: React.MouseEvent) => {
+  const handleDeleteSession = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!confirm("确定要删除这个会话吗？")) return;
+    setConfirmDialog({ type: "single", id });
+  };
 
+  const executeDeleteSession = async (id: string) => {
     setActionLoading(id);
     try {
       await deleteSession(id);
@@ -94,10 +108,12 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
     }
   };
 
-  const handleBatchDelete = async () => {
+  const handleBatchDelete = () => {
     if (selectedIds.size === 0) return;
-    if (!confirm(`确定要删除选中的 ${selectedIds.size} 个会话吗？`)) return;
+    setConfirmDialog({ type: "batch" });
+  };
 
+  const executeBatchDelete = async () => {
     setActionLoading("batch");
     try {
       await deleteSessions(Array.from(selectedIds));
@@ -107,6 +123,45 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
       setIsSelectMode(false);
     } catch (err) {
       console.error("Failed to batch delete:", err);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleConfirmAction = () => {
+    if (!confirmDialog) return;
+    if (confirmDialog.type === "single" && confirmDialog.id) {
+      executeDeleteSession(confirmDialog.id);
+    } else if (confirmDialog.type === "batch") {
+      executeBatchDelete();
+    }
+    setConfirmDialog(null);
+  };
+
+  const handleRenameSubmit = async (sessionId: string) => {
+    const trimmed = renameValue.trim();
+    if (!trimmed) {
+      setRenamingId(null);
+      return;
+    }
+    try {
+      await updateSession(sessionId, { name: trimmed });
+      setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, name: trimmed } : s));
+    } catch (err) {
+      console.error("Failed to rename session:", err);
+    } finally {
+      setRenamingId(null);
+    }
+  };
+
+  const handleResumeSession = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setActionLoading(id);
+    try {
+      await resumeSession(id);
+      await fetchSessions();
+    } catch (err) {
+      console.error("Failed to resume session:", err);
     } finally {
       setActionLoading(null);
     }
@@ -191,6 +246,28 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
           </div>
         )}
 
+        {/* Search Bar */}
+        <div className="px-4 py-2 border-b border-nimbus-border">
+          <div className="relative">
+            <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-nimbus-text-dim" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search sessions..."
+              className="w-full pl-8 pr-8 py-1.5 text-xs bg-nimbus-surface border border-nimbus-border rounded-lg text-nimbus-text placeholder-nimbus-text-dim focus:outline-none focus:border-nimbus-accent/50 transition-colors"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-nimbus-text-dim hover:text-nimbus-text transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            )}
+          </div>
+        </div>
+
         {/* List */}
         <div className="flex-1 overflow-y-auto custom-scrollbar">
           {loading ? (
@@ -210,7 +287,14 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
             </div>
           ) : (
             <div className="divide-y divide-nimbus-border">
-              {sessions.map(session => {
+              {sessions.filter(s => {
+                if (!searchQuery) return true;
+                const q = searchQuery.toLowerCase();
+                return (
+                  s.name?.toLowerCase().includes(q) ||
+                  s.first_message_preview?.toLowerCase().includes(q)
+                );
+              }).map(session => {
                 const isActive = currentSession?.id === session.id;
                 const status = STATUS_CONFIG[session.status as SessionStatus] || STATUS_CONFIG.active;
                 const isSelected = selectedIds.has(session.id);
@@ -242,9 +326,25 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
 
                     <div className={isSelectMode ? "pl-6" : ""}>
                       <div className="flex justify-between items-baseline mb-1">
-                        <h3 className={`text-sm font-medium pr-2 truncate leading-snug max-w-[200px] ${isActive ? 'text-nimbus-accent' : 'text-gray-200'}`}>
-                          {displayName}
-                        </h3>
+                        {renamingId === session.id ? (
+                          <input
+                            autoFocus
+                            type="text"
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") handleRenameSubmit(session.id);
+                              if (e.key === "Escape") setRenamingId(null);
+                            }}
+                            onBlur={() => handleRenameSubmit(session.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-sm font-medium pr-2 leading-snug max-w-[200px] bg-nimbus-surface border border-nimbus-accent/50 rounded px-1.5 py-0.5 text-nimbus-text focus:outline-none"
+                          />
+                        ) : (
+                          <h3 className={`text-sm font-medium pr-2 truncate leading-snug max-w-[200px] ${isActive ? 'text-nimbus-accent' : 'text-gray-200'}`}>
+                            {displayName}
+                          </h3>
+                        )}
                         <span className="text-[10px] text-gray-600 font-mono whitespace-nowrap shrink-0">
                           {formatRelativeTime(session.last_message_at || session.created_at)}
                         </span>
@@ -300,6 +400,22 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
                     {/* Hover Actions */}
                     {!isSelectMode && (
                       <div className="absolute right-2 top-1/2 -translate-y-1/2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-nimbus-bg shadow-[-10px_0_20px_#0c1220] pl-2">
+                        {session.status === "interrupted" && (
+                          <button
+                            onClick={(e) => handleResumeSession(session.id, e)}
+                            className="p-1.5 text-gray-500 hover:text-emerald-400 transition-colors rounded-md hover:bg-emerald-500/10"
+                            title="Resume Session"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                          </button>
+                        )}
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setRenamingId(session.id); setRenameValue(displayName); }}
+                          className="p-1.5 text-gray-500 hover:text-sky-400 transition-colors rounded-md hover:bg-sky-500/10"
+                          title="Rename Session"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                        </button>
                         <button
                           onClick={(e) => handleDeleteSession(session.id, e)}
                           className="p-1.5 text-gray-500 hover:text-red-400 transition-colors rounded-md hover:bg-red-500/10"
@@ -326,6 +442,21 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
         isOpen={showCreateDialog}
         onClose={() => setShowCreateDialog(false)}
         onCreate={handleCreateSession}
+      />
+
+      <ConfirmDialog
+        isOpen={confirmDialog !== null}
+        title={confirmDialog?.type === "batch" ? "批量删除" : "删除会话"}
+        message={
+          confirmDialog?.type === "batch"
+            ? `确定要删除选中的 ${selectedIds.size} 个会话吗？此操作不可撤销。`
+            : "确定要删除这个会话吗？此操作不可撤销。"
+        }
+        confirmLabel="删除"
+        cancelLabel="取消"
+        variant="danger"
+        onConfirm={handleConfirmAction}
+        onCancel={() => setConfirmDialog(null)}
       />
     </>
   );

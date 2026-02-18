@@ -385,13 +385,26 @@ class SessionManagerV2:
 
         return self._shared_llm_client
 
-    async def _auto_generate_title(self, session_id: str, user_message: str):
-        """用 LLM 根据首条消息自动生成 session 标题。使用 flash 模型避免与用户请求竞争 rate limit。"""
+    async def _auto_generate_title(self, session_id: str):
+        """用 LLM 根据对话内容自动生成/更新 session 标题。前几轮每次都重新生成以获得更准确的标题。"""
         try:
-            session = await self._storage.get_session(session_id)
-            current_name = session.get("name") or ""
-            if current_name and not current_name.startswith("New Chat"):
+            # 读取所有消息作为上下文
+            all_msgs = await self._storage.get_messages(session_id, limit=20)
+            if not all_msgs:
                 return
+
+            # 拼接对话摘要（每条消息取前 100 字，最多用 5 条）
+            conversation = []
+            for msg in all_msgs[:5]:
+                role = msg.get("role", "user")
+                content = (msg.get("content") or "")[:100]
+                if content.strip():
+                    conversation.append(f"{role}: {content}")
+
+            if not conversation:
+                return
+
+            conversation_text = "\n".join(conversation)
 
             # Use a lightweight flash model for title generation to avoid
             # competing with the user's main request for rate limits.
@@ -403,11 +416,11 @@ class SessionManagerV2:
                 logger.warning(f"Failed to create flash client for title generation, falling back to shared: {e}")
                 llm = await self._get_shared_llm_client()
 
-            has_chinese = any("\u4e00" <= c <= "\u9fff" for c in user_message)
+            has_chinese = any("\u4e00" <= c <= "\u9fff" for c in conversation_text)
             if has_chinese:
-                prompt = f"请用一个简短的标题（5-15个字）概括这个对话的主题，只返回标题本身：\n\n{user_message[:200]}"
+                prompt = f"请根据以下对话内容，用一个简短的标题（5-15个字）概括这个对话的主题。只返回标题本身，不要引号：\n\n{conversation_text}"
             else:
-                prompt = f"Generate a short title (3-8 words) for this conversation. Return only the title:\n\n{user_message[:200]}"
+                prompt = f"Based on this conversation, generate a short title (3-8 words) summarizing the topic. Return only the title, no quotes:\n\n{conversation_text}"
 
             messages = [{"role": "user", "content": prompt}]
             response = await llm.chat(messages, tools=[])

@@ -437,6 +437,83 @@ class DirectAdapter:
                 })
         return result if result else None
 
+    def _validate_anthropic_context(self, messages: list) -> list:
+        """
+        Validate and auto-repair context for Anthropic API constraints.
+
+        Rules:
+        1. Conversation must not end with assistant message
+        2. Every tool_use must have a corresponding tool_result
+        3. No orphan tool_use blocks without matching tool_result
+
+        This is a defensive last-resort layer. Ideally the MMU and VCPU
+        already produce well-formed context, but truncation / early-return
+        edge cases can slip through.
+        """
+        if not messages:
+            return messages
+
+        # Rule 1: Must not end with assistant message
+        # (It's likely an orphan from truncation or discard.)
+        while messages and messages[-1].get("role") == "assistant":
+            logger.warning(
+                "Context validation: Removing trailing assistant message"
+            )
+            messages.pop()
+
+        if not messages:
+            return messages
+
+        # Rule 2: Check tool_use / tool_result pairing
+        tool_use_ids: set[str] = set()
+        tool_result_ids: set[str] = set()
+        for msg in messages:
+            if msg.get("role") == "assistant":
+                content = msg.get("content", [])
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            tid = block.get("id")
+                            if tid:
+                                tool_use_ids.add(tid)
+            elif msg.get("role") == "user":
+                content = msg.get("content", [])
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "tool_result":
+                            tid = block.get("tool_use_id")
+                            if tid:
+                                tool_result_ids.add(tid)
+
+        orphan_ids = tool_use_ids - tool_result_ids
+        if orphan_ids:
+            logger.warning(
+                "Context validation: Found %d orphan tool_use IDs, removing orphan blocks: %s",
+                len(orphan_ids),
+                orphan_ids,
+            )
+            # Remove orphan tool_use blocks from assistant messages
+            for msg in messages:
+                if msg.get("role") == "assistant":
+                    content = msg.get("content", [])
+                    if isinstance(content, list):
+                        msg["content"] = [
+                            block
+                            for block in content
+                            if not (
+                                isinstance(block, dict)
+                                and block.get("type") == "tool_use"
+                                and block.get("id") in orphan_ids
+                            )
+                        ]
+                        # If no content blocks remain, mark for removal
+                        if not msg["content"]:
+                            msg["_remove"] = True
+
+            messages = [m for m in messages if not m.get("_remove")]
+
+        return messages
+
     async def _stream_anthropic_native(
         self,
         messages: List[Dict[str, Any]],
@@ -476,6 +553,8 @@ class DirectAdapter:
 
         # Convert messages & tools
         system_text, anthropic_messages = self._convert_messages_to_anthropic(messages)
+        # Validate and auto-repair context before sending to API
+        anthropic_messages = self._validate_anthropic_context(anthropic_messages)
         anthropic_tools = self._convert_tools_to_anthropic(tools)
 
         # Prepend Claude Code system prefix

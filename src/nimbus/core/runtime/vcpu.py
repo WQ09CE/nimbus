@@ -1242,14 +1242,18 @@ class VCPU:
                     f"Doom loop detected (1st time) for {action.name}, "
                     f"injecting recovery hint and continuing"
                 )
+                doom_output = (
+                    f"⚠️ DOOM LOOP DETECTED: You've made {doom_result.consecutive_count} identical failing "
+                    f"calls to {action.name}. STOP and change your approach.\n\n"
+                    f"{doom_result.guidance or ''}\n\n"
+                    f"Read the file again before retrying."
+                )
+                # Write tool_result to MMU before returning — required to keep
+                # the assistant tool_use / user tool_result pairing intact.
+                self.mmu.add_tool_result(tool_call_id=action.id, name=action.name, content=doom_output)
                 return ToolResult(
                     status="ERROR",
-                    output=(
-                        f"⚠️ DOOM LOOP DETECTED: You've made {doom_result.consecutive_count} identical failing "
-                        f"calls to {action.name}. STOP and change your approach.\n\n"
-                        f"{doom_result.guidance or ''}\n\n"
-                        f"Read the file again before retrying."
-                    ),
+                    output=doom_output,
                     is_final=False,
                     fault=Fault(
                         domain="RUNTIME",
@@ -1260,13 +1264,17 @@ class VCPU:
                 )
             else:
                 # Second+ doom loop: non-recoverable
+                doom_output = self._failure_reporter.format_doom_loop_error(
+                    tool_name=action.name,
+                    threshold=doom_result.consecutive_count,
+                    guidance=doom_result.guidance or "",
+                )
+                # Write tool_result to MMU before returning — required to keep
+                # the assistant tool_use / user tool_result pairing intact.
+                self.mmu.add_tool_result(tool_call_id=action.id, name=action.name, content=doom_output)
                 return ToolResult(
                     status="ERROR",
-                    output=self._failure_reporter.format_doom_loop_error(
-                        tool_name=action.name,
-                        threshold=doom_result.consecutive_count,
-                        guidance=doom_result.guidance or "",
-                    ),
+                    output=doom_output,
                     is_final=False,
                     fault=Fault(
                         domain="RUNTIME",

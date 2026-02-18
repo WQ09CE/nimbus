@@ -469,12 +469,12 @@ async def chat(
             await session_manager.stream_chat(session_id, chat_content)
             logger.info("✅ stream_chat completed")
 
-            # Auto-title: 仅在首轮对话后触发
+            # Auto-title: 前 3 轮对话每次都重新生成标题
             try:
-                msgs = await storage.get_messages(session_id, limit=3)
-                if len(msgs) <= 2:  # 1 user + 1 assistant = 首轮对话
+                msgs = await storage.get_messages(session_id, limit=10)
+                if len(msgs) <= 6:  # 前 3 轮对话（每轮 user+assistant=2）
                     asyncio.create_task(
-                        session_manager._auto_generate_title(session_id, data.content)
+                        session_manager._auto_generate_title(session_id)
                     )
             except Exception as title_err:
                 logger.warning(f"Auto-title check failed: {title_err}")

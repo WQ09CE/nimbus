@@ -307,6 +307,9 @@ class MMU:
 
     def _auto_detect_tool_failure(self, tool_call_id: str, content: str) -> bool:
         """Detect explicit failures."""
+        # Recovery output exemption - already contains useful recovery info, don't discard
+        if "[Auto-Recovery Output]" in content:
+            return False
         if content.startswith("[Error]"):
             self.mark_tool_call(tool_call_id, discard=True, reason="auto_detected_failure")
             return True
@@ -662,6 +665,12 @@ class MMU:
             # So we must apply the same safety check again on the final hot_messages list.
             while hot_messages and hot_messages[0].role == "tool":
                  hot_messages.pop(0)
+
+            # TAIL guard: Remove assistant messages with tool_calls at the end.
+            # Their tool_results may have been truncated by budget, leaving
+            # orphan tool_use blocks that violate the Anthropic API contract.
+            while hot_messages and hot_messages[-1].role == "assistant" and hot_messages[-1].tool_calls:
+                hot_messages.pop()
 
         # Adjust remaining budget for History Window
         history_budget = remaining_budget - hot_tokens

@@ -32,19 +32,19 @@ export function ToolCard({ tool, defaultExpanded }: ToolCardProps) {
     switch (tool.status) {
       case "running":
         return {
-          icon: <div className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse shadow-[0_0_8px_rgba(234,179,8,0.5)]" />,
+          icon: <div className="w-2 h-2 rounded-full bg-amber-400 animate-pulse ring-[3px] ring-amber-400/20" />,
           border: "border-yellow-500/30",
           bg: "bg-yellow-500/5",
         };
       case "completed":
         return {
-          icon: <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" />,
+          icon: <div className="w-2 h-2 rounded-full bg-emerald-400 ring-[3px] ring-emerald-400/20" />,
           border: "border-emerald-500/30",
           bg: "bg-emerald-500/5",
         };
       case "failed":
         return {
-          icon: <div className="w-2 h-2 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]" />,
+          icon: <div className="w-2 h-2 rounded-full bg-red-400 ring-[3px] ring-red-400/20" />,
           border: "border-red-500/30",
           bg: "bg-red-500/5",
         };
@@ -67,13 +67,23 @@ export function ToolCard({ tool, defaultExpanded }: ToolCardProps) {
 
     if (["Read", "Write", "Edit", "view_file", "replace_file_content", "write_to_file", "edit_file"].some(n => tool.name.toLowerCase().includes(n.toLowerCase()))) {
       if (typeof pathArg === 'string') {
-        // Extract just the filename if it's too long, or keep full path? 
-        // Let's shorten it for the card header: ".../filename.ext"
         const parts = pathArg.split('/');
         const fileName = parts.pop() || pathArg;
-        // If deep path, show parent dir too
         const parentDir = parts.pop();
         summary = parentDir ? `${parentDir}/${fileName}` : fileName;
+
+        // Append line range for Read tool with offset/limit
+        if (tool.name === "Read") {
+          const offset = tool.args.offset as number | undefined;
+          const limit = tool.args.limit as number | undefined;
+          if (offset && limit) {
+            summary += ` :${offset}-${offset + limit}`;
+          } else if (offset) {
+            summary += ` :${offset}+`;
+          } else if (limit) {
+            summary += ` :1-${limit}`;
+          }
+        }
       }
     } else if (["Bash", "RunCommand", "run_command", "execute"].some(n => tool.name.toLowerCase().includes(n.toLowerCase()))) {
       if (typeof cmdArg === 'string') {

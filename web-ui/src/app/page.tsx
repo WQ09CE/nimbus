@@ -67,6 +67,18 @@ export default function Home() {
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, []);
 
+  // Register Cmd+K / Ctrl+K shortcut for New Chat
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        createNewSession(true);
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [createNewSession]);
+
   if (!mounted) {
     return (
       <div className="h-screen bg-nimbus-bg flex items-center justify-center">
@@ -163,6 +175,12 @@ export default function Home() {
             {error && (
               <div data-testid="error-banner" className="mb-4 p-3 bg-red-900/20 border border-red-800 rounded text-red-400 text-sm animate-in fade-in slide-in-from-top-2">
                 <span className="font-semibold">Error:</span> {error}
+                <button
+                  onClick={() => useChatStore.getState().retryLastMessage()}
+                  className="ml-3 text-sky-400 hover:text-sky-300 underline"
+                >
+                  Retry
+                </button>
                 <button
                   onClick={clearError}
                   className="ml-3 underline hover:no-underline"

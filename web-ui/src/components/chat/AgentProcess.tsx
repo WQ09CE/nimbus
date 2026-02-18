@@ -26,16 +26,16 @@ export function AgentProcess({ steps, isStreaming }: AgentProcessProps) {
 
               {/* Connector Line (only if not last) */}
               {index < steps.length - 1 && (
-                <div className="absolute left-[5px] top-4 bottom-[-24px] w-px bg-gray-800/50 group-hover:bg-gray-700/50 transition-colors" />
+                <div className="absolute left-[3.5px] top-4 bottom-[-24px] w-px bg-gray-800/50 group-hover:bg-gray-700/50 transition-colors" />
               )}
 
               <div className="flex items-start gap-4">
                 {/* Status Dot */}
                 <div className="relative mt-2 shrink-0">
-                  <div className={`w-2.5 h-2.5 rounded-full border-2 border-black z-10 
+                  <div className={`w-2 h-2 rounded-full z-10
                         ${isThinking
-                      ? "bg-gray-600"
-                      : "bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.4)]"
+                      ? "bg-gray-500/80"
+                      : "bg-sky-400 ring-[3px] ring-sky-400/20"
                     }
                      `} />
                 </div>

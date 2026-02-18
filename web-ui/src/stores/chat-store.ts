@@ -98,6 +98,7 @@ interface ChatState {
   loadSession: (sessionId: string) => Promise<void>;
   sendMessage: (content: string, attachments?: ChatAttachment[]) => Promise<void>;
   reconnectToSession: (sessionId: string) => Promise<void>;
+  retryLastMessage: () => void;
   interruptMessage: () => void;
   clearError: () => void;
   reset: () => void;
@@ -356,12 +357,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     // Handle streaming case: Inject message instead of queuing
     if (isStreaming && session) {
-      // Optimistically add to UI
+      // Attachments are not supported during inject
+      if (attachments && attachments.length > 0) {
+        set({ error: "Agent 执行中，附件暂不支持" });
+      }
+
+      // Optimistically add to UI (text only, no prefix)
       const userMessage: Message = {
         id: `user-inject-${Date.now()}`,
         role: "user",
-        content: `[追加指令] ${content}`,
-        attachments,
+        content,
         timestamp: Date.now(),
       };
 
@@ -371,8 +376,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
 
       try {
-        // Note: inject currently only supports text. Attachments are shown in UI but
-        // not sent to backend via inject. For full attachment support, use non-streaming send.
         await injectMessage(session.id, content);
         console.log(`[Store] Injected message into session ${session.id}`);
       } catch (err) {
@@ -650,20 +653,36 @@ export const useChatStore = create<ChatState>((set, get) => ({
             });
             break;
 
+          case "permission_request": {
+            const permData = data as { action?: string; description?: string } | undefined;
+            const desc = permData?.description || permData?.action || "Permission requested";
+            set({ currentActivity: `⚠️ ${desc}` });
+            // Add system message to notify user
+            set(state => ({
+              messages: [...state.messages, {
+                id: `perm-${Date.now()}`,
+                role: "system" as const,
+                content: `⚠️ Agent requests permission: ${desc}`,
+                timestamp: Date.now(),
+              }]
+            }));
+            break;
+          }
+
           case "dag_complete":
             set({
               currentActivity: "完成",
               lastHeartbeat: Date.now()
             });
-            // Auto-refresh session to pick up auto-generated title
-            if (messages.length <= 1) {
+            // Auto-refresh session to pick up auto-generated title (first 3 rounds)
+            if (messages.length <= 6) {
               setTimeout(async () => {
                 try {
                   const { getSession } = await import("@/lib/api/sessions");
                   const updated = await getSession(currentSession.id);
                   set({ session: updated });
                 } catch {}
-              }, 3000);
+              }, 5000);
             }
             // Stream completed successfully, exit loop
             shouldContinue = false;
@@ -951,6 +970,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
         });
       }
     }
+  },
+
+  retryLastMessage: () => {
+    const state = get();
+    if (state.isStreaming) return;
+
+    // Find last user message
+    const lastUserIdx = [...state.messages].reverse().findIndex(m => m.role === 'user');
+    if (lastUserIdx === -1) return;
+
+    const actualIdx = state.messages.length - 1 - lastUserIdx;
+    const lastUserMsg = state.messages[actualIdx];
+
+    // Remove messages after the last user message
+    set({ messages: state.messages.slice(0, actualIdx), error: null });
+
+    // Re-send
+    get().sendMessage(lastUserMsg.content, lastUserMsg.attachments);
   },
 
   clearError: () => set({ error: null }),

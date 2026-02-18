@@ -146,8 +146,9 @@ class RecoveryExecutor:
         )
 
         # Combine error message, hint, and recovery result
+        # Use [Recovery] prefix to avoid triggering _auto_detect_tool_failure's [Error] check
         error_msg = self._get_error_message(ctx.original_result)
-        parts = [error_msg]
+        parts = [f"[Recovery] Original tool '{ctx.original_action.name}' failed: {error_msg}"]
 
         if recovery.hint:
             parts.append(f"(Hint: {recovery.hint})")

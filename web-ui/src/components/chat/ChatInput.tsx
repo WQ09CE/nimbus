@@ -400,7 +400,7 @@ export const ChatInput = React.memo(function ChatInput({
                     <button
                       type="button"
                       onClick={() => removeAttachment(att.id)}
-                      className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/60 text-gray-300 hover:text-white hover:bg-red-500/80 flex items-center justify-center opacity-0 group-hover/att:opacity-100 transition-all text-[10px]"
+                      className="absolute top-0.5 right-0.5 w-5 h-5 p-1 rounded-full bg-black/60 text-gray-300 hover:text-white hover:bg-red-500/80 flex items-center justify-center md:opacity-0 md:group-hover/att:opacity-100 transition-all text-[10px]"
                     >
                       ✕
                     </button>

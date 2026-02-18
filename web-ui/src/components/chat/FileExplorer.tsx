@@ -80,6 +80,7 @@ function FileTreeItem({ node, sessionId, level = 0 }: { node: FileNode, sessionI
     const [children, setChildren] = useState<FileNode[]>(node.children || []);
     const [loading, setLoading] = useState(false);
     const [hasLoaded, setHasLoaded] = useState(false);
+    const [copiedPath, setCopiedPath] = useState<string | null>(null);
 
     const isDir = node.type === "directory";
 
@@ -102,6 +103,18 @@ function FileTreeItem({ node, sessionId, level = 0 }: { node: FileNode, sessionI
         setExpanded(!expanded);
     };
 
+    const handleFileClick = async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (isDir) return;
+        try {
+            await navigator.clipboard.writeText(node.path);
+            setCopiedPath(node.path);
+            setTimeout(() => setCopiedPath(null), 2000);
+        } catch (err) {
+            console.error("Failed to copy path", err);
+        }
+    };
+
     return (
         <div>
             <div
@@ -110,7 +123,7 @@ function FileTreeItem({ node, sessionId, level = 0 }: { node: FileNode, sessionI
           ${expanded ? "text-gray-200" : "text-gray-400"}
         `}
                 style={{ paddingLeft: `${level * 12 + 8}px` }}
-                onClick={toggleExpand}
+                onClick={isDir ? toggleExpand : handleFileClick}
             >
                 <span className={`w-4 h-4 flex items-center justify-center transition-transform ${expanded ? "rotate-90" : ""} ${!isDir && "opacity-0"}`}>
                     <svg className="w-3 h-3 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -129,6 +142,17 @@ function FileTreeItem({ node, sessionId, level = 0 }: { node: FileNode, sessionI
                 )}
 
                 <span className="truncate flex-1">{node.name}</span>
+
+                {/* Copy path icon for files */}
+                {!isDir && (
+                    copiedPath === node.path ? (
+                        <span className="text-green-400 text-[10px] ml-1 shrink-0">Copied</span>
+                    ) : (
+                        <svg className="w-3.5 h-3.5 text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity ml-1 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                    )
+                )}
 
                 {loading && (
                     <div className="w-3 h-3 border-2 border-gray-600 border-t-gray-400 rounded-full animate-spin ml-2"></div>
