@@ -288,3 +288,109 @@ class TestCompactionFormatMessages:
         ]}]
         result = self.formatter._format_messages(messages)
         assert fake_b64 not in result
+
+
+# =============================================================================
+# Tool Result Progressive Compression
+# =============================================================================
+
+class TestToolResultCompression:
+    """Test tool result progressive compression (hot vs history)."""
+
+    def setup_method(self):
+        self.mmu = MMU()
+
+    def _make_tool_msg(self, content: str) -> dict:
+        """Helper to create a tool result message dict."""
+        return {"role": "tool", "content": content, "tool_call_id": "tc_1", "name": "Read"}
+
+    def test_hot_tool_result_keeps_10k(self):
+        """Tool results in hot context should keep up to 10K chars."""
+        big_content = "x" * 15_000
+        messages = [self._make_tool_msg(big_content)]
+        # hot_count=1 means all messages are hot
+        result = self.mmu._optimize_context(messages, hot_count=1)
+        # Should truncate at 10K (VIEW_MAX_TOOL_CHARS)
+        assert len(result[0]["content"]) < 11_000
+        assert len(result[0]["content"]) > 9_000
+
+    def test_history_tool_result_compresses_to_1k(self):
+        """Tool results in history should compress to ~1K chars."""
+        big_content = "x" * 15_000
+        messages = [
+            self._make_tool_msg(big_content),  # history (index 0)
+            {"role": "user", "content": "next"},  # hot (index 1)
+        ]
+        # hot_count=1 means only last message is hot
+        result = self.mmu._optimize_context(messages, hot_count=1)
+        # History tool result should be ~1K
+        assert len(result[0]["content"]) < 1_200
+        assert "compressed for context efficiency" in result[0]["content"]
+
+    def test_small_tool_result_not_truncated(self):
+        """Small tool results should not be truncated regardless of position."""
+        small_content = "x" * 500
+        messages = [self._make_tool_msg(small_content)]
+        result = self.mmu._optimize_context(messages, hot_count=0)
+        assert result[0]["content"] == small_content
+
+    def test_hot_count_zero_defaults_all_hot(self):
+        """When hot_count=0, all messages treated as hot (backward compat)."""
+        big_content = "x" * 15_000
+        messages = [self._make_tool_msg(big_content)]
+        result = self.mmu._optimize_context(messages, hot_count=0)
+        # Should use VIEW_MAX_TOOL_CHARS (10K), not HISTORY (1K)
+        assert len(result[0]["content"]) > 9_000
+
+    def test_compression_message_includes_total_chars(self):
+        """Compression suffix should include total character count."""
+        big_content = "y" * 20_000
+        messages = [
+            self._make_tool_msg(big_content),
+            {"role": "user", "content": "next"},
+        ]
+        result = self.mmu._optimize_context(messages, hot_count=1)
+        assert "20,000 chars total" in result[0]["content"]
+
+
+# =============================================================================
+# Token Estimate View
+# =============================================================================
+
+class TestTokenEstimateView:
+    """Test token_estimate_view() for accurate LLM-facing estimates."""
+
+    def test_small_tool_message_same_as_regular(self):
+        """Small tool messages: view estimate == regular estimate."""
+        msg = Message(role="tool", content="short result", tool_call_id="tc_1")
+        assert msg.token_estimate_view() == msg.token_estimate()
+
+    def test_large_tool_message_capped(self):
+        """Large tool messages: view estimate should be much smaller."""
+        big_content = "x" * 50_000  # 50K chars
+        msg = Message(role="tool", content=big_content, tool_call_id="tc_1")
+        view_est = msg.token_estimate_view()
+        full_est = msg.token_estimate()
+        assert view_est < full_est
+        # View should be roughly 10K/4 + overhead = ~2504
+        assert view_est < 3000
+
+    def test_non_tool_message_unaffected(self):
+        """Non-tool messages: view estimate == regular estimate."""
+        msg = Message(role="user", content="x" * 50_000)
+        assert msg.token_estimate_view() == msg.token_estimate()
+
+    def test_assistant_message_unaffected(self):
+        """Assistant messages: view estimate == regular estimate."""
+        msg = Message(role="assistant", content="x" * 50_000)
+        assert msg.token_estimate_view() == msg.token_estimate()
+
+    def test_mmu_estimate_tokens_uses_view(self):
+        """MMU.estimate_tokens() should use view-based estimates."""
+        mmu = MMU()
+        big_content = "x" * 50_000
+        mmu.add_tool_result("tc_1", "Read", big_content)
+
+        view_tokens = mmu.estimate_tokens()
+        # If using view-based, should be much less than 50K/4 = 12500
+        assert view_tokens < 5000

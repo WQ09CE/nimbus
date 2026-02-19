@@ -60,9 +60,15 @@ class SSEHub:
             heartbeat_interval: Seconds between heartbeat events.
         """
         self._connections: Dict[str, List[SSEConnection]] = {}
+        self._pending_events: Dict[str, List[str]] = {}  # session_id -> buffered event strings
         self._heartbeat_interval = heartbeat_interval
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
+
+    def prepare_session(self, session_id: str) -> None:
+        """Prepare event buffer for a session. Call before starting background work."""
+        if session_id not in self._pending_events:
+            self._pending_events[session_id] = []
 
     async def start(self) -> None:
         """Start the heartbeat task."""
@@ -106,7 +112,12 @@ class SSEHub:
                 self._connections[session_id] = []
             self._connections[session_id].append(connection)
 
-        # Send connected event
+            # Replay any buffered events from before subscribe was called
+            pending = self._pending_events.pop(session_id, [])
+            for event_str in pending:
+                await connection.queue.put(event_str)
+
+        # Send connected event (after replay, so order is: buffered events -> connected)
         await self._send_to_connection(connection, self.EVENT_CONNECTED, {"session_id": session_id})
 
         try:
@@ -156,9 +167,14 @@ class SSEHub:
 
         async with self._lock:
             connections = self._connections.get(session_id, [])
-            for conn in connections:
-                await self._send_to_connection(conn, event_type, data)
-                sent_count += 1
+            if connections:
+                for conn in connections:
+                    await self._send_to_connection(conn, event_type, data)
+                    sent_count += 1
+            elif session_id in self._pending_events:
+                # No subscriber yet, buffer the event
+                event_str = self._format_sse(event_type, data)
+                self._pending_events[session_id].append(event_str)
 
         return sent_count
 
@@ -247,6 +263,8 @@ class SSEHub:
                 await conn.queue.put(None)  # Signal to close
             if session_id in self._connections:
                 del self._connections[session_id]
+            # Also clean up any pending events
+            self._pending_events.pop(session_id, None)
 
     def get_active_sessions(self) -> List[str]:
         """Get list of session IDs with active connections."""

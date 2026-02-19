@@ -146,6 +146,13 @@ class Message:
         tokens += self._estimate_tool_calls()
         return tokens
 
+    def token_estimate_view(self, max_tool_chars: int = 10_000) -> int:
+        """Token estimate based on view-truncated content (matches what LLM actually receives)."""
+        if self.role == "tool" and isinstance(self.content, str) and len(self.content) > max_tool_chars:
+            capped_tokens = self._estimate_text(self.content[:max_tool_chars])
+            return MESSAGE_OVERHEAD + capped_tokens
+        return self.token_estimate()
+
 
 # =============================================================================
 # Pinned Context

@@ -1035,14 +1035,31 @@ class AgentOS:
                     previous_summary = ""
                     for m in messages:
                         content = str(m.content) if m.content else ""
-                        if "[Memory Recall]" in content or "关键信息摘要" in content:
+                        if any(marker in content for marker in [
+                            "[Memory Recall]", "关键信息摘要",
+                            "\U0001f3af PRIMARY GOAL", "\U0001f4dd EXECUTION STATUS",
+                            "[Mission Control]",
+                        ]):
                             previous_summary = content
                             break
 
-                    # Build a prompt for summarization
+                    # Build a prompt for summarization - 均匀采样覆盖全部历史
+                    sample_size = min(len(messages), 50)
+                    step = max(1, len(messages) // sample_size)
+                    sampled = messages[::step][-sample_size:]
+
+                    # Ensure the first user message is always included (original instruction)
+                    first_user_msg = None
+                    for m in messages:
+                        if m.role == "user":
+                            first_user_msg = m
+                            break
+                    if first_user_msg is not None and first_user_msg not in sampled:
+                        sampled.insert(0, first_user_msg)
+
                     context = "\n".join(
-                        f"[{m.role.upper()}]: {str(m.content)[:500]}"
-                        for m in messages[-20:]  # Last 20 messages
+                        f"[{m.role.upper()}]: {str(m.content)[:300]}"
+                        for m in sampled
                     )
 
                     # Append Memo content so summarizer preserves key info from notes
@@ -1067,6 +1084,7 @@ class AgentOS:
                             "**核心要求**：\n"
                             "1. 必须保留所有关键技术细节（代码路径、配置值、密码）。\n"
                             "2. 必须评估当前进度与最终目标的距离（防止任务漂移）。\n"
+                            "3. 必须保留用户的原始任务指令和目标。\n"
                             f"请用中文回复（{target_chars}字以内）。\n\n"
                             "**OUTPUT FORMAT**:\n"
                             "NEW_MILESTONES: [Milestone 1], [Milestone 2]\n"
@@ -1079,6 +1097,7 @@ class AgentOS:
                             "**核心要求**：\n"
                             "1. 提取所有关键技术细节（代码路径、配置值、密码）。\n"
                             "2. 明确下一步行动计划。\n"
+                            "3. 必须保留用户的原始任务指令和目标。\n"
                             f"请用中文回复（{target_chars}字以内）。\n\n"
                             "**OUTPUT FORMAT**:\n"
                             "NEW_MILESTONES: [Milestone 1]\n"

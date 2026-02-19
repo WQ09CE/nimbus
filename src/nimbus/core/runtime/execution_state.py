@@ -66,6 +66,13 @@ class ExecutionState:
     # 中断控制
     interruption_requested: bool = False
 
+    # Productive work tracking (A+B anti-premature-termination)
+    has_productive_work: bool = False
+
+    # Suppress streaming after poke (transient, not persisted)
+    suppress_streaming: bool = False
+    pending_thought_text: str = ""
+
     def reset(self) -> None:
         """重置所有状态到初始值"""
         self.iteration = 0
@@ -80,6 +87,9 @@ class ExecutionState:
         self.path_not_found_count = 0
         self.doom_loop_count = 0
         self.interruption_requested = False
+        self.has_productive_work = False
+        self.suppress_streaming = False
+        self.pending_thought_text = ""
 
     def start_execution(self) -> None:
         """开始执行"""
@@ -137,6 +147,16 @@ class ExecutionState:
     def on_action(self) -> None:
         """记录一次动作（有工具调用），重置思考计数"""
         self.consecutive_thoughts = 0
+        self.pending_thought_text = ""
+        self.suppress_streaming = False
+
+    # Productive tools = tools that create/modify output (not just reading)
+    PRODUCTIVE_TOOLS = frozenset({"Write", "Edit", "Bash", "Dispatch"})
+
+    def on_productive_action(self, tool_name: str) -> None:
+        """Record that a productive tool was called (Write/Edit/Bash/Dispatch)."""
+        if tool_name in self.PRODUCTIVE_TOOLS:
+            self.has_productive_work = True
 
     def on_tool_success(self, tool_name: str) -> None:
         """
@@ -209,6 +229,7 @@ class ExecutionState:
             "tool_failure_counts": dict(self.tool_failure_counts),
             "path_not_found_count": self.path_not_found_count,
             "doom_loop_count": self.doom_loop_count,
+            "has_productive_work": self.has_productive_work,
         }
 
     @classmethod
@@ -251,6 +272,7 @@ class ExecutionState:
             tool_failure_counts=dict(self.tool_failure_counts),
             path_not_found_count=self.path_not_found_count,
             doom_loop_count=self.doom_loop_count,
+            has_productive_work=self.has_productive_work,
         )
 
     def restore_from_snapshot(self, snapshot: ExecutionStateModel) -> None:
@@ -268,3 +290,4 @@ class ExecutionState:
         self.tool_failure_counts = dict(snapshot.tool_failure_counts)
         self.path_not_found_count = snapshot.path_not_found_count
         self.doom_loop_count = snapshot.doom_loop_count
+        self.has_productive_work = getattr(snapshot, 'has_productive_work', False)

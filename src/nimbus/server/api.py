@@ -511,6 +511,9 @@ async def chat(
         finally:
             session_manager.unregister_task(session_id)
 
+    # Prepare SSE buffer before starting background work (fix publish-before-subscribe race)
+    sse_hub.prepare_session(session_id)
+
     # Create task and keep reference to prevent GC
     task = asyncio.create_task(run_chat())
     session_manager.register_task(session_id, task)

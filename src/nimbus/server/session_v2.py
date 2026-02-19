@@ -45,6 +45,7 @@ class SessionManagerV2:
         self._dispatch_tools: Dict[str, Any] = {}  # session_id -> DispatchTool (dual_agent mode only)
         self._active_tasks: Dict[str, asyncio.Task] = {}  # session_id -> running task
         self._lock = asyncio.Lock()
+        self._shared_llm_lock = asyncio.Lock()
         self._shared_llm_client = None
         self._sub_tool_buffer: Dict[str, list] = {}  # session_id -> list of sub-tool events
 
@@ -361,29 +362,30 @@ class SessionManagerV2:
 
     async def _get_shared_llm_client(self):
         """Get or create shared LLM client (respects NIMBUS_LLM=mock)."""
-        if self._shared_llm_client is None:
-            import os
+        async with self._shared_llm_lock:
+            if self._shared_llm_client is None:
+                import os
 
-            if os.environ.get("NIMBUS_LLM") == "mock":
-                from nimbus.testing.mock_llm import MockLLMAdapter
+                if os.environ.get("NIMBUS_LLM") == "mock":
+                    from nimbus.testing.mock_llm import MockLLMAdapter
 
-                adapter = MockLLMAdapter()
-                await adapter.start()
-                self._shared_llm_client = adapter
-                logger.info("🤖 Shared MockLLMAdapter initialized (NIMBUS_LLM=mock)")
-            else:
-                from nimbus.adapters.llm_factory import create_llm_client
-                from nimbus.config import get_config
+                    adapter = MockLLMAdapter()
+                    await adapter.start()
+                    self._shared_llm_client = adapter
+                    logger.info("🤖 Shared MockLLMAdapter initialized (NIMBUS_LLM=mock)")
+                else:
+                    from nimbus.adapters.llm_factory import create_llm_client
+                    from nimbus.config import get_config
 
-                cfg = get_config()
-                model = cfg.default_model
+                    cfg = get_config()
+                    model = cfg.default_model
 
-                # Use factory to create LLM (uses DirectAdapter)
-                adapter = await create_llm_client(model=model)
-                self._shared_llm_client = adapter
-                logger.info(f"🤖 Shared DirectAdapter initialized (model={model})")
+                    # Use factory to create LLM (uses DirectAdapter)
+                    adapter = await create_llm_client(model=model)
+                    self._shared_llm_client = adapter
+                    logger.info(f"🤖 Shared DirectAdapter initialized (model={model})")
 
-        return self._shared_llm_client
+            return self._shared_llm_client
 
     async def _auto_generate_title(self, session_id: str):
         """用 LLM 根据对话内容自动生成/更新 session 标题。前几轮每次都重新生成以获得更准确的标题。"""
@@ -457,9 +459,6 @@ class SessionManagerV2:
 
         Yields SSE events in the format expected by the API.
         """
-        # Wait a bit to ensure SSE connection is established (fix race condition)
-        await asyncio.sleep(0.05)
-
         logger.info(f"[stream_chat] Starting for session {session_id}")
 
         # Reset DispatchTool budget for this new message turn (dual_agent mode)
@@ -528,6 +527,16 @@ class SessionManagerV2:
 
             # Use chat method for multi-turn conversation
             logger.info("[stream_chat] Calling agent_os.chat...")
+
+            # Record message watermark before chat (for reliable save boundary)
+            # For new sessions (process not yet created), watermark is 0 — correct
+            # because chat() will create a new process and all messages are new.
+            # For restored sessions, watermark equals the count of restored old messages.
+            _msg_watermark = 0
+            _pre_process = agent_os.get_process(session_id)
+            if _pre_process and _pre_process.mmu and _pre_process.mmu._stack:
+                _msg_watermark = len(_pre_process.mmu.current_frame.messages)
+
             try:
                 result = await agent_os.chat(message, session_id=session_id)
 
@@ -601,7 +610,7 @@ class SessionManagerV2:
 
                         # Save whatever state we have to database
                         logger.info("[stream_chat] Saving partial progress before interruption...")
-                        await self._save_conversation_to_storage(session_id, agent_os, message)
+                        await self._save_conversation_to_storage(session_id, agent_os, message, _msg_watermark)
 
                         # Save checkpoint on interruption
                         try:
@@ -659,7 +668,7 @@ class SessionManagerV2:
             agent_os.clear_events()
 
             # Save assistant messages to storage
-            await self._save_conversation_to_storage(session_id, agent_os, message)
+            await self._save_conversation_to_storage(session_id, agent_os, message, _msg_watermark)
 
             # Check for late-arriving injected messages (race condition fix)
             # There's a narrow window where inject_message() succeeds (state was still
@@ -734,13 +743,21 @@ class SessionManagerV2:
             )
 
     async def _save_conversation_to_storage(
-        self, session_id: str, agent_os: AgentOS, user_message: str
+        self, session_id: str, agent_os: AgentOS, user_message: "str | list", msg_watermark: int = 0
     ):
         """
         Save conversation messages to storage after chat completion.
 
         This extracts messages from MMU and saves them to the database,
         so they can be restored when the user refreshes the page.
+
+        Args:
+            session_id: The session ID.
+            agent_os: The AgentOS instance.
+            user_message: The user message that triggered this chat turn.
+            msg_watermark: The message count in the frame BEFORE this chat turn
+                started. Messages at index >= msg_watermark are from this turn.
+                Default 0 means save all non-user messages (backward compatible).
         """
 
         try:
@@ -761,21 +778,20 @@ class SessionManagerV2:
             frame = mmu.current_frame
             messages = frame.messages
 
-            # Find new messages (after the user message we just received)
-            # We need to save assistant messages and tool results
-            found_user_msg = False
+            # Find new messages using watermark (index-based, more reliable than content matching).
+            # msg_watermark is the message count BEFORE this chat turn started.
+            # Messages at index >= msg_watermark are from this turn.
             messages_to_save = []
 
-            for msg in messages:
-                # Skip until we find the user message we're responding to
+            start_idx = msg_watermark
+            for msg in messages[start_idx:]:
+                # Skip the user message itself (already saved by frontend)
                 if msg.role == "user" and msg.content == user_message:
-                    found_user_msg = True
                     continue
-
-                # After finding user message, save subsequent messages
                 # Skip ephemeral messages (internal system hints, not for user)
-                if found_user_msg and not msg.meta.get("ephemeral", False):
-                    messages_to_save.append(msg)
+                if msg.meta.get("ephemeral", False):
+                    continue
+                messages_to_save.append(msg)
 
             # Save each message
             for msg in messages_to_save:

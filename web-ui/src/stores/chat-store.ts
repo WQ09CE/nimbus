@@ -131,6 +131,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     agent_mode?: string;
     llm_config?: Record<string, any>;
   }) => {
+    // Abort any in-flight stream from previous session
+    const { streamAbortController: prevController } = get();
+    if (prevController) {
+      prevController.abort();
+    }
+
     const { isCreatingSession, session } = get();
 
     // Prevent concurrent session creation
@@ -180,6 +186,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   switchSession: async (session: Session | null) => {
+    // Abort any in-flight stream from previous session
+    const { streamAbortController } = get();
+    if (streamAbortController) {
+      streamAbortController.abort();
+    }
+
     // Handle null session (e.g., when deleting current session)
     if (!session) {
       set({
@@ -437,6 +449,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Stream response
       for await (const event of streamChat(currentSession.id, content, attachments, abortController.signal)) {
         const { type, data } = event;
+
+        // Guard: abort if session switched while streaming
+        if (get().session?.id !== currentSession.id) {
+          console.log('[Store] Session switched during streaming, aborting old stream');
+          abortController.abort();
+          break;
+        }
 
         switch (type) {
           case "connected":
@@ -910,9 +929,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
             try {
               const { getSessionMessages } = await import("@/lib/api/sessions");
               const serverMessages = await getSessionMessages(sessionId);
-              // Reload the full session to get complete message history
-              if (serverMessages.length > 0) {
-                await get().switchSession(session);
+              // Use current session from store (not stale closure reference)
+              const currentSession = get().session;
+              if (serverMessages.length > 0 && currentSession && currentSession.id === sessionId) {
+                await get().switchSession(currentSession);
               }
             } catch {
               // Fallback: just finalize what we have
@@ -943,8 +963,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       // Stream ended without dag_complete (agent finished while we were connecting)
-      // Reload messages from DB
-      await get().switchSession(session);
+      // Reload messages from DB (use current session from store, not stale closure)
+      const endSession = get().session;
+      if (endSession && endSession.id === sessionId) {
+        await get().switchSession(endSession);
+      }
       set({
         isStreaming: false,
         streamingContent: "",

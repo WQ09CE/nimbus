@@ -105,13 +105,34 @@ class MMU:
 
     def update_global_summary(self, new_summary: str) -> None:
         """Update the global summary with goal reinforcement."""
-        # Extract original goal from pinned context
-        goal_text = "Unknown Goal"
+        # Extract original goal from pinned context (try multiple sources)
+        goal_text = ""
+
+        # Source 1: pinned custom_anchors (e.g. "# Current Goal\n...")
         if self._pinned:
             for anchor in self._pinned.custom_anchors:
                 if anchor.startswith("# Current Goal"):
                     goal_text = anchor.replace("# Current Goal", "").strip()
                     break
+
+        # Source 2: root frame goal
+        if not goal_text and self._stack:
+            root_goal = self._stack[0].goal
+            if root_goal:
+                goal_text = root_goal
+
+        # Source 3: first user message in frame messages
+        if not goal_text and self._stack:
+            for frame in self._stack:
+                for msg in frame.messages:
+                    if msg.role == "user" and msg.content:
+                        goal_text = str(msg.content)[:200]
+                        break
+                if goal_text:
+                    break
+
+        if not goal_text:
+            goal_text = "Unknown Goal"
 
         # Re-format specifically to fight recency bias
         # Using H1/H2 headers to catch LLM attention and reinforce the original goal
@@ -243,8 +264,14 @@ class MMU:
         for msg in self.current_frame.messages:
             if msg.role == "assistant" and msg.tool_calls:
                 for tc in msg.tool_calls:
-                    tc_id = tc.get("id") or tc.get("tool_call_id")
-                    tc_name = tc.get("function", {}).get("name", "unknown")
+                    # Support both dict-style (production API) and object-style (mock) tool calls
+                    if isinstance(tc, dict):
+                        tc_id = tc.get("id") or tc.get("tool_call_id")
+                        tc_name = tc.get("function", {}).get("name", "unknown")
+                    else:
+                        tc_id = getattr(tc, "id", None) or getattr(tc, "tool_call_id", None)
+                        func = getattr(tc, "function", None)
+                        tc_name = getattr(func, "name", "unknown") if func else "unknown"
                     if tc_id: pending[tc_id] = tc_name
             elif msg.role == "tool":
                 tc_id = msg.tool_call_id
@@ -420,14 +447,19 @@ class MMU:
         """Downgrade duplicate/budget-exceeding images (alias for _optimize_context image logic)."""
         return self._optimize_context(messages)
 
-    def _optimize_context(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _optimize_context(self, messages: List[Dict[str, Any]], hot_count: int = 0) -> List[Dict[str, Any]]:
         """
         Optimize context by:
         1. Downgrading duplicate/budget-exceeding images.
         2. Truncating massive tool outputs in the view (preserving storage).
         """
         # --- Config Constants ---
-        VIEW_MAX_TOOL_CHARS = 10_000  # Max chars for tool output in context view (~2.5k tokens)
+        VIEW_MAX_TOOL_CHARS = 10_000      # Hot context: 保留详细内容
+        HISTORY_MAX_TOOL_CHARS = 1_000    # History: 只保留摘要级内容
+
+        total = len(messages)
+        # hot_count=0 means "all hot" (backward compat with _downgrade_seen_images)
+        hot_boundary = 0 if hot_count == 0 else total - hot_count  # messages[hot_boundary:] 是 hot
 
         # 1. Image Downgrade Logic
         keep_indices = set()
@@ -459,17 +491,16 @@ class MMU:
             # --- Tool Output Truncation ---
             if msg.get("role") == "tool":
                 content = msg.get("content")
-                if isinstance(content, str) and len(content) > VIEW_MAX_TOOL_CHARS:
-                    # Truncate string content
-                    # We keep the head and a warning
-                    new_content = content[:VIEW_MAX_TOOL_CHARS] + \
-                        f"\n... [Truncated {len(content)-VIEW_MAX_TOOL_CHARS:,} chars for context view] ..."
-                    
-                    # Clone message to avoid modifying the original list object
-                    new_msg = dict(msg)
-                    new_msg["content"] = new_content
-                    result.append(new_msg)
-                    continue
+                if isinstance(content, str):
+                    is_hot = (i >= hot_boundary)
+                    max_chars = VIEW_MAX_TOOL_CHARS if is_hot else HISTORY_MAX_TOOL_CHARS
+                    if len(content) > max_chars:
+                        new_content = content[:max_chars] + \
+                            f"\n... [{len(content):,} chars total, compressed for context efficiency]"
+                        new_msg = dict(msg)
+                        new_msg["content"] = new_content
+                        result.append(new_msg)
+                        continue
 
             # --- Image Processing ---
             content = msg.get("content")
@@ -765,7 +796,7 @@ class MMU:
                 messages.append(m.to_dict())
 
         # Phase 2: Optimize Context (Downgrade images, Truncate large tool outputs)
-        messages = self._optimize_context(messages)
+        messages = self._optimize_context(messages, hot_count=len(hot_messages))
 
         return messages
 
@@ -802,7 +833,9 @@ class MMU:
     def estimate_tokens(self) -> int:
         total = 0
         if self._pinned: total += self._pinned.token_estimate()
-        for frame in self._stack: total += frame.token_estimate()
+        for frame in self._stack:
+            for msg in frame.messages:
+                total += msg.token_estimate_view()
         return total
 
     def needs_compression(self) -> bool:

@@ -322,11 +322,18 @@ class TestVCPULimits:
 
     @pytest.mark.asyncio
     async def test_max_consecutive_thoughts(self, decoder, gate, mmu):
-        """Test that consecutive thoughts trigger auto-return."""
+        """Test that consecutive thoughts trigger auto-return.
+
+        With max_consecutive_thoughts=3:
+          - Thought 0: streamed to user, poke injected, pending_thought_text saved
+          - Thought 1: suppressed, poke injected
+          - Thought 2: suppressed, consecutive=3 >= max=3, terminate
+          - Output: pending_thought_text from first poke ("Thinking 0...")
+        """
         # LLM returns text without tool calls
         thoughts = [
             MockLLMResponse(content=f"Thinking {i}...")
-            for i in range(5)
+            for i in range(10)
         ]
 
         llm = MockLLMClient(responses=thoughts)
@@ -343,11 +350,11 @@ class TestVCPULimits:
 
         result = await vcpu.execute("Think a lot")
 
-        # Should auto-return after 3 consecutive thoughts
+        # Terminates after 3 consecutive thoughts (max_consecutive_thoughts=3)
         assert result.status == "OK"
         assert result.is_final is True
-        # The output should be the last thought
-        assert "Thinking 2" in result.output
+        # Output is the first thought (saved as pending_thought_text before first poke)
+        assert "Thinking 0" in result.output
 
     @pytest.mark.asyncio
     async def test_compaction_on_iteration_limit(self, decoder, gate, mmu):

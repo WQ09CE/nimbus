@@ -154,7 +154,7 @@ class VCPUConfig:
 
     max_iterations: int = 50
     default_timeout: float = 60.0
-    max_consecutive_thoughts: int = 1  # Auto-return on first text-only response (THOUGHT = final answer)
+    max_consecutive_thoughts: int = 2  # Allow 1 continuation poke before termination (was 1)
     max_sub_call_depth: int = 10
     emit_step_events: bool = True
     compact_on_limit: bool = True  # NEW: Trigger compaction instead of stopping
@@ -608,10 +608,13 @@ class VCPU:
             # Callback for streaming thinking process
             def on_think_chunk(chunk: str):
                 processed = self.pipeline.process_chunk(chunk)
-                if processed:
+                if processed and not self._state.suppress_streaming:
                     self._emit_event("THINKING", {"content": processed})
 
             response = await self.alu.chat(messages, tools=tools_to_pass, on_chunk=on_think_chunk)
+
+            # Reset suppress flag after receiving response
+            self._state.suppress_streaming = False
 
             # CLEANUP EPHEMERAL MESSAGES
             # Once the LLM has responded, the previous ephemeral hints (errors/retries)
@@ -972,12 +975,15 @@ class VCPU:
     async def _handle_thought(self, action: ActionIR) -> ToolResult:
         """Handle THOUGHT action.
 
-        Design principle: A text-only response (no tool calls) IS the AI's final answer.
-        The only exception is non-blocking thoughts from MixedResponseSplitter
-        (content + tool_calls split into separate actions).
+        Design: A text-only response (no tool calls) MAY be the AI's final answer,
+        but confused/long-context LLMs sometimes emit planning statements without
+        acting. We give the LLM a second chance via continuation poke.
 
-        With max_consecutive_thoughts=1 (default), the first standard THOUGHT
-        triggers _handle_return and stops the loop immediately.
+        Termination logic:
+          - If has_productive_work is True and consecutive_thoughts == 1:
+            Treat as final task summary/answer (RETURN).
+          - If no productive work or consecutive_thoughts > 1:
+            Allow up to config.max_consecutive_thoughts pokes.
         """
         # 1. Pipeline splitting (non-blocking) - from MixedResponseSplitter
         # These are thought fragments that accompany tool calls, NOT final answers
@@ -988,17 +994,46 @@ class VCPU:
                  is_final=False
              )
 
-        # 2. Standard thought (text-only response) = Final answer
+        # 2. Standard thought (text-only response)
         self._state.on_thought()
 
-        if self._state.consecutive_thoughts >= self.config.max_consecutive_thoughts:
-             # Treat as Final Return - this is the AI's answer
+        # Refined termination logic:
+        # Case A: Task summary after productive work (on first thought)
+        if self._state.has_productive_work and self._state.consecutive_thoughts == 1:
+            return await self._handle_return(action)
+
+        # Case B: Continuation Poke
+        effective_max = self.config.max_consecutive_thoughts
+        if self._state.consecutive_thoughts >= effective_max:
+             # Final termination
              return await self._handle_return(action)
 
-        # Fallback: Only reached if max_consecutive_thoughts > 1 (not recommended)
+        # Not final yet — inject continuation poke to give LLM another chance
+        from nimbus.core.logging import get_logger
+        logger = get_logger("kernel.vcpu")
+        logger.info(
+            f"THOUGHT #{self._state.consecutive_thoughts}/{effective_max} "
+            f"(productive_work={self._state.has_productive_work}): injecting continuation poke"
+        )
+
+        # Layer 2: Save first pre-poke text (only once) and suppress post-poke streaming
+        if not self._state.pending_thought_text:
+            self._state.pending_thought_text = action.args.get("text", "")
+        self._state.suppress_streaming = True
+
+        poke_msg = (
+            "[System] You responded with text but didn't use any tools. "
+            "If you've completed the task, provide your final answer. "
+            "Otherwise, continue working by calling the appropriate tools."
+        )
+        self.mmu.add_user_message(poke_msg)
+        # Mark as ephemeral so it doesn't get saved to session history
+        if self.mmu.current_frame.messages:
+            self.mmu.current_frame.messages[-1].meta["ephemeral"] = True
+
         return ToolResult(
             status="OK",
-            output=action.args.get("text"),
+            output=action.args.get("text", ""),
             is_final=False
         )
 
@@ -1315,6 +1350,7 @@ class VCPU:
 
         # Reset consecutive thoughts counter on tool call
         self._state.on_action()
+        self._state.on_productive_action(action.name)
 
         # DoomLoopDetector handles its own state management internally
 
@@ -1341,6 +1377,15 @@ class VCPU:
         # with proper short/long text heuristics. No duplicate check here — it caused
         # false positives when the model legitimately discussed tool patterns in its response.
 
+        # Layer 2 fix: if post-poke THOUGHT was suppressed, use the pre-poke text
+        # and mark as not-streamed so stream_chat emits it as a formal message.
+        # Only applies when terminating via THOUGHT (not explicit RETURN after tool use).
+        streamed = action.kind == "THOUGHT"
+        if self._state.pending_thought_text and action.kind == "THOUGHT":
+            result = self._state.pending_thought_text
+            self._state.pending_thought_text = ""
+            streamed = False
+
         self._emit_event(
             "PROC_FINISHED",
             {
@@ -1353,10 +1398,10 @@ class VCPU:
             status="OK",
             output=result,
             is_final=True,
-            meta={"streamed": action.kind == "THOUGHT"},
+            meta={"streamed": streamed},
         )
 
-    # _handle_thought removed (mapped to _handle_return for implicit return)
+    # _handle_thought: continuation poke (A) + productive work tracking (B)
 
     async def _handle_post_ipc(self, action: ActionIR) -> ToolResult:
         """
