@@ -19,6 +19,7 @@ import logging
 import os
 import platform
 import re
+import time
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
@@ -79,6 +80,9 @@ class DirectAdapter:
         # Cached Anthropic SDK client (reused across calls, rebuilt on token change)
         self._anthropic_client: Any = None
         self._anthropic_client_token: str | None = None
+        # Cached httpx client for Codex channel (reused across calls, rebuilt on token change)
+        self._codex_client: Optional[httpx.AsyncClient] = None
+        self._codex_client_token: Optional[str] = None
 
     def _ensure_api_keys(self):
         """Ensure API keys are loaded from NimbusConfig."""
@@ -129,6 +133,21 @@ class DirectAdapter:
                     auth_path,
                 )
 
+    def _get_codex_client(self, token: str) -> httpx.AsyncClient:
+        """Return a persistent httpx client for Codex, rebuilding on token change."""
+        if self._codex_client is None or self._codex_client_token != token:
+            if self._codex_client is not None:
+                # Schedule close of the old client (fire-and-forget)
+                try:
+                    asyncio.get_event_loop().create_task(self._codex_client.aclose())
+                except RuntimeError:
+                    pass  # no running loop — will be GC'd
+            self._codex_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(300.0, connect=30.0)
+            )
+            self._codex_client_token = token
+        return self._codex_client
+
     def _is_anthropic_model(self) -> bool:
         """Check if current model is an Anthropic model."""
         return "claude" in self._model.lower()
@@ -148,8 +167,14 @@ class DirectAdapter:
         pass
 
     async def stop(self):
-        """No-op for direct adapter."""
-        pass
+        """Close persistent HTTP clients."""
+        if self._codex_client is not None:
+            try:
+                await self._codex_client.aclose()
+            except Exception:
+                pass
+            self._codex_client = None
+            self._codex_client_token = None
 
     async def health_check(self) -> bool:
         """Check if we have credentials for at least one provider."""
@@ -587,9 +612,21 @@ class DirectAdapter:
 
         try:
             current_tool: dict | None = None
+            t_start = time.monotonic()
+            ttfb_logged = False
+            chunk_count = 0
 
             async with client.messages.stream(**kwargs) as stream:
                 async for event in stream:
+                    chunk_count += 1
+                    if not ttfb_logged:
+                        ttfb = time.monotonic() - t_start
+                        logger.info(
+                            "[Anthropic] model=%s TTFB=%.1fs",
+                            model_id, ttfb,
+                        )
+                        ttfb_logged = True
+
                     if event.type == "content_block_start":
                         if event.content_block.type == "tool_use":
                             current_tool = {
@@ -626,6 +663,12 @@ class DirectAdapter:
                             current_tool = None
                     elif event.type == "message_stop":
                         yield LLMStreamEvent(type="stop", reason="stop")
+
+            total = time.monotonic() - t_start
+            logger.info(
+                "[Anthropic] model=%s TTFB=%.1fs total=%.1fs chunks=%d",
+                model_id, ttfb if ttfb_logged else total, total, chunk_count,
+            )
 
         except Exception as e:
             logger.error(f"Anthropic native streaming error: {e}")
@@ -859,110 +902,125 @@ class DirectAdapter:
         body["instructions"] = instructions if instructions else "You are a helpful assistant."
         # Note: Codex Responses API does not support temperature parameter
 
+        # Get or reuse persistent httpx client
+        client = self._get_codex_client(access_token)
+
         # Retry loop
         for attempt in range(CODEX_MAX_RETRIES):
             try:
-                async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(300.0, connect=30.0)
-                ) as client:
-                    async with client.stream(
-                        "POST", CODEX_RESPONSES_URL, headers=headers, json=body
-                    ) as resp:
-                        if resp.status_code >= 400:
-                            resp_body = (await resp.aread()).decode("utf-8", errors="replace")
-                            logger.error(
-                                "Codex API %d response: %s\nRequest body: %s",
-                                resp.status_code, resp_body[:2000],
-                                json.dumps(body, ensure_ascii=False, default=str)[:2000],
+                t_start = time.monotonic()
+                ttfb_logged = False
+                chunk_count = 0
+
+                async with client.stream(
+                    "POST", CODEX_RESPONSES_URL, headers=headers, json=body
+                ) as resp:
+                    if resp.status_code >= 400:
+                        resp_body = (await resp.aread()).decode("utf-8", errors="replace")
+                        logger.error(
+                            "Codex API %d response: %s\nRequest body: %s",
+                            resp.status_code, resp_body[:2000],
+                            json.dumps(body, ensure_ascii=False, default=str)[:2000],
+                        )
+                        if resp.status_code in CODEX_RETRY_STATUS_CODES and attempt < CODEX_MAX_RETRIES - 1:
+                            delay = CODEX_RETRY_BASE_DELAY * (2 ** attempt)
+                            logger.warning(
+                                "Codex API %d, retrying in %.1fs (attempt %d/%d)",
+                                resp.status_code, delay,
+                                attempt + 1, CODEX_MAX_RETRIES,
                             )
-                            if resp.status_code in CODEX_RETRY_STATUS_CODES and attempt < CODEX_MAX_RETRIES - 1:
-                                delay = CODEX_RETRY_BASE_DELAY * (2 ** attempt)
-                                logger.warning(
-                                    "Codex API %d, retrying in %.1fs (attempt %d/%d)",
-                                    resp.status_code, delay,
-                                    attempt + 1, CODEX_MAX_RETRIES,
-                                )
-                                await asyncio.sleep(delay)
-                                continue
-                        resp.raise_for_status()
+                            await asyncio.sleep(delay)
+                            continue
+                    resp.raise_for_status()
 
-                        # SSE state machine
-                        pending_calls: dict[str, dict] = {}
+                    # SSE state machine
+                    pending_calls: dict[str, dict] = {}
 
-                        async for event_type, data_str in self._parse_sse_lines(
-                            resp.aiter_bytes()
-                        ):
-                            if not data_str:
-                                continue
-                            try:
-                                data = json.loads(data_str)
-                            except json.JSONDecodeError:
-                                continue
+                    async for event_type, data_str in self._parse_sse_lines(
+                        resp.aiter_bytes()
+                    ):
+                        if not data_str:
+                            continue
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
 
-                            logger.debug(
-                                "SSE event=%s data=%s",
-                                event_type, data_str[:500],
+                        chunk_count += 1
+                        if not ttfb_logged:
+                            ttfb = time.monotonic() - t_start
+                            logger.info("[Codex] TTFB=%.1fs", ttfb)
+                            ttfb_logged = True
+
+                        logger.debug(
+                            "SSE event=%s data=%s",
+                            event_type, data_str[:500],
+                        )
+
+                        if event_type == "response.output_text.delta":
+                            yield LLMStreamEvent(
+                                type="text",
+                                text=data.get("delta", ""),
                             )
 
-                            if event_type == "response.output_text.delta":
-                                yield LLMStreamEvent(
-                                    type="text",
-                                    text=data.get("delta", ""),
+                        elif event_type == "response.output_item.added":
+                            item = data.get("item", {})
+                            if item.get("type") == "function_call":
+                                item_id = item.get("id", "")
+                                call_id = item.get("call_id", item_id)
+                                pending_calls[item_id] = {
+                                    "id": call_id,
+                                    "name": item.get("name", ""),
+                                    "arguments": "",
+                                }
+
+                        elif event_type == "response.function_call_arguments.delta":
+                            item_id = data.get("item_id", data.get("call_id", ""))
+                            if item_id in pending_calls:
+                                pending_calls[item_id]["arguments"] += data.get(
+                                    "delta", ""
                                 )
 
-                            elif event_type == "response.output_item.added":
-                                item = data.get("item", {})
-                                if item.get("type") == "function_call":
-                                    item_id = item.get("id", "")
-                                    call_id = item.get("call_id", item_id)
-                                    pending_calls[item_id] = {
-                                        "id": call_id,
-                                        "name": item.get("name", ""),
-                                        "arguments": "",
-                                    }
-
-                            elif event_type == "response.function_call_arguments.delta":
-                                item_id = data.get("item_id", data.get("call_id", ""))
-                                if item_id in pending_calls:
-                                    pending_calls[item_id]["arguments"] += data.get(
-                                        "delta", ""
+                        elif event_type == "response.output_item.done":
+                            item = data.get("item", {})
+                            if item.get("type") == "function_call":
+                                item_id = item.get("id", "")
+                                tc = pending_calls.pop(item_id, None)
+                                if tc:
+                                    try:
+                                        args = (
+                                            json.loads(tc["arguments"])
+                                            if tc["arguments"]
+                                            else {}
+                                        )
+                                    except (json.JSONDecodeError, TypeError):
+                                        args = tc["arguments"]
+                                    yield LLMStreamEvent(
+                                        type="tool_call",
+                                        tool_call={
+                                            "id": tc["id"],
+                                            "name": tc["name"],
+                                            "arguments": args,
+                                        },
                                     )
 
-                            elif event_type == "response.output_item.done":
-                                item = data.get("item", {})
-                                if item.get("type") == "function_call":
-                                    item_id = item.get("id", "")
-                                    tc = pending_calls.pop(item_id, None)
-                                    if tc:
-                                        try:
-                                            args = (
-                                                json.loads(tc["arguments"])
-                                                if tc["arguments"]
-                                                else {}
-                                            )
-                                        except (json.JSONDecodeError, TypeError):
-                                            args = tc["arguments"]
-                                        yield LLMStreamEvent(
-                                            type="tool_call",
-                                            tool_call={
-                                                "id": tc["id"],
-                                                "name": tc["name"],
-                                                "arguments": args,
-                                            },
-                                        )
+                        elif event_type == "response.completed":
+                            yield LLMStreamEvent(type="stop", reason="stop")
 
-                            elif event_type == "response.completed":
-                                yield LLMStreamEvent(type="stop", reason="stop")
+                        elif event_type in ("error", "response.failed"):
+                            err = data.get("error")
+                            if isinstance(err, dict):
+                                err_msg = err.get("message", str(data))
+                            else:
+                                err_msg = str(data)
+                            yield LLMStreamEvent(type="error", error=err_msg)
 
-                            elif event_type in ("error", "response.failed"):
-                                err = data.get("error")
-                                if isinstance(err, dict):
-                                    err_msg = err.get("message", str(data))
-                                else:
-                                    err_msg = str(data)
-                                yield LLMStreamEvent(type="error", error=err_msg)
-
-                    return  # Success, exit retry loop
+                total = time.monotonic() - t_start
+                logger.info(
+                    "[Codex] TTFB=%.1fs total=%.1fs chunks=%d",
+                    ttfb if ttfb_logged else total, total, chunk_count,
+                )
+                return  # Success, exit retry loop
 
             except httpx.HTTPStatusError as e:
                 if (
@@ -1022,6 +1080,10 @@ class DirectAdapter:
             clean_messages.append(msg)
 
         try:
+            t_start = time.monotonic()
+            ttfb_logged = False
+            chunk_count = 0
+
             response = await acompletion(
                 model=model,
                 messages=clean_messages,
@@ -1034,6 +1096,12 @@ class DirectAdapter:
             tool_call_chunks = {}
 
             async for chunk in response:
+                chunk_count += 1
+                if not ttfb_logged:
+                    ttfb = time.monotonic() - t_start
+                    logger.info("[LiteLLM] model=%s TTFB=%.1fs", model, ttfb)
+                    ttfb_logged = True
+
                 delta = chunk.choices[0].delta
 
                 if delta.content:
@@ -1052,6 +1120,12 @@ class DirectAdapter:
                             if tc.id: tool_call_chunks[idx]["id"] += tc.id
                             if tc.function.name: tool_call_chunks[idx]["name"] += tc.function.name
                             if tc.function.arguments: tool_call_chunks[idx]["arguments"] += tc.function.arguments
+
+            total = time.monotonic() - t_start
+            logger.info(
+                "[LiteLLM] model=%s TTFB=%.1fs total=%.1fs chunks=%d",
+                model, ttfb if ttfb_logged else total, total, chunk_count,
+            )
 
             for idx, tc_data in tool_call_chunks.items():
                 try:
@@ -1078,37 +1152,22 @@ class DirectAdapter:
         """List available models from configured providers."""
         models = []
 
-        # Gemini models (Google AI Studio)
+        # Google Gemini models
         models.extend([
             {"id": "google/gemini-3-flash-preview", "object": "model", "owned_by": "google"},
             {"id": "google/gemini-3-pro-preview", "object": "model", "owned_by": "google"},
-            {"id": "google/gemini-2.5-flash", "object": "model", "owned_by": "google"},
-            {"id": "google/gemini-2.5-pro", "object": "model", "owned_by": "google"},
-            {"id": "google/gemini-2.0-flash-exp", "object": "model", "owned_by": "google"},
-            {"id": "google/gemini-1.5-pro", "object": "model", "owned_by": "google"},
-            {"id": "google/gemini-1.5-flash", "object": "model", "owned_by": "google"},
         ])
 
-        # Claude models (Anthropic)
+        # Anthropic Claude models
         models.extend([
             {"id": "anthropic/claude-opus-4-6", "object": "model", "owned_by": "anthropic"},
-            {"id": "anthropic/claude-sonnet-4-20250514", "object": "model", "owned_by": "anthropic"},
-            {"id": "anthropic/claude-3-5-sonnet-20241022", "object": "model", "owned_by": "anthropic"},
-            {"id": "anthropic/claude-3-opus-20240229", "object": "model", "owned_by": "anthropic"},
+            {"id": "anthropic/claude-sonnet-4-6", "object": "model", "owned_by": "anthropic"},
         ])
 
-        # OpenAI models
+        # OpenAI Codex models
         models.extend([
-            {"id": "openai/gpt-4o", "object": "model", "owned_by": "openai"},
-            {"id": "openai/gpt-4-turbo", "object": "model", "owned_by": "openai"},
-            {"id": "openai/gpt-3.5-turbo", "object": "model", "owned_by": "openai"},
-        ])
-
-        # OpenAI Codex models (ChatGPT subscription)
-        models.extend([
+            {"id": "openai-codex/gpt-5.2-codex", "object": "model", "owned_by": "openai-codex"},
             {"id": "openai-codex/gpt-5.3-codex", "object": "model", "owned_by": "openai-codex"},
-            {"id": "openai-codex/gpt-4o", "object": "model", "owned_by": "openai-codex"},
-            {"id": "openai-codex/o3-mini", "object": "model", "owned_by": "openai-codex"},
         ])
 
         return models

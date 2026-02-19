@@ -850,6 +850,14 @@ class VCPU:
                         step_result.fault = fault_result.fault
                     else:
                         # Normal ToolResult
+                        # Apply smart truncation to prevent context explosion
+                        if result.output and isinstance(result.output, str) and len(result.output) > 4000:
+                            total_len = len(result.output)
+                            head = result.output[:2000]
+                            tail = result.output[-2000:]
+                            result.output = f"{head}\n\n... [Output truncated, {total_len - 4000} characters hidden. If you need the full content, use specific tools to read segments.] ...\n\n{tail}"
+                            logger.info(f"✂️ Truncated long output from {total_len} to {len(result.output)} chars")
+
                         step_result.results.append(result)
 
                         # Check for final result (priority to first one found)

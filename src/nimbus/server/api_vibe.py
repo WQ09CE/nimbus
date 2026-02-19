@@ -259,8 +259,8 @@ async def list_models():
             "models": [
                 "google/gemini-3-flash-preview",
                 "google/gemini-3-pro-preview",
-                "anthropic/claude-sonnet-4-20250514",
-                "openai/gpt-4o",
+                "anthropic/claude-sonnet-4-6",
+                "openai-codex/gpt-5.3-codex",
             ]
         }
 

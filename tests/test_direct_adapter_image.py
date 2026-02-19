@@ -34,6 +34,8 @@ def _make_adapter():
         adapter._codex_auth = None
         adapter._anthropic_client = None
         adapter._anthropic_client_token = None
+        adapter._codex_client = None
+        adapter._codex_client_token = None
         return adapter
 
 

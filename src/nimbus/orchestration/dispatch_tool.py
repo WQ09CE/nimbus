@@ -55,17 +55,15 @@ class DispatchToolConfig:
 
     # Model alias mapping for Executor
     model_aliases: Dict[str, str] = field(default_factory=lambda: {
-        # Short aliases
         "claude": "anthropic/claude-opus-4-6",
         "opus": "anthropic/claude-opus-4-6",
-        "sonnet": "anthropic/claude-sonnet-4-5",
-        "gpt": "openai-codex/gpt-4o",
-        "gpt4o": "openai-codex/gpt-4o",
-        "gpt-4o": "openai-codex/gpt-4o",
-        "codex": "openai-codex/gpt-4o",
+        "sonnet": "anthropic/claude-sonnet-4-6",
+        "gpt": "openai-codex/gpt-5.3-codex",
+        "codex": "openai-codex/gpt-5.3-codex",
         "gemini": "google/gemini-3-pro-preview",
-        "gemini3": "google/gemini-3-pro-preview",
         "gemini-pro": "google/gemini-3-pro-preview",
+        "gemini-flash": "google/gemini-3-flash-preview",
+        "flash": "google/gemini-3-flash-preview",
     })
 
 
