@@ -68,6 +68,7 @@ class KernelGate:
         event_stream: Optional[EventStream] = None,
         default_timeout: float = 60.0,
         local_tools: Optional[Dict[str, Callable]] = None,
+        write_filter: Optional[List[str]] = None,
     ):
         """
         Initialize the Kernel Gate.
@@ -78,12 +79,14 @@ class KernelGate:
             event_stream: Event stream for observability (optional)
             default_timeout: Default execution timeout in seconds
             local_tools: Process-specific tools (in-memory)
+            write_filter: File extension whitelist for Write/Edit (e.g. [".md"] for architect)
         """
         self.pid = pid
         self.executor = tool_executor
         self.events = event_stream
         self.default_timeout = default_timeout
         self.local_tools = local_tools or {}
+        self.write_filter = write_filter
 
     async def syscall_tool(
         self,
@@ -159,6 +162,29 @@ class KernelGate:
             )
 
         logger.info(f"Executing tool '{tool_name}'...")
+
+        # Write filter enforcement (e.g. architect can only write .md files)
+        if self.write_filter and tool_name in ("Write", "Edit"):
+            file_path = action.args.get("file_path", "")
+            if file_path:
+                import os.path as _ospath
+                _, ext = _ospath.splitext(file_path)
+                if ext.lower() not in self.write_filter:
+                    error_msg = (
+                        f"Write filter violation: {tool_name} blocked for '{file_path}'. "
+                        f"This agent can only write files with extensions: {self.write_filter}"
+                    )
+                    self._emit_event("TOOL_FINISHED", {
+                        "action_id": action.id, "tool": tool_name,
+                        "status": "ERROR", "output": f"[Error] {error_msg}",
+                        "duration_ms": 0,
+                        "fault": {"domain": "PERMISSION", "code": "WRITE_FILTER", "message": error_msg, "retryable": False},
+                    })
+                    return ToolResult(
+                        status="ERROR",
+                        output=f"[Error] {error_msg}",
+                        fault=Fault(domain="PERMISSION", code="WRITE_FILTER", message=error_msg, retryable=False),
+                    )
 
         start_time = time.time_ns()
 
@@ -343,6 +369,10 @@ class SimpleEventStream:
 _META_TOOL_TIMEOUTS: Dict[str, float] = {
     "Dispatch": 600.0,  # Executor agent runs inside; controlled by max_iterations not timeout
     "Verify": 120.0,    # Runs multiple checks sequentially
+    "Explore": 120.0,   # Read-only exploration
+    "Implement": 300.0, # Full code implementation
+    "Design": 180.0,    # Architecture/design documents
+    "Test": 180.0,      # Test execution and verification
 }
 
 # Maps tool_name -> {alias: canonical_name}

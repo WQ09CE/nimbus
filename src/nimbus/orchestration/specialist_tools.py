@@ -1,0 +1,160 @@
+"""
+Specialist Tools -- Typed Meta-Tools for Multi-Agent Orchestration.
+
+Replaces the single Dispatch tool with typed specialist tools:
+- Explore: Read-only codebase investigation
+- Implement: Code writing and execution
+- Design: Architecture and design documents
+- Test: Test execution and verification
+
+Each tool spawns a specialist agent via AgentOS.spawn() with
+appropriate AgentProfile and structured GoalDocument.
+"""
+
+import time
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from loguru import logger
+
+from nimbus.adapters.llm_factory import create_llm_client
+from nimbus.agentos import AgentOS
+from nimbus.core.profile import AgentProfile
+from nimbus.orchestration.context_protocol import GoalDocument
+from nimbus.orchestration.workspace_diff import (
+    diff_snapshots,
+    take_snapshot,
+)
+
+
+class SpecialistTool:
+    """Base class for specialist meta-tools."""
+
+    # Subclasses override these
+    ROLE = "specialist"
+    DEFAULT_TIMEOUT = 120.0
+    TRACK_DIFF = False  # Only Implementer tracks workspace diffs
+
+    def __init__(
+        self,
+        agent_os: AgentOS,
+        workspace: Optional[Path] = None,
+    ):
+        self._agent_os = agent_os
+        self._workspace = workspace or Path.cwd()
+
+    def _create_profile(self, model_id: str = "default") -> AgentProfile:
+        """Create the appropriate AgentProfile for this specialist."""
+        raise NotImplementedError
+
+    async def execute(self, task: str, context: str = "", **kwargs) -> str:
+        """
+        Execute a specialist task.
+
+        1. Build structured GoalDocument
+        2. Create specialist profile
+        3. Take workspace snapshot (if tracking diffs)
+        4. Spawn specialist process
+        5. Wait for completion
+        6. Format and return result
+        """
+        start_time = time.time()
+
+        # Resolve model
+        model_name = kwargs.get("model", "")
+        executor_llm = None
+        if model_name:
+            try:
+                executor_llm = await create_llm_client(model_name)
+                logger.info(f"  [{self.ROLE}] Using model: {model_name}")
+            except Exception as e:
+                logger.warning(f"  [{self.ROLE}] Failed to create LLM for {model_name}: {e}")
+
+        # Build goal document
+        profile = self._create_profile(model_name or "default")
+        goal_doc = GoalDocument(
+            mission=task,
+            context=context,
+            workspace=str(self._workspace),
+            constraints=[
+                f"Tool budget: {profile.max_iterations} iterations",
+                f"Role: {self.ROLE}",
+            ],
+        )
+        goal = goal_doc.render()
+
+        # Take before snapshot (for diff tracking)
+        snapshot_before = None
+        if self.TRACK_DIFF:
+            snapshot_before = take_snapshot(self._workspace)
+
+        # Spawn specialist process
+        pid = self._agent_os.spawn(
+            goal=goal,
+            profile=profile,
+            llm_client=executor_llm,
+        )
+        logger.info(f"[{self.ROLE}] Spawned {pid} for: {task[:80]}...")
+
+        # Wait for completion
+        try:
+            result = await self._agent_os.wait(pid, timeout=self.DEFAULT_TIMEOUT)
+            output = result.output or f"({self.ROLE} returned no output)"
+            if result.fault:
+                output += f"\n\nFault: {result.fault.message}"
+        except Exception as e:
+            output = f"[{self.ROLE} error: {e}]"
+            logger.error(f"[{self.ROLE}] {pid} failed: {e}")
+
+        # Compute diff (for Implementer)
+        diff_summary = ""
+        if snapshot_before is not None:
+            snapshot_after = take_snapshot(self._workspace)
+            diff = diff_snapshots(snapshot_before, snapshot_after)
+            if diff.has_changes:
+                diff_summary = f"\n\n### Files Changed\n{diff.summary()}"
+
+        elapsed = time.time() - start_time
+        logger.info(f"[{self.ROLE}] {pid} done in {elapsed:.1f}s")
+
+        return f"## {self.ROLE.title()} Result\n\n{output}{diff_summary}"
+
+
+class ExploreTool(SpecialistTool):
+    """Read-only codebase exploration."""
+    ROLE = "explorer"
+    DEFAULT_TIMEOUT = 60.0
+    TRACK_DIFF = False
+
+    def _create_profile(self, model_id: str = "default") -> AgentProfile:
+        return AgentProfile.create_explorer(model_id)
+
+
+class ImplementTool(SpecialistTool):
+    """Code implementation with full tool access."""
+    ROLE = "implementer"
+    DEFAULT_TIMEOUT = 180.0
+    TRACK_DIFF = True
+
+    def _create_profile(self, model_id: str = "default") -> AgentProfile:
+        return AgentProfile.create_implementer(model_id)
+
+
+class DesignTool(SpecialistTool):
+    """Architecture and design document creation."""
+    ROLE = "architect"
+    DEFAULT_TIMEOUT = 120.0
+    TRACK_DIFF = True  # Track .md file creation
+
+    def _create_profile(self, model_id: str = "default") -> AgentProfile:
+        return AgentProfile.create_architect(model_id)
+
+
+class TestTool(SpecialistTool):
+    """Test execution and verification."""
+    ROLE = "tester"
+    DEFAULT_TIMEOUT = 120.0
+    TRACK_DIFF = False
+
+    def _create_profile(self, model_id: str = "default") -> AgentProfile:
+        return AgentProfile.create_tester(model_id)

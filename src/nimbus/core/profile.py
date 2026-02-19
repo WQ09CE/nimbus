@@ -17,11 +17,12 @@ class AgentProfile:
     Configuration profile for an Agent.
     """
     name: str
-    role: str  # "core", "executor", "standard", "reviewer"
+    role: str  # "core", "executor", "standard", "explorer", "implementer", "architect", "tester", "orchestrator"
 
     # Tool Access Control
     allowed_tools: List[str] = field(default_factory=list)  # Whitelist of tool names
     kernel_tools: bool = False  # Whether to load kernel tools (deprecated concept, but kept for compat)
+    write_filter: List[str] = field(default_factory=list)  # File extension whitelist for Write/Edit (empty = no filter)
 
     # Prompting
     system_prompt: str = ""  # The generated system prompt
@@ -69,4 +70,78 @@ class AgentProfile:
             system_prompt=PromptManager.get_system_prompt("executor", model_id),
             max_iterations=20,
             max_consecutive_thoughts=1
+        )
+
+    # =========================================================================
+    # Specialist Agent Profiles
+    # =========================================================================
+
+    @classmethod
+    def create_explorer(cls, model_id: str = "default") -> "AgentProfile":
+        """Create an Explorer Agent profile (read-only investigator)."""
+        from nimbus.orchestration.prompts import PromptManager
+        return cls(
+            name="explorer",
+            role="explorer",
+            allowed_tools=["Read", "Glob", "Grep"],
+            system_prompt=PromptManager.get_system_prompt("explorer", model_id),
+            max_iterations=20,
+            max_consecutive_thoughts=1,
+            write_filter=[],
+        )
+
+    @classmethod
+    def create_implementer(cls, model_id: str = "default") -> "AgentProfile":
+        """Create an Implementer Agent profile (hands-on engineer)."""
+        from nimbus.orchestration.prompts import PromptManager
+        return cls(
+            name="implementer",
+            role="implementer",
+            allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+            system_prompt=PromptManager.get_system_prompt("implementer", model_id),
+            max_iterations=30,
+            max_consecutive_thoughts=1,
+            write_filter=[],
+        )
+
+    @classmethod
+    def create_architect(cls, model_id: str = "default") -> "AgentProfile":
+        """Create an Architect Agent profile (design thinker, .md only)."""
+        from nimbus.orchestration.prompts import PromptManager
+        return cls(
+            name="architect",
+            role="architect",
+            allowed_tools=["Read", "Write", "Glob", "Grep"],
+            system_prompt=PromptManager.get_system_prompt("architect", model_id),
+            max_iterations=15,
+            max_consecutive_thoughts=1,
+            write_filter=[".md"],
+        )
+
+    @classmethod
+    def create_tester(cls, model_id: str = "default") -> "AgentProfile":
+        """Create a Tester Agent profile (quality gatekeeper)."""
+        from nimbus.orchestration.prompts import PromptManager
+        return cls(
+            name="tester",
+            role="tester",
+            allowed_tools=["Read", "Bash", "Glob"],
+            system_prompt=PromptManager.get_system_prompt("tester", model_id),
+            max_iterations=20,
+            max_consecutive_thoughts=1,
+            write_filter=[],
+        )
+
+    @classmethod
+    def create_orchestrator(cls, model_id: str = "default") -> "AgentProfile":
+        """Create an Orchestrator Agent profile (coordinator)."""
+        from nimbus.orchestration.prompts import PromptManager
+        return cls(
+            name="orchestrator",
+            role="orchestrator",
+            allowed_tools=["Read", "Bash", "Explore", "Implement", "Design", "Test", "Verify", "ReviewCommittee", "Memo"],
+            system_prompt=PromptManager.get_system_prompt("orchestrator", model_id),
+            max_iterations=50,
+            max_consecutive_thoughts=3,
+            write_filter=[],
         )

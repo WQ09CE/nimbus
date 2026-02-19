@@ -242,3 +242,113 @@ def _resolve_path(target: str, workspace: Path) -> Path:
 
 def _fmt(passed: bool, msg: str) -> str:
     return f"{'✅' if passed else '❌'} {msg}"
+
+
+# =============================================================================
+# Specialist Tool Definitions
+# =============================================================================
+
+EXPLORE_TOOL_DEF = {
+    "name": "Explore",
+    "description": (
+        "Delegate codebase exploration to the Explorer agent (read-only). "
+        "The Explorer can Read files, Glob for patterns, and Grep for content. "
+        "Use for: finding files, understanding code structure, searching patterns. "
+        "Returns the Explorer's findings with file paths and line numbers. "
+        "Cheap and fast -- can be called multiple times or in parallel."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task": {
+                "type": "string",
+                "description": (
+                    "What to explore. Be specific: what files to find, what patterns to search, "
+                    "what code structure to understand."
+                ),
+            },
+            "context": {
+                "type": "string",
+                "description": "Additional context from prior exploration or user instructions. Optional.",
+            },
+        },
+        "required": ["task"],
+    },
+}
+
+IMPLEMENT_TOOL_DEF = {
+    "name": "Implement",
+    "description": (
+        "Delegate code implementation to the Implementer agent. "
+        "The Implementer has full Read/Write/Edit/Bash/Glob/Grep permissions. "
+        "Use for: writing code, editing files, running commands, multi-file changes. "
+        "Provide clear, specific instructions with exact file paths and code details. "
+        "Returns a summary of changes and list of modified files."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task": {
+                "type": "string",
+                "description": (
+                    "Specific implementation task. Include: what to do, which files to modify, "
+                    "exact names/values, success criteria."
+                ),
+            },
+            "context": {
+                "type": "string",
+                "description": "Relevant code snippets, file contents, or prior findings. Optional.",
+            },
+        },
+        "required": ["task"],
+    },
+}
+
+DESIGN_TOOL_DEF = {
+    "name": "Design",
+    "description": (
+        "Delegate architecture/design work to the Architect agent. "
+        "The Architect can Read code and Write markdown (.md) files only. "
+        "Use for: design documents, architecture proposals, technical specs, code reviews. "
+        "Returns the created document content."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task": {
+                "type": "string",
+                "description": "Design task: what document to create, what to analyze, what to propose.",
+            },
+            "context": {
+                "type": "string",
+                "description": "Relevant code references, requirements, or prior findings. Optional.",
+            },
+        },
+        "required": ["task"],
+    },
+}
+
+TEST_TOOL_DEF = {
+    "name": "Test",
+    "description": (
+        "Delegate test execution to the Tester agent. "
+        "The Tester can Read files, run Bash commands, and Glob for patterns. "
+        "Use for: running test suites, verification commands, checking build status. "
+        "Returns test results with pass/fail details. "
+        "The Tester does NOT fix failures -- it only reports them."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task": {
+                "type": "string",
+                "description": "What to test: commands to run, test files to execute, what to verify.",
+            },
+            "context": {
+                "type": "string",
+                "description": "Context about recent changes or expected behavior. Optional.",
+            },
+        },
+        "required": ["task"],
+    },
+}

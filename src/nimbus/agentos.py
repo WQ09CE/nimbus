@@ -421,9 +421,14 @@ class AgentOS:
         mmu._memo_manager = session_manager
         mmu._global_memo_manager = global_manager
 
+        # Extract write_filter from profile
+        _write_filter = None
+        if profile and profile.write_filter:
+            _write_filter = profile.write_filter
+
         gate = self._create_gate(pid, _role, local_tools={
             "Memo": memo_func
-        })
+        }, write_filter=_write_filter)
         decoder = InstructionDecoder()
 
         # Prepare tools list
@@ -1533,7 +1538,13 @@ class AgentOS:
 
         return mmu
 
-    def _create_gate(self, pid: str, role: str = "", local_tools: Optional[Dict[str, Callable]] = None) -> KernelGate:
+    def _create_gate(
+        self,
+        pid: str,
+        role: str = "",
+        local_tools: Optional[Dict[str, Callable]] = None,
+        write_filter: Optional[List[str]] = None,
+    ) -> KernelGate:
         """Create a KernelGate for a process."""
         return KernelGate(
             pid=pid,
@@ -1541,6 +1552,7 @@ class AgentOS:
             event_stream=self._events,
             default_timeout=self.config.default_timeout,
             local_tools=local_tools,
+            write_filter=write_filter,
         )
 
     def _emit_event(self, event_type: str, pid: str, data: Dict[str, Any]) -> None:
@@ -1626,6 +1638,8 @@ def create_agent_os(
             target_profile = AgentProfile.create_core(model_id)
         elif profile == "executor":
             target_profile = AgentProfile.create_executor(model_id)
+        elif profile == "orchestrator":
+            target_profile = AgentProfile.create_orchestrator(model_id)
         else:
             target_profile = AgentProfile.create_standard(model_id)
     elif isinstance(profile, AgentProfile):
@@ -1695,6 +1709,65 @@ def create_agent_os(
                 description=REVIEW_TOOL_DEF["description"],
                 parameters=REVIEW_TOOL_DEF["parameters"],
                 roles=["core", "chat"],
+                category="extension",
+            )
+
+        elif isinstance(profile, str) and profile == "orchestrator":
+            # Orchestrator Profile: Specialist tools + basic tools
+            register_default_tools(os, workspace=ws, tools=["Read", "Bash"])
+            # Executor tools (for specialists)
+            register_default_tools(os, workspace=ws, tools=["Write", "Edit", "Glob", "Grep"], roles=["executor", "implementer", "architect", "explorer", "tester"])
+
+            # --- Register Specialist Tools ---
+            from nimbus.orchestration.specialist_tools import (
+                ExploreTool, ImplementTool, DesignTool, TestTool,
+            )
+            from nimbus.orchestration.tools import (
+                EXPLORE_TOOL_DEF, IMPLEMENT_TOOL_DEF, DESIGN_TOOL_DEF, TEST_TOOL_DEF,
+                VERIFY_TOOL_DEF,
+            )
+
+            explore_tool = ExploreTool(agent_os=os, workspace=ws)
+            implement_tool = ImplementTool(agent_os=os, workspace=ws)
+            design_tool = DesignTool(agent_os=os, workspace=ws)
+            test_tool = TestTool(agent_os=os, workspace=ws)
+
+            for tool_inst, tool_def in [
+                (explore_tool, EXPLORE_TOOL_DEF),
+                (implement_tool, IMPLEMENT_TOOL_DEF),
+                (design_tool, DESIGN_TOOL_DEF),
+                (test_tool, TEST_TOOL_DEF),
+            ]:
+                os.register_tool(
+                    name=tool_def["name"],
+                    func=tool_inst.execute,
+                    description=tool_def["description"],
+                    parameters=tool_def["parameters"],
+                    roles=["orchestrator", "chat"],
+                    category="extension",
+                )
+
+            # Register Verify (reuse from dispatch)
+            from nimbus.orchestration.dispatch_tool import DispatchTool, DispatchToolConfig
+            dispatch_tool = DispatchTool(agent_os=os, config=DispatchToolConfig(), workspace=ws)
+            os.register_tool(
+                name="Verify",
+                func=dispatch_tool.verify,
+                description=VERIFY_TOOL_DEF["description"],
+                parameters=VERIFY_TOOL_DEF["parameters"],
+                roles=["orchestrator", "chat"],
+                category="extension",
+            )
+
+            # Register ReviewCommittee
+            from nimbus.orchestration.review_tool import REVIEW_TOOL_DEF, ReviewTool
+            review_tool = ReviewTool(agent_os=os, workspace=ws)
+            os.register_tool(
+                name="ReviewCommittee",
+                func=review_tool.review,
+                description=REVIEW_TOOL_DEF["description"],
+                parameters=REVIEW_TOOL_DEF["parameters"],
+                roles=["orchestrator", "chat"],
                 category="extension",
             )
 
