@@ -11,6 +11,10 @@ from typing import List
 # Delayed import to avoid circular dependency with AgentOS -> orchestration
 # from nimbus.orchestration.prompts import PromptManager
 
+# NimFS tool sets by access level
+_NIMFS_READ = ["NimFSReadArtifact", "NimFSListArtifacts", "NimFSSearchMemory", "NimFSLoadContext"]
+_NIMFS_ALL = _NIMFS_READ + ["NimFSWriteArtifact", "NimFSWriteMemory"]
+
 @dataclass
 class AgentProfile:
     """
@@ -39,7 +43,7 @@ class AgentProfile:
         return cls(
             name="standard",
             role="standard",
-            allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"], # Explicit list or "ALL"
+            allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"] + _NIMFS_ALL,
             system_prompt=PromptManager.get_system_prompt("executor", model_id), # Behaves like an executor but standalone
             max_iterations=50,
             max_consecutive_thoughts=1
@@ -52,7 +56,7 @@ class AgentProfile:
         return cls(
             name="executor",
             role="executor",
-            allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+            allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"] + _NIMFS_ALL,
             system_prompt=PromptManager.get_system_prompt("executor", model_id),
             max_iterations=40,
             max_consecutive_thoughts=2
@@ -69,7 +73,7 @@ class AgentProfile:
         return cls(
             name="explorer",
             role="explorer",
-            allowed_tools=["Read", "Glob", "Grep"],
+            allowed_tools=["Read", "Glob", "Grep"] + _NIMFS_READ,
             system_prompt=PromptManager.get_system_prompt("explorer", model_id),
             max_iterations=40,
             max_consecutive_thoughts=2,
@@ -83,7 +87,7 @@ class AgentProfile:
         return cls(
             name="implementer",
             role="implementer",
-            allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+            allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"] + _NIMFS_ALL,
             system_prompt=PromptManager.get_system_prompt("implementer", model_id),
             max_iterations=50,
             max_consecutive_thoughts=2,
@@ -97,7 +101,7 @@ class AgentProfile:
         return cls(
             name="architect",
             role="architect",
-            allowed_tools=["Read", "Write", "Glob", "Grep"],
+            allowed_tools=["Read", "Write", "Glob", "Grep"] + _NIMFS_ALL,
             system_prompt=PromptManager.get_system_prompt("architect", model_id),
             max_iterations=30,
             max_consecutive_thoughts=2,
@@ -111,7 +115,7 @@ class AgentProfile:
         return cls(
             name="tester",
             role="tester",
-            allowed_tools=["Read", "Bash", "Glob"],
+            allowed_tools=["Read", "Bash", "Glob"] + _NIMFS_READ + ["NimFSWriteArtifact"],
             system_prompt=PromptManager.get_system_prompt("tester", model_id),
             max_iterations=40,
             max_consecutive_thoughts=2,
@@ -125,7 +129,7 @@ class AgentProfile:
         return cls(
             name="orchestrator",
             role="orchestrator",
-            allowed_tools=["Read", "Bash", "Explore", "Implement", "Design", "Test", "Verify", "ReviewCommittee", "Memo"],
+            allowed_tools=["Read", "Bash", "Explore", "Implement", "Design", "Test", "Verify", "ReviewCommittee", "Memo"] + _NIMFS_READ + ["NimFSWriteMemory"],
             system_prompt=PromptManager.get_system_prompt("orchestrator", model_id),
             max_iterations=50,
             max_consecutive_thoughts=2,
