@@ -174,6 +174,11 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
 
           {isUser ? (
             <div className="text-[15px] leading-relaxed whitespace-pre-wrap font-sans selection:bg-white/20">
+              {message.isInjection && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 mr-2 rounded-full text-[11px] font-medium bg-amber-500/20 text-amber-300 border border-amber-400/30">
+                  <span className="not-italic">&#9889;</span> 插入消息
+                </span>
+              )}
               {message.content}
               {/* Attachments */}
               {message.attachments && message.attachments.length > 0 && (
@@ -259,6 +264,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
     prevProps.message.content === nextProps.message.content &&
     prevProps.isStreaming === nextProps.isStreaming &&
     prevProps.message.toolCalls === nextProps.message.toolCalls &&
-    prevProps.message.toolResults === nextProps.message.toolResults
+    prevProps.message.toolResults === nextProps.message.toolResults &&
+    prevProps.message.isInjection === nextProps.message.isInjection
   );
 });

@@ -24,6 +24,7 @@ export interface Message {
   toolResults?: ToolResult[];
   attachments?: ChatAttachment[];
   timestamp: number;
+  isInjection?: boolean;
 }
 
 // SSE event data types (from server)
@@ -366,13 +367,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
         }
 
+        // Detect injected messages: server stores them with "[Intervention] " prefix
+        const rawContent = m.content || "";
+        const interventionPrefix = "[Intervention] ";
+        const isInjection = m.role === "user" && rawContent.startsWith(interventionPrefix);
+        const content = isInjection ? rawContent.slice(interventionPrefix.length) : rawContent;
+
         messages.push({
           id: m.id,
           role: m.role as 'user' | 'assistant' | 'system',
-          content: m.content || "", // Ensure content is never null
+          content, // Ensure content is never null
           toolCalls,
           toolResults: toolResults && toolResults.length > 0 ? toolResults : undefined,
           timestamp: !isNaN(new Date(m.created_at).getTime()) ? new Date(m.created_at).getTime() : Date.now(),
+          ...(isInjection ? { isInjection: true } : {}),
         });
       }
 
@@ -447,6 +455,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         role: "user",
         content,
         timestamp: Date.now(),
+        isInjection: true,
       };
 
       set({
