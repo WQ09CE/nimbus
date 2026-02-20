@@ -42,7 +42,6 @@ class SessionManagerV2:
         self._permission_manager = permission_manager
         self._max_sessions = max_sessions
         self._sessions: Dict[str, AgentOS] = {}  # session_id -> AgentOS
-        self._dispatch_tools: Dict[str, Any] = {}  # session_id -> DispatchTool (dual_agent mode only)
         self._active_tasks: Dict[str, asyncio.Task] = {}  # session_id -> running task
         self._lock = asyncio.Lock()
         self._shared_llm_lock = asyncio.Lock()
@@ -146,7 +145,6 @@ class SessionManagerV2:
             if session_id in self._sessions:
                 logger.info(f"🔄 Invalidating cached session {session_id} due to config update")
                 del self._sessions[session_id]
-                self._dispatch_tools.pop(session_id, None)
 
             return await self._storage.get_session(session_id)
 
@@ -172,11 +170,6 @@ class SessionManagerV2:
         async with self._lock:
             if session_id in self._sessions:
                 del self._sessions[session_id]
-            # Clean up DispatchTool if exists (dual_agent mode)
-            dispatch_tool = self._dispatch_tools.pop(session_id, None)
-            if dispatch_tool:
-                dispatch_tool.cleanup()
-
         self._permission_manager.cancel_pending(session_id)
         await self._storage.delete_session(session_id)
         logger.info(f"🗑️ Deleted session {session_id}")
@@ -406,11 +399,6 @@ class SessionManagerV2:
         Yields SSE events in the format expected by the API.
         """
         logger.info(f"[stream_chat] Starting for session {session_id}")
-
-        # Reset DispatchTool budget for this new message turn (dual_agent mode)
-        dispatch_tool = self._dispatch_tools.get(session_id)
-        if dispatch_tool:
-            dispatch_tool.reset()
 
         # Get or create AgentOS
         agent_os = await self.get_or_create_agent(session_id)

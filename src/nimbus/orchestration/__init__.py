@@ -1,11 +1,9 @@
 """
 Nimbus Orchestration Layer.
 
-Provides high-level tools and prompts for Agent orchestration.
-(Legacy DualAgentOrchestrator has been merged into AgentOS kernel).
+Provides specialist tools, prompts, and verification for Agent orchestration.
 """
 
-from .dispatch_tool import DispatchTool, DispatchToolConfig
 from .prompts import PromptManager
 
-__all__ = ["DispatchTool", "DispatchToolConfig", "PromptManager"]
+__all__ = ["PromptManager"]

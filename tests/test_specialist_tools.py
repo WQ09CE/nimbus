@@ -172,7 +172,7 @@ class TestSpecialistProfiles:
     """Tests for specialist AgentProfile factory methods in profile.py."""
 
     def test_create_explorer_profile(self):
-        """Explorer: read-only tools, max_iterations=20."""
+        """Explorer: read-only tools, max_iterations=40."""
         from nimbus.core.profile import AgentProfile
 
         with patch("nimbus.orchestration.prompts.PromptManager.get_system_prompt", return_value=""):
@@ -182,25 +182,28 @@ class TestSpecialistProfiles:
         assert "Read" in profile.allowed_tools
         assert "Glob" in profile.allowed_tools
         assert "Grep" in profile.allowed_tools
+        # NimFS read tools should be included
+        assert "NimFSReadArtifact" in profile.allowed_tools
         # Write/Edit must NOT be in explorer tools
         assert "Write" not in profile.allowed_tools
         assert "Edit" not in profile.allowed_tools
-        assert profile.max_iterations == 20
+        assert profile.max_iterations == 40
 
     def test_create_implementer_profile(self):
-        """Implementer: 6 full tools, max_iterations=30."""
+        """Implementer: 6 full tools + NimFS, max_iterations=50."""
         from nimbus.core.profile import AgentProfile
 
         with patch("nimbus.orchestration.prompts.PromptManager.get_system_prompt", return_value=""):
             profile = AgentProfile.create_implementer()
 
         assert profile.role == "implementer"
-        expected_tools = {"Read", "Write", "Edit", "Bash", "Glob", "Grep"}
-        assert set(profile.allowed_tools) == expected_tools
-        assert profile.max_iterations == 30
+        for t in ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]:
+            assert t in profile.allowed_tools
+        assert "NimFSWriteArtifact" in profile.allowed_tools
+        assert profile.max_iterations == 50
 
     def test_create_architect_profile(self):
-        """Architect: write_filter=['.md'], max_iterations=15."""
+        """Architect: write_filter=['.md'], max_iterations=30."""
         from nimbus.core.profile import AgentProfile
 
         with patch("nimbus.orchestration.prompts.PromptManager.get_system_prompt", return_value=""):
@@ -208,10 +211,10 @@ class TestSpecialistProfiles:
 
         assert profile.role == "architect"
         assert profile.write_filter == [".md"]
-        assert profile.max_iterations == 15
+        assert profile.max_iterations == 30
 
     def test_create_tester_profile(self):
-        """Tester: read+exec only tools, max_iterations=20."""
+        """Tester: read+exec only tools, max_iterations=40."""
         from nimbus.core.profile import AgentProfile
 
         with patch("nimbus.orchestration.prompts.PromptManager.get_system_prompt", return_value=""):
@@ -223,7 +226,7 @@ class TestSpecialistProfiles:
         assert "Glob" in profile.allowed_tools
         assert "Write" not in profile.allowed_tools
         assert "Edit" not in profile.allowed_tools
-        assert profile.max_iterations == 20
+        assert profile.max_iterations == 40
 
     def test_create_orchestrator_profile(self):
         """Orchestrator: max_consecutive_thoughts=1, max_iterations=50."""

@@ -82,16 +82,22 @@ class SpecialistTool:
             except Exception as e:
                 logger.warning(f"  [{self.ROLE}] Failed to create LLM for {model_name}: {e}")
 
+        # Resolve instructions
+        instructions = kwargs.get("instructions", "")
+
         # Build goal document
         profile = self._create_profile(model_name or "default")
+        constraints = [
+            f"Tool budget: {profile.max_iterations} iterations",
+            f"Role: {self.ROLE}",
+        ]
+        if instructions:
+            constraints.append(f"Additional instructions: {instructions}")
         goal_doc = GoalDocument(
             mission=task,
             context=context,
             workspace=str(self._workspace),
-            constraints=[
-                f"Tool budget: {profile.max_iterations} iterations",
-                f"Role: {self.ROLE}",
-            ],
+            constraints=constraints,
         )
         goal = goal_doc.render()
 

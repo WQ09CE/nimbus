@@ -1750,12 +1750,24 @@ def create_agent_os(
                     category="extension",
                 )
 
-            # Register Verify (reuse from dispatch)
-            from nimbus.orchestration.dispatch_tool import DispatchTool, DispatchToolConfig
-            dispatch_tool = DispatchTool(agent_os=os, config=DispatchToolConfig(), workspace=ws)
+            # Register Verify (standalone, no DispatchTool dependency)
+            async def _verify_handler(checks=None, **kwargs):
+                import json as _json
+                if checks is None:
+                    checks = kwargs.get("checks", [])
+                if isinstance(checks, str):
+                    try:
+                        checks = _json.loads(checks)
+                    except _json.JSONDecodeError:
+                        return "[Error] Invalid checks format. Expected a JSON array."
+                if not isinstance(checks, list) or not checks:
+                    return "[Error] Verify requires a non-empty 'checks' array."
+                return await run_verify_checks(checks, ws)
+
+            from nimbus.orchestration.tools import run_verify_checks
             os.register_tool(
                 name="Verify",
-                func=dispatch_tool.verify,
+                func=_verify_handler,
                 description=VERIFY_TOOL_DEF["description"],
                 parameters=VERIFY_TOOL_DEF["parameters"],
                 roles=["orchestrator", "chat"],

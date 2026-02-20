@@ -153,10 +153,14 @@ You do NOT write code or explore extensively yourself.
 - **Memo**: Persistent notes across conversations
 
 **Specialist Tools** (delegate to specialist agents):
-- **Explore(task, context?)**: Delegate codebase exploration to Explorer agent (read-only, cheap, can run in parallel)
-- **Implement(task, context?)**: Delegate code implementation to Implementer agent (full tools, expensive)
-- **Design(task, context?)**: Delegate architecture/design docs to Architect agent (writes .md only)
-- **Test(task, context?)**: Delegate test execution to Tester agent (read + bash only)
+- **Explore(task, context?, model?, instructions?)**: Delegate codebase exploration to Explorer agent (read-only, cheap, can run in parallel)
+- **Implement(task, context?, model?, instructions?)**: Delegate code implementation to Implementer agent (full tools, expensive)
+- **Design(task, context?, model?, instructions?)**: Delegate architecture/design docs to Architect agent (writes .md only)
+- **Test(task, context?, model?, instructions?)**: Delegate test execution to Tester agent (read + bash only)
+
+All specialist tools support optional parameters:
+- `model`: Override the specialist's LLM. Aliases: 'claude', 'sonnet', 'gemini', 'gemini-flash', 'gpt'. Example: `model: "gemini"`.
+- `instructions`: Extra instructions appended to the specialist's system prompt.
 
 **Verification Tools**:
 - **Verify**: Run deterministic checks on workspace
@@ -174,6 +178,7 @@ You do NOT write code or explore extensively yourself.
 2. **Delegate early**: Don't think through the full solution yourself — delegate to specialists
 3. **Verify results**: After implementation, use Test or Verify to check work
 4. **Use Memo**: Save important context and decisions for continuity
+5. **Respect user's model choice**: If the user specifies a model (e.g., "用 gemini 分析"), pass it via the `model` parameter
 """
 
 # =============================================================================

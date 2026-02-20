@@ -248,6 +248,31 @@ def _fmt(passed: bool, msg: str) -> str:
 # Specialist Tool Definitions
 # =============================================================================
 
+# Common optional parameters shared by all specialist tools
+_COMMON_OPTIONAL_PARAMS = {
+    "context": {
+        "type": "string",
+        "description": "Additional context: relevant code, prior findings, or constraints. Optional.",
+    },
+    "model": {
+        "type": "string",
+        "description": (
+            "LLM model for this specialist. "
+            "Aliases: 'claude', 'sonnet', 'gemini', 'gemini-flash', 'gpt'. "
+            "Or full ID like 'google/gemini-3-flash-preview'. "
+            "Default: same as orchestrator."
+        ),
+    },
+    "instructions": {
+        "type": "string",
+        "description": "Extra instructions appended to the specialist's system prompt. Optional.",
+    },
+    "timeout": {
+        "type": "number",
+        "description": "Timeout in seconds. Default 600.",
+    },
+}
+
 EXPLORE_TOOL_DEF = {
     "name": "Explore",
     "description": (
@@ -267,14 +292,7 @@ EXPLORE_TOOL_DEF = {
                     "what code structure to understand."
                 ),
             },
-            "context": {
-                "type": "string",
-                "description": "Additional context from prior exploration or user instructions. Optional.",
-            },
-            "timeout": {
-                "type": "number",
-                "description": "Timeout in seconds. Default 600. Increase if the task needs more time.",
-            },
+            **_COMMON_OPTIONAL_PARAMS,
         },
         "required": ["task"],
     },
@@ -299,14 +317,7 @@ IMPLEMENT_TOOL_DEF = {
                     "exact names/values, success criteria."
                 ),
             },
-            "context": {
-                "type": "string",
-                "description": "Relevant code snippets, file contents, or prior findings. Optional.",
-            },
-            "timeout": {
-                "type": "number",
-                "description": "Timeout in seconds. Default 600. Increase if the task needs more time.",
-            },
+            **_COMMON_OPTIONAL_PARAMS,
         },
         "required": ["task"],
     },
@@ -327,14 +338,7 @@ DESIGN_TOOL_DEF = {
                 "type": "string",
                 "description": "Design task: what document to create, what to analyze, what to propose.",
             },
-            "context": {
-                "type": "string",
-                "description": "Relevant code references, requirements, or prior findings. Optional.",
-            },
-            "timeout": {
-                "type": "number",
-                "description": "Timeout in seconds. Default 600. Increase if the task needs more time.",
-            },
+            **_COMMON_OPTIONAL_PARAMS,
         },
         "required": ["task"],
     },
@@ -356,14 +360,7 @@ TEST_TOOL_DEF = {
                 "type": "string",
                 "description": "What to test: commands to run, test files to execute, what to verify.",
             },
-            "context": {
-                "type": "string",
-                "description": "Context about recent changes or expected behavior. Optional.",
-            },
-            "timeout": {
-                "type": "number",
-                "description": "Timeout in seconds. Default 600. Increase if the task needs more time.",
-            },
+            **_COMMON_OPTIONAL_PARAMS,
         },
         "required": ["task"],
     },
