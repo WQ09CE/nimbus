@@ -150,12 +150,24 @@ class InstructionDecoder:
                 action = self._map_tool_call(tc)
                 actions.append(action)
 
+            # 2b. Text alongside tool calls = non-blocking thought (LLM commentary)
+            # This mirrors what MixedResponseSplitter does for models with
+            # split_mixed_responses=True. The text is just the LLM explaining
+            # what it's doing — it must NOT trigger REPLY/RETURN termination.
+            if content and content.strip():
+                actions.append(ActionIR(
+                    kind="THOUGHT", name="thought",
+                    args={"text": content.strip()},
+                    meta={"non_blocking": True},
+                ))
+            return actions
+
         # 3. Handle Orchestrator-specific conversation logic
-        # If an Orchestrator role provides text but NO valid tool calls, 
+        # If an Orchestrator role provides text but NO valid tool calls,
         # we treat it as a REPLY (conversational response) rather than a THOUGHT.
-        # This prevents the system from re-prompting (System Poke) when the 
+        # This prevents the system from re-prompting (System Poke) when the
         # Orchestrator is simply talking to the user.
-        if role == "orchestrator" and not tool_calls and content and content.strip():
+        if role == "orchestrator" and content and content.strip():
             # Double check for simulated calls in content (hallucinations)
             self._check_hallucination(content)
             actions.append(ActionIR(kind="REPLY", name="reply", args={"text": content.strip()}))
