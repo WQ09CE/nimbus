@@ -24,6 +24,7 @@ from nimbus.core.compaction import (
 from nimbus.core.memory.context import PinnedContext
 from nimbus.core.memory.mmu import MMU, MMUConfig
 from nimbus.core.profile import AgentProfile  # NEW
+from nimbus.core.models.manifest import get_model_manifest
 from nimbus.core.protocol import Event, Fault, ToolResult
 from nimbus.core.runtime.decoder import InstructionDecoder
 from nimbus.core.runtime.vcpu import VCPU, LLMClient, VCPUConfig
@@ -412,6 +413,9 @@ class AgentOS:
         # Create process components
         mmu = self._create_mmu(pid, system_rules=_system_rules)
 
+        # NimFS: inject workspace so MMU can auto-offload large tool results
+        mmu.nimfs_workspace = str(Path.cwd())
+
         # Create Memo tool (bound to workspace and session)
         # Note: workspace_info is a display string like "Workspace: .", not a path
         workspace = Path.cwd()
@@ -442,7 +446,13 @@ class AgentOS:
                     if defn:
                         tools_list.append(defn.to_openai_format())
             else:
-                tools_list = list(_tools_filter)
+                # Normalize: convert any ToolDefinition objects to openai format dicts
+                tools_list = []
+                for t in _tools_filter:
+                    if hasattr(t, "to_openai_format"):
+                        tools_list.append(t.to_openai_format())
+                    else:
+                        tools_list.append(t)
         else:
             # Inherit from kernel (filtered by role) + Memo
             tools_list = self._composite_tools.get_definitions(format="openai", role=_role)
@@ -464,6 +474,8 @@ class AgentOS:
             )
 
         # Create VCPU
+        manifest = get_model_manifest(llm_client or self._llm)
+        manifest.role = _role
         vcpu = VCPU(
             alu=llm_client or self._llm,
             config=vcpu_config,
@@ -472,6 +484,7 @@ class AgentOS:
             gate=gate,
             tools=tools_list,
             session_id=pid,
+            manifest=manifest,
         )
 
         # Create process
@@ -686,6 +699,7 @@ class AgentOS:
             if not session_id:
                 session_id = f"chat-{uuid.uuid4().hex[:8]}"
             mmu = self._create_mmu(session_id)
+            mmu.nimfs_workspace = str(Path.cwd())
 
             # Create Memo tool (bound to workspace and session)
             workspace = Path.cwd()
@@ -785,6 +799,43 @@ class AgentOS:
             process = self._processes.pop(session_id)
             process.state = "COMPLETED"
             self._emit_event("PROC_FINISHED", session_id, {"reason": "session_ended"})
+            # NimFS GC: clean up SESSION-level artifacts when session ends
+            self._nimfs_gc_session(process)
+
+    # =========================================================================
+    # NimFS GC Helpers
+    # =========================================================================
+
+    def _nimfs_gc_task(self, process: "Process") -> None:
+        """
+        Clean up TASK-level NimFS artifacts after a sub-process finishes.
+        Called from _run_process() on normal completion.
+        Runs silently — any error is swallowed to avoid disrupting the main flow.
+        """
+        try:
+            workspace = getattr(process.mmu, "nimfs_workspace", None) if process.mmu else None
+            if not workspace:
+                workspace = str(Path.cwd())
+            from nimbus.core.nimfs.gc import NimFSGC
+            from nimbus.core.nimfs.models import ArtifactTTL
+            NimFSGC().gc_artifacts(workspace, ttl_level=ArtifactTTL.TASK)
+        except Exception:
+            pass
+
+    def _nimfs_gc_session(self, process: "Process") -> None:
+        """
+        Clean up SESSION-level (and TASK-level) NimFS artifacts when a session ends.
+        Called from end_session().
+        Runs silently — any error is swallowed to avoid disrupting the main flow.
+        """
+        try:
+            workspace = getattr(process.mmu, "nimfs_workspace", None) if process.mmu else None
+            if not workspace:
+                workspace = str(Path.cwd())
+            from nimbus.core.nimfs.gc import NimFSGC
+            NimFSGC().gc_session(workspace)
+        except Exception:
+            pass
 
     # =========================================================================
     # Session Management (NEW)
@@ -800,6 +851,7 @@ class AgentOS:
         """
         # Re-create components similar to chat() initialization
         mmu = self._create_mmu(session_id)
+        mmu.nimfs_workspace = str(Path.cwd())
 
         # Create Memo tool (bound to workspace and session)
         workspace = Path.cwd()
@@ -1259,7 +1311,7 @@ class AgentOS:
                 vcpu = process.vcpu
                 if vcpu._state.iteration >= vcpu.config.max_iterations:
                     if vcpu.config.compact_on_limit:
-                        # For long-running processes (e.g. Core Agent), compact and continue
+                        # For long-running processes (e.g. Orchestrator), compact and continue
                         compacted = await self._compaction_for_process(process.pid, process.mmu)
                         if compacted:
                             logger.info(
@@ -1381,6 +1433,9 @@ class AgentOS:
                     "status": final_result.status if final_result else "UNKNOWN",
                 },
             )
+
+            # NimFS GC: clean up TASK-level artifacts when a sub-process finishes
+            self._nimfs_gc_task(process)
 
             return final_result or ToolResult(status="OK")
 
@@ -1634,9 +1689,7 @@ def create_agent_os(
     # Handle profile overrides
     target_profile = None
     if isinstance(profile, str):
-        if profile == "core":
-            target_profile = AgentProfile.create_core(model_id)
-        elif profile == "executor":
+        if profile == "executor":
             target_profile = AgentProfile.create_executor(model_id)
         elif profile == "orchestrator":
             target_profile = AgentProfile.create_orchestrator(model_id)
@@ -1662,57 +1715,7 @@ def create_agent_os(
         # If profile is None, workspace is already set above
         # If profile is present, use it to determine tool registration
 
-        if isinstance(profile, str) and profile == "core":
-            # Core Profile: Split tools by role
-            # Shared: Read + Bash (CoreBash removed, standard Bash is shared)
-            register_default_tools(os, workspace=ws, tools=["Read", "Bash"])
-            # Executor only: Write/Edit
-            register_default_tools(os, workspace=ws, tools=["Write", "Edit"], roles=["executor"])
-
-            # --- Auto-register Orchestration Tools for Core ---
-            from nimbus.orchestration.dispatch_tool import DispatchTool, DispatchToolConfig
-            from nimbus.orchestration.tools import (
-                DISPATCH_TOOL_DEF,
-                VERIFY_TOOL_DEF,
-            )
-
-            # Register Dispatch/Verify
-            dispatch_config = DispatchToolConfig()
-            dispatch_tool = DispatchTool(
-                agent_os=os,
-                config=dispatch_config,
-                workspace=ws,
-            )
-            os.register_tool(
-                name="Dispatch",
-                func=dispatch_tool.dispatch,
-                description=DISPATCH_TOOL_DEF["description"],
-                parameters=DISPATCH_TOOL_DEF["parameters"],
-                roles=["core", "chat"],
-                category="extension",
-            )
-            os.register_tool(
-                name="Verify",
-                func=dispatch_tool.verify,
-                description=VERIFY_TOOL_DEF["description"],
-                parameters=VERIFY_TOOL_DEF["parameters"],
-                roles=["core", "chat"],
-                category="extension",
-            )
-
-            # Register ReviewCommittee
-            from nimbus.orchestration.review_tool import REVIEW_TOOL_DEF, ReviewTool
-            review_tool = ReviewTool(agent_os=os, workspace=ws)
-            os.register_tool(
-                name="ReviewCommittee",
-                func=review_tool.review,
-                description=REVIEW_TOOL_DEF["description"],
-                parameters=REVIEW_TOOL_DEF["parameters"],
-                roles=["core", "chat"],
-                category="extension",
-            )
-
-        elif isinstance(profile, str) and profile == "orchestrator":
+        if isinstance(profile, str) and profile == "orchestrator":
             # Orchestrator Profile: Specialist tools + basic tools
             register_default_tools(os, workspace=ws, tools=["Read", "Bash"])
             # Executor tools (for specialists)

@@ -154,7 +154,7 @@ class VCPUConfig:
 
     max_iterations: int = 50
     default_timeout: float = 60.0
-    max_consecutive_thoughts: int = 2  # Allow 1 continuation poke before termination (was 1)
+    max_consecutive_thoughts: int = 2  # 2 = default to 2 thoughts before stopping
     max_sub_call_depth: int = 10
     emit_step_events: bool = True
     compact_on_limit: bool = True  # NEW: Trigger compaction instead of stopping
@@ -980,19 +980,36 @@ class VCPU:
         """Handle SUB_CALL action (Simulated)."""
         return ToolResult(status="OK", output="Subroutine called (simulated)")
 
+    def _is_stale_thought(self, current: str, previous: str, threshold: float = 0.8) -> bool:
+        """Detect near-duplicate thoughts using character-level overlap."""
+        if not current or not previous:
+            return False
+        # Quick check: identical
+        if current.strip() == previous.strip():
+            return True
+        # Length-based heuristic: very different lengths = likely different content
+        ratio = min(len(current), len(previous)) / max(len(current), len(previous))
+        if ratio < 0.5:
+            return False
+        # Prefix match: same start = likely same thought loop
+        prefix_len = min(200, len(current), len(previous))
+        if current[:prefix_len] == previous[:prefix_len]:
+            return True
+        return False
+
     async def _handle_thought(self, action: ActionIR) -> ToolResult:
         """Handle THOUGHT action.
 
-        Design: A text-only response (no tool calls) MAY be the AI's final answer,
-        but confused/long-context LLMs sometimes emit planning statements without
-        acting. We give the LLM a second chance via continuation poke.
-
-        Termination logic:
-          - If has_productive_work is True and consecutive_thoughts == 1:
-            Treat as final task summary/answer (RETURN).
-          - If no productive work or consecutive_thoughts > 1:
-            Allow up to config.max_consecutive_thoughts pokes.
+        Design: A text-only response (no tool calls) is treated as a final answer
+        (RETURN) in most cases, especially for Orchestrators.
+        
+        Note: The 'Continuation Poke' mechanism was removed as it caused 
+        UI hanging and redundant LLM calls.
         """
+        from nimbus.core.logging import get_logger
+        logger = get_logger("kernel.vcpu")
+        logger.info(f"VCPU _handle_thought. Role: {getattr(self.manifest, 'role', 'unknown')}, Action: {action.kind}")
+
         # 1. Pipeline splitting (non-blocking) - from MixedResponseSplitter
         # These are thought fragments that accompany tool calls, NOT final answers
         if action.meta and action.meta.get("non_blocking"):
@@ -1003,47 +1020,19 @@ class VCPU:
              )
 
         # 2. Standard thought (text-only response)
-        self._state.on_thought()
+        # In all modes (Orchestrator, Standard, etc.), we now treat THOUGHT as RETURN
+        # to ensure natural conversation and avoid the "Poke" logic.
+        return await self._handle_return(action)
 
-        # Refined termination logic:
-        # Case A: Task summary after productive work (on first thought)
-        if self._state.has_productive_work and self._state.consecutive_thoughts == 1:
-            return await self._handle_return(action)
-
-        # Case B: Continuation Poke
-        effective_max = self.config.max_consecutive_thoughts
-        if self._state.consecutive_thoughts >= effective_max:
-             # Final termination
-             return await self._handle_return(action)
-
-        # Not final yet — inject continuation poke to give LLM another chance
-        from nimbus.core.logging import get_logger
-        logger = get_logger("kernel.vcpu")
-        logger.info(
-            f"THOUGHT #{self._state.consecutive_thoughts}/{effective_max} "
-            f"(productive_work={self._state.has_productive_work}): injecting continuation poke"
-        )
-
-        # Layer 2: Save first pre-poke text (only once) and suppress post-poke streaming
-        if not self._state.pending_thought_text:
-            self._state.pending_thought_text = action.args.get("text", "")
-        self._state.suppress_streaming = True
-
-        poke_msg = (
-            "[System] You responded with text but didn't use any tools. "
-            "If you've completed the task, provide your final answer. "
-            "Otherwise, continue working by calling the appropriate tools."
-        )
-        self.mmu.add_user_message(poke_msg)
-        # Mark as ephemeral so it doesn't get saved to session history
-        if self.mmu.current_frame.messages:
-            self.mmu.current_frame.messages[-1].meta["ephemeral"] = True
-
-        return ToolResult(
-            status="OK",
-            output=action.args.get("text", ""),
-            is_final=False
-        )
+    async def _handle_reply(self, action: ActionIR) -> ToolResult:
+        """Handle REPLY action.
+        
+        A REPLY is a definitive conversational response from the LLM.
+        Unlike THOUGHT, it doesn't trigger a continuation poke and
+        immediately marks the current turn as finished (returns to user).
+        """
+        # A REPLY always acts as a RETURN
+        return await self._handle_return(action)
 
     async def _execute_action(self, action: ActionIR) -> ToolResult:
         """
@@ -1060,6 +1049,7 @@ class VCPU:
         handlers = {
             "TOOL_CALL": self._handle_tool_call,
             "RETURN": self._handle_return,
+            "REPLY": self._handle_reply,
             # Treat THOUGHT as implicit RETURN (Natural conversation)
             "THOUGHT": self._handle_thought,
             "SUB_CALL": self._handle_sub_call,
@@ -1385,14 +1375,14 @@ class VCPU:
         # with proper short/long text heuristics. No duplicate check here — it caused
         # false positives when the model legitimately discussed tool patterns in its response.
 
-        # Layer 2 fix: if post-poke THOUGHT was suppressed, use the pre-poke text
-        # and mark as not-streamed so stream_chat emits it as a formal message.
-        # Only applies when terminating via THOUGHT (not explicit RETURN after tool use).
+        # Layer 2: if post-poke THOUGHT was suppressed, use the pre-poke text.
+        # The pre-poke text was already streamed via THINKING events in iteration 1,
+        # so keep streamed=True to prevent stream_chat from re-emitting it.
         streamed = action.kind == "THOUGHT"
         if self._state.pending_thought_text and action.kind == "THOUGHT":
             result = self._state.pending_thought_text
             self._state.pending_thought_text = ""
-            streamed = False
+            # streamed stays True — text was already sent via THINKING events
 
         self._emit_event(
             "PROC_FINISHED",
@@ -1401,6 +1391,7 @@ class VCPU:
                 "is_final": True,
             },
         )
+        self._emit_event("STEP_COMPLETED", {"status": "success", "is_final": True})
 
         return ToolResult(
             status="OK",
@@ -1587,13 +1578,14 @@ class VCPU:
     async def _dump_context_to_file(self, messages: List[Dict[str, Any]], iteration: int) -> None:
         """Dump current context messages to a JSON file for debugging."""
         try:
-            from datetime import datetime
             from pathlib import Path
+
+            from nimbus.utils.timeutil import local_now_str
 
             log_dir = Path(".logs/context")
             log_dir.mkdir(parents=True, exist_ok=True)
 
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = local_now_str("%Y%m%d_%H%M%S")
             filename = log_dir / f"context_{timestamp}_iter{iteration:03d}.json"
 
             with open(filename, "w", encoding="utf-8") as f:
@@ -1759,18 +1751,19 @@ One sentence summary:"""
         Files are written to .logs/context/ directory.
         """
         import json
-        from datetime import datetime
         from pathlib import Path
+
+        from nimbus.utils.timeutil import local_now_str, utcnow
 
         dump_dir = Path(".logs/context")
         dump_dir.mkdir(parents=True, exist_ok=True)
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = local_now_str("%Y%m%d_%H%M%S")
         filename = dump_dir / f"context_{timestamp}_iter{iteration:03d}.json"
 
         # Prepare dump data
         dump_data = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": utcnow().isoformat(),
             "iteration": iteration,
             "message_count": len(messages),
             "messages": messages,

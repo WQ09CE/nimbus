@@ -10,7 +10,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from .models import SSEEvent
@@ -22,7 +22,7 @@ class SSEConnection:
 
     session_id: str
     queue: asyncio.Queue
-    created_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_heartbeat: float = field(default_factory=time.time)
 
 
@@ -137,7 +137,7 @@ class SSEHub:
                 except asyncio.TimeoutError:
                     # Send heartbeat if no events
                     heartbeat = self._format_sse(
-                        self.EVENT_HEARTBEAT, {"timestamp": datetime.now().isoformat()}
+                        self.EVENT_HEARTBEAT, {"timestamp": datetime.now(timezone.utc).isoformat()}
                     )
                     yield heartbeat
 
@@ -228,7 +228,7 @@ class SSEHub:
                 await asyncio.sleep(self._heartbeat_interval)
 
                 # Send heartbeat to all connections
-                heartbeat_data = {"timestamp": datetime.now().isoformat()}
+                heartbeat_data = {"timestamp": datetime.now(timezone.utc).isoformat()}
                 await self.broadcast(self.EVENT_HEARTBEAT, heartbeat_data)
 
             except asyncio.CancelledError:
@@ -380,5 +380,5 @@ class SSEEventBuilder:
     def heartbeat() -> SSEEvent:
         """Create heartbeat event."""
         return SSEEvent(
-            event=SSEHub.EVENT_HEARTBEAT, data={"timestamp": datetime.now().isoformat()}
+            event=SSEHub.EVENT_HEARTBEAT, data={"timestamp": datetime.now(timezone.utc).isoformat()}
         )

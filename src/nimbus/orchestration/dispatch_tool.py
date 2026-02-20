@@ -60,8 +60,10 @@ class DispatchToolConfig:
         "sonnet": "anthropic/claude-sonnet-4-6",
         "gpt": "openai-codex/gpt-5.3-codex",
         "codex": "openai-codex/gpt-5.3-codex",
-        "gemini": "google/gemini-3-pro-preview",
-        "gemini-pro": "google/gemini-3-pro-preview",
+        "gemini": "google/gemini-3.1-pro-preview",
+        "gemini-pro": "google/gemini-3.1-pro-preview",
+        "gemini-3.1": "google/gemini-3.1-pro-preview",
+        "gemini-customtools": "google/gemini-3.1-pro-preview-customtools",
         "gemini-flash": "google/gemini-3-flash-preview",
         "flash": "google/gemini-3-flash-preview",
     })
@@ -71,7 +73,7 @@ class DispatchTool:
     """
     Dispatch Meta-Tool: spawns Executor processes on the parent AgentOS kernel.
 
-    Registered on the Core AgentOS as a regular tool.  Uses
+    Registered on the Orchestrator AgentOS as a regular tool.  Uses
     ``agent_os.spawn(role="executor")`` to create child processes that
     inherit the kernel's tool registry (filtered by role).
 
@@ -103,7 +105,7 @@ class DispatchTool:
 
     async def dispatch(self, task: str, context: str = "", **kwargs) -> str:
         """
-        Handle Dispatch tool calls from Core Agent.
+        Handle Dispatch tool calls from Orchestrator.
 
         1. Check dispatch limits (count and time budget)
         2. Auto-inject context from previous dispatch if enabled
@@ -280,7 +282,7 @@ class DispatchTool:
 
     async def verify(self, checks: Any = None, **kwargs) -> str:
         """
-        Handle Verify tool calls from Core Agent.
+        Handle Verify tool calls from Orchestrator.
 
         Delegates to run_verify_checks with the workspace path.
         """

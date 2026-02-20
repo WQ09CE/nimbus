@@ -36,7 +36,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional
 
-from nimbus.core.protocol import Event, Fault, ToolResult
+from nimbus.core.protocol import Event, Fault, ToolResult, offload_to_nimfs
 
 # =============================================================================
 # Task State Machine
@@ -590,6 +590,77 @@ class Scheduler:
 
         result_key = f"{task_id}.{key}"
         return self._results[dag_id].get(result_key)
+
+    def inject_artifact_ref(
+        self,
+        dag_id: str,
+        task_id: str,
+        artifact_ref: str,
+    ) -> None:
+        """
+        Inject a NimFS artifact reference as a task result (Phase 1 IPC).
+
+        Instead of storing large string outputs in the result store, tasks
+        can store a nimfs://artifact/{id} reference. Downstream tasks that
+        depend on this task will receive the reference in their GoalDocument
+        context and can expand it via NimFSReadArtifact.
+
+        Args:
+            dag_id:       The DAG ID.
+            task_id:      The task whose output is being registered.
+            artifact_ref: nimfs://artifact/{artifact_id} reference string.
+        """
+        self.inject_result(dag_id, task_id, "artifact_ref", artifact_ref)
+
+    def build_downstream_context(
+        self,
+        dag_id: str,
+        task_id: str,
+    ) -> str:
+        """
+        Build a context string for a downstream task by resolving its
+        upstream dependencies' results.
+
+        For each completed upstream task:
+          - If the task result has an artifact_ref (nimfs://), include the
+            reference so GoalDocument.render() can expand it inline.
+          - Otherwise include the raw output string (truncated to 2000 chars
+            to avoid bloating the context).
+
+        Args:
+            dag_id:  The DAG ID.
+            task_id: The downstream task whose context is being built.
+
+        Returns:
+            Formatted context string ready for GoalDocument.context.
+        """
+        dag = self._dags.get(dag_id)
+        if not dag:
+            return ""
+
+        task = dag.get_task(task_id)
+        if not task or not task.depends_on:
+            return ""
+
+        parts: List[str] = []
+        for dep_id in task.depends_on:
+            dep_task = dag.get_task(dep_id)
+            if dep_task is None or dep_task.result is None:
+                continue
+
+            result = dep_task.result
+            # Prefer nimfs:// reference (zero-copy, no truncation)
+            if result.artifact_ref:
+                parts.append(
+                    f"### Output from '{dep_id}'\n"
+                    f"{result.artifact_ref}"
+                )
+            elif result.output:
+                output_str = str(result.output)
+                preview = output_str[:2000] + ("..." if len(output_str) > 2000 else "")
+                parts.append(f"### Output from '{dep_id}'\n{preview}")
+
+        return "\n\n".join(parts)
 
     def get_task_result(
         self,

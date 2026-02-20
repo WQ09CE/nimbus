@@ -64,6 +64,10 @@ class MMUConfig:
     auto_detect_failures: bool = True
     remove_failed_tool_calls: bool = True
 
+    # NimFS auto-offload: tool results larger than this are offloaded to NimFS.
+    # Set to 0 to disable. Requires nimfs_workspace to be set on the MMU.
+    nimfs_offload_threshold: int = 8_000  # characters
+
 
 class MMU:
     """
@@ -94,6 +98,11 @@ class MMU:
 
         # Clipboard (Short-term memory buffer)
         self._clipboard: str = ""
+
+        # NimFS offload: workspace path for auto-offloading large tool results.
+        # Set by AgentOS after spawning. None = offload disabled.
+        self.nimfs_workspace: Optional[str] = None
+        self._nimfs_offload_counter: int = 0  # for unique task_id generation
 
     # =========================================================================
     # Pinned Context Management (The Anchor)
@@ -290,6 +299,17 @@ class MMU:
         self.current_frame.add_assistant_with_tool_calls(content, tool_calls)
 
     def add_tool_result(self, tool_call_id: str, name: str, content: str, tool_args: dict = None) -> None:
+        # NimFS auto-offload: if tool result is large and workspace is configured,
+        # store the full content in NimFS and replace with a compact reference message.
+        threshold = self.config.nimfs_offload_threshold
+        if (
+            threshold > 0
+            and self.nimfs_workspace
+            and isinstance(content, str)
+            and len(content) > threshold
+        ):
+            content = self._offload_tool_result_to_nimfs(name, content)
+
         self.current_frame.add_tool_result(tool_call_id, name, content)
 
         # 1. Auto-detect explicit failures (Error Recovery)
@@ -331,6 +351,44 @@ class MMU:
                                  discard_list.append(tool_call_id)
                                  msg.meta["discard_tool_calls"] = discard_list
                         return
+
+    def _offload_tool_result_to_nimfs(self, tool_name: str, content: str) -> str:
+        """
+        Offload a large tool result to NimFS and return a compact reference message.
+
+        Called automatically by add_tool_result() when content exceeds
+        config.nimfs_offload_threshold and nimfs_workspace is set.
+
+        Returns a short message containing the nimfs:// reference so the
+        MMU stores only ~200 chars instead of the full content.
+        """
+        try:
+            from nimbus.core.nimfs.manager import NimFSManager
+            from nimbus.core.nimfs.models import ArtifactTTL
+
+            self._nimfs_offload_counter += 1
+            task_id = f"mmu-offload-{self.process_id or 'proc'}-{self._nimfs_offload_counter}"
+
+            manager = NimFSManager(self.nimfs_workspace)
+            ref = manager.write_artifact(
+                content=content,
+                task_id=task_id,
+                producer=f"mmu/{tool_name}",
+                artifact_type="text",
+                ttl=ArtifactTTL.SESSION,
+                summary=content[:150].replace("\n", " "),
+            )
+
+            return (
+                f"[NimFS Auto-Offload] Tool '{tool_name}' returned {len(content):,} chars "
+                f"(exceeded {self.config.nimfs_offload_threshold:,} threshold).\n"
+                f"Full output stored at: {ref}\n"
+                f"Use NimFSReadArtifact(ref='{ref}') to retrieve the complete content.\n\n"
+                f"Preview:\n{content[:300]}..."
+            )
+        except Exception:
+            # Offload failed — return original content unchanged (graceful degradation)
+            return content
 
     def _auto_detect_tool_failure(self, tool_call_id: str, content: str) -> bool:
         """Detect explicit failures."""

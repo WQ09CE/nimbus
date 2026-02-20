@@ -63,7 +63,7 @@ def run_command(
     """
     import json
     import logging
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     # Setup logging
     if verbose:
@@ -103,7 +103,7 @@ def run_command(
             "output": result.get("output"),
             "error": result.get("error"),
             "iterations": result.get("iterations", 0),
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         typer.echo(json.dumps(output, indent=2))
     else:

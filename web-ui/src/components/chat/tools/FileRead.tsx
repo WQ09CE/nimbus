@@ -24,7 +24,16 @@ export function FileRead({ args, result, error, status }: FileReadProps) {
     <div className="font-mono text-sm bg-[#0d1117]">
       {/* File Info Bar */}
       {status === "completed" && (
-        <div className="bg-[#161b22] px-3 py-1 border-b border-gray-800 flex justify-end items-center text-[10px] text-gray-500">
+        <div className="bg-[#161b22] px-3 py-1 border-b border-gray-800 flex justify-end items-center text-[10px] text-gray-500 gap-3">
+          {safeArgs.offset !== undefined && (
+            <span>Offset: {safeArgs.offset}</span>
+          )}
+          {safeArgs.limit !== undefined && (
+            <span>Limit: {safeArgs.limit}</span>
+          )}
+          {safeArgs.offset !== undefined || safeArgs.limit !== undefined ? (
+            <span className="text-gray-700">|</span>
+          ) : null}
           <span>{lineCount} lines • {ext?.toUpperCase() || 'TXT'}</span>
         </div>
       )}

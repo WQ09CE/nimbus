@@ -1,0 +1,26 @@
+    async def _handle_thought(self, action: ActionIR) -> ToolResult:
+        """Handle THOUGHT action.
+
+        Design: A text-only response (no tool calls) is treated as a final answer
+        (RETURN) in most cases, especially for Orchestrators.
+        
+        Note: The 'Continuation Poke' mechanism was removed as it caused 
+        UI hanging and redundant LLM calls.
+        """
+        from nimbus.core.logging import get_logger
+        logger = get_logger("kernel.vcpu")
+        logger.info(f"VCPU _handle_thought. Role: {getattr(self.manifest, 'role', 'unknown')}, Action: {action.kind}")
+
+        # 1. Pipeline splitting (non-blocking) - from MixedResponseSplitter
+        # These are thought fragments that accompany tool calls, NOT final answers
+        if action.meta and action.meta.get("non_blocking"):
+             return ToolResult(
+                 status="OK",
+                 output=action.args.get("text"),
+                 is_final=False
+             )
+
+        # 2. Standard thought (text-only response)
+        # In all modes (Orchestrator, Standard, etc.), we now treat THOUGHT as RETURN
+        # to ensure natural conversation and avoid the "Poke" logic.
+        return await self._handle_return(action)

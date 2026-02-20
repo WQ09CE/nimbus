@@ -1,8 +1,8 @@
 """
 Custom tool definitions for the Dual-Agent orchestration layer.
 
-- Dispatch: Core sends sub-tasks to Executor
-- Verify: Core runs deterministic checks on workspace
+- Dispatch: Orchestrator sends sub-tasks to Executor
+- Verify: Orchestrator runs deterministic checks on workspace
 """
 
 import asyncio
@@ -50,9 +50,9 @@ DISPATCH_TOOL_DEF = {
                 "type": "string",
                 "description": (
                     "Optional: specify which LLM model the Executor should use. "
-                    "Aliases: 'claude'→claude-opus-4-6, 'sonnet'→claude-sonnet-4-5, 'gpt'→gpt-4o, 'gemini'→gemini-3-pro-high. "
+                    "Aliases: 'claude'→claude-opus-4-6, 'sonnet'→claude-sonnet-4-5, 'gpt'→gpt-4o, 'gemini'→gemini-3.1-pro-preview. "
                     "Or use full model ID like 'openai-codex/gpt-4o'. "
-                    "Default: same model as Core Agent."
+                    "Default: same model as the orchestrator."
                 ),
             },
         },
@@ -271,6 +271,10 @@ EXPLORE_TOOL_DEF = {
                 "type": "string",
                 "description": "Additional context from prior exploration or user instructions. Optional.",
             },
+            "timeout": {
+                "type": "number",
+                "description": "Timeout in seconds. Default 600. Increase if the task needs more time.",
+            },
         },
         "required": ["task"],
     },
@@ -299,6 +303,10 @@ IMPLEMENT_TOOL_DEF = {
                 "type": "string",
                 "description": "Relevant code snippets, file contents, or prior findings. Optional.",
             },
+            "timeout": {
+                "type": "number",
+                "description": "Timeout in seconds. Default 600. Increase if the task needs more time.",
+            },
         },
         "required": ["task"],
     },
@@ -322,6 +330,10 @@ DESIGN_TOOL_DEF = {
             "context": {
                 "type": "string",
                 "description": "Relevant code references, requirements, or prior findings. Optional.",
+            },
+            "timeout": {
+                "type": "number",
+                "description": "Timeout in seconds. Default 600. Increase if the task needs more time.",
             },
         },
         "required": ["task"],
@@ -347,6 +359,10 @@ TEST_TOOL_DEF = {
             "context": {
                 "type": "string",
                 "description": "Context about recent changes or expected behavior. Optional.",
+            },
+            "timeout": {
+                "type": "number",
+                "description": "Timeout in seconds. Default 600. Increase if the task needs more time.",
             },
         },
         "required": ["task"],

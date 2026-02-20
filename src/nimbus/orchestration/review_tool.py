@@ -10,7 +10,6 @@ Usage:
 """
 
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -107,13 +106,13 @@ class ReviewTool:
         **kwargs,
     ) -> str:
         """
-        Handle ReviewCommittee tool calls from Core Agent.
+        Handle ReviewCommittee tool calls from Orchestrator.
 
         1. Parse model list
         2. Spawn a pure-reasoning process for each model
         3. Wait for all reviewers in parallel
         4. Save results to docs/reviews/
-        5. Return formatted results for Core Agent to synthesize
+        5. Return formatted results for Orchestrator to synthesize
         """
         # Parse model list
         if models and models.strip():
@@ -148,7 +147,7 @@ class ReviewTool:
                 goal=review_prompt,
                 role="reviewer",
                 llm_client=llm,
-                max_iterations=1,       # Pure reasoning, single turn
+                max_iterations=3,       # Goal summarization (1) + review generation (1) + margin
                 tools_override=[],      # No tools needed
                 system_rules=REVIEWER_SYSTEM_RULES,
             )
@@ -190,7 +189,7 @@ class ReviewTool:
             except Exception:
                 pass
 
-        # Format output for Core Agent
+        # Format output for Orchestrator
         output = "## 🏛️ AI Review Committee Results\n\n"
         output += f"**Focus:** {focus} | **Reviewers:** {len(reviews)} | **Time:** {elapsed:.1f}s\n\n"
 
@@ -224,7 +223,9 @@ class ReviewTool:
         reviews_dir.mkdir(parents=True, exist_ok=True)
 
         # Generate filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        from nimbus.utils.timeutil import local_now_str
+
+        timestamp = local_now_str("%Y%m%d_%H%M%S")
         safe_title = "".join(c if c.isalnum() or c in "-_" else "-" for c in title)
         filename = f"{timestamp}_{safe_title}.md"
         filepath = reviews_dir / filename
@@ -233,7 +234,7 @@ class ReviewTool:
         lines = [
             f"# AI Review Committee: {title}",
             "",
-            f"- **Date**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"- **Date**: {local_now_str()}",
             f"- **Focus**: {focus}",
             f"- **Reviewers**: {len(reviews)}",
             f"- **Total Time**: {elapsed:.1f}s",

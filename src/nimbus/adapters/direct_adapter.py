@@ -1156,6 +1156,8 @@ class DirectAdapter:
         models.extend([
             {"id": "google/gemini-3-flash-preview", "object": "model", "owned_by": "google"},
             {"id": "google/gemini-3-pro-preview", "object": "model", "owned_by": "google"},
+            {"id": "google/gemini-3.1-pro-preview", "object": "model", "owned_by": "google"},
+            {"id": "google/gemini-3.1-pro-preview-customtools", "object": "model", "owned_by": "google"},
         ])
 
         # Anthropic Claude models

@@ -7,7 +7,7 @@ while maintaining compatibility with the v1 server API.
 import asyncio
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -299,60 +299,6 @@ class SessionManagerV2:
             skill_paths=skill_paths,
         )
 
-        # --- Dispatch Tool Integration (for Core/Dual mode) ---
-        if profile_name == "core":
-            from nimbus.orchestration.dispatch_tool import DispatchTool, DispatchToolConfig
-            from nimbus.orchestration.tools import (
-                DISPATCH_TOOL_DEF,
-                VERIFY_TOOL_DEF,
-            )
-            
-            # Register CoreBash (Standard Bash)
-            # CoreBash removed as per Review P0. We use standard Bash for all roles now.
-            # But the logic below was trying to import register_core_bash which we removed.
-            # So we skip it. Standard Bash is already registered above via register_default_tools.
-            
-            # Initialize Dispatch Tool
-            dispatch_config = DispatchToolConfig()
-            dispatch_tool = DispatchTool(
-                agent_os=agent_os,
-                config=dispatch_config,
-                workspace=workspace or Path.cwd(),
-            )
-
-            # Register Meta-Tools
-            agent_os.register_tool(
-                name="Dispatch",
-                func=dispatch_tool.dispatch,
-                description=DISPATCH_TOOL_DEF["description"],
-                parameters=DISPATCH_TOOL_DEF["parameters"],
-                roles=["core", "chat"],
-            )
-            agent_os.register_tool(
-                name="Verify",
-                func=dispatch_tool.verify,
-                description=VERIFY_TOOL_DEF["description"],
-                parameters=VERIFY_TOOL_DEF["parameters"],
-                roles=["core", "chat"],
-            )
-
-            # Register ReviewCommittee
-            from nimbus.orchestration.review_tool import REVIEW_TOOL_DEF, ReviewTool
-            review_tool = ReviewTool(
-                agent_os=agent_os,
-                workspace=workspace or Path.cwd(),
-            )
-            agent_os.register_tool(
-                name="ReviewCommittee",
-                func=review_tool.review,
-                description=REVIEW_TOOL_DEF["description"],
-                parameters=REVIEW_TOOL_DEF["parameters"],
-                roles=["core", "chat"],
-            )
-
-            # Keep reference for lifecycle management
-            self._dispatch_tools[session_id] = dispatch_tool
-
         logger.info(f"🔧 Created AgentOS (profile={profile_name}) for session {session_id}")
 
         async with self._lock:
@@ -494,7 +440,7 @@ class SessionManagerV2:
         await self._sse_hub.publish(
             session_id,
             "connected",
-            {"session_id": session_id, "timestamp": datetime.utcnow().isoformat()},
+            {"session_id": session_id, "timestamp": datetime.now(timezone.utc).isoformat()},
         )
 
         # Emit message_start
@@ -814,8 +760,8 @@ class SessionManagerV2:
                             "name": msg.name,
                         }
                     ]
-                    # Attach buffered sub-tool events to Dispatch results
-                    if msg.name == "Dispatch" and session_id in self._sub_tool_buffer:
+                    # Attach buffered sub-tool events to meta-tool results
+                    if session_id in self._sub_tool_buffer:
                         sub_events = self._sub_tool_buffer.pop(session_id)
                         if sub_events:
                             artifacts.append({

@@ -22,6 +22,10 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 
+# NimFS auto-offload threshold: outputs larger than this will be stored in
+# NimFS and replaced with a nimfs:// reference to avoid context overflow.
+NIMFS_OFFLOAD_THRESHOLD = 8_000  # characters
+
 # =============================================================================
 # 1. Action Instruction Set (ISA)
 # =============================================================================
@@ -30,6 +34,7 @@ ActionKind = Literal[
     "TOOL_CALL",  # Syscall: Execute external tool
     "SUB_CALL",  # Control Flow: Push stack frame (spawn subprocess)
     "RETURN",  # Control Flow: Pop stack frame (return result)
+    "REPLY",  # UI: User-facing response (Conversational)
     "THOUGHT",  # Internal: Chain-of-Thought / Logging
     "POST_IPC",  # IPC: Publish reference to IPC bus
     "REQUEST_REPLAN",  # Planner: Request DAG modification
@@ -126,6 +131,11 @@ class ToolResult:
     cost: Dict[str, Any] = field(default_factory=dict)
     version: str = "1.0"
     meta: Dict[str, Any] = field(default_factory=dict)  # Additional metadata
+
+    # NimFS IPC: when output exceeds NIMFS_OFFLOAD_THRESHOLD, it is offloaded
+    # to NimFS and this field carries the nimfs://artifact/{id} reference.
+    # Consumers should call NimFSReadArtifact(ref) to retrieve the full content.
+    artifact_ref: Optional[str] = None  # nimfs://artifact/{artifact_id}
 
 
 # =============================================================================
@@ -270,3 +280,85 @@ class IPCMessage:
     value_ref: str
     meta: Dict[str, Any] = field(default_factory=dict)
     version: str = "1.0"
+
+
+# =============================================================================
+# 6. NimFS Integration Helpers
+# =============================================================================
+
+
+def offload_to_nimfs(
+    result: "ToolResult",
+    workspace: str,
+    task_id: str,
+    producer: str = "agent",
+) -> "ToolResult":
+    """
+    Offload a large ToolResult output to NimFS if it exceeds the threshold.
+
+    When output exceeds NIMFS_OFFLOAD_THRESHOLD characters, stores the full
+    content in NimFS artifacts/ and replaces output with a compact summary
+    containing the nimfs:// reference.
+
+    Non-destructive: if output is small enough, returns the original result
+    unchanged (zero overhead for normal-sized outputs).
+
+    Args:
+        result:    The ToolResult to potentially offload.
+        workspace: Current workspace path (used to construct NimFSManager).
+        task_id:   Task identifier for artifact grouping.
+        producer:  Agent role name for artifact provenance.
+
+    Returns:
+        The original ToolResult if small enough, otherwise a new ToolResult
+        with output replaced by a compact reference message and artifact_ref
+        set to the nimfs:// URI.
+
+    Example:
+        result = offload_to_nimfs(big_result, workspace="/path/to/ws",
+                                   task_id="task-explore-1", producer="explore-agent")
+        # If offloaded: result.artifact_ref == "nimfs://artifact/task-explore-1-abc123"
+        #               result.output == "[NimFS] Full content stored at nimfs://... (45230 bytes)"
+    """
+    output_str = str(result.output) if result.output is not None else ""
+    if len(output_str) <= NIMFS_OFFLOAD_THRESHOLD:
+        return result  # Small enough — no offload needed
+
+    try:
+        # Lazy import to avoid circular deps at module load time
+        from nimbus.core.nimfs.manager import NimFSManager
+        from nimbus.core.nimfs.models import ArtifactTTL
+
+        manager = NimFSManager(workspace)
+        ref = manager.write_artifact(
+            content=output_str,
+            task_id=task_id,
+            producer=producer,
+            artifact_type="text",
+            ttl=ArtifactTTL.SESSION,
+            summary=output_str[:200].replace("\n", " "),
+        )
+
+        compact_output = (
+            f"[NimFS Offload] Output too large for inline context "
+            f"({len(output_str):,} chars > {NIMFS_OFFLOAD_THRESHOLD:,} threshold).\n"
+            f"Full content stored at: {ref}\n"
+            f"Use NimFSReadArtifact tool or call read_artifact('{ref}') to retrieve it.\n\n"
+            f"Preview (first 500 chars):\n{output_str[:500]}..."
+        )
+
+        return ToolResult(
+            status=result.status,
+            output=compact_output,
+            is_final=result.is_final,
+            fault=result.fault,
+            artifacts=result.artifacts,
+            timing_ms=result.timing_ms,
+            cost=result.cost,
+            version=result.version,
+            meta=result.meta,
+            artifact_ref=ref,
+        )
+    except Exception:
+        # NimFS offload failed — return original result unchanged (graceful degradation)
+        return result

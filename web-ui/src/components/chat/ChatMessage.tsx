@@ -93,13 +93,14 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
     return merged;
   }, [message.toolCalls, message.toolResults]);
 
-  // Auto-expand tool list when Dispatch tools are present
-  const hasDispatch = tools.some((t) => t.name === "Dispatch");
+  // Auto-expand tool list when sub-agent tools (Dispatch/Explore/Implement/Design/Test) are present
+  const META_TOOLS = new Set(["Dispatch", "Explore", "Implement", "Design", "Test"]);
+  const hasMetaTool = tools.some((t) => META_TOOLS.has(t.name));
   useEffect(() => {
-    if (hasDispatch) {
+    if (hasMetaTool) {
       setShowTools(true);
     }
-  }, [hasDispatch]);
+  }, [hasMetaTool]);
 
   // Auto-expand tools during streaming
   useEffect(() => {

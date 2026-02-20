@@ -2,7 +2,7 @@
 Agent Profile Definitions.
 
 Defines the "personality" and capabilities of an AgentOS instance.
-This unifies the configuration for Single Agent, Core Agent, and Executor Agent.
+This unifies the configuration for Single Agent, Orchestrator Agent, and Executor Agent.
 """
 
 from dataclasses import dataclass, field
@@ -17,7 +17,7 @@ class AgentProfile:
     Configuration profile for an Agent.
     """
     name: str
-    role: str  # "core", "executor", "standard", "explorer", "implementer", "architect", "tester", "orchestrator"
+    role: str  # "executor", "standard", "explorer", "implementer", "architect", "tester", "orchestrator"
 
     # Tool Access Control
     allowed_tools: List[str] = field(default_factory=list)  # Whitelist of tool names
@@ -46,20 +46,6 @@ class AgentProfile:
         )
 
     @classmethod
-    def create_core(cls, model_id: str = "default") -> "AgentProfile":
-        """Create a Core Agent profile (Orchestrator)."""
-        from nimbus.orchestration.prompts import PromptManager
-        return cls(
-            name="core",
-            role="core",
-            # Bash replaces CoreBash (Review P0)
-            allowed_tools=["Read", "Bash", "Dispatch", "Verify", "ReviewCommittee", "Memo"],
-            system_prompt=PromptManager.get_system_prompt("core", model_id),
-            max_iterations=30,
-            max_consecutive_thoughts=1
-        )
-
-    @classmethod
     def create_executor(cls, model_id: str = "default") -> "AgentProfile":
         """Create an Executor Agent profile (Implementer)."""
         from nimbus.orchestration.prompts import PromptManager
@@ -68,8 +54,8 @@ class AgentProfile:
             role="executor",
             allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
             system_prompt=PromptManager.get_system_prompt("executor", model_id),
-            max_iterations=20,
-            max_consecutive_thoughts=1
+            max_iterations=40,
+            max_consecutive_thoughts=2
         )
 
     # =========================================================================
@@ -85,8 +71,8 @@ class AgentProfile:
             role="explorer",
             allowed_tools=["Read", "Glob", "Grep"],
             system_prompt=PromptManager.get_system_prompt("explorer", model_id),
-            max_iterations=20,
-            max_consecutive_thoughts=1,
+            max_iterations=40,
+            max_consecutive_thoughts=2,
             write_filter=[],
         )
 
@@ -99,8 +85,8 @@ class AgentProfile:
             role="implementer",
             allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
             system_prompt=PromptManager.get_system_prompt("implementer", model_id),
-            max_iterations=30,
-            max_consecutive_thoughts=1,
+            max_iterations=50,
+            max_consecutive_thoughts=2,
             write_filter=[],
         )
 
@@ -113,8 +99,8 @@ class AgentProfile:
             role="architect",
             allowed_tools=["Read", "Write", "Glob", "Grep"],
             system_prompt=PromptManager.get_system_prompt("architect", model_id),
-            max_iterations=15,
-            max_consecutive_thoughts=1,
+            max_iterations=30,
+            max_consecutive_thoughts=2,
             write_filter=[".md"],
         )
 
@@ -127,8 +113,8 @@ class AgentProfile:
             role="tester",
             allowed_tools=["Read", "Bash", "Glob"],
             system_prompt=PromptManager.get_system_prompt("tester", model_id),
-            max_iterations=20,
-            max_consecutive_thoughts=1,
+            max_iterations=40,
+            max_consecutive_thoughts=2,
             write_filter=[],
         )
 
@@ -142,6 +128,6 @@ class AgentProfile:
             allowed_tools=["Read", "Bash", "Explore", "Implement", "Design", "Test", "Verify", "ReviewCommittee", "Memo"],
             system_prompt=PromptManager.get_system_prompt("orchestrator", model_id),
             max_iterations=50,
-            max_consecutive_thoughts=3,
+            max_consecutive_thoughts=2,
             write_filter=[],
         )

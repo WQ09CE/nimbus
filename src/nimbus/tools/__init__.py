@@ -35,6 +35,18 @@ from nimbus.tools.read import read_file
 from nimbus.tools.sandbox import Sandbox, SandboxError
 from nimbus.tools.write import write_file
 
+# NimFS tools (shared virtual disk + Agent IPC)
+from nimbus.tools.nimfs_tools import (
+    NIMFS_TOOLS,
+    NIMFS_TOOL_FUNCTIONS,
+    nimfs_write_artifact,
+    nimfs_read_artifact,
+    nimfs_list_artifacts,
+    nimfs_write_memory,
+    nimfs_search_memory,
+    nimfs_load_context,
+)
+
 if TYPE_CHECKING:
     from nimbus.agentos import AgentOS
 
@@ -160,6 +172,8 @@ ALL_TOOLS: List[Dict[str, Any]] = [
     WRITE_TOOL,
     EDIT_TOOL,
     BASH_TOOL,
+    # NimFS tools: shared virtual disk + Agent IPC (H002 fix: registered in ALL_TOOLS)
+    *NIMFS_TOOLS,
 ]
 
 TOOL_FUNCTIONS: Dict[str, Callable] = {
@@ -167,6 +181,8 @@ TOOL_FUNCTIONS: Dict[str, Callable] = {
     "Write": write_file,
     "Edit": edit_file,
     "Bash": bash_command,
+    # NimFS tool functions
+    **NIMFS_TOOL_FUNCTIONS,
 }
 
 
@@ -245,11 +261,15 @@ def register_default_tools(
         elif isinstance(roles, dict):
             tool_roles = roles.get(name)
 
+        # Handle both dict and object
+        description = tool_def.get("description", "") if hasattr(tool_def, "get") else getattr(tool_def, "description", "")
+        parameters = tool_def.get("parameters") if hasattr(tool_def, "get") else getattr(tool_def, "parameters", None)
+
         os.register_tool(
             name=name,
             func=wrapped_func,
-            description=tool_def.get("description", ""),
-            parameters=tool_def.get("parameters"),
+            description=description,
+            parameters=parameters,
             roles=tool_roles,
         )
 

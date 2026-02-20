@@ -12,7 +12,7 @@ This module provides REST API endpoints for:
 import asyncio
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -715,7 +715,7 @@ async def list_files(
                 path=rel_path,
                 type=FileType.DIRECTORY if is_dir else FileType.FILE,
                 size=entry.stat().st_size if not is_dir else None,
-                last_modified=datetime.fromtimestamp(entry.stat().st_mtime),
+                last_modified=datetime.fromtimestamp(entry.stat().st_mtime, tz=timezone.utc),
             )
             nodes.append(node)
 
@@ -835,7 +835,7 @@ async def get_dag(
         id=dag.id,
         goal=dag.goal,
         status=dag_status,
-        created_at=datetime.now(),  # TODO: Store actual creation time
+        created_at=datetime.now(timezone.utc),  # TODO: Store actual creation time
         nodes=nodes,
         stats=DAGStatsResponse(**stats),
     )

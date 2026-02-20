@@ -26,7 +26,7 @@ __role__ = "MMU"  # Memory Management Unit
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Protocol, Union
 
@@ -54,7 +54,7 @@ class PinnedItem:
     type: str  # "file_meta", "user_instruction", "key_entity"
     content: str
     priority: int = 0  # Higher priority = shown first
-    created_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     # Letta-inspired fields
     description: str = ""  # Description for Agent (what this memory is for)
     read_only: bool = False  # If True, Agent cannot modify this item
@@ -70,7 +70,7 @@ class Message:
 
     role: str  # "user" | "assistant" | "system"
     content: str
-    timestamp: datetime = field(default_factory=datetime.now)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def estimate_tokens(self) -> int:
         """Estimate token count for this message."""

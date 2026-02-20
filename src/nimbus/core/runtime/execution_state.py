@@ -51,7 +51,7 @@ class ExecutionState:
 
     # Compaction 相关
     compaction_count: int = 0
-    max_compactions: int = 10
+    max_compactions: int = 1  # 默认允许 1 次压缩，由 VCPU 逻辑配合
 
     # 工具失败跟踪
     tool_failure_counts: Dict[str, int] = field(default_factory=dict)
@@ -68,6 +68,10 @@ class ExecutionState:
 
     # Productive work tracking (A+B anti-premature-termination)
     has_productive_work: bool = False
+    # Terminal work = direct output artifacts (Write/Edit/Bash)
+    # After terminal work, first text is almost certainly a task summary.
+    # After coordination work (Explore/Implement/etc), first text may be planning.
+    has_terminal_work: bool = False
 
     # Suppress streaming after poke (transient, not persisted)
     suppress_streaming: bool = False
@@ -88,6 +92,7 @@ class ExecutionState:
         self.doom_loop_count = 0
         self.interruption_requested = False
         self.has_productive_work = False
+        self.has_terminal_work = False
         self.suppress_streaming = False
         self.pending_thought_text = ""
 
@@ -151,12 +156,22 @@ class ExecutionState:
         self.suppress_streaming = False
 
     # Productive tools = tools that create/modify output (not just reading)
-    PRODUCTIVE_TOOLS = frozenset({"Write", "Edit", "Bash", "Dispatch"})
+    PRODUCTIVE_TOOLS = frozenset({
+        "Write", "Edit", "Bash",
+        "Dispatch", "Explore", "Implement", "Design", "Test",
+    })
+
+    # Terminal tools = tools that produce direct output artifacts.
+    # After terminal work, first text-only response = task summary (immediate RETURN).
+    # Coordination tools (Explore/Implement/etc) don't trigger this shortcut.
+    TERMINAL_TOOLS = frozenset({"Write", "Edit", "Bash"})
 
     def on_productive_action(self, tool_name: str) -> None:
-        """Record that a productive tool was called (Write/Edit/Bash/Dispatch)."""
+        """Record that a productive tool was called."""
         if tool_name in self.PRODUCTIVE_TOOLS:
             self.has_productive_work = True
+        if tool_name in self.TERMINAL_TOOLS:
+            self.has_terminal_work = True
 
     def on_tool_success(self, tool_name: str) -> None:
         """
@@ -230,6 +245,7 @@ class ExecutionState:
             "path_not_found_count": self.path_not_found_count,
             "doom_loop_count": self.doom_loop_count,
             "has_productive_work": self.has_productive_work,
+            "has_terminal_work": self.has_terminal_work,
         }
 
     @classmethod
@@ -273,6 +289,7 @@ class ExecutionState:
             path_not_found_count=self.path_not_found_count,
             doom_loop_count=self.doom_loop_count,
             has_productive_work=self.has_productive_work,
+            has_terminal_work=self.has_terminal_work,
         )
 
     def restore_from_snapshot(self, snapshot: ExecutionStateModel) -> None:
@@ -291,3 +308,4 @@ class ExecutionState:
         self.path_not_found_count = snapshot.path_not_found_count
         self.doom_loop_count = snapshot.doom_loop_count
         self.has_productive_work = getattr(snapshot, 'has_productive_work', False)
+        self.has_terminal_work = getattr(snapshot, 'has_terminal_work', False)

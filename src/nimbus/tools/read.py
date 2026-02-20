@@ -63,7 +63,10 @@ async def read_file(
     Raises:
         SandboxError: If path escapes workspace
         FileNotFoundError: If file doesn't exist
-        ValueError: If offset is out of bounds
+
+    Note:
+        If offset exceeds file length, it is automatically clamped to the
+        last page of the file instead of raising an error.
     """
     # Resolve path
     path_obj = Path(file_path)
@@ -79,6 +82,10 @@ async def read_file(
 
     if not resolved_path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
+
+    # Directory fallback: return listing instead of error
+    if resolved_path.is_dir():
+        return _list_directory(resolved_path, file_path)
 
     # Ensure types (LLM might pass strings)
     if offset is not None:
@@ -100,6 +107,22 @@ async def read_file(
 
     # Read text file
     return await _read_text(resolved_path, offset, limit, file_path)
+
+
+def _list_directory(dir_path: Path, original_path: str) -> str:
+    """List directory contents when Read is called on a directory."""
+    try:
+        entries = sorted(dir_path.iterdir(), key=lambda p: (not p.is_dir(), p.name))
+        lines = [f"['{original_path}' is a directory. Contents:]", ""]
+        for entry in entries[:100]:  # Cap at 100 entries
+            prefix = "📁 " if entry.is_dir() else "   "
+            lines.append(f"{prefix}{entry.name}")
+        if len(list(dir_path.iterdir())) > 100:
+            lines.append(f"\n... and more ({len(list(dir_path.iterdir())) - 100} entries omitted)")
+        lines.append("\n[Tip: Use Glob to find files by pattern, or Read with a specific file path.]")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"[Error listing directory '{original_path}': {e}]"
 
 
 async def _read_image(file_path: Path, mime_type: str) -> str:
@@ -149,12 +172,19 @@ async def _read_small_text(
     smart_max_lines, smart_max_bytes = get_smart_limits(file_size=file_size)
 
     # Apply offset (1-indexed → 0-indexed)
+    original_offset = offset
     start_line = (offset - 1) if offset else 0
     start_line = max(0, start_line)
 
-    # Check if offset is out of bounds
+    # Clamp offset if beyond end of file (prevent doom loops)
+    clamp_warning = ""
     if start_line >= total_lines:
-        raise ValueError(f"Offset {offset} is beyond end of file ({total_lines} lines total)")
+        effective_limit = limit if limit is not None else smart_max_lines
+        start_line = max(0, total_lines - effective_limit)
+        clamp_warning = (
+            f"\u26a0\ufe0f Requested offset {original_offset} exceeds file length "
+            f"({total_lines} lines). Showing from line {start_line + 1}.\n\n"
+        )
 
     # Select lines
     if limit is not None:
@@ -201,7 +231,7 @@ async def _read_small_text(
             f"\n\n[{remaining} more lines in file. Use offset={next_offset} to continue.]"
         )
 
-    return output_text
+    return clamp_warning + output_text
 
 
 async def _read_large_text(
@@ -216,9 +246,11 @@ async def _read_large_text(
     smart_max_lines, smart_max_bytes = get_smart_limits(file_size=file_size)
 
     # Apply offset (1-indexed → 0-indexed)
+    original_offset = offset
     start_line = (offset - 1) if offset else 0
     start_line = max(0, start_line)
 
+    clamp_warning = ""
     lines_read = []
     lines_skipped = 0
     bytes_read = 0
@@ -235,11 +267,30 @@ async def _read_large_text(
     try:
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
             # Skip lines
+            offset_beyond_eof = False
             for _ in range(start_line):
                 if not f.readline():
-                    # End of file reached during skip
-                    raise ValueError(f"Offset {offset} is beyond end of file")
+                    # End of file reached during skip - count total lines
+                    offset_beyond_eof = True
+                    break
                 lines_skipped += 1
+
+            if offset_beyond_eof:
+                # Count total lines and clamp offset to last page
+                total_lines = lines_skipped  # lines_skipped = lines read before EOF
+                effective_limit = limit if limit is not None else max_lines
+                clamped_start = max(0, total_lines - effective_limit)
+                clamp_warning = (
+                    f"\u26a0\ufe0f Requested offset {original_offset} exceeds file length "
+                    f"({total_lines} lines). Showing from line {clamped_start + 1}.\n\n"
+                )
+                # Re-read from clamped position
+                start_line = clamped_start
+                lines_skipped = 0
+                f.seek(0)
+                for _ in range(start_line):
+                    f.readline()
+                    lines_skipped += 1
 
             # Read requested lines
             while len(lines_read) < max_lines:
@@ -284,8 +335,6 @@ async def _read_large_text(
     except UnicodeDecodeError:
         raise ValueError(f"File is not valid UTF-8 text: {original_path}")
     except Exception as e:
-        if "Offset" in str(e):
-            raise
         raise OSError(f"Failed to read file: {str(e)}")
 
     output_text = "\n".join(lines_read)
@@ -327,4 +376,4 @@ async def _read_large_text(
     # For large files, we might not know total_lines without scanning.
     # We omit "of {total_lines}" to save time.
 
-    return output_text
+    return clamp_warning + output_text

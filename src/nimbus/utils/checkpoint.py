@@ -36,7 +36,9 @@ class CheckpointManager:
         Returns:
             Path to saved checkpoint file.
         """
-        filename = f"{session_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        from nimbus.utils.timeutil import local_now_str
+
+        filename = f"{session_id}_{local_now_str('%Y%m%d_%H%M%S')}.json"
         filepath = self.base_path / filename
 
         content = json.dumps(data, ensure_ascii=False, indent=2, default=self._json_default)

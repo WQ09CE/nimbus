@@ -6,7 +6,7 @@ It provides CRUD operations for sessions, messages, DAGs, memory checkpoints, an
 
 import json
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
@@ -279,7 +279,7 @@ class SQLiteStorage:
             session_id: Session identifier.
         """
         await self.update_session(
-            session_id, status="archived", archived_at=datetime.now().isoformat()
+            session_id, status="archived", archived_at=datetime.now(timezone.utc).isoformat()
         )
 
     # =========================================================================
@@ -462,7 +462,7 @@ class SQLiteStorage:
                     completed,
                     failed,
                     duration_ms,
-                    datetime.now().isoformat() if dag.is_completed() else None,
+                    datetime.now(timezone.utc).isoformat() if dag.is_completed() else None,
                 ),
             )
             await db.commit()

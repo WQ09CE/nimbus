@@ -226,14 +226,14 @@ class TestSpecialistProfiles:
         assert profile.max_iterations == 20
 
     def test_create_orchestrator_profile(self):
-        """Orchestrator: max_consecutive_thoughts=3, max_iterations=50."""
+        """Orchestrator: max_consecutive_thoughts=1, max_iterations=50."""
         from nimbus.core.profile import AgentProfile
 
         with patch("nimbus.orchestration.prompts.PromptManager.get_system_prompt", return_value=""):
             profile = AgentProfile.create_orchestrator()
 
         assert profile.role == "orchestrator"
-        assert profile.max_consecutive_thoughts == 3
+        assert profile.max_consecutive_thoughts == 2
         assert profile.max_iterations == 50
         # Orchestrator has specialist meta-tools
         assert "Explore" in profile.allowed_tools
@@ -242,20 +242,15 @@ class TestSpecialistProfiles:
         assert "Test" in profile.allowed_tools
 
     def test_legacy_profiles_unchanged(self):
-        """Legacy create_standard/create_core/create_executor still work."""
+        """Legacy create_standard/create_executor still work."""
         from nimbus.core.profile import AgentProfile
 
         with patch("nimbus.orchestration.prompts.PromptManager.get_system_prompt", return_value=""):
             standard = AgentProfile.create_standard()
-            core = AgentProfile.create_core()
             executor = AgentProfile.create_executor()
 
         assert standard.role == "standard"
-        assert core.role == "core"
         assert executor.role == "executor"
-
-        # Core must have Dispatch in its tools
-        assert "Dispatch" in core.allowed_tools
 
         # Executor must have full write tools
         assert "Write" in executor.allowed_tools
@@ -510,22 +505,6 @@ class TestCreateAgentOSIntegration:
         # Verify tool should also be registered
         assert "Verify" in tools
 
-    def test_create_agent_os_core_profile_registers_dispatch(self):
-        """create_agent_os(profile='core') must register Dispatch (not Explore etc.)."""
-        from nimbus.agentos import create_agent_os
-
-        with patch("nimbus.orchestration.prompts.PromptManager.get_system_prompt", return_value=""), \
-             patch("nimbus.orchestration.prompts.AGENTOS_SYSTEM_RULES", ""):
-            llm = MockLLMClient()
-            os_instance = create_agent_os(llm_client=llm, profile="core")
-
-        tools = os_instance.list_tools()
-        assert "Dispatch" in tools
-        # Specialist tools must NOT be registered for core profile
-        assert "Explore" not in tools
-        assert "Implement" not in tools
-        assert "Design" not in tools
-
     def test_create_agent_os_no_profile_unchanged(self):
         """create_agent_os() with no profile registers standard kernel tools."""
         from nimbus.agentos import create_agent_os
@@ -553,6 +532,6 @@ class TestCreateAgentOSIntegration:
             llm = MockLLMClient()
             os_instance = create_agent_os(llm_client=llm, profile="orchestrator")
 
-        # Orchestrator profile sets max_iterations=50 and max_consecutive_thoughts=3
+        # Orchestrator profile sets max_iterations=50 and max_consecutive_thoughts=2
         assert os_instance.config.vcpu_config.max_iterations == 50
-        assert os_instance.config.vcpu_config.max_consecutive_thoughts == 3
+        assert os_instance.config.vcpu_config.max_consecutive_thoughts == 2

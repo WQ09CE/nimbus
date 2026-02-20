@@ -85,6 +85,43 @@ class TestReadTool:
         assert "offset=" in result.lower() or "continue" in result.lower()
 
     @pytest.mark.asyncio
+    async def test_read_offset_beyond_eof_clamps(self, temp_workspace):
+        """Test that offset beyond EOF clamps to last page instead of raising."""
+        test_file = temp_workspace / "lines.txt"
+        content = "\n".join(f"Line {i}" for i in range(1, 51))  # 50 lines
+        test_file.write_text(content)
+
+        # Offset 500 is way beyond the 50-line file
+        result = await read_file(
+            str(test_file),
+            offset=500,
+            limit=10,
+            workspace=temp_workspace,
+        )
+
+        # Should NOT raise, should clamp and return content with warning
+        assert "exceeds file length" in result
+        assert "Line 50" in result  # Should show the last lines
+        assert "Showing from line" in result
+
+    @pytest.mark.asyncio
+    async def test_read_offset_at_exact_boundary(self, temp_workspace):
+        """Test that offset at exact file length works normally."""
+        test_file = temp_workspace / "lines.txt"
+        # 10 lines, no trailing newline -> split gives 10 elements
+        content = "\n".join(f"Line {i}" for i in range(1, 11))
+        test_file.write_text(content)
+
+        # offset=10 is the last line (in range)
+        result = await read_file(
+            str(test_file),
+            offset=10,
+            workspace=temp_workspace,
+        )
+        assert "Line 10" in result
+        assert "exceeds file length" not in result
+
+    @pytest.mark.asyncio
     async def test_read_nonexistent_file(self, temp_workspace):
         """Test reading a nonexistent file raises error."""
         with pytest.raises(FileNotFoundError):

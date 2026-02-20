@@ -401,14 +401,14 @@ async def create_session(
     request: Request,
 ) -> CreateSessionResponse:
     """Create a new chat session."""
-    import datetime
+    from datetime import datetime, timezone
 
     session_id = f"session-{uuid.uuid4().hex[:12]}"
 
     return CreateSessionResponse(
         id=session_id,
         name=request_data.name or "New Chat",
-        createdAt=datetime.datetime.now().isoformat(),
+        createdAt=datetime.now(timezone.utc).isoformat(),
     )
 
 

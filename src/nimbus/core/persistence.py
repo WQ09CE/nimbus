@@ -69,6 +69,7 @@ class ExecutionStateModel(BaseModel):
     path_not_found_count: int
     doom_loop_count: int = 0
     has_productive_work: bool = False
+    has_terminal_work: bool = False
 
 class SessionCheckpointModel(BaseModel):
     """Top-level session checkpoint"""

@@ -122,6 +122,18 @@ const initialState = {
   isCreatingSession: false,
 };
 
+// Tools that spawn sub-agents and can contain nested sub_tool_call/sub_tool_result
+const META_TOOLS = new Set(["Dispatch", "Explore", "Implement", "Design", "Test"]);
+
+// Human-readable labels for meta-tools in activity status
+const META_TOOL_LABELS: Record<string, string> = {
+  Dispatch: "Executor",
+  Explore: "Explorer",
+  Implement: "Implementer",
+  Design: "Architect",
+  Test: "Tester",
+};
+
 export const useChatStore = create<ChatState>((set, get) => ({
   ...initialState,
 
@@ -236,20 +248,64 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const serverMessages = await getSessionMessages(session.id);
       console.log("[Store] Raw server messages:", serverMessages);
 
-      // First pass: extract all messages and build a map of tool results
+      // First pass: extract all messages and build maps of tool results and sub-tool events
       const toolResultsMap = new Map<string, ToolResult>();
+      const subEventsMap = new Map<string, { subCalls: ToolCall[]; subResults: ToolResult[] }>();
 
       for (const m of serverMessages) {
         if (m.role === 'tool' && m.artifacts) {
+          // First, find the tool_call_id for this tool message
+          let toolCallId: string | null = null;
+
           for (const artifact of m.artifacts) {
             if (artifact && typeof artifact === 'object') {
               const art = artifact as Record<string, unknown>;
               if (art.type === 'tool_result' && art.tool_call_id) {
-                toolResultsMap.set(String(art.tool_call_id), {
-                  id: String(art.tool_call_id),
+                toolCallId = String(art.tool_call_id);
+                toolResultsMap.set(toolCallId, {
+                  id: toolCallId,
                   name: String(art.name || ''),
                   result: m.content,
                 });
+              }
+            }
+          }
+
+          // Then, extract sub_tool_events if present (attached to Dispatch tool results)
+          if (toolCallId) {
+            for (const artifact of m.artifacts) {
+              if (artifact && typeof artifact === 'object') {
+                const art = artifact as Record<string, unknown>;
+                if (art.type === 'sub_tool_events' && Array.isArray(art.events)) {
+                  const subCalls: ToolCall[] = [];
+                  const subResults: ToolResult[] = [];
+
+                  for (const evt of art.events as Array<{ type: string; data: Record<string, unknown> }>) {
+                    if (evt.type === 'sub_tool_call' && evt.data) {
+                      subCalls.push({
+                        id: String(evt.data.action_id || evt.data.id || ''),
+                        name: String(evt.data.tool || evt.data.name || 'unknown'),
+                        arguments: (evt.data.args || evt.data.arguments || {}) as Record<string, unknown>,
+                        agentType: 'dispatch',
+                      });
+                    } else if (evt.type === 'sub_tool_result' && evt.data) {
+                      const fault = evt.data.fault as { message: string } | undefined;
+                      subResults.push({
+                        id: String(evt.data.action_id || evt.data.id || ''),
+                        name: String(evt.data.tool || evt.data.name || 'unknown'),
+                        result: evt.data.output !== undefined ? evt.data.output : evt.data.result,
+                        error: evt.data.status === 'ERROR'
+                          ? (fault ? fault.message : 'Error')
+                          : undefined,
+                        duration: evt.data.duration_ms as number | undefined,
+                      });
+                    }
+                  }
+
+                  if (subCalls.length > 0 || subResults.length > 0) {
+                    subEventsMap.set(toolCallId, { subCalls, subResults });
+                  }
+                }
               }
             }
           }
@@ -279,15 +335,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 toolCalls = (art.tool_calls as Array<{
                   id?: string;
                   function?: { name?: string; arguments?: string };
-                }>).map(tc => ({
-                  id: tc.id || '',
-                  name: tc.function?.name || '',
-                  arguments: tc.function?.arguments
-                    ? (typeof tc.function.arguments === 'string'
-                      ? JSON.parse(tc.function.arguments)
-                      : tc.function.arguments)
-                    : {},
-                }));
+                }>).map(tc => {
+                  const call: ToolCall = {
+                    id: tc.id || '',
+                    name: tc.function?.name || '',
+                    arguments: tc.function?.arguments
+                      ? (typeof tc.function.arguments === 'string'
+                        ? JSON.parse(tc.function.arguments)
+                        : tc.function.arguments)
+                      : {},
+                  };
+
+                  // Restore sub-agent tool calls/results for meta-tools (Dispatch, etc.)
+                  if (call.id && subEventsMap.has(call.id)) {
+                    const sub = subEventsMap.get(call.id)!;
+                    if (sub.subCalls.length > 0) call.subCalls = sub.subCalls;
+                    if (sub.subResults.length > 0) call.subResults = sub.subResults;
+                  }
+
+                  return call;
+                });
 
                 // Match tool results from the map
                 toolResults = toolCalls
@@ -618,16 +685,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 arguments: d.args || d.arguments || {},
                 agentType: "dispatch",
               };
-              // Nest under the current Dispatch tool call
-              const lastDispatchIdx = toolCalls.map(tc => tc.name).lastIndexOf("Dispatch");
-              if (lastDispatchIdx >= 0) {
-                const dispatch = toolCalls[lastDispatchIdx];
-                if (!dispatch.subCalls) dispatch.subCalls = [];
-                dispatch.subCalls.push(subTool);
+              // Nest under the last meta-tool (Dispatch/Explore/Implement/Design/Test)
+              const lastMetaIdx = toolCalls.reduce(
+                (last, tc, i) => META_TOOLS.has(tc.name) ? i : last, -1
+              );
+              if (lastMetaIdx >= 0) {
+                const metaTool = toolCalls[lastMetaIdx];
+                if (!metaTool.subCalls) metaTool.subCalls = [];
+                metaTool.subCalls.push(subTool);
               }
+              const metaLabel = lastMetaIdx >= 0
+                ? META_TOOL_LABELS[toolCalls[lastMetaIdx].name] || toolCalls[lastMetaIdx].name
+                : "Executor";
               set({
                 streamingToolCalls: [...toolCalls],
-                currentActivity: `⚡ Executor: ${subTool.name}`,
+                currentActivity: `${metaLabel}: ${subTool.name}`,
                 lastHeartbeat: Date.now()
               });
             }
@@ -643,16 +715,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 error: d.status === "ERROR" ? (d.fault ? d.fault.message : "Error") : undefined,
                 duration: d.duration_ms,
               };
-              // Nest under the current Dispatch tool call
-              const dispatchIdx = toolCalls.map(tc => tc.name).lastIndexOf("Dispatch");
-              if (dispatchIdx >= 0) {
-                const dispatch = toolCalls[dispatchIdx];
-                if (!dispatch.subResults) dispatch.subResults = [];
-                dispatch.subResults.push(subResult);
+              // Nest under the last meta-tool (Dispatch/Explore/Implement/Design/Test)
+              const lastMetaIdxForResult = toolCalls.reduce(
+                (last, tc, i) => META_TOOLS.has(tc.name) ? i : last, -1
+              );
+              if (lastMetaIdxForResult >= 0) {
+                const metaTool = toolCalls[lastMetaIdxForResult];
+                if (!metaTool.subResults) metaTool.subResults = [];
+                metaTool.subResults.push(subResult);
               }
+              const metaResultLabel = lastMetaIdxForResult >= 0
+                ? META_TOOL_LABELS[toolCalls[lastMetaIdxForResult].name] || toolCalls[lastMetaIdxForResult].name
+                : "Executor";
               set({
                 streamingToolCalls: [...toolCalls],
-                currentActivity: `⚡ Executor: ${d.tool || d.name} 完成`,
+                currentActivity: `${metaResultLabel}: ${d.tool || d.name} done`,
                 lastHeartbeat: Date.now()
               });
             }
@@ -893,6 +970,64 @@ export const useChatStore = create<ChatState>((set, get) => ({
               set({
                 streamingToolResults: [...toolResults],
                 currentActivity: "工具执行完成",
+                lastHeartbeat: Date.now(),
+              });
+            }
+            break;
+
+          case "sub_tool_call":
+            if (data && typeof data === "object") {
+              const d = data as Record<string, unknown>;
+              const subTool: ToolCall = {
+                id: (d.action_id || d.id || "") as string,
+                name: (d.tool || d.name || "unknown") as string,
+                arguments: (d.args || d.arguments || {}) as Record<string, unknown>,
+                agentType: "dispatch",
+              };
+              const lastMetaIdx = toolCalls.reduce(
+                (last, tc, i) => META_TOOLS.has(tc.name) ? i : last, -1
+              );
+              if (lastMetaIdx >= 0) {
+                const metaTool = toolCalls[lastMetaIdx];
+                if (!metaTool.subCalls) metaTool.subCalls = [];
+                metaTool.subCalls.push(subTool);
+              }
+              const metaLabel = lastMetaIdx >= 0
+                ? META_TOOL_LABELS[toolCalls[lastMetaIdx].name] || toolCalls[lastMetaIdx].name
+                : "Executor";
+              set({
+                streamingToolCalls: [...toolCalls],
+                currentActivity: `${metaLabel}: ${subTool.name}`,
+                lastHeartbeat: Date.now(),
+              });
+            }
+            break;
+
+          case "sub_tool_result":
+            if (data && typeof data === "object") {
+              const d = data as Record<string, unknown>;
+              const fault = d.fault as { message: string } | undefined;
+              const subResult: ToolResult = {
+                id: (d.action_id || d.id || "") as string,
+                name: (d.tool || d.name || "unknown") as string,
+                result: d.output !== undefined ? d.output : d.result,
+                error: d.status === "ERROR" ? (fault ? fault.message : "Error") : undefined,
+                duration: d.duration_ms as number | undefined,
+              };
+              const lastMetaIdxForResult = toolCalls.reduce(
+                (last, tc, i) => META_TOOLS.has(tc.name) ? i : last, -1
+              );
+              if (lastMetaIdxForResult >= 0) {
+                const metaTool = toolCalls[lastMetaIdxForResult];
+                if (!metaTool.subResults) metaTool.subResults = [];
+                metaTool.subResults.push(subResult);
+              }
+              const metaResultLabel = lastMetaIdxForResult >= 0
+                ? META_TOOL_LABELS[toolCalls[lastMetaIdxForResult].name] || toolCalls[lastMetaIdxForResult].name
+                : "Executor";
+              set({
+                streamingToolCalls: [...toolCalls],
+                currentActivity: `${metaResultLabel}: ${d.tool || d.name} done`,
                 lastHeartbeat: Date.now(),
               });
             }

@@ -3,6 +3,9 @@ import { ToolDisplay } from './ToolDisplay';
 import { DispatchCard } from './DispatchCard';
 import type { ToolCall, ToolResult } from '@/lib/api';
 
+// Tools that spawn sub-agents and get the dedicated DispatchCard treatment
+const META_TOOLS = new Set(["Dispatch", "Explore", "Implement", "Design", "Test"]);
+
 interface ToolCardProps {
   tool: {
     id?: string;
@@ -20,8 +23,8 @@ interface ToolCardProps {
 }
 
 export function ToolCard({ tool, defaultExpanded }: ToolCardProps) {
-  // Dispatch tools get their own dedicated card
-  if (tool.name === 'Dispatch') {
+  // Meta-tools (Dispatch/Explore/Implement/Design/Test) get the dedicated sub-agent card
+  if (META_TOOLS.has(tool.name)) {
     return <DispatchCard tool={tool} />;
   }
 

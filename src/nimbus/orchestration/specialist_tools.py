@@ -11,6 +11,7 @@ Each tool spawns a specialist agent via AgentOS.spawn() with
 appropriate AgentProfile and structured GoalDocument.
 """
 
+import asyncio
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -32,7 +33,7 @@ class SpecialistTool:
 
     # Subclasses override these
     ROLE = "specialist"
-    DEFAULT_TIMEOUT = 120.0
+    DEFAULT_TIMEOUT = 600.0  # 10 min default for all specialists
     TRACK_DIFF = False  # Only Implementer tracks workspace diffs
 
     def __init__(
@@ -59,6 +60,16 @@ class SpecialistTool:
         6. Format and return result
         """
         start_time = time.time()
+
+        # Resolve timeout: explicit kwarg > class default
+        timeout = kwargs.get("timeout")
+        if timeout is not None:
+            try:
+                timeout = float(timeout)
+            except (TypeError, ValueError):
+                timeout = self.DEFAULT_TIMEOUT
+        else:
+            timeout = self.DEFAULT_TIMEOUT
 
         # Resolve model
         model_name = kwargs.get("model", "")
@@ -96,15 +107,32 @@ class SpecialistTool:
         )
         logger.info(f"[{self.ROLE}] Spawned {pid} for: {task[:80]}...")
 
-        # Wait for completion
+        # Wait for completion -- with actionable timeout hint
+        timed_out = False
         try:
-            result = await self._agent_os.wait(pid, timeout=self.DEFAULT_TIMEOUT)
+            result = await self._agent_os.wait(pid, timeout=timeout)
             output = result.output or f"({self.ROLE} returned no output)"
             if result.fault:
                 output += f"\n\nFault: {result.fault.message}"
-        except Exception as e:
-            output = f"[{self.ROLE} error: {e}]"
-            logger.error(f"[{self.ROLE}] {pid} failed: {e}")
+        except (asyncio.TimeoutError, Exception) as e:
+            if "timed out" in str(e).lower() or isinstance(e, asyncio.TimeoutError):
+                timed_out = True
+                elapsed = time.time() - start_time
+                output = (
+                    f"[{self.ROLE} TIMEOUT after {elapsed:.0f}s (limit: {timeout:.0f}s)]\n\n"
+                    f"The {self.ROLE} did not finish within the timeout.\n"
+                    f"Possible causes:\n"
+                    f"- Task too complex for single specialist call\n"
+                    f"- LLM thinking time exceeded expectations\n"
+                    f"- Network/API latency\n\n"
+                    f"You can retry with a longer timeout by passing `timeout` parameter, "
+                    f'e.g. {{"task": "...", "timeout": {int(timeout * 2)}}}.\n'
+                    f"Or break the task into smaller sub-tasks."
+                )
+                logger.warning(f"[{self.ROLE}] {pid} timed out after {elapsed:.0f}s")
+            else:
+                output = f"[{self.ROLE} error: {e}]"
+                logger.error(f"[{self.ROLE}] {pid} failed: {e}")
 
         # Compute diff (for Implementer)
         diff_summary = ""
@@ -123,7 +151,7 @@ class SpecialistTool:
 class ExploreTool(SpecialistTool):
     """Read-only codebase exploration."""
     ROLE = "explorer"
-    DEFAULT_TIMEOUT = 60.0
+    DEFAULT_TIMEOUT = 600.0  # 10 min default for all specialists
     TRACK_DIFF = False
 
     def _create_profile(self, model_id: str = "default") -> AgentProfile:
@@ -133,7 +161,7 @@ class ExploreTool(SpecialistTool):
 class ImplementTool(SpecialistTool):
     """Code implementation with full tool access."""
     ROLE = "implementer"
-    DEFAULT_TIMEOUT = 180.0
+    DEFAULT_TIMEOUT = 600.0  # 10 min default for all specialists
     TRACK_DIFF = True
 
     def _create_profile(self, model_id: str = "default") -> AgentProfile:
@@ -143,7 +171,7 @@ class ImplementTool(SpecialistTool):
 class DesignTool(SpecialistTool):
     """Architecture and design document creation."""
     ROLE = "architect"
-    DEFAULT_TIMEOUT = 120.0
+    DEFAULT_TIMEOUT = 600.0  # 10 min default for all specialists
     TRACK_DIFF = True  # Track .md file creation
 
     def _create_profile(self, model_id: str = "default") -> AgentProfile:
@@ -153,7 +181,7 @@ class DesignTool(SpecialistTool):
 class TestTool(SpecialistTool):
     """Test execution and verification."""
     ROLE = "tester"
-    DEFAULT_TIMEOUT = 120.0
+    DEFAULT_TIMEOUT = 600.0  # 10 min default for all specialists
     TRACK_DIFF = False
 
     def _create_profile(self, model_id: str = "default") -> AgentProfile:

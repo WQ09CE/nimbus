@@ -364,15 +364,14 @@ class SimpleEventStream:
 # Tool Argument Normalization (LLM hallucination tolerance)
 # =============================================================================
 
-# Meta-tools that spawn sub-agents need longer timeouts than regular tools.
-# These override the Gate's default_timeout (typically 60s).
+# All meta-tools get 10 min -- specialist manages its own timeout
 _META_TOOL_TIMEOUTS: Dict[str, float] = {
-    "Dispatch": 600.0,  # Executor agent runs inside; controlled by max_iterations not timeout
-    "Verify": 120.0,    # Runs multiple checks sequentially
-    "Explore": 120.0,   # Read-only exploration
-    "Implement": 300.0, # Full code implementation
-    "Design": 180.0,    # Architecture/design documents
-    "Test": 180.0,      # Test execution and verification
+    "Dispatch": 600.0,
+    "Verify": 600.0,
+    "Explore": 600.0,
+    "Implement": 600.0,
+    "Design": 600.0,
+    "Test": 600.0,
 }
 
 # Maps tool_name -> {alias: canonical_name}

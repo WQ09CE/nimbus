@@ -13,6 +13,7 @@ The Decoder sits between the LLM (ALU) and the vCPU (Control Unit).
 """
 
 import json
+import re
 from typing import Any, List, Optional, Protocol
 
 from nimbus.core.protocol import ActionIR, Fault
@@ -55,6 +56,48 @@ class InstructionDecoder:
         "Do not mimic this format",
     ]
 
+    # Patterns that indicate the LLM has finished and needs no further action.
+    # These are checked against pure-text responses (no tool calls).
+    _DONE_PATTERNS = re.compile(
+        r"""
+        (?:^|\W)                       # word boundary
+        (?:
+            已完成|已解答|已回答|        # Chinese completions
+            done|finished|complete|completed|  # English completions
+            that(?:'s|\s+is)\s+all|
+            no\s+(?:further|more|additional)\s+(?:action|step|tool)s?\s+(?:needed|required|necessary)
+        )
+        (?:\W|$)
+        """,
+        re.IGNORECASE | re.VERBOSE,
+    )
+
+    @classmethod
+    def _is_conversational_reply(cls, text: str) -> bool:
+        """
+        Heuristic: detect whether a pure-text LLM response is a conversational
+        final answer (should map to RETURN) rather than an intermediate thought
+        (should map to THOUGHT).
+
+        Returns True if the text appears to be a self-contained final answer.
+        """
+        stripped = text.strip()
+
+        # Rule 1: Explicit done markers
+        if cls._DONE_PATTERNS.search(stripped):
+            return True
+
+        # Rule 2: Very short responses (≤ 120 chars) with no planning language
+        # are almost certainly direct answers or greetings.
+        _PLANNING_WORDS = ("next", "now i", "let me", "i will", "i'll", "i need to",
+                           "first", "then", "step", "接下来", "首先", "然后", "我需要", "我将")
+        if len(stripped) <= 120:
+            lower = stripped.lower()
+            if not any(w in lower for w in _PLANNING_WORDS):
+                return True
+
+        return False
+
     # Special tool names that map to control flow actions
     CONTROL_FLOW_TOOLS = {
         "call_subroutine": "SUB_CALL",
@@ -68,10 +111,14 @@ class InstructionDecoder:
         "cancel_task": "CANCEL",
     }
 
+    # Regex to capture content inside <reply>...</reply> tags
+    REPLY_TAG_PATTERN = re.compile(r"<reply>(.*?)</reply>", re.DOTALL | re.IGNORECASE)
+
     def decode(
         self,
         content: Optional[str],
         tool_calls: Optional[List[Any]],
+        role: Optional[str] = None,
     ) -> List[ActionIR]:
         """
         Decode LLM output into ActionIR instructions.
@@ -79,6 +126,7 @@ class InstructionDecoder:
         Args:
             content: Text content from LLM response
             tool_calls: List of tool call objects from LLM response
+            role: The role of the agent being decoded (e.g., 'orchestrator')
 
         Returns:
             List of ActionIR instructions
@@ -88,25 +136,38 @@ class InstructionDecoder:
         """
         actions = []
 
-        # Note: Hallucination detection (text-based tool simulation) is handled by
-        # the pipeline's HallucinationSanitizer middleware, which strips suspicious
-        # patterns from content without throwing errors. The decoder no longer does
-        # hard hallucination checks here because:
-        # 1. The root cause (pi-ai-server metadata mismatch) has been fixed
-        # 2. Simple pattern matching causes false positives when models legitimately
-        #    discuss tool patterns in their responses
-        # 3. The Fault-based retry loop creates a worse UX than just letting the
-        #    (stripped) response through
+        # 1. Parse <reply> tags if present in content
+        if content and (reply_match := self.REPLY_TAG_PATTERN.search(content)):
+            reply_text = reply_match.group(1).strip()
+            actions.append(ActionIR(kind="REPLY", name="reply", args={"text": reply_text}))
+            # If we found a <reply> tag, we ignore other tool calls or text to enforce 
+            # the "reply is final" semantics (similar to RETURN).
+            return actions
 
-        # 1. Parse Native Tool Calls
+        # 2. Parse Native Tool Calls
         if tool_calls:
             for tc in tool_calls:
                 action = self._map_tool_call(tc)
                 actions.append(action)
 
-        # 3. Handle pure thought/text if no tool calls
+        # 3. Handle Orchestrator-specific conversation logic
+        # If an Orchestrator role provides text but NO valid tool calls, 
+        # we treat it as a REPLY (conversational response) rather than a THOUGHT.
+        # This prevents the system from re-prompting (System Poke) when the 
+        # Orchestrator is simply talking to the user.
+        if role == "orchestrator" and not tool_calls and content and content.strip():
+            # Double check for simulated calls in content (hallucinations)
+            self._check_hallucination(content)
+            actions.append(ActionIR(kind="REPLY", name="reply", args={"text": content.strip()}))
+            return actions
+
+        # 4. Handle pure thought/text if no tool calls (General Agent logic)
         elif content and content.strip():
-            actions.append(ActionIR(kind="THOUGHT", name="thought", args={"text": content.strip()}))
+            stripped = content.strip()
+            # Heuristic: short conversational replies or explicit "done" signals
+            # should be treated as REPLY, not THOUGHT, to avoid re-prompting loops.
+            kind = "REPLY" if self._is_conversational_reply(stripped) else "THOUGHT"
+            actions.append(ActionIR(kind=kind, name="thought" if kind == "THOUGHT" else "reply", args={"text": stripped}))
 
         return actions
 
@@ -217,3 +278,32 @@ class InstructionDecoder:
     def add_control_flow_tool(self, tool_name: str, action_kind: str) -> None:
         """Register a custom control flow tool mapping."""
         self.CONTROL_FLOW_TOOLS[tool_name] = action_kind
+
+    def _is_conversational_reply(self, content: str) -> bool:
+        """
+        Check if the content is likely a conversational reply rather than a thought.
+        """
+        # Conversational markers
+        reply_markers = [
+            "?",
+            "你好",
+            "hello",
+            "hi ",
+            "完成",
+            "done",
+            "fixed",
+            "已修复",
+            "请问",
+            "我可以",
+            "帮您",
+            "还有什么",
+        ]
+        lower_content = content.lower()
+        if any(marker in lower_content for marker in reply_markers):
+            return True
+
+        # Very short responses are likely replies
+        if len(content) < 50:
+            return True
+
+        return False

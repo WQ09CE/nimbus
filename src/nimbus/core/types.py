@@ -4,7 +4,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 
@@ -217,7 +217,7 @@ class ReplanRecord:
         if isinstance(timestamp, str):
             timestamp = datetime.fromisoformat(timestamp)
         elif timestamp is None:
-            timestamp = datetime.now()
+            timestamp = datetime.now(timezone.utc)
 
         return cls(
             timestamp=timestamp,
@@ -500,7 +500,7 @@ class TaskDAG:
     id: str
     goal: str
     nodes: Dict[str, TaskNode]
-    created_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     # NEW: Replan history
     replan_history: List[ReplanRecord] = field(default_factory=list)
@@ -682,7 +682,7 @@ class TaskDAG:
         if isinstance(created_at, str):
             created_at = datetime.fromisoformat(created_at)
         elif created_at is None:
-            created_at = datetime.now()
+            created_at = datetime.now(timezone.utc)
 
         # Restore nodes
         nodes = {}

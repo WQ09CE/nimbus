@@ -293,9 +293,10 @@ class TestVCPULimits:
     async def test_max_iterations(self, decoder, gate, mmu):
         """Test that max iterations limit is enforced."""
         # LLM that never returns - just keeps thinking
+        # Use unique content per response to avoid staleness detection
         llm = MockLLMClient(responses=[
-            MockLLMResponse(content="Thinking...")
-            for _ in range(100)
+            MockLLMResponse(content=f"Thinking about step {i} of the problem...")
+            for i in range(100)
         ])
     
         # Set max_consecutive_thoughts high enough so max_iterations triggers first

@@ -25,7 +25,7 @@ class NimbusConfig:
     # Default model (provider/model_id format)
     default_model: str = "google/gemini-3-flash-preview"
 
-    # Agent profile: "orchestrator", "core", "standard"
+    # Agent profile: "orchestrator", "standard"
     agent_profile: str = "orchestrator"
 
     # LLM parameters
@@ -50,7 +50,7 @@ class NimbusConfig:
     review_models: list = field(default_factory=lambda: [
         "anthropic/claude-opus-4-6",
         "openai-codex/gpt-5.3-codex",
-        "google/gemini-3-pro-preview",
+        "google/gemini-3.1-pro-preview",
     ])
 
     @classmethod
@@ -107,12 +107,21 @@ def _apply_json(config: NimbusConfig, data: dict) -> None:
     if models := rc.get("models"):
         config.review_models = list(models)
 
+    _VALID_PROFILES = {"orchestrator", "standard", "executor"}
     # Agent profile (top-level or under "agent" section)
     if v := data.get("agent_profile"):
-        config.agent_profile = v
+        if v not in _VALID_PROFILES:
+            import warnings
+            warnings.warn(f"Unknown agent_profile '{v}', ignoring. Valid: {_VALID_PROFILES}")
+        else:
+            config.agent_profile = v
     elif agent := data.get("agent"):
         if v := agent.get("profile"):
-            config.agent_profile = v
+            if v not in _VALID_PROFILES:
+                import warnings
+                warnings.warn(f"Unknown agent_profile '{v}', ignoring. Valid: {_VALID_PROFILES}")
+            else:
+                config.agent_profile = v
 
 
 def _apply_env(config: NimbusConfig) -> None:
@@ -140,7 +149,12 @@ def _apply_env(config: NimbusConfig) -> None:
         config.codex_use_oauth = v.lower() not in ("0", "false", "no")
 
     if v := os.environ.get("NIMBUS_AGENT_PROFILE"):
-        config.agent_profile = v
+        _VALID_PROFILES = {"orchestrator", "standard", "executor"}
+        if v not in _VALID_PROFILES:
+            import warnings
+            warnings.warn(f"Unknown NIMBUS_AGENT_PROFILE '{v}', ignoring. Valid: {_VALID_PROFILES}")
+        else:
+            config.agent_profile = v
 
 
 # Singleton

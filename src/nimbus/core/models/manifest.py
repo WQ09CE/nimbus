@@ -40,6 +40,7 @@ class ModelManifest:
     """
     model_id: str
     features: ModelFeatures
+    role: str = "agent"  # Role of the agent (e.g., 'orchestrator', 'implementer', 'agent')
 
 
 # =============================================================================
@@ -96,8 +97,16 @@ _REGISTRY: Dict[str, ModelManifest] = {
     "claude": ModelManifest("claude", CLAUDE_FEATURES),
 }
 
-def get_model_manifest(model_id: str) -> ModelManifest:
-    """Get the manifest for a given model ID (fuzzy match)."""
+def get_model_manifest(model_id) -> ModelManifest:
+    """Get the manifest for a given model ID (fuzzy match).
+
+    Args:
+        model_id: Model identifier string, or an LLM client object
+                  (will extract model name from .config or ._model).
+    """
+    # Accept LLM client objects — extract model string
+    if not isinstance(model_id, str):
+        model_id = getattr(model_id, "_model", None) or getattr(getattr(model_id, "config", None), "model_id", None) or "default"
     model_id = model_id.lower()
     if "gemini" in model_id:
         return _REGISTRY["gemini"]
