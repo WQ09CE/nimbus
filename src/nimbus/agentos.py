@@ -1721,6 +1721,50 @@ def create_agent_os(
             # Executor tools (for specialists)
             register_default_tools(os, workspace=ws, tools=["Write", "Edit", "Glob", "Grep"], roles=["executor", "implementer", "architect", "explorer", "tester"])
 
+            # --- Register NimFS Tools (shared virtual disk + Agent IPC) ---
+            # Read tools: available to all roles (no role restriction)
+            register_default_tools(os, workspace=ws, tools=[
+                "NimFSReadArtifact", "NimFSListArtifacts", "NimFSSearchMemory", "NimFSLoadContext",
+            ])
+            # WriteArtifact: specialists that produce artifacts (not orchestrator, not explorer)
+            register_default_tools(os, workspace=ws, tools=["NimFSWriteArtifact"],
+                roles=["executor", "implementer", "architect", "tester"])
+            # WriteMemory: orchestrator + implementation roles (not explorer, not tester)
+            register_default_tools(os, workspace=ws, tools=["NimFSWriteMemory"],
+                roles=["orchestrator", "executor", "implementer", "architect"])
+
+            # --- Register SubmitResult pseudo-tool (for specialist agents only) ---
+            # This is a "fake tool" — VCPU intercepts it in _handle_tool_call before
+            # reaching the Gate.  It gives backend specialists an explicit, deterministic
+            # way to signal task completion instead of relying on plain-text heuristics.
+            async def _submit_result_noop(**kwargs):
+                # Should never be called; VCPU intercepts SubmitResult before Gate.
+                return kwargs.get("result", "")
+
+            SPECIALIST_ROLES = ["executor", "explorer", "implementer", "architect", "tester"]
+            os.register_tool(
+                name="SubmitResult",
+                func=_submit_result_noop,
+                description=(
+                    "Submit your final result and end the task. You MUST call this tool "
+                    "when your work is complete. Pass your findings/summary as the "
+                    "'result' parameter. Plain text output is NOT delivered — only "
+                    "SubmitResult output is returned to the orchestrator."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "result": {
+                            "type": "string",
+                            "description": "Your final result summary to return to the orchestrator.",
+                        },
+                    },
+                    "required": ["result"],
+                },
+                roles=SPECIALIST_ROLES,
+                category="system",
+            )
+
             # --- Register Specialist Tools ---
             from nimbus.orchestration.specialist_tools import (
                 ExploreTool, ImplementTool, DesignTool, TestTool,

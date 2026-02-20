@@ -50,6 +50,19 @@ from nimbus.core.persistence import (
 )
 
 
+# NimFS tools whose output should never be re-offloaded.
+# Without this guard, reading back an offloaded artifact would itself exceed the
+# threshold, producing a NEW artifact reference — leading to infinite nesting.
+_NIMFS_NO_OFFLOAD = frozenset({
+    "NimFSReadArtifact",
+    "NimFSListArtifacts",
+    "NimFSSearchMemory",
+    "NimFSLoadContext",
+    "NimFSWriteArtifact",
+    "NimFSWriteMemory",
+})
+
+
 @dataclass
 class MMUConfig:
     """
@@ -307,6 +320,7 @@ class MMU:
             and self.nimfs_workspace
             and isinstance(content, str)
             and len(content) > threshold
+            and name not in _NIMFS_NO_OFFLOAD
         ):
             content = self._offload_tool_result_to_nimfs(name, content)
 

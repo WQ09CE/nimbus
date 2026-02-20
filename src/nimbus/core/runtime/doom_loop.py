@@ -71,7 +71,7 @@ class DoomLoopDetector:
             "EDIT TOOL GUIDANCE:\n"
             "1. Use the Read tool FIRST to see the current file content\n"
             "2. Common failure reasons:\n"
-            "   - The old_string does not match the file content exactly\n"
+            "   - The old_text does not match the file content exactly\n"
             "   - The file was already modified by a previous successful edit\n"
             "   - Whitespace or indentation mismatch\n"
             "   - The text appears multiple times (need more context)\n"
@@ -140,10 +140,10 @@ class DoomLoopDetector:
                 "offset": args.get("offset", 0),
             }
         if tool_name == "Edit":
-            # file_path + old_string are the key parameters
+            # file_path + old_text are the key parameters
             return {
                 "file_path": args.get("file_path", ""),
-                "old_string": args.get("old_string", ""),
+                "old_text": args.get("old_text", ""),
             }
         return args
 

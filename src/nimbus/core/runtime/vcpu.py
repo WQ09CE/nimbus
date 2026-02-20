@@ -77,6 +77,9 @@ TOOL_NAME_CANONICAL: Dict[str, str] = {
     "write": "Write",
     "edit": "Edit",
     "return_result": "return_result",
+    "submitresult": "SubmitResult",
+    "submit_result": "SubmitResult",
+    "SubmitResult": "SubmitResult",
     # Add canonical forms as well (no-op repair)
     "Read": "Read",
     "Glob": "Glob",
@@ -1000,15 +1003,15 @@ class VCPU:
     async def _handle_thought(self, action: ActionIR) -> ToolResult:
         """Handle THOUGHT action.
 
-        Design: A text-only response (no tool calls) is treated as a final answer
-        (RETURN) in most cases, especially for Orchestrators.
-        
-        Note: The 'Continuation Poke' mechanism was removed as it caused 
-        UI hanging and redundant LLM calls.
+        Design (Asymmetric):
+        - Frontend agents (orchestrator, standard, chat): Text = final answer → stop.
+        - Backend specialists (explorer, implementer, etc.): Text is just CoT thinking.
+          They MUST call SubmitResult to finish. A poke reminds them to use tools.
         """
         from nimbus.core.logging import get_logger
         logger = get_logger("kernel.vcpu")
-        logger.info(f"VCPU _handle_thought. Role: {getattr(self.manifest, 'role', 'unknown')}, Action: {action.kind}")
+        role = getattr(self.manifest, 'role', 'unknown')
+        logger.info(f"VCPU _handle_thought. Role: {role}, Action: {action.kind}")
 
         # 1. Pipeline splitting (non-blocking) - from MixedResponseSplitter
         # These are thought fragments that accompany tool calls, NOT final answers
@@ -1019,10 +1022,40 @@ class VCPU:
                  is_final=False
              )
 
-        # 2. Standard thought (text-only response)
-        # In all modes (Orchestrator, Standard, etc.), we now treat THOUGHT as RETURN
-        # to ensure natural conversation and avoid the "Poke" logic.
-        return await self._handle_return(action)
+        # 2. Frontend roles: text output = final answer (chat with user)
+        FRONTEND_ROLES = {"orchestrator", "standard", "chat"}
+        if role in FRONTEND_ROLES:
+            return await self._handle_return(action)
+
+        # 3. Backend specialists: text is just thinking, not a final answer.
+        #    They must call SubmitResult to properly finish.
+        thought_count = self._state.on_thought()
+        max_thoughts = self._config.max_consecutive_thoughts
+
+        logger.info(
+            f"VCPU backend thought #{thought_count}/{max_thoughts} from {role}"
+        )
+
+        if thought_count >= max_thoughts:
+            # Safety valve: force return after max consecutive thoughts
+            logger.warning(
+                f"VCPU: {role} hit max consecutive thoughts ({max_thoughts}), forcing return"
+            )
+            return await self._handle_return(action)
+
+        # Poke: remind the specialist to use tools or SubmitResult
+        poke_msg = (
+            "[System] You are a background specialist agent. Your text output is NOT "
+            "delivered to the user. You MUST use tools to do your work. When finished, "
+            "call SubmitResult(result='your findings') to submit your final answer."
+        )
+        self.mmu.add_user_message(poke_msg)
+
+        return ToolResult(
+            status="OK",
+            output=action.args.get("text", ""),
+            is_final=False,
+        )
 
     async def _handle_reply(self, action: ActionIR) -> ToolResult:
         """Handle REPLY action.
@@ -1217,6 +1250,7 @@ class VCPU:
         and timeout enforcement.
 
         Features:
+        - SubmitResult interception: Pseudo-tool for specialist task completion.
         - Tool name auto-repair (learned from opencode): Fixes common LLM
           casing errors like "read" -> "Read".
         - File edit history tracking (improved from opencode): Detects when
@@ -1226,6 +1260,27 @@ class VCPU:
         - Terminal tool hints: Reminds LLM to finish the task after
           state-modifying operations (Edit, Write, Bash).
         """
+        # ── SubmitResult pseudo-tool: intercept before anything else ──
+        if action.name == "SubmitResult":
+            result_text = (
+                action.args.get("result")
+                or action.args.get("arguments", {}).get("result", "")
+            )
+            from nimbus.core.logging import get_logger
+            get_logger("kernel.vcpu").info(
+                f"SubmitResult called by {getattr(self.manifest, 'role', '?')}: "
+                f"{result_text[:120]}..."
+            )
+            # Record it in MMU so the parent can see the tool call/result pair
+            self.mmu.add_assistant_with_tool_calls(
+                content=None,
+                tool_calls=[{"id": action.id, "function": {"name": "SubmitResult", "arguments": action.args}}],
+            )
+            self.mmu.add_tool_result(
+                tool_call_id=action.id, name="SubmitResult", content=result_text
+            )
+            return ToolResult(status="OK", output=result_text, is_final=True)
+
         # Auto-repair tool name if needed (learned from opencode's llm.ts)
         # Only repair built-in tools; custom tools pass through unchanged
         canonical_name = TOOL_NAME_CANONICAL.get(action.name.lower())

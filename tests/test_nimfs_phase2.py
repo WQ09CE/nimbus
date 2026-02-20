@@ -196,6 +196,69 @@ def test_add_tool_result_offload_counter_increments(mmu_with_nimfs, workspace):
 
 
 # =============================================================================
+# 3b. NimFS tools should never have their output re-offloaded (infinite nesting fix)
+# =============================================================================
+
+
+def test_nimfs_read_artifact_not_re_offloaded(mmu_with_nimfs, workspace):
+    """NimFSReadArtifact results must NOT be offloaded again (prevents infinite nesting)."""
+    large = "RETRIEVED_CONTENT_" * 200  # well above 500 threshold
+
+    mmu_with_nimfs.add_tool_result("call-nimfs-1", "NimFSReadArtifact", large)
+
+    messages = mmu_with_nimfs.current_frame.messages
+    tool_msg = next((m for m in messages if m.role == "tool"), None)
+    assert tool_msg is not None
+    # Content should be stored verbatim, NOT offloaded
+    assert tool_msg.content == large
+    assert "NimFS Auto-Offload" not in tool_msg.content
+
+    # No artifacts should have been created by this call
+    manager = NimFSManager(str(workspace))
+    artifacts = manager.list_artifacts()
+    assert len(artifacts) == 0
+
+
+def test_all_nimfs_tools_not_offloaded(mmu_with_nimfs, workspace):
+    """All NimFS tools should be exempt from auto-offload."""
+    from nimbus.core.memory.mmu import _NIMFS_NO_OFFLOAD
+
+    large = "X" * 1000  # above threshold
+    for i, tool_name in enumerate(_NIMFS_NO_OFFLOAD):
+        mmu_with_nimfs.add_tool_result(f"call-skip-{i}", tool_name, large)
+
+    messages = mmu_with_nimfs.current_frame.messages
+    tool_msgs = [m for m in messages if m.role == "tool"]
+    assert len(tool_msgs) == len(_NIMFS_NO_OFFLOAD)
+
+    for msg in tool_msgs:
+        assert msg.content == large, f"Tool result for NimFS tool was unexpectedly offloaded"
+        assert "NimFS Auto-Offload" not in msg.content
+
+    # No artifacts should have been created
+    manager = NimFSManager(str(workspace))
+    artifacts = manager.list_artifacts()
+    assert len(artifacts) == 0
+
+
+def test_non_nimfs_tool_still_offloaded(mmu_with_nimfs, workspace):
+    """Non-NimFS tools should still be offloaded as before."""
+    large = "Y" * 1000  # above threshold
+
+    mmu_with_nimfs.add_tool_result("call-regular", "BashCommand", large)
+
+    messages = mmu_with_nimfs.current_frame.messages
+    tool_msg = next((m for m in messages if m.role == "tool"), None)
+    assert tool_msg is not None
+    assert "NimFS Auto-Offload" in tool_msg.content
+
+    # Artifact should exist
+    manager = NimFSManager(str(workspace))
+    artifacts = manager.list_artifacts()
+    assert len(artifacts) == 1
+
+
+# =============================================================================
 # 4. AgentOS GC helpers (smoke test — no real AgentOS needed)
 # =============================================================================
 
