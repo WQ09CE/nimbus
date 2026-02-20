@@ -73,7 +73,7 @@ class AgentProfile:
         return cls(
             name="explorer",
             role="explorer",
-            allowed_tools=["Read", "Bash", "SubmitResult"] + _NIMFS_READ,
+            allowed_tools=["Read", "Bash", "SubmitResult"] + _NIMFS_ALL,
             system_prompt=PromptManager.get_system_prompt("explorer", model_id),
             max_iterations=40,
             max_consecutive_thoughts=2,
@@ -115,7 +115,7 @@ class AgentProfile:
         return cls(
             name="tester",
             role="tester",
-            allowed_tools=["Read", "Bash", "SubmitResult"] + _NIMFS_READ + ["NimFSWriteArtifact"],
+            allowed_tools=["Read", "Bash", "SubmitResult"] + _NIMFS_ALL,
             system_prompt=PromptManager.get_system_prompt("tester", model_id),
             max_iterations=40,
             max_consecutive_thoughts=2,
@@ -129,7 +129,7 @@ class AgentProfile:
         return cls(
             name="orchestrator",
             role="orchestrator",
-            allowed_tools=["Read", "Bash", "Explore", "Implement", "Design", "Test", "Verify", "ReviewCommittee", "Memo"] + _NIMFS_READ + ["NimFSWriteMemory"],
+            allowed_tools=["Read", "Bash", "Explore", "Implement", "Design", "Test", "Verify", "ReviewCommittee", "Memo"] + _NIMFS_ALL,
             system_prompt=PromptManager.get_system_prompt("orchestrator", model_id),
             max_iterations=50,
             max_consecutive_thoughts=2,
