@@ -21,6 +21,7 @@ from loguru import logger
 from nimbus.adapters.llm_factory import create_llm_client
 from nimbus.agentos import AgentOS
 from nimbus.core.profile import AgentProfile
+from nimbus.core.protocol import NIMFS_OFFLOAD_THRESHOLD
 from nimbus.orchestration.context_protocol import GoalDocument
 from nimbus.orchestration.workspace_diff import (
     diff_snapshots,
@@ -133,6 +134,35 @@ class SpecialistTool:
             else:
                 output = f"[{self.ROLE} error: {e}]"
                 logger.error(f"[{self.ROLE}] {pid} failed: {e}")
+
+        # Offload large output to NimFS to save orchestrator context tokens
+        if len(output) > NIMFS_OFFLOAD_THRESHOLD and self._workspace:
+            try:
+                from nimbus.core.nimfs.manager import NimFSManager
+                from nimbus.core.nimfs.models import ArtifactTTL
+
+                nimfs = NimFSManager(self._workspace)
+                artifact_ref = nimfs.write_artifact(
+                    content=output,
+                    task_id=f"{self.ROLE}-{pid[:8]}",
+                    producer=self.ROLE,
+                    artifact_type="text",
+                    ttl=ArtifactTTL.TASK,
+                    summary=f"{self.ROLE.title()} result ({len(output)} chars)",
+                )
+                original_size = len(output)
+                preview = output[:500]
+                output = (
+                    f"[Result stored as artifact]\n"
+                    f"Reference: {artifact_ref}\n"
+                    f"Size: {original_size} chars\n\n"
+                    f"Preview:\n{preview}...\n\n"
+                    f"Use NimFSReadArtifact to read the full result."
+                )
+                logger.info(f"[{self.ROLE}] Offloaded large output to NimFS: {artifact_ref}")
+            except Exception as e:
+                # Offload failure must not block normal flow -- keep original output
+                logger.debug(f"[{self.ROLE}] NimFS offload skipped: {e}")
 
         # Compute diff (for Implementer)
         diff_summary = ""

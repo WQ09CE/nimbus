@@ -22,6 +22,7 @@ from loguru import logger
 
 from nimbus.adapters.llm_factory import create_llm_client
 from nimbus.agentos import AgentOS
+from nimbus.core.nimfs.manager import NimFSManager
 
 from .prompts import PromptManager  # NEW: Dynamic prompt manager
 from .tools import run_verify_checks
@@ -67,6 +68,10 @@ class DispatchToolConfig:
         "gemini-flash": "google/gemini-3-flash-preview",
         "flash": "google/gemini-3-flash-preview",
     })
+
+    # Artifact offloading threshold (in characters)
+    # If the executor report exceeds this, it's offloaded to NimFS
+    artifact_offload_threshold: int = 1000
 
 
 class DispatchTool:
@@ -251,8 +256,32 @@ class DispatchTool:
         self._last_dispatch_diff = diff
 
         # --- Format result ---
+        report_content = executor_output
+        is_offloaded = False
+        artifact_ref = ""
+
+        # Offload large reports to NimFS Artifacts to save Orchestrator context tokens
+        if len(executor_output) > self._config.artifact_offload_threshold:
+            try:
+                nimfs = NimFSManager(self._workspace)
+                artifact_ref = nimfs.write_artifact(
+                    content=executor_output,
+                    task_id=f"dispatch-{dispatch_num}",
+                    producer="executor",
+                    summary=f"Executor report for dispatch #{dispatch_num}",
+                )
+                report_content = (
+                    f"[Report Offloaded] Content too long ({len(executor_output)} chars). "
+                    f"Full report stored as Artifact: {artifact_ref}\n"
+                    f"Preview: {executor_output[:200]}..."
+                )
+                is_offloaded = True
+                logger.info(f"Offloaded dispatch report to NimFS: {artifact_ref}")
+            except Exception as e:
+                logger.warning(f"Failed to offload report to NimFS: {e}")
+
         output = f"## Dispatch #{dispatch_num} Result\n\n"
-        output += f"### Executor Report\n{executor_output}\n\n"
+        output += f"### Executor Report\n{report_content}\n\n"
         output += f"### Files Changed\n{diff.summary()}\n"
 
         if diff.has_changes:
