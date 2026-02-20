@@ -13,6 +13,28 @@ from typing import Optional
 
 from loguru import logger
 
+# Short aliases → full "provider/model_id"
+MODEL_ALIASES = {
+    "claude": "anthropic/claude-opus-4-6",
+    "opus": "anthropic/claude-opus-4-6",
+    "sonnet": "anthropic/claude-sonnet-4-6",
+    "haiku": "anthropic/claude-haiku-4-5-20251001",
+    "gpt": "openai/gpt-4o",
+    "gpt-4o": "openai/gpt-4o",
+    "codex": "openai-codex/gpt-5.3-codex",
+    "gemini": "google/gemini-3.1-pro-preview",
+    "gemini-pro": "google/gemini-3.1-pro-preview",
+    "gemini-3.1": "google/gemini-3.1-pro-preview",
+    "gemini-customtools": "google/gemini-3.1-pro-preview-customtools",
+    "gemini-flash": "google/gemini-3-flash-preview",
+    "flash": "google/gemini-3-flash-preview",
+}
+
+
+def resolve_model_alias(model: str) -> str:
+    """Resolve a short alias to full provider/model_id, or return as-is."""
+    return MODEL_ALIASES.get(model.lower(), model)
+
 
 async def create_llm_client(
     model: str,
@@ -25,10 +47,8 @@ async def create_llm_client(
     Create and start a DirectAdapter (LiteLLM) for the given model.
 
     Args:
-        model: Model identifier in "provider/model_id" format
-            e.g. "anthropic/claude-sonnet-4-20250514"
-                 "openai/gpt-4o"
-                 "google/gemini-2.5-pro"
+        model: Model identifier — short alias (e.g. "sonnet", "gemini")
+            or full "provider/model_id" format (e.g. "anthropic/claude-sonnet-4-6")
         base_url: Optional base URL override
         timeout: Request timeout in seconds
         temperature: Optional temperature override
@@ -39,6 +59,9 @@ async def create_llm_client(
     """
     from nimbus.adapters.direct_adapter import DirectAdapter
     from nimbus.adapters.types import LLMConfig
+
+    # Resolve alias first
+    model = resolve_model_alias(model)
 
     # Parse provider/model_id
     if "/" in model:
