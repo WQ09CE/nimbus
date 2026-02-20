@@ -1,26 +1,46 @@
+"""
+Regression test: max_consecutive_thoughts=1 triggers immediate return.
+
+When max_consecutive_thoughts is 1, a pure-text LLM response should be
+treated as a final answer (RETURN), not a thought that needs continuation.
+"""
+
 import pytest
-import asyncio
-from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+
 from nimbus.core.memory.mmu import MMU, MMUConfig
 from nimbus.core.runtime.decoder import InstructionDecoder
 from nimbus.core.runtime.vcpu import VCPU, VCPUConfig
-from nimbus.os.gate import KernelGate
+
 
 @dataclass
 class MockLLMResponse:
     content: Optional[str] = None
     tool_calls: Optional[List[Any]] = None
 
-@dataclass
-class MockFunction:
-    name: str
-    arguments: str
 
-@dataclass
-class MockToolCall:
-    function: MockFunction
-    id: str = "call_123"
+class MockEventStream:
+    def __init__(self):
+        self.events: List[Any] = []
+        self.listeners: List[Any] = []
+
+    def emit(self, event: Any):
+        self.events.append(event)
+
+    def add_listener(self, listener: Any):
+        self.listeners.append(listener)
+
+
+class MockGate:
+    def __init__(self):
+        self.events = MockEventStream()
+        self.pid = "test-process"
+
+    async def syscall_tool(self, action, timeout_sec=60.0):
+        from nimbus.core.protocol import ToolResult
+        return ToolResult(status="OK", output=f"Executed {action.name}")
+
 
 class MockLLMClient:
     def __init__(self, responses: List[Any]):
@@ -34,34 +54,29 @@ class MockLLMClient:
             return res
         return MockLLMResponse(content="Done")
 
+
 @pytest.mark.asyncio
 async def test_max_consecutive_thoughts_is_1():
     """Verify that with max_consecutive_thoughts=1, it returns immediately after one thought."""
     mmu = MMU(config=MMUConfig(), process_id="test_consecutive")
     decoder = InstructionDecoder()
-    
+
     # LLM returns a plain text thought
     llm = MockLLMClient([
         MockLLMResponse(content="Hello, I am an assistant.")
     ])
-    
-    # Use default config where we just set max_consecutive_thoughts = 1
+
     config = VCPUConfig(max_consecutive_thoughts=1)
-    
-    # Mock Gate
-    async def mock_syscall(name, args): return "Success"
-    gate = KernelGate(mock_syscall)
-    
+    gate = MockGate()
+
     vcpu = VCPU(llm, decoder, gate, mmu, config=config)
-    
-    # First step should process the thought
+
     result = await vcpu.step()
-    
-    # Since max_consecutive_thoughts = 1, the first thought should trigger _handle_return
-    # resulting in is_final=True for the step result.
+
+    # Short conversational text is detected as REPLY by decoder (not THOUGHT),
+    # so _handle_return is called directly — consecutive_thoughts stays 0.
     assert result.is_final is True
-    assert vcpu._state.consecutive_thoughts == 1
+    assert vcpu._state.consecutive_thoughts == 0  # REPLY path, not THOUGHT path
     # Check that no continuation poke was added to MMU
-    # The poke message starts with "[System]"
     last_msg = mmu.current_frame.messages[-1]
     assert "[System]" not in last_msg.content

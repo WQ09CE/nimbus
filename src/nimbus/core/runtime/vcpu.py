@@ -850,7 +850,14 @@ class VCPU:
                     else:
                         # Normal ToolResult
                         # Apply smart truncation to prevent context explosion
-                        if result.output and isinstance(result.output, str) and len(result.output) > 4000:
+                        # Skip truncation for SubmitResult (is_final=True) — let the
+                        # specialist_tools NimFS offload handle large final outputs
+                        # so no data is permanently lost.
+                        is_final = getattr(result, 'is_final', False)
+                        if (not is_final
+                                and result.output
+                                and isinstance(result.output, str)
+                                and len(result.output) > 4000):
                             total_len = len(result.output)
                             head = result.output[:2000]
                             tail = result.output[-2000:]
