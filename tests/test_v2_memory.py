@@ -341,7 +341,7 @@ class TestMMUIntegration:
         mmu.set_pinned(PinnedContext(
             system_rules="You are a helpful coding assistant.",
             workspace_info="Working directory: /project\nLanguage: Python",
-            capabilities="Available tools: Read, Write, Bash, Glob"
+            capabilities="Available tools: Read, Write, Edit, Bash"
         ))
 
         # Main conversation

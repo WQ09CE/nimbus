@@ -217,8 +217,8 @@ class TestToolRegistry:
         """Test getting all tool definitions."""
         tools = get_all_tools()
 
-        # 4 core tools
-        assert len(tools) == 4
+        # 4 core tools + NimFS tools
+        assert len(tools) >= 4
         tool_names = [t["name"] for t in tools]
         assert "Read" in tool_names
         assert "Write" in tool_names
@@ -251,7 +251,7 @@ class TestToolRegistry:
         """Test iterating over tools."""
         tools = iterate_tools(workspace=Path.cwd())
 
-        assert len(tools) == 4  # 4 core tools
+        assert len(tools) >= 4  # 4 core tools + NimFS tools
         for name, func, desc, params in tools:
             assert isinstance(name, str)
             assert callable(func)

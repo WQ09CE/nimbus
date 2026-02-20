@@ -4,7 +4,7 @@ Nimbus Server E2E Test - DAG Parallel Execution Verification
 
 This script tests the Nimbus Server's DAG parallel execution capabilities:
 1. Parallel file reading - verify multiple tool.start events have close timestamps
-2. Parallel Glob + Read - Glob files then read multiple in parallel
+2. Parallel Bash + Read - Bash file listing then read multiple in parallel
 3. DAG dependency execution - verify execution order is correct
 
 Key verification points:
@@ -501,20 +501,20 @@ class DAGParallelTest:
             self.results.append(result)
             return result
 
-    async def test_parallel_glob_then_read(self) -> ParallelTestResult:
+    async def test_parallel_bash_then_read(self) -> ParallelTestResult:
         """
-        Test 2: Parallel Glob + Read
+        Test 2: Parallel Bash + Read
 
-        First Glob to find files, then read multiple files in parallel.
-        Verify the Read operations happen in parallel after Glob completes.
+        First Bash to find files, then read multiple files in parallel.
+        Verify the Read operations happen in parallel after Bash completes.
         """
-        self.print_header("Test 2: Parallel Glob then Read")
-        self.print_info("Glob files first, then read multiple in parallel")
+        self.print_header("Test 2: Parallel Bash then Read")
+        self.print_info("Bash file listing first, then read multiple in parallel")
         print()
 
         message = (
-            "First, use Glob to find all Python files in the tests/ directory "
-            "(pattern: tests/*.py). Then read the first 3 test files you find "
+            "First, use Bash to find all Python files in the tests/ directory "
+            "(e.g., find tests -name '*.py'). Then read the first 3 test files you find "
             "and briefly describe what each tests."
         )
 
@@ -534,11 +534,11 @@ class DAGParallelTest:
             print(f"Total duration: {duration_ms:.1f}ms")
             print(f"Tool starts: {len(tool_starts)}")
 
-            # Separate Glob and Read events
-            glob_starts = [t for t in tool_starts if "glob" in t[1].lower()]
+            # Separate Bash and Read events
+            bash_starts = [t for t in tool_starts if "bash" in t[1].lower()]
             read_starts = [t for t in tool_starts if "read" in t[1].lower()]
 
-            print(f"Glob starts: {len(glob_starts)}")
+            print(f"Bash starts: {len(bash_starts)}")
             print(f"Read starts: {len(read_starts)}")
 
             # Print timeline
@@ -547,21 +547,21 @@ class DAGParallelTest:
                 for task_id, tool_name, ts in sorted(tool_starts, key=lambda x: x[2]):
                     print(f"  {ts:>7.1f}ms: {tool_name}")
 
-            # Check that Glob completed before Reads started
-            glob_dones = [t for t in tool_dones if "glob" in t[1].lower()]
+            # Check that Bash completed before Reads started
+            bash_dones = [t for t in tool_dones if "bash" in t[1].lower()]
 
             order_ok = True
             order_verdict = ""
-            if glob_starts and glob_dones and read_starts:
-                glob_done_time = max(t[2] for t in glob_dones)
+            if bash_starts and bash_dones and read_starts:
+                bash_done_time = max(t[2] for t in bash_dones)
                 first_read_time = min(t[2] for t in read_starts)
-                if glob_done_time <= first_read_time:
-                    order_verdict = f"Glob completed at {glob_done_time:.1f}ms, first Read at {first_read_time:.1f}ms"
+                if bash_done_time <= first_read_time:
+                    order_verdict = f"Bash completed at {bash_done_time:.1f}ms, first Read at {first_read_time:.1f}ms"
                 else:
                     order_ok = False
-                    order_verdict = f"Read started at {first_read_time:.1f}ms before Glob done at {glob_done_time:.1f}ms"
-            elif not glob_starts:
-                order_verdict = "No Glob operation detected"
+                    order_verdict = f"Read started at {first_read_time:.1f}ms before Bash done at {bash_done_time:.1f}ms"
+            elif not bash_starts:
+                order_verdict = "No Bash operation detected"
             elif not read_starts:
                 order_verdict = "No Read operations detected"
             else:
@@ -584,8 +584,8 @@ class DAGParallelTest:
                 self.print_fail(verdict)
 
             result = ParallelTestResult(
-                name="Parallel Glob then Read",
-                description="Glob files first, then parallel read",
+                name="Parallel Bash then Read",
+                description="Bash file listing first, then parallel read",
                 passed=passed,
                 verdict=verdict,
                 events=events,
@@ -600,8 +600,8 @@ class DAGParallelTest:
             duration_ms = (time.time() - start_time) * 1000
             self.print_fail(f"Test failed with exception: {e}")
             result = ParallelTestResult(
-                name="Parallel Glob then Read",
-                description="Glob then parallel read",
+                name="Parallel Bash then Read",
+                description="Bash then parallel read",
                 passed=False,
                 verdict=f"Exception: {e}",
                 duration_ms=duration_ms
@@ -625,7 +625,7 @@ class DAGParallelTest:
         message = (
             "Please do the following tasks in order:\n"
             "1. First, read pyproject.toml to find the project name\n"
-            "2. Then, use Grep to search for where that project name is imported in the codebase\n"
+            "2. Then, use Bash with grep to search for where that project name is imported in the codebase\n"
             "3. Finally, summarize what you found\n"
             "Execute these in the correct order respecting dependencies."
         )
@@ -659,10 +659,10 @@ class DAGParallelTest:
                 for ts, event_type, tool_name, task_id in sorted(all_events, key=lambda x: x[0]):
                     print(f"  {ts:>7.1f}ms: {event_type} {tool_name}")
 
-            # Check for Read -> Grep dependency
+            # Check for Read -> Bash (search) dependency
             read_starts = [t for t in tool_starts if "read" in t[1].lower()]
             read_dones = [t for t in tool_dones if "read" in t[1].lower()]
-            grep_starts = [t for t in tool_starts if "grep" in t[1].lower()]
+            grep_starts = [t for t in tool_starts if "bash" in t[1].lower()]
 
             dependency_ok = True
             dependency_verdict = ""
@@ -686,12 +686,12 @@ class DAGParallelTest:
                     if pyproject_read_done <= first_grep_start:
                         dependency_verdict = (
                             f"Correct: Read completed at {pyproject_read_done:.1f}ms, "
-                            f"Grep started at {first_grep_start:.1f}ms"
+                            f"Bash search started at {first_grep_start:.1f}ms"
                         )
                     else:
                         dependency_ok = False
                         dependency_verdict = (
-                            f"Violation: Grep started at {first_grep_start:.1f}ms "
+                            f"Violation: Bash search started at {first_grep_start:.1f}ms "
                             f"before Read done at {pyproject_read_done:.1f}ms"
                         )
                 else:
@@ -699,7 +699,7 @@ class DAGParallelTest:
             elif not read_starts:
                 dependency_verdict = "No Read operation found"
             elif not grep_starts:
-                dependency_verdict = "No Grep operation found"
+                dependency_verdict = "No Bash search operation found"
             else:
                 dependency_verdict = "Incomplete tool execution data"
 

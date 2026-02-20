@@ -141,14 +141,14 @@ async def test_multi_turn_conversation():
 async def test_file_operations():
     """Test file read, glob, and grep operations."""
     print("\n" + "="*60)
-    print("🧪 TEST: File operations (Read, Glob, Grep)")
+    print("TEST: File operations (Read, Bash)")
     print("="*60)
 
     session_id = f"test_file_ops_{asyncio.get_event_loop().time()}"
 
     async with httpx.AsyncClient() as client:
-        # Test 1: Glob
-        print("\n--- Test Glob ---")
+        # Test 1: File listing via Bash
+        print("\n--- Test File Listing (Bash) ---")
         messages = [{
             "role": "user",
             "content": "列出 /Users/wangqing/sourcecode/agent/agent-framework/nimbus/src/nimbus/server 目录下的所有 .py 文件",
@@ -156,11 +156,11 @@ async def test_file_operations():
         events = await send_message(client, session_id, messages)
 
         # Check for tool output
-        has_glob_output = any(
+        has_list_output = any(
             e.get("type") == "tool-output-available" and "api" in e.get("output", "").lower()
             for e in events
         )
-        print(f"   Glob test: {'✅ PASSED' if has_glob_output else '⚠️ Check output'}")
+        print(f"   File listing test: {'PASSED' if has_list_output else 'Check output'}")
 
         # Test 2: Read
         print("\n--- Test Read ---")
@@ -174,21 +174,21 @@ async def test_file_operations():
             e.get("type") == "tool-output-available" and "import" in e.get("output", "").lower()
             for e in events
         )
-        print(f"   Read test: {'✅ PASSED' if has_read_output else '⚠️ Check output'}")
+        print(f"   Read test: {'PASSED' if has_read_output else 'Check output'}")
 
-        # Test 3: Grep
-        print("\n--- Test Grep ---")
+        # Test 3: Content search via Bash
+        print("\n--- Test Content Search (Bash) ---")
         messages = [{
             "role": "user",
             "content": "在 /Users/wangqing/sourcecode/agent/agent-framework/nimbus/src/nimbus/server 目录搜索包含 'session' 的文件",
         }]
         events = await send_message(client, session_id, messages)
 
-        has_grep_output = any(
+        has_search_output = any(
             e.get("type") == "tool-output-available"
             for e in events
         )
-        print(f"   Grep test: {'✅ PASSED' if has_grep_output else '⚠️ Check output'}")
+        print(f"   Content search test: {'PASSED' if has_search_output else 'Check output'}")
 
     return True
 

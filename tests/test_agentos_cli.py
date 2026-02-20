@@ -580,7 +580,7 @@ class AgentOSTestFramework:
 CRITICAL RULES:
 1. You MUST use the function calling API to invoke tools. NEVER simulate tool calls in text.
 2. When you need to read a file, call the Read function directly.
-3. When you need to search files, call Glob or Grep functions.
+3. When you need to search files, use Bash with grep or find commands.
 4. When you have completed the task, call the return_result function with the final answer.
 5. Be concise and direct.""",
             )

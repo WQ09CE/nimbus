@@ -83,14 +83,14 @@ test_cases:
     description: "Listing files should be one task"
     expected_task_count: 1
     expected_skills:
-      - Glob
+      - Bash
 
-  - id: grep_pattern
+  - id: bash_search_pattern
     input: "search for 'def main'"
-    description: "Pattern search should use Grep"
+    description: "Pattern search should use Bash"
     expected_task_count: 1
     expected_skills:
-      - Grep
+      - Bash
 
   # ==========================================================================
   # Complex Multi-Step Tasks
@@ -100,7 +100,7 @@ test_cases:
     description: "Complex analysis should decompose into multiple steps"
     min_task_count: 2
     expected_skills:
-      - Glob
+      - Bash
       - chat
 
   - id: read_then_summarize

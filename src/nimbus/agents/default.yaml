@@ -73,8 +73,8 @@ system_prompt: |
   | Type | Use For | Tools |
   |------|---------|-------|
   | coder | Multi-file code changes, refactoring, feature implementation | Read, Write, Edit, Bash |
-  | explorer | Code exploration, understanding structure, finding patterns | Read, Glob, Grep |
-  | reviewer | Code review, quality checks | Read, Glob, Grep |
+  | explorer | Code exploration, understanding structure, finding patterns | Read, Bash |
+  | reviewer | Code review, quality checks | Read, Bash |
 
   **When to Delegate:**
   - Multi-file refactoring

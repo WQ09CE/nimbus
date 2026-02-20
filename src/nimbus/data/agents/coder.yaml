@@ -7,8 +7,6 @@ allowed_tools:
   - Write
   - Edit
   - Bash
-  - Glob
-  - Grep
 prompt: |
   你是代码实现专家，专注于编写高质量代码。
 

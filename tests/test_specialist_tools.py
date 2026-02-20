@@ -180,8 +180,6 @@ class TestSpecialistProfiles:
 
         assert profile.role == "explorer"
         assert "Read" in profile.allowed_tools
-        assert "Glob" in profile.allowed_tools
-        assert "Grep" in profile.allowed_tools
         # NimFS read tools should be included
         assert "NimFSReadArtifact" in profile.allowed_tools
         # Write/Edit must NOT be in explorer tools
@@ -197,7 +195,7 @@ class TestSpecialistProfiles:
             profile = AgentProfile.create_implementer()
 
         assert profile.role == "implementer"
-        for t in ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]:
+        for t in ["Read", "Write", "Edit", "Bash"]:
             assert t in profile.allowed_tools
         assert "NimFSWriteArtifact" in profile.allowed_tools
         assert profile.max_iterations == 50
@@ -223,7 +221,6 @@ class TestSpecialistProfiles:
         assert profile.role == "tester"
         assert "Read" in profile.allowed_tools
         assert "Bash" in profile.allowed_tools
-        assert "Glob" in profile.allowed_tools
         assert "Write" not in profile.allowed_tools
         assert "Edit" not in profile.allowed_tools
         assert profile.max_iterations == 40

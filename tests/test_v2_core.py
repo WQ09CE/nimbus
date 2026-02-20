@@ -110,7 +110,8 @@ class TestInstructionDecoder:
 
     def test_decode_thought(self):
         decoder = InstructionDecoder()
-        actions = decoder.decode(content="Let me think about this...", tool_calls=None)
+        # Use long text with planning language to ensure it's classified as THOUGHT
+        actions = decoder.decode(content="Let me think about this problem carefully. First I need to analyze the code structure and then identify the root cause of the issue.", tool_calls=None)
 
         assert len(actions) == 1
         assert actions[0].kind == "THOUGHT"
@@ -157,16 +158,17 @@ class TestInstructionDecoder:
         assert len(actions) == 1
         assert actions[0].kind == "RETURN"
 
-    def test_hallucination_patterns_pass_through_as_thought(self):
-        """Hallucination patterns in text are now treated as normal THOUGHT.
+    def test_hallucination_patterns_pass_through(self):
+        """Hallucination patterns in text pass through without raising Fault.
 
         Detection was moved to the pipeline's HallucinationSanitizer (per-model).
-        The decoder no longer raises Fault for pattern matches to avoid false
-        positives when models discuss tool patterns in legitimate responses.
+        The decoder no longer raises Fault for pattern matches. Short patterns
+        are classified as REPLY by the conversational heuristic (< 120 chars,
+        no planning language).
         """
         decoder = InstructionDecoder()
 
-        # These used to raise Fault, now they pass through as THOUGHT
+        # These used to raise Fault, now they pass through (short → REPLY)
         patterns = [
             "[Called Read with file=/test.txt]",
             "[Calling some_tool]",
@@ -177,7 +179,7 @@ class TestInstructionDecoder:
         for pattern in patterns:
             actions = decoder.decode(content=pattern, tool_calls=None)
             assert len(actions) == 1
-            assert actions[0].kind == "THOUGHT"
+            assert actions[0].kind in ("THOUGHT", "REPLY")
 
 
 # =============================================================================

@@ -432,7 +432,7 @@ class CodeSearchMetrics(CapabilityMetrics):
 
         Args:
             dag: The produced TaskDAG.
-            expected_tool: Expected tool/skill name (e.g., "Grep", "Glob").
+            expected_tool: Expected tool/skill name (e.g., "Bash", "Read").
 
         Returns:
             MetricResult for tool selection accuracy.

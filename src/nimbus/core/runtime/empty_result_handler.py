@@ -2,7 +2,7 @@
 Empty Result Handler - Handles "success but no result" situations.
 
 Extracted from VCPU to follow single responsibility principle.
-Handles cases like Glob/Grep returning no matches.
+Handles cases like search tools returning no matches.
 """
 
 from typing import Optional
@@ -17,14 +17,14 @@ logger = get_logger("kernel.vcpu.empty_result")
 
 class EmptyResultHandler:
     """
-    Handles "success but no result" situations (e.g., Glob/Grep no match).
+    Handles "success but no result" situations (e.g., search returning no match).
 
     These cases have status=OK but LLM may fall into repeated attempts.
     This handler provides intelligent recovery hints and tracks failures.
     """
 
     # Tools that can return "no match" results
-    NO_MATCH_TOOLS = {"Glob", "Grep"}
+    NO_MATCH_TOOLS = {"Bash"}
 
     def __init__(
         self,

@@ -6,7 +6,7 @@ These tests verify the error recovery mechanisms in VCPU:
 - Recovery action execution (auto_tool, inject_hint, modify_args)
 - Progressive recovery (1st, 2nd, 3rd failure handling)
 - Doom loop detection
-- Empty result handling (Glob/Grep no match)
+- Empty result handling (Bash no match)
 - Max consecutive errors termination
 
 Test Strategy:
@@ -174,8 +174,6 @@ def create_vcpu(
             {"type": "function", "function": {"name": "Read", "parameters": {}}},
             {"type": "function", "function": {"name": "Bash", "parameters": {}}},
             {"type": "function", "function": {"name": "Edit", "parameters": {}}},
-            {"type": "function", "function": {"name": "Glob", "parameters": {}}},
-            {"type": "function", "function": {"name": "Grep", "parameters": {}}},
         ],
     )
 
@@ -497,7 +495,7 @@ class TestDoomLoopDetection:
 
 
 # =============================================================================
-# Test: Empty Result Handling (Glob/Grep No Match)
+# Test: Empty Result Handling (Bash No Match)
 # =============================================================================
 
 
@@ -505,17 +503,17 @@ class TestEmptyResultHandling:
     """Test handling of successful but empty results (no matches)."""
 
     @pytest.mark.asyncio
-    async def test_glob_no_match_gets_hint(self):
-        """Glob with no matches should get helpful hints."""
+    async def test_bash_no_match_gets_hint(self):
+        """Bash search with no matches should get helpful hints."""
         gate = MockGate()
         gate.set_response(
-            "Glob",
+            "Bash",
             ToolResult(status="OK", output="No matches found for pattern: *.xyz"),
         )
 
         vcpu, llm, _ = create_vcpu(
             llm_responses=[
-                make_tool_call_response("Glob", {"pattern": "*.xyz"}),
+                make_tool_call_response("Bash", {"command": "find . -name '*.xyz'"}),
                 make_return_response("no files found"),
             ],
             gate=gate,
@@ -523,28 +521,28 @@ class TestEmptyResultHandling:
 
         await vcpu.execute("Find xyz files")
 
-        # Should have called Glob
-        assert gate.call_counts.get("Glob", 0) >= 1
+        # Should have called Bash
+        assert gate.call_counts.get("Bash", 0) >= 1
 
     @pytest.mark.asyncio
     async def test_excessive_no_match_triggers_hard_stop(self):
         """Too many no-match results should trigger hard stop."""
         gate = MockGate()
         gate.set_response(
-            "Glob",
+            "Bash",
             ToolResult(status="OK", output="No matches found"),
         )
 
-        # LLM keeps trying Glob
+        # LLM keeps trying Bash
         vcpu, llm, _ = create_vcpu(
             llm_responses=[
-                make_tool_call_response("Glob", {"pattern": "*.a"}),
-                make_tool_call_response("Glob", {"pattern": "*.b"}),
-                make_tool_call_response("Glob", {"pattern": "*.c"}),
-                make_tool_call_response("Glob", {"pattern": "*.d"}),
-                make_tool_call_response("Glob", {"pattern": "*.e"}),
-                make_tool_call_response("Glob", {"pattern": "*.f"}),
-                make_tool_call_response("Glob", {"pattern": "*.g"}),
+                make_tool_call_response("Bash", {"command": "find . -name '*.a'"}),
+                make_tool_call_response("Bash", {"command": "find . -name '*.b'"}),
+                make_tool_call_response("Bash", {"command": "find . -name '*.c'"}),
+                make_tool_call_response("Bash", {"command": "find . -name '*.d'"}),
+                make_tool_call_response("Bash", {"command": "find . -name '*.e'"}),
+                make_tool_call_response("Bash", {"command": "find . -name '*.f'"}),
+                make_tool_call_response("Bash", {"command": "find . -name '*.g'"}),
                 make_return_response("gave up"),
             ],
             gate=gate,
@@ -557,7 +555,7 @@ class TestEmptyResultHandling:
         result = await vcpu.execute("Find files")
 
         # Should have stopped after max failures
-        assert gate.call_counts.get("Glob", 0) <= 4  # Some grace
+        assert gate.call_counts.get("Bash", 0) <= 4  # Some grace
 
 
 # =============================================================================

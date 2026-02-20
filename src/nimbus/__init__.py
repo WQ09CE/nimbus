@@ -3,7 +3,7 @@
 Nimbus provides a production-ready agent framework with:
 - vCPU + Process model for robust execution
 - pi-ai integration for multi-provider LLM support
-- Tool system (Read, Write, Edit, Glob, Grep, Bash)
+- Tool system (Read, Write, Edit, Bash)
 - SSE streaming API
 - Web UI
 

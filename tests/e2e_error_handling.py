@@ -7,7 +7,7 @@ graceful degradation and clear error messages.
 
 Test Cases:
 1. Read non-existent file - "Read nonexistent_file_xyz.txt", verify graceful error
-2. Invalid Glob pattern - Edge case handling
+2. Invalid file pattern - Edge case handling
 3. Empty message handling - Send empty message, verify no crash
 4. Non-existent session - Send message to invalid session, verify 404
 
@@ -395,18 +395,18 @@ class NimbusErrorHandlingTest:
             return result
 
     # =========================================================================
-    # Test Case 2: Invalid Glob Pattern (Edge Cases)
+    # Test Case 2: Invalid File Pattern (Edge Cases)
     # =========================================================================
-    async def test_invalid_glob_pattern(self) -> TestResult:
+    async def test_invalid_file_pattern(self) -> TestResult:
         """
-        Test handling of edge case glob patterns.
+        Test handling of edge case file patterns.
 
         Expected behavior:
         - Server handles unusual patterns gracefully
         - No crash or unhandled exception
         - Clear response or error message
         """
-        self.print_header("Test 2: Invalid/Edge Case Glob Pattern")
+        self.print_header("Test 2: Invalid/Edge Case File Pattern")
 
         start_time = time.time()
 
@@ -429,7 +429,7 @@ class NimbusErrorHandlingTest:
                 msg = f"Unexpected behavior (HTTP {http_status})"
 
             result = TestResult(
-                name="Invalid Glob Pattern",
+                name="Invalid File Pattern",
                 passed=passed,
                 message=msg,
                 duration_ms=duration_ms,
@@ -456,7 +456,7 @@ class NimbusErrorHandlingTest:
         except Exception as e:
             duration_ms = (time.time() - start_time) * 1000
             result = TestResult(
-                name="Invalid Glob Pattern",
+                name="Invalid File Pattern",
                 passed=False,
                 message=f"Exception: {e}",
                 duration_ms=duration_ms,

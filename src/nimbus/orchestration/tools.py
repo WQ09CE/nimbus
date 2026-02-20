@@ -277,7 +277,7 @@ EXPLORE_TOOL_DEF = {
     "name": "Explore",
     "description": (
         "Delegate codebase exploration to the Explorer agent (read-only). "
-        "The Explorer can Read files, Glob for patterns, and Grep for content. "
+        "The Explorer can Read files and use Bash for file search. "
         "Use for: finding files, understanding code structure, searching patterns. "
         "Returns the Explorer's findings with file paths and line numbers. "
         "Cheap and fast -- can be called multiple times or in parallel."
@@ -302,7 +302,7 @@ IMPLEMENT_TOOL_DEF = {
     "name": "Implement",
     "description": (
         "Delegate code implementation to the Implementer agent. "
-        "The Implementer has full Read/Write/Edit/Bash/Glob/Grep permissions. "
+        "The Implementer has full Read/Write/Edit/Bash permissions. "
         "Use for: writing code, editing files, running commands, multi-file changes. "
         "Provide clear, specific instructions with exact file paths and code details. "
         "Returns a summary of changes and list of modified files."
@@ -348,7 +348,7 @@ TEST_TOOL_DEF = {
     "name": "Test",
     "description": (
         "Delegate test execution to the Tester agent. "
-        "The Tester can Read files, run Bash commands, and Glob for patterns. "
+        "The Tester can Read files and run Bash commands. "
         "Use for: running test suites, verification commands, checking build status. "
         "Returns test results with pass/fail details. "
         "The Tester does NOT fix failures -- it only reports them."

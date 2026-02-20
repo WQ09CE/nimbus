@@ -454,7 +454,7 @@ class CoreAgentConfig:
     temperature: float = 0.7
     max_tokens: int = 8192
     allowed_tools: List[str] = field(
-        default_factory=lambda: ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Subagent"]
+        default_factory=lambda: ["Read", "Write", "Edit", "Bash", "Subagent"]
     )
     prompt: str = ""  # 统一使用 prompt 字段
     max_turns: int = 100
@@ -497,7 +497,7 @@ class CoreAgentConfig:
             temperature=data.get("temperature", 0.7),
             max_tokens=data.get("max_tokens", 8192),
             allowed_tools=data.get(
-                "allowed_tools", ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Subagent"]
+                "allowed_tools", ["Read", "Write", "Edit", "Bash", "Subagent"]
             ),
             prompt=prompt,
             max_turns=data.get("max_turns", 100),

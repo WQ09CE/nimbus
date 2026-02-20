@@ -36,7 +36,7 @@ class ToolErrorCode(Enum):
     NOT_A_DIRECTORY = "NOT_A_DIRECTORY"
 
     # 搜索/匹配错误
-    PATTERN_NO_MATCH = "PATTERN_NO_MATCH"  # Glob/Grep 无匹配
+    PATTERN_NO_MATCH = "PATTERN_NO_MATCH"  # 搜索无匹配
     SEARCH_TOO_BROAD = "SEARCH_TOO_BROAD"  # 匹配太多结果
 
     # 编辑错误
@@ -178,7 +178,7 @@ class FileNotFoundHandler(ErrorHandler):
     恢复策略：
     1. 第一次：尝试 TypeScript/Node 模块解析（index.ts 等）
     2. 第二次：自动列出目录内容帮助定位
-    3. 第三次：建议使用 Glob 搜索
+    3. 第三次：建议使用 Bash 搜索
     """
 
     @property
@@ -214,7 +214,7 @@ class FileNotFoundHandler(ErrorHandler):
             # 没找到替代路径，注入轻微提示
             return RecoveryAction.inject(
                 f"💡 File '{file_path}' not found. "
-                f"Consider checking the path or using Glob to search."
+                f"Consider checking the path or using Bash to search (e.g., find . -name 'filename')."
             )
 
         elif attempt == 2:
@@ -227,20 +227,20 @@ class FileNotFoundHandler(ErrorHandler):
             )
 
         else:
-            # 第三次及以后：建议 Glob 搜索
+            # 第三次及以后：建议 Bash 搜索
             filename = os.path.basename(file_path)
             return RecoveryAction.inject(
                 f"🔍 File '{file_path}' still not found after {attempt} attempts.\n\n"
                 f"Suggestions:\n"
-                f"1. Search with Glob: Glob(pattern='**/{filename}')\n"
-                f"2. Find similar files: Glob(pattern='**/*{filename[:5]}*')\n"
+                f"1. Search with Bash: Bash(command='find . -name \"{filename}\"')\n"
+                f"2. Find similar files: Bash(command='find . -name \"*{filename[:5]}*\"')\n"
                 f"3. If this file doesn't exist, stop and report the issue"
             )
 
 
 class PatternNoMatchHandler(ErrorHandler):
     """
-    处理 Glob/Grep 无匹配的情况
+    处理搜索无匹配的情况
 
     恢复策略：
     1. 第一次：静默跳过，让 LLM 自己调整
@@ -254,7 +254,7 @@ class PatternNoMatchHandler(ErrorHandler):
 
     @property
     def handled_tools(self) -> Optional[List[str]]:
-        return ["Glob", "Grep"]
+        return None  # Handle for any tool that returns no matches
 
     async def handle(
         self,
@@ -290,7 +290,7 @@ class PatternNoMatchHandler(ErrorHandler):
                 f"1. Work with the files that DO exist (check the directory listing above)\n"
                 f"2. If you need to verify your work, read the file you modified\n"
                 f"3. Stop and report your progress\n\n"
-                f"DO NOT try more Glob/Grep patterns for '{pattern}' - it won't help."
+                f"DO NOT try more search patterns for '{pattern}' - it won't help."
             )
 
 
@@ -334,8 +334,8 @@ class EditStringNotFoundHandler(ErrorHandler):
     处理 Edit 找不到目标字符串的情况
 
     恢复策略：
-    1. 第一次：自动读取文件当前内容
-    2. 第二次：Grep 搜索类似内容
+    1. 第一次：注入诊断提示
+    2. 第二次：自动读取文件当前内容
     3. 第三次：建议检查文件状态或终止
     """
 

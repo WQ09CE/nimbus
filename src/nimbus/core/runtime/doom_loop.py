@@ -84,7 +84,7 @@ class DoomLoopDetector:
         "Write": (
             "WRITE TOOL GUIDANCE:\n"
             "- If Write is failing repeatedly, the file path may be invalid\n"
-            "- Check if the directory exists using Glob or Bash\n"
+            "- Check if the directory exists using Bash (e.g., ls -la)\n"
             "- Ensure you have permission to write to this location\n"
             "- Consider using a different approach if Write keeps failing"
         ),
@@ -98,21 +98,8 @@ class DoomLoopDetector:
         "Read": (
             "READ TOOL GUIDANCE:\n"
             "- The file may not exist at the specified path\n"
-            "- Use Glob to search for the correct file path\n"
+            "- Use Bash to search for the correct file path (e.g., find . -name 'filename')\n"
             "- Check if the path is relative vs absolute"
-        ),
-        "Glob": (
-            "GLOB TOOL GUIDANCE:\n"
-            "- The pattern may not match any files\n"
-            "- Try a broader pattern (e.g., **/*.py instead of specific path)\n"
-            "- Verify the search directory is correct\n"
-            "- If the file doesn't exist, stop and report the issue"
-        ),
-        "Grep": (
-            "GREP TOOL GUIDANCE:\n"
-            "- The search pattern may not exist in any files\n"
-            "- Try a simpler or broader search pattern\n"
-            "- Check if the path/directory is correct"
         ),
     }
 

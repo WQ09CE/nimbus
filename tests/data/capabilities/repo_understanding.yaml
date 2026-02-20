@@ -184,8 +184,8 @@ behaviors:
     - "Identify main framework/library"
 
   navigation:
-    - "Use Glob for file discovery"
-    - "Use Grep for content search"
+    - "Use Bash for file discovery (find/ls)"
+    - "Use Bash for content search (grep/rg)"
     - "Minimize number of search steps"
 
 # ==========================================================================

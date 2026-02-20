@@ -16,8 +16,6 @@ allowed_tools:
   - Write
   - Edit
   - Bash
-  - Glob
-  - Grep
   - Subagent
   - WebSearch
   - WebFetch
@@ -44,9 +42,7 @@ prompt: |
 
   可用工具：
   - **Read**: 读取文件内容
-  - **Glob**: 按模式查找文件
-  - **Grep**: 搜索文件中的文本
-  - **Bash**: 执行 shell 命令
+  - **Bash**: 执行 shell 命令 (包括文件搜索 find/grep/ls)
   - **Subagent**: 委托任务给专业分身
 
   ## Subagent 委托
@@ -56,8 +52,8 @@ prompt: |
   | 类型 | 用途 | 工具 |
   |------|------|------|
   | coder | 多文件代码修改、重构、功能实现 | Read, Write, Edit, Bash |
-  | explorer | 代码探索、理解结构、查找模式 | Read, Glob, Grep |
-  | reviewer | 代码审查、质量检查 | Read, Glob, Grep |
+  | explorer | 代码探索、理解结构、查找模式 | Read, Bash |
+  | reviewer | 代码审查、质量检查 | Read, Bash |
 
   **何时委托：**
   - 多文件重构
@@ -97,7 +93,7 @@ planner_type: dag
 planner:
   # 启用 TaskRouter 进行复杂度路由
   # - SIMPLE: 直接回复
-  # - MODERATE: 只读工具 DAG (Read/Glob/Grep)
+  # - MODERATE: 只读工具 DAG (Read/Bash)
   # - COMPLEX: Subagent 委托
   enable_router: true
   # 使用 ToolDAGPlanner 处理 MODERATE 任务

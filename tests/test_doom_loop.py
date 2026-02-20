@@ -45,7 +45,7 @@ class TestDoomLoopDetector:
         detector = DoomLoopDetector(threshold=5)
 
         for i in range(4):
-            result = detector.check("Glob", {"pattern": "*.py"})
+            result = detector.check("Bash", {"command": "find . -name '*.py'"})
             assert not result.is_loop
 
     def test_reset_after_detection(self):
@@ -96,8 +96,8 @@ class TestDoomLoopDetector:
         edit_guidance = detector.get_guidance("Edit")
         assert "Read tool FIRST" in edit_guidance
 
-        glob_guidance = detector.get_guidance("Glob")
-        assert "broader pattern" in glob_guidance
+        bash_guidance = detector.get_guidance("Bash")
+        assert "command syntax" in bash_guidance
 
     def test_guidance_for_unknown_tool(self):
         """Unknown tools should get generic guidance."""
@@ -111,9 +111,10 @@ class TestDoomLoopDetector:
         """Same tool with different args should not trigger loop."""
         detector = DoomLoopDetector(threshold=3)
 
-        r1 = detector.check("Glob", {"pattern": "*.py"})
-        r2 = detector.check("Glob", {"pattern": "*.ts"})
-        r3 = detector.check("Glob", {"pattern": "*.js"})
+        r1 = detector.check("Bash", {"command": "find . -name '*.py'"})
+        r2 = detector.check("Bash", {"command": "find . -name '*.ts'"})
+        r3 = detector.check("Bash", {"command": "find . -name '*.js'"})
+
 
         assert not r1.is_loop
         assert not r2.is_loop

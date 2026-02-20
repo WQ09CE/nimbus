@@ -43,7 +43,7 @@ class AgentProfile:
         return cls(
             name="standard",
             role="standard",
-            allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"] + _NIMFS_ALL,
+            allowed_tools=["Read", "Write", "Edit", "Bash"] + _NIMFS_ALL,
             system_prompt=PromptManager.get_system_prompt("executor", model_id), # Behaves like an executor but standalone
             max_iterations=50,
             max_consecutive_thoughts=1
@@ -56,7 +56,7 @@ class AgentProfile:
         return cls(
             name="executor",
             role="executor",
-            allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "SubmitResult"] + _NIMFS_ALL,
+            allowed_tools=["Read", "Write", "Edit", "Bash", "SubmitResult"] + _NIMFS_ALL,
             system_prompt=PromptManager.get_system_prompt("executor", model_id),
             max_iterations=40,
             max_consecutive_thoughts=2
@@ -73,7 +73,7 @@ class AgentProfile:
         return cls(
             name="explorer",
             role="explorer",
-            allowed_tools=["Read", "Glob", "Grep", "SubmitResult"] + _NIMFS_READ,
+            allowed_tools=["Read", "Bash", "SubmitResult"] + _NIMFS_READ,
             system_prompt=PromptManager.get_system_prompt("explorer", model_id),
             max_iterations=40,
             max_consecutive_thoughts=2,
@@ -87,7 +87,7 @@ class AgentProfile:
         return cls(
             name="implementer",
             role="implementer",
-            allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "SubmitResult"] + _NIMFS_ALL,
+            allowed_tools=["Read", "Write", "Edit", "Bash", "SubmitResult"] + _NIMFS_ALL,
             system_prompt=PromptManager.get_system_prompt("implementer", model_id),
             max_iterations=50,
             max_consecutive_thoughts=2,
@@ -101,7 +101,7 @@ class AgentProfile:
         return cls(
             name="architect",
             role="architect",
-            allowed_tools=["Read", "Write", "Glob", "Grep", "SubmitResult"] + _NIMFS_ALL,
+            allowed_tools=["Read", "Write", "SubmitResult"] + _NIMFS_ALL,
             system_prompt=PromptManager.get_system_prompt("architect", model_id),
             max_iterations=30,
             max_consecutive_thoughts=2,
@@ -115,7 +115,7 @@ class AgentProfile:
         return cls(
             name="tester",
             role="tester",
-            allowed_tools=["Read", "Bash", "Glob", "SubmitResult"] + _NIMFS_READ + ["NimFSWriteArtifact"],
+            allowed_tools=["Read", "Bash", "SubmitResult"] + _NIMFS_READ + ["NimFSWriteArtifact"],
             system_prompt=PromptManager.get_system_prompt("tester", model_id),
             max_iterations=40,
             max_consecutive_thoughts=2,

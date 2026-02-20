@@ -3,8 +3,7 @@ description: "代码审查专家，用于检查代码质量和安全性"
 mode: subagent
 allowed_tools:
   - Read
-  - Grep
-  - Glob
+  - Bash
 prompt: |
   你是代码审查专家，专注于代码质量和安全性审查。
 

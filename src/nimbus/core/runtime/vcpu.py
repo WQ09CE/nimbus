@@ -70,8 +70,6 @@ DOOM_LOOP_THRESHOLD = 3
 # This mapping allows automatic correction.
 TOOL_NAME_CANONICAL: Dict[str, str] = {
     "read": "Read",
-    "glob": "Glob",
-    "grep": "Grep",
     "bash": "Bash",
     "kill": "Kill",
     "write": "Write",
@@ -82,8 +80,6 @@ TOOL_NAME_CANONICAL: Dict[str, str] = {
     "SubmitResult": "SubmitResult",
     # Add canonical forms as well (no-op repair)
     "Read": "Read",
-    "Glob": "Glob",
-    "Grep": "Grep",
     "Bash": "Bash",
     "Kill": "Kill",
     "Write": "Write",
@@ -1192,7 +1188,7 @@ class VCPU:
         self, action: ActionIR, result: ToolResult
     ) -> Optional[ToolResult]:
         """
-        处理"成功但无结果"的情况（如 Glob/Grep 无匹配）。
+        处理"成功但无结果"的情况。
 
         Delegates to EmptyResultHandler for basic handling,
         then performs recovery actions if needed.
@@ -1395,7 +1391,7 @@ class VCPU:
             if recovered is not None:
                 result = recovered  # Use recovered result instead
         else:
-            # Handle "successful but empty" results (e.g., Glob/Grep with no matches)
+            # Handle "successful but empty" results (e.g., search with no matches)
             # These are OK status but still need recovery hints
             empty_override = await self._handle_empty_result(action, result)
             if empty_override is not None:

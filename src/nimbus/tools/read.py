@@ -119,7 +119,7 @@ def _list_directory(dir_path: Path, original_path: str) -> str:
             lines.append(f"{prefix}{entry.name}")
         if len(list(dir_path.iterdir())) > 100:
             lines.append(f"\n... and more ({len(list(dir_path.iterdir())) - 100} entries omitted)")
-        lines.append("\n[Tip: Use Glob to find files by pattern, or Read with a specific file path.]")
+        lines.append("\n[Tip: Use Bash to find files (e.g., find . -name '*.py'), or Read with a specific file path.]")
         return "\n".join(lines)
     except Exception as e:
         return f"[Error listing directory '{original_path}': {e}]"

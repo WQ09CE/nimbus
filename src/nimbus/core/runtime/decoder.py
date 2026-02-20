@@ -291,31 +291,3 @@ class InstructionDecoder:
         """Register a custom control flow tool mapping."""
         self.CONTROL_FLOW_TOOLS[tool_name] = action_kind
 
-    def _is_conversational_reply(self, content: str) -> bool:
-        """
-        Check if the content is likely a conversational reply rather than a thought.
-        """
-        # Conversational markers
-        reply_markers = [
-            "?",
-            "你好",
-            "hello",
-            "hi ",
-            "完成",
-            "done",
-            "fixed",
-            "已修复",
-            "请问",
-            "我可以",
-            "帮您",
-            "还有什么",
-        ]
-        lower_content = content.lower()
-        if any(marker in lower_content for marker in reply_markers):
-            return True
-
-        # Very short responses are likely replies
-        if len(content) < 50:
-            return True
-
-        return False

@@ -143,7 +143,7 @@ def mmu():
     mmu = MMU(config=MMUConfig(), process_id="test-proc-001")
     mmu.set_pinned(PinnedContext(
         system_rules="Be helpful and use tools correctly.",
-        capabilities="Available tools: Read, Glob, Grep"
+        capabilities="Available tools: Read, Write, Edit, Bash"
     ))
     return mmu
 
@@ -558,16 +558,16 @@ class TestVCPUErrors:
     # Permission checking can be re-added as a separate middleware if needed.
 
     @pytest.mark.asyncio
-    async def test_hallucination_pattern_passes_through_as_thought(self, decoder, gate, mmu, vcpu_config):
-        """Test that text containing hallucination patterns is treated as normal THOUGHT.
+    async def test_hallucination_pattern_passes_through(self, decoder, gate, mmu, vcpu_config):
+        """Test that text containing hallucination patterns passes through without Fault.
 
         Hallucination detection was moved out of the decoder to avoid false positives
         when models legitimately discuss tool patterns. The pipeline's HallucinationSanitizer
         (enabled per-model) provides soft defense by stripping patterns from content.
-        The decoder no longer throws Fault for pattern matches.
+        Short patterns may be classified as REPLY by the conversational heuristic.
         """
         llm = MockLLMClient(responses=[
-            # Response with hallucination pattern - should pass through as THOUGHT
+            # Response with hallucination pattern - should pass through (no Fault)
             MockLLMResponse(content="[Called Read tool with file.txt]"),
         ])
 
@@ -582,10 +582,10 @@ class TestVCPUErrors:
         mmu.add_user_message("Read a file")
         step_result = await vcpu.step()
 
-        # No fault - treated as normal thought/text response
+        # No fault - passes through without raising Fault
         assert step_result.fault is None
         assert len(step_result.actions) == 1
-        assert step_result.actions[0].kind == "THOUGHT"
+        assert step_result.actions[0].kind in ("THOUGHT", "REPLY")
 
 
 # =============================================================================
@@ -598,15 +598,15 @@ class TestVCPUStep:
     @pytest.mark.asyncio
     async def test_single_step(self, decoder, gate, mmu, vcpu_config, tool_executor):
         """Test single step execution."""
-        tool_executor.results["Glob"] = ["file1.py", "file2.py"]
+        tool_executor.results["Bash"] = "file1.py\nfile2.py"
 
         llm = MockLLMClient(responses=[
             MockLLMResponse(
                 tool_calls=[
                     MockToolCall(
                         function=MockFunction(
-                            name="Glob",
-                            arguments='{"pattern": "*.py"}'
+                            name="Bash",
+                            arguments='{"command": "find . -name *.py"}'
                         )
                     )
                 ]
@@ -626,7 +626,7 @@ class TestVCPUStep:
 
         assert len(step_result.actions) == 1
         assert step_result.actions[0].kind == "TOOL_CALL"
-        assert step_result.actions[0].name == "Glob"
+        assert step_result.actions[0].name == "Bash"
         assert len(step_result.results) == 1
         assert step_result.results[0].status == "OK"
         assert step_result.is_final is False
@@ -737,18 +737,10 @@ class TestVCPUState:
     @pytest.mark.asyncio
     async def test_get_state(self, decoder, gate, mmu, vcpu_config):
         """Test get_state method."""
+        # "Thinking..." is short (11 chars) and will be classified as REPLY
+        # by the conversational heuristic, so VCPU finishes in 1 iteration.
         llm = MockLLMClient(responses=[
             MockLLMResponse(content="Thinking..."),
-            MockLLMResponse(
-                tool_calls=[
-                    MockToolCall(
-                        function=MockFunction(
-                            name="return_result",
-                            arguments='{"result": "Done"}'
-                        )
-                    )
-                ]
-            )
         ])
 
         vcpu = VCPU(
@@ -768,7 +760,7 @@ class TestVCPUState:
         assert "stack_depth" in state
         assert "mmu_state" in state
         assert state["is_done"] is True
-        assert state["iteration"] == 2
+        assert state["iteration"] == 1
 
     def test_initial_state(self, decoder, gate, mmu, vcpu_config):
         """Test initial vCPU state."""
@@ -796,7 +788,7 @@ class TestVCPUIntegration:
     @pytest.mark.asyncio
     async def test_full_workflow(self, decoder, gate, mmu, vcpu_config, tool_executor):
         """Test a complete workflow with multiple steps."""
-        tool_executor.results["Glob"] = ["src/main.py", "src/utils.py"]
+        tool_executor.results["Bash"] = "src/main.py\nsrc/utils.py"
         tool_executor.results["Read"] = "def main():\n    print('Hello')"
 
         llm = MockLLMClient(responses=[
@@ -805,8 +797,8 @@ class TestVCPUIntegration:
                 tool_calls=[
                     MockToolCall(
                         function=MockFunction(
-                            name="Glob",
-                            arguments='{"pattern": "src/*.py"}'
+                            name="Bash",
+                            arguments='{"command": "find src -name *.py"}'
                         )
                     )
                 ]

@@ -7,62 +7,62 @@ description: Test cases for verifying code search precision and tool selection
 
 test_cases:
   # ==========================================================================
-  # Grep Pattern Search
+  # Bash Content Search (grep/rg)
   # ==========================================================================
-  - id: grep_function_def
+  - id: bash_function_def
     input: "search for 'def main'"
     description: "Search for function definition pattern"
-    expected_tool: Grep
+    expected_tool: Bash
     expected_params:
-      pattern: "def main"
+      command: "grep -rn 'def main' ."
     relevant_files:
       - src/main.py
       - tests/test_main.py
 
-  - id: grep_class_def
+  - id: bash_class_def
     input: "find 'class Agent'"
     description: "Search for class definition"
-    expected_tool: Grep
+    expected_tool: Bash
     expected_params:
-      pattern: "class Agent"
+      command: "grep -rn 'class Agent' ."
     relevant_files:
       - src/nimbus/core/agent.py
 
-  - id: grep_import
+  - id: bash_import
     input: "search 'import asyncio'"
     description: "Search for import statement"
-    expected_tool: Grep
+    expected_tool: Bash
     expected_params:
-      pattern: "import asyncio"
+      command: "grep -rn 'import asyncio' ."
 
-  - id: grep_chinese
+  - id: bash_chinese
     input: "search for 'CodeAgent' definition"
     description: "Search with Chinese pattern"
-    expected_tool: Grep
+    expected_tool: Bash
 
   # ==========================================================================
-  # Glob File Search
+  # Bash File Search (find/ls)
   # ==========================================================================
-  - id: glob_python_files
+  - id: bash_python_files
     input: "list all Python files"
     description: "List all .py files"
-    expected_tool: Glob
+    expected_tool: Bash
     expected_params:
-      pattern: "*.py"
+      command: "find . -name '*.py'"
 
-  - id: glob_directory
+  - id: bash_directory
     input: "list files in src/"
     description: "List files in specific directory"
-    expected_tool: Glob
+    expected_tool: Bash
     expected_params:
-      path: "src"
+      command: "ls src/"
 
-  - id: glob_test_files
+  - id: bash_test_files
     input: "find all test files"
     description: "Find test_*.py files"
-    expected_tool: Glob
+    expected_tool: Bash
     expected_params:
-      pattern: "test_*.py"
+      command: "find . -name 'test_*.py'"
 
   # ==========================================================================
   # Read Specific File
@@ -87,30 +87,26 @@ test_cases:
   - id: multi_pattern_search
     input: "find all async functions"
     description: "Search for async def pattern"
-    expected_tool: Grep
+    expected_tool: Bash
     expected_params:
-      pattern: "async def"
+      command: "grep -rn 'async def' ."
 
   - id: search_in_directory
     input: "search for 'import' in tests/"
     description: "Search pattern in specific directory"
-    expected_tool: Grep
+    expected_tool: Bash
     expected_params:
-      pattern: "import"
-      path: "tests"
+      command: "grep -rn 'import' tests/"
 
 # ==========================================================================
 # Tool Selection Rules
 # ==========================================================================
 tool_selection_rules:
-  Grep:
-    - Pattern-based content search
+  Bash:
+    - Pattern-based content search (grep/rg)
+    - File listing/finding (find/ls)
     - "search for X"
     - "find X in code"
-    - "grep X"
-
-  Glob:
-    - File listing/finding
     - "list files"
     - "find files"
     - "ls"

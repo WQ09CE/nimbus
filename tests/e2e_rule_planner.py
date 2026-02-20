@@ -8,8 +8,8 @@ which handles common patterns without invoking the LLM.
 Test Cases:
 1. Greeting rules - "hello", "hi" - direct response, no LLM
 2. File read rules - "read pyproject.toml" - direct Read tool invocation
-3. List files rules - "list files in src" - direct Glob tool invocation
-4. Search rules - "search def create_plan" - direct Grep tool invocation
+3. List files rules - "list files in src" - direct Bash tool invocation
+4. Search rules - "search def create_plan" - direct Bash tool invocation
 
 Key Validation Points:
 - Response speed (rule matching should be < 500ms without LLM call)
@@ -480,7 +480,7 @@ class RulePlannerE2ETest:
             },
 
             # =================================================================
-            # List Files Rules - Direct Glob tool invocation
+            # List Files Rules - Direct Bash tool invocation
             # =================================================================
             {
                 "name": "List Files - Chinese",
@@ -502,7 +502,7 @@ class RulePlannerE2ETest:
             },
 
             # =================================================================
-            # Search Rules - Direct Grep tool invocation
+            # Search Rules - Direct Bash tool invocation
             # =================================================================
             {
                 "name": "Search Code - Chinese",

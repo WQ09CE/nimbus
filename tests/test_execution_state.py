@@ -29,7 +29,7 @@ class TestExecutionState:
         state.iteration = 50
         state.is_running = True
         state.consecutive_thoughts = 5
-        state.tool_failure_counts["Glob"] = 3
+        state.tool_failure_counts["Bash"] = 3
 
         # Reset
         state.reset()
@@ -131,21 +131,21 @@ class TestExecutionState:
         """on_tool_failure() should track failures per tool."""
         state = ExecutionState()
 
-        assert state.on_tool_failure("Glob") == 1
-        assert state.on_tool_failure("Glob") == 2
+        assert state.on_tool_failure("Bash") == 1
+        assert state.on_tool_failure("Bash") == 2
         assert state.on_tool_failure("Read") == 1
-        assert state.on_tool_failure("Glob") == 3
+        assert state.on_tool_failure("Bash") == 3
 
     def test_is_tool_failing_too_much(self):
         """is_tool_failing_too_much() should check against threshold."""
         state = ExecutionState.from_config(max_tool_failures=3)
 
-        state.on_tool_failure("Glob")
-        state.on_tool_failure("Glob")
-        assert not state.is_tool_failing_too_much("Glob")
+        state.on_tool_failure("Bash")
+        state.on_tool_failure("Bash")
+        assert not state.is_tool_failing_too_much("Bash")
 
-        state.on_tool_failure("Glob")
-        assert state.is_tool_failing_too_much("Glob")
+        state.on_tool_failure("Bash")
+        assert state.is_tool_failing_too_much("Bash")
 
     def test_empty_response_tracking(self):
         """on_empty_response() and on_valid_response() should track correctly."""

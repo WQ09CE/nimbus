@@ -34,10 +34,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def test_basic_glob():
-    """Test basic file search with Glob."""
+async def test_basic_file_search():
+    """Test basic file search with Bash."""
     print("\n" + "=" * 60)
-    print("TEST 1: Basic File Search (Glob)")
+    print("TEST 1: Basic File Search (Bash)")
     print("=" * 60)
 
     agent = CodeAgent(
@@ -47,7 +47,7 @@ async def test_basic_glob():
 
     result = await agent.run(
         goal="Find all Python files in the src/nimbus/tools directory. List them.",
-        allowed_tools={"Glob", "Read"},
+        allowed_tools={"Bash", "Read"},
         timeout=60.0,
     )
 
@@ -65,10 +65,10 @@ async def test_basic_glob():
     return True
 
 
-async def test_grep_search():
-    """Test content search with Grep."""
+async def test_content_search():
+    """Test content search with Bash."""
     print("\n" + "=" * 60)
-    print("TEST 2: Content Search (Grep)")
+    print("TEST 2: Content Search (Bash)")
     print("=" * 60)
 
     agent = CodeAgent(
@@ -78,7 +78,7 @@ async def test_grep_search():
 
     result = await agent.run(
         goal="Search for 'async def' in Python files under src/nimbus/tools/. How many matches are there?",
-        allowed_tools={"Grep", "Glob"},
+        allowed_tools={"Bash", "Read"},
         timeout=60.0,
     )
 
@@ -139,7 +139,7 @@ async def test_multi_tool_task():
             "2. Count how many test files there are\n"
             "3. Pick one test file and show its first 20 lines"
         ),
-        allowed_tools={"Glob", "Read"},
+        allowed_tools={"Bash", "Read"},
         timeout=120.0,
     )
 

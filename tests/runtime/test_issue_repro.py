@@ -4,8 +4,13 @@ from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
 from nimbus.core.memory.mmu import MMU, MMUConfig
 from nimbus.core.runtime.decoder import InstructionDecoder
-from nimbus.core.runtime.vcpu import VCPU, VCPUConfig, LLMResponse
+from nimbus.core.runtime.vcpu import VCPU, VCPUConfig
 from nimbus.os.gate import KernelGate
+
+@dataclass
+class MockLLMResponse:
+    content: Optional[str] = None
+    tool_calls: Optional[List[Any]] = None
 
 @dataclass
 class MockFunction:
@@ -27,7 +32,7 @@ class MockLLMClient:
             res = self.responses[self.call_count]
             self.call_count += 1
             return res
-        return LLMResponse(content="Done")
+        return MockLLMResponse(content="Done")
 
 @pytest.mark.asyncio
 async def test_max_consecutive_thoughts_is_1():
@@ -37,7 +42,7 @@ async def test_max_consecutive_thoughts_is_1():
     
     # LLM returns a plain text thought
     llm = MockLLMClient([
-        LLMResponse(content="Hello, I am an assistant.")
+        MockLLMResponse(content="Hello, I am an assistant.")
     ])
     
     # Use default config where we just set max_consecutive_thoughts = 1

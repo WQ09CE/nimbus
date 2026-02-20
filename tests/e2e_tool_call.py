@@ -10,8 +10,8 @@ This script validates the complete tool call flow in nimbus serve:
 
 Test Scenarios:
 1. Basic tool call: Read a file -> triggers Read tool
-2. Glob tool call: List files -> triggers Glob tool
-3. Tool chain: Search + Read -> triggers Grep + Read
+2. Bash tool call: List files -> triggers Bash tool
+3. Tool chain: Search + Read -> triggers Bash + Read
 
 Protocol Events:
 - connected: Connection established
@@ -634,32 +634,32 @@ class ToolCallE2ETest:
             timeout=60.0
         )
 
-    async def test_glob_tool(self) -> TestResult:
+    async def test_bash_list_files(self) -> TestResult:
         """
-        Test 2: Glob Tool Call
+        Test 2: Bash Tool Call (file listing)
 
         Scenario: Ask to list Python files
-        Expected: Glob tool is called
+        Expected: Bash tool is called
         """
         return await self.run_test_case(
-            name="Glob Tool Call",
+            name="Bash File Listing",
             message="List all Python files in the src/nimbus directory (just the filenames)",
-            expected_tools=["Glob"],
+            expected_tools=["Bash"],
             content_check=lambda text: ".py" in text or "python" in text.lower() or "file" in text.lower(),
             timeout=60.0
         )
 
-    async def test_grep_tool(self) -> TestResult:
+    async def test_bash_search(self) -> TestResult:
         """
-        Test 3: Grep Tool Call
+        Test 3: Bash Tool Call (content search)
 
         Scenario: Ask to search for a pattern
-        Expected: Grep tool is called
+        Expected: Bash tool is called (using grep/find)
         """
         return await self.run_test_case(
-            name="Grep Tool Call",
+            name="Bash Content Search",
             message="Search for 'async def' in the codebase",
-            expected_tools=["Grep"],
+            expected_tools=["Bash"],
             content_check=lambda text: "async" in text.lower() or "found" in text.lower() or "search" in text.lower(),
             timeout=60.0
         )
@@ -669,12 +669,12 @@ class ToolCallE2ETest:
         Test 4: Tool Chain (Multiple Tools)
 
         Scenario: Ask a question requiring multiple tools
-        Expected: Multiple tools are called (e.g., Grep then Read)
+        Expected: Multiple tools are called (e.g., Bash then Read)
         """
         return await self.run_test_case(
             name="Tool Chain (Search + Read)",
             message="Find files that contain 'class SSEHub' and show me the first few lines of that class definition",
-            expected_tools=["Grep"],  # May also include Read, but Grep is minimum
+            expected_tools=["Bash"],  # May also include Read, but Bash is minimum
             content_check=lambda text: "SSE" in text or "class" in text.lower() or len(text) > 100,
             timeout=90.0
         )

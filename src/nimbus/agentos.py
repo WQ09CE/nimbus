@@ -478,8 +478,8 @@ class AgentOS:
             )
 
         # Create VCPU
-        manifest = get_model_manifest(llm_client or self._llm)
-        manifest.role = _role
+        from dataclasses import replace as _dc_replace
+        manifest = _dc_replace(get_model_manifest(llm_client or self._llm), role=_role)
         vcpu = VCPU(
             alu=llm_client or self._llm,
             config=vcpu_config,
@@ -723,8 +723,8 @@ class AgentOS:
                 "function": memo_def
             })
 
-            manifest = get_model_manifest(self._llm)
-            manifest.role = "chat"
+            from dataclasses import replace as _dc_replace
+            manifest = _dc_replace(get_model_manifest(self._llm), role="chat")
 
             vcpu = VCPU(
                 alu=self._llm,
@@ -879,8 +879,8 @@ class AgentOS:
             "function": memo_def
         })
 
-        manifest = get_model_manifest(self._llm)
-        manifest.role = "chat"
+        from dataclasses import replace as _dc_replace
+        manifest = _dc_replace(get_model_manifest(self._llm), role="chat")
 
         vcpu = VCPU(
             alu=self._llm,
@@ -1665,7 +1665,7 @@ def create_agent_os(
         max_processes: Maximum concurrent processes
         default_timeout: Default execution timeout
         workspace: Workspace path for tool sandboxing
-        register_defaults: Whether to register default v2 tools (Read, Glob, etc.)
+        register_defaults: Whether to register default v2 tools (Read, Write, etc.)
         kernel_tools: Whether to auto-register kernel tools (Read, Write, Edit, Bash)
         profile: AgentProfile configuration (overrides manual config)
         model_id: Model ID for dynamic prompt generation
@@ -1733,7 +1733,7 @@ def create_agent_os(
             # Orchestrator Profile: Specialist tools + basic tools
             register_default_tools(os, workspace=ws, tools=["Read", "Bash"])
             # Executor tools (for specialists)
-            register_default_tools(os, workspace=ws, tools=["Write", "Edit", "Glob", "Grep"], roles=["executor", "implementer", "architect", "explorer", "tester"])
+            register_default_tools(os, workspace=ws, tools=["Write", "Edit"], roles=["executor", "implementer", "architect", "explorer", "tester"])
 
             # --- Register NimFS Tools (shared virtual disk + Agent IPC) ---
             # Read tools: available to all roles (no role restriction)
