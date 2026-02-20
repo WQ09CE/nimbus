@@ -783,6 +783,7 @@ class AgentOS:
 
         if process.state != "RUNNING":
             process.state = "RUNNING"
+            process.signals.clear()  # Clear stale signals (e.g. interrupt from previous cancellation)
             return await self._run_process(process)
 
         return ToolResult(status="OK", output="[Already Running]")
@@ -1453,6 +1454,7 @@ class AgentOS:
 
         except asyncio.CancelledError:
             process.state = "CANCELLED"
+            process.signals["interrupt"] = False  # Clear stale signal so next run isn't auto-cancelled
             process.result = ToolResult(
                 status="CANCELLED",
                 fault=Fault(
