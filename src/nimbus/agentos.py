@@ -410,6 +410,10 @@ class AgentOS:
             if profile.allowed_tools:
                 _tools_filter = profile.allowed_tools
 
+        # Default to "standard" if no role was resolved from profile or caller
+        if not _role:
+            _role = "standard"
+
         # Create process components
         mmu = self._create_mmu(pid, system_rules=_system_rules)
 
@@ -719,6 +723,9 @@ class AgentOS:
                 "function": memo_def
             })
 
+            manifest = get_model_manifest(self._llm)
+            manifest.role = "chat"
+
             vcpu = VCPU(
                 alu=self._llm,
                 decoder=decoder,
@@ -727,6 +734,7 @@ class AgentOS:
                 config=self.config.vcpu_config,
                 tools=tools_list,
                 session_id=session_id,
+                manifest=manifest,
             )
 
             vcpu.set_compaction_callback(
@@ -870,6 +878,9 @@ class AgentOS:
             "function": memo_def
         })
 
+        manifest = get_model_manifest(self._llm)
+        manifest.role = "chat"
+
         vcpu = VCPU(
             alu=self._llm,
             decoder=decoder,
@@ -878,6 +889,7 @@ class AgentOS:
             config=self.config.vcpu_config,
             tools=tools_list,
             session_id=session_id,
+            manifest=manifest,
         )
 
         vcpu.set_compaction_callback(

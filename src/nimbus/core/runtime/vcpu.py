@@ -1027,13 +1027,29 @@ class VCPU:
         if role in FRONTEND_ROLES:
             return await self._handle_return(action)
 
+        # 2.5 Staleness detection — near-duplicate thoughts → immediate return
+        current_text = action.args.get("text", "")
+        if self._state.pending_thought_text:
+            if self._is_stale_thought(current_text, self._state.pending_thought_text):
+                logger.info(
+                    f"THOUGHT stale (duplicate detected), forcing RETURN "
+                    f"(consecutive={self._state.consecutive_thoughts})"
+                )
+                return await self._handle_return(action)
+
         # 3. Backend specialists: text is just thinking, not a final answer.
         #    They must call SubmitResult to properly finish.
         thought_count = self._state.on_thought()
-        max_thoughts = self._config.max_consecutive_thoughts
+
+        # Frame-aware limits: child frames (specialists) get more CoT room
+        base_max = self.config.max_consecutive_thoughts
+        if self.mmu.stack_depth > 1:
+            max_thoughts = max(base_max, 4)
+        else:
+            max_thoughts = base_max
 
         logger.info(
-            f"VCPU backend thought #{thought_count}/{max_thoughts} from {role}"
+            f"VCPU backend thought #{thought_count}/{max_thoughts} from {role} (depth={self.mmu.stack_depth})"
         )
 
         if thought_count >= max_thoughts:
@@ -1043,13 +1059,14 @@ class VCPU:
             )
             return await self._handle_return(action)
 
-        # Poke: remind the specialist to use tools or SubmitResult
+        # Poke: remind the specialist to use tools or SubmitResult.
+        # MUST be injected as "system" role — if injected as "user", the LLM
+        # treats it as a new user request and tries to "answer" it with more text.
         poke_msg = (
-            "[System] You are a background specialist agent. Your text output is NOT "
-            "delivered to the user. You MUST use tools to do your work. When finished, "
-            "call SubmitResult(result='your findings') to submit your final answer."
+            "Continue working. If you have finished, call "
+            "SubmitResult(result='your findings') to deliver your answer."
         )
-        self.mmu.add_user_message(poke_msg)
+        self.mmu.add_system_message(poke_msg)
 
         return ToolResult(
             status="OK",
