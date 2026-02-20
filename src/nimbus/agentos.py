@@ -438,9 +438,9 @@ class AgentOS:
             if _tools_filter and isinstance(_tools_filter[0], str):
                 tools_list = []
                 for name in _tools_filter:
-                    defn = self._tools.get_definition(name)
+                    defn = self._composite_tools.get_definition(name)
                     if defn:
-                        tools_list.append(defn)
+                        tools_list.append(defn.to_openai_format())
             else:
                 tools_list = list(_tools_filter)
         else:

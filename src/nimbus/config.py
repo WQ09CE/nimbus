@@ -25,6 +25,9 @@ class NimbusConfig:
     # Default model (provider/model_id format)
     default_model: str = "google/gemini-3-flash-preview"
 
+    # Agent profile: "orchestrator", "core", "standard"
+    agent_profile: str = "orchestrator"
+
     # LLM parameters
     max_tokens: int = 8192
     timeout: float = 300.0
@@ -104,6 +107,13 @@ def _apply_json(config: NimbusConfig, data: dict) -> None:
     if models := rc.get("models"):
         config.review_models = list(models)
 
+    # Agent profile (top-level or under "agent" section)
+    if v := data.get("agent_profile"):
+        config.agent_profile = v
+    elif agent := data.get("agent"):
+        if v := agent.get("profile"):
+            config.agent_profile = v
+
 
 def _apply_env(config: NimbusConfig) -> None:
     """Apply environment variable overrides."""
@@ -128,6 +138,9 @@ def _apply_env(config: NimbusConfig) -> None:
 
     if v := os.environ.get("NIMBUS_CODEX_USE_OAUTH"):
         config.codex_use_oauth = v.lower() not in ("0", "false", "no")
+
+    if v := os.environ.get("NIMBUS_AGENT_PROFILE"):
+        config.agent_profile = v
 
 
 # Singleton

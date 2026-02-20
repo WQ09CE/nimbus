@@ -265,11 +265,11 @@ class SessionManagerV2:
             logger.info(f"📁 Using workspace: {workspace}")
 
         # --- UNIFIED AGENT ARCHITECTURE ---
-        # "dual_agent" maps to the "core" profile (Orchestrator).
-        # "standard" maps to the "standard" profile (Generalist).
-
-        # Default to "core" profile unless explicitly "standard"
-        profile_name = "core"
+        # Profile is read from config (default: "orchestrator").
+        # agent_mode == "standard" overrides to "standard" profile.
+        from nimbus.config import get_config
+        nimbus_config = get_config()
+        profile_name = nimbus_config.agent_profile  # default "orchestrator"
         if agent_mode == "standard":
              # We can keep standard mode as a simple executor with all tools
              profile_name = "standard"
