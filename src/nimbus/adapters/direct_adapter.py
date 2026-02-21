@@ -671,8 +671,8 @@ class DirectAdapter:
             )
 
         except Exception as e:
-            logger.error(f"Anthropic native streaming error: {e}")
-            yield LLMStreamEvent(type="error", error=str(e))
+            logger.error(f"Anthropic native streaming error: {type(e).__name__}: {e!r}")
+            yield LLMStreamEvent(type="error", error=f"{type(e).__name__}: {e}" if str(e) else type(e).__name__)
 
     # ------------------------------------------------------------------
     # Channel 2: OpenAI Codex — Responses API (OAuth)

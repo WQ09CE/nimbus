@@ -89,7 +89,7 @@ class AgentProfile:
             role="implementer",
             allowed_tools=["Read", "Write", "Edit", "Bash", "SubmitResult"] + _NIMFS_ALL,
             system_prompt=PromptManager.get_system_prompt("implementer", model_id),
-            max_iterations=50,
+            max_iterations=30,
             max_consecutive_thoughts=2,
             write_filter=[],
         )

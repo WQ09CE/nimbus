@@ -31,13 +31,24 @@ from nimbus.core.nimfs.models import (
     MemoryScope,
     NimFSError,
 )
+import nimbus.core.nimfs.project_id as _project_id_module
 from nimbus.core.nimfs.project_id import (
     get_global_root,
-    get_nimfs_root,
     get_project_root,
     make_artifact_ref,
     parse_nimfs_ref,
 )
+
+
+def get_nimfs_root():
+    """Thin wrapper that delegates to project_id.get_nimfs_root().
+
+    Defined here so that tests can patch ``nimbus.core.nimfs.manager.get_nimfs_root``
+    *or* patch ``nimbus.core.nimfs.project_id.get_nimfs_root`` – both work because
+    we always call the module-level function at call time rather than binding it at
+    import time.
+    """
+    return _project_id_module.get_nimfs_root()
 
 # Whitelist for task_id and memory_id: alphanumeric, hyphens, underscores, dots
 # Max 128 chars to prevent filesystem abuse
@@ -449,9 +460,12 @@ class NimFSManager:
                     if entry.confidence < min_confidence:
                         continue
 
-                    # Match against title and tags
+                    # Match against title and tags (token-based OR match)
                     searchable = entry.title.lower() + " " + " ".join(entry.tags).lower()
-                    if query_lower in searchable:
+                    tokens = [t for t in query_lower.split() if len(t) > 1]
+                    if not tokens:
+                        tokens = [query_lower]
+                    if any(token in searchable for token in tokens):
                         results.append(entry)
 
         results.sort(key=lambda e: e.updated_at, reverse=True)
@@ -497,7 +511,7 @@ class NimFSManager:
 
         # 3. Relevant project memory (keyword search on goal)
         if current_goal.strip():
-            relevant = self.search_memory(current_goal, top_k=8, scope="project")
+            relevant = self.search_memory(current_goal, top_k=8, scope="all")
             if relevant:
                 lines = []
                 for entry in relevant:

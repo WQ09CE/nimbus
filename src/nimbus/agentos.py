@@ -420,12 +420,13 @@ class AgentOS:
         # NimFS: inject workspace so MMU can auto-offload large tool results
         mmu.nimfs_workspace = str(Path.cwd())
 
-        # Create Memo tool (bound to workspace and session)
-        # Note: workspace_info is a display string like "Workspace: .", not a path
+        # NimFS-backed Memo (v2): inject NimFSManager for context loading
         workspace = Path.cwd()
-        memo_def, memo_func, session_manager, global_manager = create_memo_tool(workspace, pid)
+        from nimbus.core.nimfs.manager import NimFSManager
+        mmu._nimfs_manager = NimFSManager(workspace_path=workspace)
 
-        # Store memo managers for later access (e.g., prepending memo to context)
+        # Create Memo tool (backward-compat bridge to NimFS)
+        memo_def, memo_func, session_manager, global_manager = create_memo_tool(workspace, pid)
         mmu._memo_manager = session_manager
         mmu._global_memo_manager = global_manager
 
@@ -705,8 +706,12 @@ class AgentOS:
             mmu = self._create_mmu(session_id)
             mmu.nimfs_workspace = str(Path.cwd())
 
-            # Create Memo tool (bound to workspace and session)
+            # NimFS-backed Memo (v2): inject NimFSManager for context loading
             workspace = Path.cwd()
+            from nimbus.core.nimfs.manager import NimFSManager
+            mmu._nimfs_manager = NimFSManager(workspace_path=workspace)
+
+            # Create Memo tool (backward-compat bridge to NimFS)
             memo_def, memo_func, session_manager, global_manager = create_memo_tool(workspace, session_id)
             mmu._memo_manager = session_manager
             mmu._global_memo_manager = global_manager
@@ -862,8 +867,12 @@ class AgentOS:
         mmu = self._create_mmu(session_id)
         mmu.nimfs_workspace = str(Path.cwd())
 
-        # Create Memo tool (bound to workspace and session)
+        # NimFS-backed Memo (v2): inject NimFSManager for context loading
         workspace = Path.cwd()
+        from nimbus.core.nimfs.manager import NimFSManager
+        mmu._nimfs_manager = NimFSManager(workspace_path=workspace)
+
+        # Create Memo tool (backward-compat bridge to NimFS)
         memo_def, memo_func, session_manager, global_manager = create_memo_tool(workspace, session_id)
         mmu._memo_manager = session_manager
         mmu._global_memo_manager = global_manager
@@ -1078,7 +1087,7 @@ class AgentOS:
                 return truncated + "...[已压缩]"
 
             # Create a summarizer that uses the LLM to generate a summary
-            # Read Memo content to include in summary (so passwords/key info survive)
+            # Read Memo/NimFS content to include in summary (so key info survives compaction)
             memo_context = ""
             if hasattr(mmu, '_memo_manager') and mmu._memo_manager:
                 try:
@@ -1088,9 +1097,19 @@ class AgentOS:
                 except Exception:
                     pass
 
-            # Read Global Memo to include in summary
+            # Read Global knowledge from NimFS (preferred) or legacy Global Memo
             global_memo_context = ""
-            if hasattr(mmu, '_global_memo_manager') and mmu._global_memo_manager:
+            if hasattr(mmu, '_nimfs_manager') and mmu._nimfs_manager:
+                try:
+                    gc = mmu._nimfs_manager.load_context(
+                        current_goal="Summarize project knowledge for compaction",
+                        max_chars=500
+                    )
+                    if gc and gc.strip():
+                        global_memo_context = gc.strip()[:300]
+                except Exception:
+                    pass
+            if not global_memo_context and hasattr(mmu, '_global_memo_manager') and mmu._global_memo_manager:
                 try:
                     gc = mmu._global_memo_manager.read()
                     if gc and gc.strip():

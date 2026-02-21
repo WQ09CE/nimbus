@@ -108,9 +108,16 @@ class SSEHub:
         )
 
         async with self._lock:
-            if session_id not in self._connections:
-                self._connections[session_id] = []
-            self._connections[session_id].append(connection)
+            # 踢掉旧连接：同一 session 只允许一个活跃 SSE 连接
+            existing = self._connections.get(session_id, [])
+            if existing:
+                import logging
+                logging.getLogger(__name__).info(
+                    f"[SSEHub] Closing {len(existing)} existing connection(s) for session {session_id} (new subscriber)"
+                )
+                for old_conn in existing:
+                    await old_conn.queue.put(None)  # Signal old connections to close
+            self._connections[session_id] = [connection]
 
             # Replay any buffered events from before subscribe was called
             pending = self._pending_events.pop(session_id, [])

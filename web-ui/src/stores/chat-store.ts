@@ -397,8 +397,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const status = await getSessionStatus(session.id);
         if (status.running) {
           console.log("[Store] Session has active task, reconnecting...");
-          // Reconnect in background
-          setTimeout(() => get().reconnectToSession(session.id), 100);
+          // Reconnect in background (use setTimeout to let state settle)
+          setTimeout(() => {
+            const currentState = get();
+            // Double-check: avoid reconnect if sendMessage already started streaming
+            if (!currentState.isStreaming) {
+              get().reconnectToSession(session.id);
+            } else {
+              console.log("[Store] Already streaming, skip reconnect");
+            }
+          }, 100);
         }
       } catch (err) {
         // Status check failed, not critical
@@ -899,8 +907,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   reconnectToSession: async (sessionId: string) => {
-    const { session } = get();
+    const { session, isStreaming, streamAbortController } = get();
     if (!session || session.id !== sessionId) return;
+
+    // 防重入：如果已有 stream 在跑，先 abort 旧的
+    if (isStreaming && streamAbortController) {
+      console.log("[Store] Aborting existing stream before reconnect");
+      streamAbortController.abort();
+    }
 
     const abortController = new AbortController();
 

@@ -12,6 +12,7 @@ Token lifecycle:
 
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Dict, Optional
@@ -43,6 +44,13 @@ STEALTH_HEADERS = {
 
 CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 
+# ---------------------------------------------------------------------------
+# Module-level singleton for cross-instance token sharing
+# ---------------------------------------------------------------------------
+_global_auth: Optional[Dict] = None
+_global_auth_path: Optional[Path] = None
+_refresh_lock = threading.Lock()
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -55,8 +63,20 @@ def load_oauth_token(auth_path: Optional[Path] = None) -> Optional[Dict]:
     Returns ``{"access": "...", "refresh": "...", "expires": ...}`` on
     success, or ``None`` if the file does not exist or has no ``anthropic``
     key.
+
+    All callers sharing the same *auth_path* receive the **same** dict
+    object (module-level singleton) so that a refresh performed by any
+    adapter instance is immediately visible to all others.
     """
+    global _global_auth, _global_auth_path
+
     path = auth_path or AUTH_JSON_PATH
+
+    # If we already have a global auth dict for this path, return it
+    # (all adapters share the same dict object)
+    if _global_auth is not None and _global_auth_path == path:
+        logger.debug("Returning shared OAuth token singleton")
+        return _global_auth
 
     if not path.exists():
         logger.debug("Auth file not found: %s", path)
@@ -78,7 +98,11 @@ def load_oauth_token(auth_path: Optional[Path] = None) -> Optional[Dict]:
         "Loaded OAuth token (expires in %.1f min)",
         (auth.get("expires", 0) - time.time() * 1000) / 1000 / 60,
     )
-    return auth
+
+    # Store as global singleton
+    _global_auth = auth
+    _global_auth_path = path
+    return _global_auth
 
 
 def check_and_refresh(
@@ -115,8 +139,18 @@ def check_and_refresh(
         logger.debug("OAuth token valid for %.0f more minutes", remaining_min)
         return auth["access"]
 
-    logger.info("OAuth token expired or expiring soon, refreshing...")
-    return _refresh_token(auth, auth_path)
+    # Use lock to prevent concurrent refresh attempts
+    with _refresh_lock:
+        # Double-check after acquiring lock (another thread may have refreshed)
+        now_ms = time.time() * 1000
+        expires_ms = auth.get("expires", 0)
+        remaining_ms = expires_ms - now_ms
+        if remaining_ms > REFRESH_BUFFER_MS:
+            logger.debug("OAuth token was refreshed by another thread")
+            return auth["access"]
+
+        logger.info("OAuth token expired or expiring soon, refreshing...")
+        return _refresh_token(auth, auth_path)
 
 
 # ---------------------------------------------------------------------------

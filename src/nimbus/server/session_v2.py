@@ -581,21 +581,9 @@ class SessionManagerV2:
                 queue.put_nowait(None)
                 await consumer_task
 
-            # Emit the final message content (only if not already streamed)
-            if result.output and not (result.meta and result.meta.get("streamed")):
-                # Stream output character by character (simulating typing)
-                content = str(result.output)
-                chunk_size = 10  # Send 10 chars at a time
-                for i in range(0, len(content), chunk_size):
-                    chunk = content[i : i + chunk_size]
-                    await self._sse_hub.publish(
-                        session_id,
-                        "message",
-                        {"content": chunk},
-                    )
-                    await asyncio.sleep(0.01)  # Small delay for smooth streaming
-            elif not result.output and not (result.meta and result.meta.get("streamed")):
-                # Only warn if there's no output AND content wasn't streamed
+            # Note: LLM output is already streamed via THINKING events in real-time.
+            # No need to re-emit result.output here — doing so causes duplicate messages.
+            if not result.output:
                 logger.warning(f"[stream_chat] NO OUTPUT in result for session {session_id}")
 
             # Clear events for next turn

@@ -648,26 +648,53 @@ class MMU:
             token_count += summary_msg.token_estimate()
             messages.append(summary_msg.to_dict())
 
-        # --- Global Memo (跨会话知识) ---
-        GLOBAL_MEMO_TOKEN_CAP = 2000
-        if hasattr(self, '_global_memo_manager') and self._global_memo_manager:
+        # --- NimFS Knowledge Injection (replaces old Global Memo + Session Memo) ---
+        # Phase 1: Load curated context from NimFS Memory (replaces global memo)
+        NIMFS_CONTEXT_TOKEN_CAP = 2000
+        nimfs_context_loaded = False
+        if hasattr(self, '_nimfs_manager') and self._nimfs_manager:
             try:
-                global_content = self._global_memo_manager.read()
-                if global_content and global_content.strip():
-                    global_msg = Message(
+                # Derive goal from pinned context or fallback
+                _goal = "General project knowledge"
+                if self._pinned and self._pinned.goal:
+                    _goal = self._pinned.goal
+                nimfs_context = self._nimfs_manager.load_context(
+                    current_goal=_goal, max_chars=3000
+                )
+                if nimfs_context and nimfs_context.strip():
+                    nimfs_msg = Message(
                         role="system",
-                        content=f"🌐 [Global Memo - 跨会话知识]:\n{global_content}",
-                        meta={"type": "global_memo"}
+                        content=f"🌐 [Global Memo - 跨会话知识]:\n{nimfs_context}",
+                        meta={"type": "nimfs_context"}
                     )
-                    global_tokens = min(global_msg.token_estimate(), GLOBAL_MEMO_TOKEN_CAP)
-                    if token_count + global_tokens < max_tokens:
-                        messages.append(global_msg.to_dict())
-                        token_count += global_tokens
+                    ctx_tokens = min(nimfs_msg.token_estimate(), NIMFS_CONTEXT_TOKEN_CAP)
+                    if token_count + ctx_tokens < max_tokens:
+                        messages.append(nimfs_msg.to_dict())
+                        token_count += ctx_tokens
+                        nimfs_context_loaded = True
             except Exception:
                 pass
 
-        # --- Memo (好记性不如烂笔头) ---
-        # Auto-inject memo content if MemoManager is attached
+        # Fallback: legacy global memo adapter (backward compat during migration)
+        if not nimfs_context_loaded:
+            GLOBAL_MEMO_TOKEN_CAP = 2000
+            if hasattr(self, '_global_memo_manager') and self._global_memo_manager:
+                try:
+                    global_content = self._global_memo_manager.read()
+                    if global_content and global_content.strip():
+                        global_msg = Message(
+                            role="system",
+                            content=f"🌐 [Global Memo - 跨会话知识]:\n{global_content}",
+                            meta={"type": "global_memo"}
+                        )
+                        global_tokens = min(global_msg.token_estimate(), GLOBAL_MEMO_TOKEN_CAP)
+                        if token_count + global_tokens < max_tokens:
+                            messages.append(global_msg.to_dict())
+                            token_count += global_tokens
+                except Exception:
+                    pass
+
+        # Phase 2: Session memo (NimFS Artifact-backed or legacy adapter)
         if hasattr(self, '_memo_manager') and self._memo_manager:
             try:
                 memo_content = self._memo_manager.read()

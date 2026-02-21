@@ -639,19 +639,19 @@ class TestToolRegistration:
         for name, func in NIMFS_TOOL_FUNCTIONS.items():
             assert callable(func), f"Tool function '{name}' is not callable"
 
-    def test_nimfs_tools_not_in_all_tools(self):
-        """ALL_TOOLS should NOT contain NimFS tools (they are registered separately).
+    def test_nimfs_tools_in_all_tools(self):
+        """ALL_TOOLS MUST contain all 6 NimFS tools (registered via grant_full_nimfs_tools).
 
-        This documents the current state. If NimFS tools are later added to ALL_TOOLS,
-        this test should be updated accordingly.
+        Since commit 4c4545a ('feat: grant full NimFS tools to all agent profiles'),
+        NimFS tools are included in ALL_TOOLS for every agent profile.
+        This test verifies the current (correct) state.
         """
         from nimbus.tools import ALL_TOOLS, NIMFS_TOOLS
 
         all_tool_names = {t["name"] for t in ALL_TOOLS}
         nimfs_tool_names = {t["name"] for t in NIMFS_TOOLS}
 
-        overlap = all_tool_names & nimfs_tool_names
-        assert len(overlap) == 0, (
-            f"NimFS tools found in ALL_TOOLS: {overlap}. "
-            f"This may be intentional (H002) or a bug."
+        assert nimfs_tool_names.issubset(all_tool_names), (
+            f"NimFS tools missing from ALL_TOOLS: {nimfs_tool_names - all_tool_names}. "
+            f"All agent profiles should have NimFS tools registered."
         )

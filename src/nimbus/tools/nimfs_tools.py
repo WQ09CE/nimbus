@@ -247,7 +247,7 @@ async def nimfs_search_memory(
     query: str,
     category: str = "",
     top_k: str = "5",
-    scope: str = "project",
+    scope: str = "all",
     **ctx: Any,
 ) -> str:
     """
@@ -260,7 +260,7 @@ async def nimfs_search_memory(
         query:    Search query string.
         category: Optional category filter (leave empty for all categories).
         top_k:    Maximum number of results to return (default "5").
-        scope:    "project" | "global" | "all" (default "project").
+        scope:    "project" | "global" | "all" (default "all").
 
     Returns:
         Formatted list of matching memory entries with L0 summaries.
@@ -432,7 +432,7 @@ NIMFS_SEARCH_MEMORY_TOOL: Dict[str, Any] = {
             "query":    {"type": "string", "description": "Search query string"},
             "category": {"type": "string", "description": "Optional category filter"},
             "top_k":    {"type": "string", "description": "Max results to return (default '5')"},
-            "scope":    {"type": "string", "description": "project | global | all (default 'project')"},
+            "scope":    {"type": "string", "description": "project | global | all (default 'all')"},
         },
         "required": ["query"],
     },

@@ -24,6 +24,34 @@ BASE_RULES = """\
 6. **Sequential Tool Calls**: When multiple tools are needed in sequence, call the FIRST tool now. After receiving its result, call the NEXT tool. Never describe future tool calls as text.
 """
 
+NIMFS_MEMORY_RULES = """\
+## NimFS Memory 维护规范
+你有 `NimFSWriteMemory` 和 `NimFSSearchMemory`、`NimFSLoadContext` 工具来维护长期记忆。
+
+### 写入规则（何时写、写什么）
+在以下情况主动调用 `NimFSWriteMemory` 写入：
+- **任务完成后**：把关键发现、决策、结论写入 memory（category="cases" 或 "patterns"）
+- **发现重要规律**：架构模式、设计决策、踩坑经验 → category="patterns", scope="global"
+- **记录重要事件**：里程碑、版本变更、重大修复 → category="events", scope="project"
+- **发现关键实体**：重要文件路径、模块职责、接口契约 → category="entities", scope="project"
+
+### 写入质量要求
+- `title`：简洁描述性标题，**必须具体**（禁止用 "General"、"Notes" 等泛泛标题）
+- `summary`：< 150 字的精华摘要，这是 Anchor 注入时展示的唯一内容，务必信息密度高
+- `content`：完整细节，支持 Markdown
+- `tags`：至少填写 1 个相关标签（如 "nimfs,architecture" 或 "bugfix,vcpu"）
+- `scope`：跨项目通用经验用 "global"，项目特定信息用 "project"（默认）
+
+### 禁止行为
+- ❌ 禁止写 title="Global profile"、"Agent role"、"General" 等无意义条目
+- ❌ 禁止将自身角色信息（"I am a Nimbus agent"）写入 profile 类别
+- ❌ 禁止重复写入已存在的相同内容（写前先 `NimFSSearchMemory` 检查）
+- ❌ 禁止 summary 为空或与 title 完全相同
+
+### 任务开始时
+如果是复杂任务，先调用 `NimFSLoadContext(goal="...")` 加载相关历史知识。
+"""
+
 # =============================================================================
 # Role-Specific Core Instructions
 # =============================================================================
@@ -94,6 +122,7 @@ You are the **Implementer Agent** — the hands-on engineer.
 - Read files before editing to understand existing content.
 - Use exact filenames and patterns from the task description.
 - If something fails, try to fix it before giving up.
+- **Memory**: After completing significant work, use `NimFSWriteMemory` to record key findings, decisions, and patterns for future sessions.
 - **Task Completion**: When you have completed all changes, call `SubmitResult(result="your summary of changes")` to deliver your results back to the orchestrator.
 """
 
@@ -174,7 +203,7 @@ All specialist tools support optional parameters:
 1. **Understand first**: Use Explore to understand before requesting implementation
 2. **Delegate early**: Don't think through the full solution yourself — delegate to specialists
 3. **Verify results**: After implementation, use Test or Verify to check work
-4. **Use Memo**: Save important context and decisions for continuity
+4. **Use NimFS Memory**: After completing tasks, use `NimFSWriteMemory` to persist key decisions, patterns, and findings. Use `NimFSLoadContext` at the start of complex tasks to recall relevant history.
 5. **Respect user's model choice**: If the user specifies a model (e.g., "用 gemini 分析"), pass it via the `model` parameter
 """
 
@@ -246,7 +275,12 @@ class PromptManager:
         # 2. Base Rules (Common)
         parts.append(BASE_RULES)
 
-        # 3. Model Specifics
+        # 3. NimFS Memory Rules (for agents with write access)
+        roles_with_memory = {"implementer", "orchestrator", "executor"}
+        if role.lower() in roles_with_memory:
+            parts.append(NIMFS_MEMORY_RULES)
+
+        # 4. Model Specifics
         model_id = model_id.lower()
         if "gpt" in model_id or "codex" in model_id or "o1" in model_id:
             parts.append(TRAIT_CODEX)
