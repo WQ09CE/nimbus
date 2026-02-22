@@ -61,8 +61,9 @@ READ_TOOL: Dict[str, Any] = {
     "name": "Read",
     "description": (
         "Read the contents of a file. Supports text files and images (jpg, png, gif, webp). "
-        "Images are sent as attachments. For text files, output is truncated to 2000 lines "
-        "or 50KB (whichever is hit first). Use offset/limit for large files. "
+        "Images are sent as attachments. For text files, output is truncated to 4000 lines "
+        "or 200KB (whichever is hit first). Most files fit in a single read — just pass file_path "
+        "without offset/limit. Only use offset/limit for very large files (>4000 lines). "
         "When you need the full file, continue with offset until complete."
     ),
     "function": read_file,
@@ -79,7 +80,7 @@ READ_TOOL: Dict[str, Any] = {
             },
             "limit": {
                 "type": "integer",
-                "description": "Maximum number of lines to read",
+                "description": "Maximum number of lines to read (default: 4000, usually no need to set this)",
             },
         },
         "required": ["file_path"],
