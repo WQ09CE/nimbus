@@ -172,7 +172,7 @@ class TestSpecialistProfiles:
     """Tests for specialist AgentProfile factory methods in profile.py."""
 
     def test_create_explorer_profile(self):
-        """Explorer: read-only tools, max_iterations=40."""
+        """Explorer: read-only tools, max_iterations=50."""
         from nimbus.core.profile import AgentProfile
 
         with patch("nimbus.orchestration.prompts.PromptManager.get_system_prompt", return_value=""):
@@ -185,7 +185,7 @@ class TestSpecialistProfiles:
         # Write/Edit must NOT be in explorer tools
         assert "Write" not in profile.allowed_tools
         assert "Edit" not in profile.allowed_tools
-        assert profile.max_iterations == 40
+        assert profile.max_iterations == 50
 
     def test_create_implementer_profile(self):
         """Implementer: 6 full tools + NimFS, max_iterations=50."""
@@ -201,7 +201,7 @@ class TestSpecialistProfiles:
         assert profile.max_iterations == 50
 
     def test_create_architect_profile(self):
-        """Architect: write_filter=['.md'], max_iterations=30."""
+        """Architect: write_filter=['.md'], max_iterations=50."""
         from nimbus.core.profile import AgentProfile
 
         with patch("nimbus.orchestration.prompts.PromptManager.get_system_prompt", return_value=""):
@@ -209,10 +209,10 @@ class TestSpecialistProfiles:
 
         assert profile.role == "architect"
         assert profile.write_filter == [".md"]
-        assert profile.max_iterations == 30
+        assert profile.max_iterations == 50
 
     def test_create_tester_profile(self):
-        """Tester: read+exec only tools, max_iterations=40."""
+        """Tester: read+exec only tools, max_iterations=50."""
         from nimbus.core.profile import AgentProfile
 
         with patch("nimbus.orchestration.prompts.PromptManager.get_system_prompt", return_value=""):
@@ -223,7 +223,7 @@ class TestSpecialistProfiles:
         assert "Bash" in profile.allowed_tools
         assert "Write" not in profile.allowed_tools
         assert "Edit" not in profile.allowed_tools
-        assert profile.max_iterations == 40
+        assert profile.max_iterations == 50
 
     def test_create_orchestrator_profile(self):
         """Orchestrator: max_consecutive_thoughts=1, max_iterations=50."""

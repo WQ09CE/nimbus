@@ -16,9 +16,9 @@ from typing import Any, Dict, Optional, Tuple
 # Previous: 300 lines / 12KB (too conservative for modern models)
 # Current: Intelligent scaling based on context capacity and file size
 
-# Base limits for 100k context models (8x improvement over legacy limits)
-DEFAULT_MAX_LINES = 2000  # ~100KB for typical code files
-DEFAULT_MAX_BYTES = 100 * 1024  # 100KB ≈ 33k tokens (vs old 12KB)
+# Base limits for 100k+ context models (generous for modern LLMs)
+DEFAULT_MAX_LINES = 4000  # ~200KB for typical code files
+DEFAULT_MAX_BYTES = 200 * 1024  # 200KB ≈ 66k tokens (vs old 100KB)
 
 
 def get_smart_limits(context_capacity: Optional[int] = None, file_size: Optional[int] = None) -> tuple[int, int]:
@@ -34,23 +34,18 @@ def get_smart_limits(context_capacity: Optional[int] = None, file_size: Optional
     """
     context_capacity = context_capacity or 100_000  # Default to 100k
 
-    # Simple scaling: larger context = more generous limits
     if context_capacity >= 200_000:
-        # Very large context (200k+): be generous
-        max_lines = 4000
-        max_bytes = 200 * 1024  # 200KB
+        max_lines = 8000
+        max_bytes = 400 * 1024  # 400KB
     elif context_capacity >= 100_000:
-        # Large context (100k+): use default modern limits
-        max_lines = DEFAULT_MAX_LINES
-        max_bytes = DEFAULT_MAX_BYTES
+        max_lines = DEFAULT_MAX_LINES   # 4000
+        max_bytes = DEFAULT_MAX_BYTES    # 200KB
     elif context_capacity >= 32_000:
-        # Medium context (32k-100k): scale down
-        max_lines = 1000
-        max_bytes = 50 * 1024  # 50KB
+        max_lines = 2000
+        max_bytes = 100 * 1024  # 100KB
     else:
-        # Small context (<32k): be conservative
-        max_lines = 300
-        max_bytes = 12 * 1024  # 12KB
+        max_lines = 500
+        max_bytes = 25 * 1024  # 25KB
 
     # File size optimization: if file is small, read it all
     if file_size and file_size <= max_bytes // 4:

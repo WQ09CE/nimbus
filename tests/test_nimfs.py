@@ -393,12 +393,15 @@ def test_tools_import():
         nimfs_list_artifacts,
         nimfs_write_memory,
         nimfs_search_memory,
+        nimfs_list_memory,
+        nimfs_update_profile,
         nimfs_load_context,
         NIMFS_TOOLS,
         NIMFS_TOOL_FUNCTIONS,
     )
-    assert len(NIMFS_TOOLS) == 6
+    assert len(NIMFS_TOOLS) == 8
     assert "NimFSWriteArtifact" in NIMFS_TOOL_FUNCTIONS
+    assert "NimFSListMemory" in NIMFS_TOOL_FUNCTIONS
 
 
 # =============================================================================

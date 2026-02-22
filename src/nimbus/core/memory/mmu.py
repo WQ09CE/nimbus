@@ -31,6 +31,7 @@ Design Principles (Simplified):
 """
 
 import hashlib
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -61,6 +62,11 @@ _NIMFS_NO_OFFLOAD = frozenset({
     "NimFSWriteArtifact",
     "NimFSWriteMemory",
 })
+
+# Lazy Expansion: auto-expand NimFS refs in _optimize_context
+_NIMFS_REF_PATTERN = re.compile(r"nimfs://artifact/([\w\-]+)")
+_NIMFS_OFFLOAD_MARKER = "[NimFS Auto-Offload]"
+_INLINE_EXPAND_MAX_CHARS = 15_000   # Don't expand artifacts larger than this
 
 
 @dataclass
@@ -393,12 +399,13 @@ class MMU:
                 summary=content[:150].replace("\n", " "),
             )
 
+            preview_len = min(2000, len(content))
             return (
                 f"[NimFS Auto-Offload] Tool '{tool_name}' returned {len(content):,} chars "
                 f"(exceeded {self.config.nimfs_offload_threshold:,} threshold).\n"
                 f"Full output stored at: {ref}\n"
                 f"Use NimFSReadArtifact(ref='{ref}') to retrieve the complete content.\n\n"
-                f"Preview:\n{content[:300]}..."
+                f"Preview:\n{content[:preview_len]}{'...' if len(content) > preview_len else ''}"
             )
         except Exception:
             # Offload failed — return original content unchanged (graceful degradation)
@@ -522,6 +529,7 @@ class MMU:
     def _optimize_context(self, messages: List[Dict[str, Any]], hot_count: int = 0) -> List[Dict[str, Any]]:
         """
         Optimize context by:
+        0. Lazy-expand NimFS offloaded refs if token budget allows (hot context only).
         1. Downgrading duplicate/budget-exceeding images.
         2. Truncating massive tool outputs in the view (preserving storage).
         """
@@ -530,15 +538,67 @@ class MMU:
         HISTORY_MAX_TOOL_CHARS = 1_000    # History: 只保留摘要级内容
 
         total = len(messages)
-        # hot_count=0 means "all hot" (backward compat with _downgrade_seen_images)
-        hot_boundary = 0 if hot_count == 0 else total - hot_count  # messages[hot_boundary:] 是 hot
+        hot_boundary = 0 if hot_count == 0 else total - hot_count
 
-        # 1. Image Downgrade Logic
+        # --- Phase 0: NimFS Lazy Expansion ---
+        # For hot-context tool results that were auto-offloaded, expand them
+        # back inline if we have enough token budget. This eliminates the
+        # "useless round-trip" where the agent manually calls NimFSReadArtifact.
+        if self.nimfs_workspace:
+            # Estimate current total chars (rough: only count string content)
+            total_chars = 0
+            for m in messages:
+                c = m.get("content", "")
+                if isinstance(c, str):
+                    total_chars += len(c)
+                elif isinstance(c, list):
+                    for block in c:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            total_chars += len(block.get("text", ""))
+
+            budget_chars = (self.config.max_context_tokens * 4) - total_chars  # ~1 token ≈ 4 chars
+
+            # Scan hot context from most recent → oldest (most recent = most relevant)
+            for i in range(total - 1, max(hot_boundary - 1, -1), -1):
+                msg = messages[i]
+                if msg.get("role") != "tool":
+                    continue
+                content = msg.get("content", "")
+                if not isinstance(content, str):
+                    continue
+                if _NIMFS_OFFLOAD_MARKER not in content:
+                    continue
+
+                ref_match = _NIMFS_REF_PATTERN.search(content)
+                if not ref_match:
+                    continue
+
+                ref = f"nimfs://artifact/{ref_match.group(1)}"
+
+                try:
+                    from nimbus.core.nimfs.manager import NimFSManager
+                    manager = NimFSManager(self.nimfs_workspace)
+                    manifest = manager.get_artifact_manifest(ref)
+                    artifact_size = manifest.size_bytes
+
+                    if (artifact_size <= _INLINE_EXPAND_MAX_CHARS
+                            and artifact_size <= budget_chars * 0.5):
+                        # Budget allows: expand inline
+                        full_content = manager.read_artifact(ref)
+                        new_msg = dict(msg)
+                        new_msg["content"] = full_content
+                        messages[i] = new_msg
+                        budget_chars -= artifact_size
+                        total_chars += artifact_size - len(content)
+                    # else: leave the offload ref as-is, will get enhanced preview below
+                except Exception:
+                    pass  # Expansion failed — keep original ref message
+
+        # --- Phase 1: Image Downgrade Logic (backwards scan) ---
         keep_indices = set()
         seen_keys = set()
         current_image_tokens = 0
         
-        # Scan backwards for images
         for i in range(len(messages) - 1, -1, -1):
             msg = messages[i]
             content = msg.get("content")
@@ -548,7 +608,6 @@ class MMU:
                     if isinstance(block, dict) and block.get("type") == "image":
                         key = self._image_key(block)
                         if key in seen_keys: continue
-                        
                         img_tokens = IMAGE_TOKEN_ESTIMATE 
                         if current_image_tokens + img_tokens <= self.config.max_image_tokens:
                             keep_indices.add((i, j))
@@ -557,7 +616,7 @@ class MMU:
                         else:
                             seen_keys.add(key)
 
-        # 2. Rebuild with Optimizations
+        # --- Phase 2: Rebuild with Optimizations ---
         result = []
         for i, msg in enumerate(messages):
             # --- Tool Output Truncation ---
@@ -582,7 +641,6 @@ class MMU:
                 
             new_content = []
             changed = False
-            
             for j, block in enumerate(content):
                 if isinstance(block, dict) and block.get("type") == "image":
                     if (i, j) in keep_indices:

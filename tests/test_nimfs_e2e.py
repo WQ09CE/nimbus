@@ -614,11 +614,11 @@ class TestToolRegistration:
         assert isinstance(NIMFS_TOOL_FUNCTIONS, dict)
 
     def test_nimfs_tools_count(self):
-        """There should be exactly 6 NimFS tool definitions."""
+        """There should be exactly 8 NimFS tool definitions."""
         from nimbus.tools import NIMFS_TOOLS
 
-        assert len(NIMFS_TOOLS) == 6, (
-            f"Expected 6 NimFS tools, got {len(NIMFS_TOOLS)}: "
+        assert len(NIMFS_TOOLS) == 8, (
+            f"Expected 8 NimFS tools, got {len(NIMFS_TOOLS)}: "
             f"{[t['name'] for t in NIMFS_TOOLS]}"
         )
 

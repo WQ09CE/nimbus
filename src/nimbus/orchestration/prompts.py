@@ -45,6 +45,7 @@ NIMFS_MEMORY_RULES = """\
 ### 禁止行为
 - ❌ 禁止写 title="Global profile"、"Agent role"、"General" 等无意义条目
 - ❌ 禁止将自身角色信息（"I am a Nimbus agent"）写入 profile 类别
+- ❌ Specialist agents（Explorer/Implementer/Architect/Tester）禁止写入任何 memory —— 你的任务是完成工作并返回结果，不是记录笔记
 - ❌ 禁止重复写入已存在的相同内容（写前先 `NimFSSearchMemory` 检查）
 - ❌ 禁止 summary 为空或与 title 完全相同
 
@@ -275,9 +276,8 @@ class PromptManager:
         # 2. Base Rules (Common)
         parts.append(BASE_RULES)
 
-        # 3. NimFS Memory Rules (for agents with write access)
-        roles_with_memory = {"implementer", "orchestrator", "executor"}
-        if role.lower() in roles_with_memory:
+        # 3. NimFS Memory Rules (all agents have NimFSWriteMemory, so all need the rules)
+        if True:  # All roles get memory rules — prevents garbage "Agent role" entries
             parts.append(NIMFS_MEMORY_RULES)
 
         # 4. Model Specifics

@@ -407,14 +407,14 @@ class NimFSManager:
         scope: str = "project",  # "project" | "global" | "all"
     ) -> List[MemoryEntry]:
         """
-        Keyword search over memory entries (Phase 0: title + tags matching).
+        Keyword search over memory entries with wildcard and list-all support.
 
-        Searches title and tags for case-insensitive substring matches.
-        Scans the specified scope(s) and returns top_k results sorted by
-        updated_at descending.
+        Searches title, tags, and L0 abstract for case-insensitive matches.
+        Supports wildcards (* and ?) via fnmatch. When query is empty, "*",
+        or "**", enters list-all mode and returns all entries.
 
         Args:
-            query:          Search query string.
+            query:          Search query string. Use "*" or "" to list all.
             category:       Optional category filter.
             top_k:          Maximum number of results.
             min_confidence: Minimum confidence threshold.
@@ -426,7 +426,13 @@ class NimFSManager:
         Note:
             Phase 1 will upgrade this to hybrid vector + keyword search.
         """
-        query_lower = query.lower()
+        import fnmatch
+
+        query_stripped = query.strip()
+        query_lower = query_stripped.lower()
+        # List-all mode: empty query, "*", or "**"
+        list_all = query_stripped in ("", "*", "**")
+
         results: List[MemoryEntry] = []
 
         search_roots: List[Path] = []
@@ -460,16 +466,73 @@ class NimFSManager:
                     if entry.confidence < min_confidence:
                         continue
 
-                    # Match against title and tags (token-based OR match)
+                    # List-all mode: skip keyword matching
+                    if list_all:
+                        results.append(entry)
+                        continue
+
+                    # Build searchable text: title + tags + L0 abstract
                     searchable = entry.title.lower() + " " + " ".join(entry.tags).lower()
-                    tokens = [t for t in query_lower.split() if len(t) > 1]
+                    l0_path = entry_dir / "l0.abstract"
+                    if l0_path.exists():
+                        try:
+                            l0_text = l0_path.read_text(encoding="utf-8").lower()
+                            searchable += " " + l0_text
+                        except Exception:
+                            pass
+
+                    # Tokenize query (include single-char tokens)
+                    tokens = [t for t in query_lower.split() if len(t) > 0]
                     if not tokens:
                         tokens = [query_lower]
-                    if any(token in searchable for token in tokens):
+
+                    # Match: wildcard tokens use fnmatch, others use substring
+                    searchable_words = searchable.split()
+                    matched = False
+                    for token in tokens:
+                        if "*" in token or "?" in token:
+                            # Wildcard: match against individual words
+                            if any(fnmatch.fnmatch(word, token) for word in searchable_words):
+                                matched = True
+                                break
+                        else:
+                            # Substring match against full searchable text
+                            if token in searchable:
+                                matched = True
+                                break
+
+                    if matched:
                         results.append(entry)
 
         results.sort(key=lambda e: e.updated_at, reverse=True)
         return results[:top_k]
+
+    def list_memory(
+        self,
+        category: Optional[MemoryCategory] = None,
+        scope: str = "project",
+        top_k: int = 50,
+    ) -> List[MemoryEntry]:
+        """
+        List all memory entries, optionally filtered by category and scope.
+
+        Convenience wrapper around search_memory with list-all mode.
+
+        Args:
+            category: Optional category filter.
+            scope:    "project", "global", or "all".
+            top_k:    Maximum number of entries to return.
+
+        Returns:
+            List of MemoryEntry, sorted by updated_at descending.
+        """
+        return self.search_memory(
+            query="*",
+            category=category,
+            top_k=top_k,
+            min_confidence=0.0,
+            scope=scope,
+        )
 
     def load_context(self, current_goal: str, max_chars: int = 3000) -> str:
         """

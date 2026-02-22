@@ -99,6 +99,87 @@ class MockToolExecutor:
 
 
 # =============================================================================
+# Mock Tools
+# =============================================================================
+
+MOCK_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "Read",
+            "description": "Read a file",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "Path to file"}
+                },
+                "required": ["file_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "Write",
+            "description": "Write a file",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "Path to file"},
+                    "content": {"type": "string", "description": "Content to write"}
+                },
+                "required": ["file_path", "content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "Edit",
+            "description": "Edit a file",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "Path to file"},
+                    "old_text": {"type": "string", "description": "Text to find"},
+                    "new_text": {"type": "string", "description": "Replacement text"}
+                },
+                "required": ["file_path", "old_text", "new_text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "Bash",
+            "description": "Run a bash command",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Command to run"}
+                },
+                "required": ["command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "return_result",
+            "description": "Return final result",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "result": {"type": "string", "description": "Final result"}
+                },
+                "required": ["result"]
+            }
+        }
+    },
+]
+
+
+# =============================================================================
 # Test Fixtures
 # =============================================================================
 
@@ -189,7 +270,8 @@ class TestVCPUBasic:
             decoder=decoder,
             gate=gate,
             mmu=mmu,
-            config=vcpu_config
+            config=vcpu_config,
+            tools=MOCK_TOOLS,
         )
 
         result = await vcpu.execute("Say hello")
@@ -234,7 +316,8 @@ class TestVCPUBasic:
             decoder=decoder,
             gate=gate,
             mmu=mmu,
-            config=vcpu_config
+            config=vcpu_config,
+            tools=MOCK_TOOLS,
         )
 
         result = await vcpu.execute("Read the file")
@@ -269,7 +352,8 @@ class TestVCPUBasic:
             decoder=decoder,
             gate=gate,
             mmu=mmu,
-            config=vcpu_config
+            config=vcpu_config,
+            tools=MOCK_TOOLS,
         )
 
         result = await vcpu.execute("Think about something")
@@ -311,7 +395,8 @@ class TestVCPULimits:
             decoder=decoder,
             gate=gate,
             mmu=mmu,
-            config=config
+            config=config,
+            tools=MOCK_TOOLS,
         )
 
         result = await vcpu.execute("Never-ending task")
@@ -346,7 +431,8 @@ class TestVCPULimits:
             decoder=decoder,
             gate=gate,
             mmu=mmu,
-            config=config
+            config=config,
+            tools=MOCK_TOOLS,
         )
 
         result = await vcpu.execute("Think a lot")
@@ -395,7 +481,8 @@ class TestVCPULimits:
             decoder=decoder,
             gate=gate,
             mmu=mmu,
-            config=config
+            config=config,
+            tools=MOCK_TOOLS,
         )
 
         result = await vcpu.execute("Read many files")
@@ -437,7 +524,8 @@ class TestVCPULimits:
             decoder=decoder,
             gate=gate,
             mmu=mmu,
-            config=config
+            config=config,
+            tools=MOCK_TOOLS,
         )
 
         result = await vcpu.execute("Endless task")
@@ -501,7 +589,8 @@ class TestVCPUSubCall:
             decoder=decoder,
             gate=gate,
             mmu=mmu,
-            config=vcpu_config
+            config=vcpu_config,
+            tools=MOCK_TOOLS,
         )
 
         # Before execution, we're at root frame
@@ -538,7 +627,8 @@ class TestVCPUSubCall:
             decoder=decoder,
             gate=gate,
             mmu=mmu,
-            config=config
+            config=config,
+            tools=MOCK_TOOLS,
         )
 
         result = await vcpu.execute("Deep recursion")
@@ -576,7 +666,8 @@ class TestVCPUErrors:
             decoder=decoder,
             gate=gate,
             mmu=mmu,
-            config=vcpu_config
+            config=vcpu_config,
+            tools=MOCK_TOOLS,
         )
 
         mmu.add_user_message("Read a file")
@@ -618,7 +709,8 @@ class TestVCPUStep:
             decoder=decoder,
             gate=gate,
             mmu=mmu,
-            config=vcpu_config
+            config=vcpu_config,
+            tools=MOCK_TOOLS,
         )
 
         mmu.add_user_message("Find Python files")
@@ -643,7 +735,8 @@ class TestVCPUStep:
             decoder=decoder,
             gate=gate,
             mmu=mmu,
-            config=vcpu_config
+            config=vcpu_config,
+            tools=MOCK_TOOLS,
         )
 
         mmu.add_user_message("Do something")
@@ -683,7 +776,8 @@ class TestVCPUEvents:
             decoder=decoder,
             gate=gate,
             mmu=mmu,
-            config=vcpu_config
+            config=vcpu_config,
+            tools=MOCK_TOOLS,
         )
 
         await vcpu.execute("Do something")
@@ -716,7 +810,8 @@ class TestVCPUEvents:
             decoder=decoder,
             gate=gate,
             mmu=mmu,
-            config=config
+            config=config,
+            tools=MOCK_TOOLS,
         )
 
         event_stream.clear()
@@ -748,7 +843,8 @@ class TestVCPUState:
             decoder=decoder,
             gate=gate,
             mmu=mmu,
-            config=vcpu_config
+            config=vcpu_config,
+            tools=MOCK_TOOLS,
         )
 
         await vcpu.execute("Do something")
@@ -770,7 +866,8 @@ class TestVCPUState:
             decoder=decoder,
             gate=gate,
             mmu=mmu,
-            config=vcpu_config
+            config=vcpu_config,
+            tools=MOCK_TOOLS,
         )
 
         assert vcpu.iteration == 0
@@ -834,7 +931,8 @@ class TestVCPUIntegration:
             decoder=decoder,
             gate=gate,
             mmu=mmu,
-            config=vcpu_config
+            config=vcpu_config,
+            tools=MOCK_TOOLS,
         )
 
         result = await vcpu.execute("Explore the codebase")

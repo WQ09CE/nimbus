@@ -74,3 +74,14 @@ jobs/
 
 # Build artifacts
 dist/
+
+# Temp scripts & debug artifacts
+extract.py
+patch_tools.py
+search_check.py
+test_profile.py
+test_mmu_results.txt
+test_report.txt
+reproduction_scripts/
+*.patch
+NimFS_Memo_Refactoring_Design.md

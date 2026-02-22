@@ -435,7 +435,7 @@ class TestSimpleExecution:
                 tool_calls=[
                     MockToolCall(
                         function=MockToolCall.Function(
-                            name="return_result", arguments='{"result": "Echo completed"}'
+                            name="SubmitResult", arguments='{"result": "Echo completed"}'
                         )
                     )
                 ]

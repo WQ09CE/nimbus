@@ -29,9 +29,29 @@ function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    await navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.style.position = "absolute";
+        textArea.style.left = "-999999px";
+        document.body.prepend(textArea);
+        textArea.select();
+        try {
+          document.execCommand("copy");
+        } catch (err) {
+          console.error("Fallback copy failed", err);
+        } finally {
+          textArea.remove();
+        }
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error("Copy failed", err);
+    }
   };
   return (
     <button onClick={handleCopy} className="p-1 rounded text-nimbus-text-dim hover:text-nimbus-text hover:bg-nimbus-surface transition-colors" title="Copy">
@@ -158,7 +178,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
         {/* Bubble */}
         <div
           className={`
-            relative px-3 md:px-5 py-2.5 md:py-3.5 shadow-md
+            relative px-3 md:px-5 py-2.5 md:py-3.5 shadow-md pr-10 md:pr-12
             ${isUser
               ? "bg-sky-500/15 border border-sky-400/20 backdrop-blur-md text-nimbus-text rounded-2xl rounded-tr-sm"
               : "bg-nimbus-surface backdrop-blur-xl border border-nimbus-border text-gray-100 rounded-2xl rounded-tl-sm"
@@ -167,7 +187,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
         >
           {/* Copy button - appears on hover */}
           {hasContent && (
-            <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="absolute top-2 right-2 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity z-10">
               <CopyButton text={message.content} />
             </div>
           )}

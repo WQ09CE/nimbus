@@ -44,7 +44,9 @@ from nimbus.tools.nimfs_tools import (
     nimfs_list_artifacts,
     nimfs_write_memory,
     nimfs_search_memory,
+    nimfs_list_memory,
     nimfs_load_context,
+    nimfs_update_profile,
 )
 
 if TYPE_CHECKING:

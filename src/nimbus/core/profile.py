@@ -12,8 +12,9 @@ from typing import List
 # from nimbus.orchestration.prompts import PromptManager
 
 # NimFS tool sets by access level
-_NIMFS_READ = ["NimFSReadArtifact", "NimFSListArtifacts", "NimFSSearchMemory", "NimFSLoadContext"]
+_NIMFS_READ = ["NimFSReadArtifact", "NimFSListArtifacts", "NimFSSearchMemory", "NimFSLoadContext", "NimFSListMemory"]
 _NIMFS_ALL = _NIMFS_READ + ["NimFSWriteArtifact", "NimFSWriteMemory"]
+_NIMFS_SPECIALIST = _NIMFS_READ + ["NimFSWriteArtifact"]  # Specialists can write artifacts but NOT memory
 
 @dataclass
 class AgentProfile:
@@ -73,9 +74,9 @@ class AgentProfile:
         return cls(
             name="explorer",
             role="explorer",
-            allowed_tools=["Read", "Bash", "SubmitResult"] + _NIMFS_ALL,
+            allowed_tools=["Read", "Bash", "SubmitResult"] + _NIMFS_SPECIALIST,
             system_prompt=PromptManager.get_system_prompt("explorer", model_id),
-            max_iterations=40,
+            max_iterations=50,
             max_consecutive_thoughts=2,
             write_filter=[],
         )
@@ -87,9 +88,9 @@ class AgentProfile:
         return cls(
             name="implementer",
             role="implementer",
-            allowed_tools=["Read", "Write", "Edit", "Bash", "SubmitResult"] + _NIMFS_ALL,
+            allowed_tools=["Read", "Write", "Edit", "Bash", "SubmitResult"] + _NIMFS_SPECIALIST,
             system_prompt=PromptManager.get_system_prompt("implementer", model_id),
-            max_iterations=30,
+            max_iterations=50,
             max_consecutive_thoughts=2,
             write_filter=[],
         )
@@ -101,9 +102,9 @@ class AgentProfile:
         return cls(
             name="architect",
             role="architect",
-            allowed_tools=["Read", "Write", "SubmitResult"] + _NIMFS_ALL,
+            allowed_tools=["Read", "Write", "SubmitResult"] + _NIMFS_SPECIALIST,
             system_prompt=PromptManager.get_system_prompt("architect", model_id),
-            max_iterations=30,
+            max_iterations=50,
             max_consecutive_thoughts=2,
             write_filter=[".md"],
         )
@@ -115,9 +116,9 @@ class AgentProfile:
         return cls(
             name="tester",
             role="tester",
-            allowed_tools=["Read", "Bash", "SubmitResult"] + _NIMFS_ALL,
+            allowed_tools=["Read", "Bash", "SubmitResult"] + _NIMFS_SPECIALIST,
             system_prompt=PromptManager.get_system_prompt("tester", model_id),
-            max_iterations=40,
+            max_iterations=50,
             max_consecutive_thoughts=2,
             write_filter=[],
         )

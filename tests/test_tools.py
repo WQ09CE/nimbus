@@ -71,9 +71,11 @@ class TestReadTool:
 
     @pytest.mark.asyncio
     async def test_read_truncation(self, temp_workspace):
-        """Test that large files are truncated to 2000 lines."""
+        """Test that large files are truncated to default limit (e.g. 4000 lines)."""
         test_file = temp_workspace / "large.txt"
-        content = "\n".join(f"Line {i}" for i in range(1, 3001))
+        # Using a very large file to ensure it triggers truncation even with smart limits
+        # Smart limits for a small file might be expanded, so we go much larger
+        content = "\n".join(f"Line {i}" for i in range(1, 20001))
         test_file.write_text(content)
 
         result = await read_file(

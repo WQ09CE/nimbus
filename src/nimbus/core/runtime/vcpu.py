@@ -857,11 +857,11 @@ class VCPU:
                         if (not is_final
                                 and result.output
                                 and isinstance(result.output, str)
-                                and len(result.output) > 4000):
+                                and len(result.output) > 100_000):
                             total_len = len(result.output)
-                            head = result.output[:2000]
-                            tail = result.output[-2000:]
-                            result.output = f"{head}\n\n... [Output truncated, {total_len - 4000} characters hidden. If you need the full content, use specific tools to read segments.] ...\n\n{tail}"
+                            head = result.output[:50_000]
+                            tail = result.output[-50_000:]
+                            result.output = f"{head}\n\n... [Output truncated, {total_len - 100_000} characters hidden. If you need the full content, use specific tools to read segments.] ...\n\n{tail}"
                             logger.info(f"✂️ Truncated long output from {total_len} to {len(result.output)} chars")
 
                         step_result.results.append(result)
@@ -1850,8 +1850,19 @@ One sentence summary:"""
             },
         }
 
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump(dump_data, f, ensure_ascii=False, indent=2)
+        def _safe_default(obj):
+            """Fallback serialiser for non-JSON-serialisable objects (e.g. mock dataclasses)."""
+            if hasattr(obj, "__dict__"):
+                return obj.__dict__
+            return str(obj)
+
+        try:
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(dump_data, f, ensure_ascii=False, indent=2, default=_safe_default)
+        except Exception:
+            # If serialization still fails, write a repr fallback
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(repr(dump_data))
 
         from nimbus.core.logging import get_logger
 

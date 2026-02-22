@@ -470,12 +470,14 @@ class AgentOS:
         vcpu_config = self.config.vcpu_config
         if _max_iterations is not None:
             from dataclasses import replace as dc_replace
-            # Executor-like sub-processes: set iteration limit and disable compaction.
-            # They should stop at max_iterations, not compact and continue.
+            # Sub-processes: set iteration limit with compact-and-continue.
+            # When hitting the limit, compact context and keep going (up to max_compactions).
+            # This prevents subagents from stopping mid-task.
             vcpu_config = dc_replace(
                 vcpu_config,
                 max_iterations=_max_iterations,
-                compact_on_limit=False,
+                compact_on_limit=True,
+                max_compactions=2,
             )
 
         # Create VCPU
@@ -1342,17 +1344,22 @@ class AgentOS:
                 # Check iteration limit (iteration-based budget instead of wall-clock timeout)
                 vcpu = process.vcpu
                 if vcpu._state.iteration >= vcpu.config.max_iterations:
-                    if vcpu.config.compact_on_limit:
-                        # For long-running processes (e.g. Orchestrator), compact and continue
+                    if (vcpu.config.compact_on_limit
+                            and vcpu._state.compaction_count < vcpu.config.max_compactions):
+                        # Compact context and continue (within compaction budget)
                         compacted = await self._compaction_for_process(process.pid, process.mmu)
                         if compacted:
+                            vcpu._state.compaction_count += 1
                             logger.info(
-                                f"[{process.pid}] Compaction #{vcpu._state.compaction_count} complete, "
+                                f"[{process.pid}] Compaction #{vcpu._state.compaction_count}/{vcpu.config.max_compactions} complete, "
                                 f"resetting iteration counter (was {vcpu._state.iteration})"
                             )
                             vcpu._state.iteration = 0
-                            vcpu._state.compaction_count += 1
                             continue
+                        # Compaction failed — fall through to budget exceeded
+                        logger.warning(
+                            f"[{process.pid}] Compaction failed, stopping process"
+                        )
                     # Budget exceeded (or compaction disabled/failed)
                     # Give the LLM one final step to summarize what it did
                     logger.info(

@@ -105,7 +105,7 @@ def test_add_tool_result_small_not_offloaded(mmu_with_nimfs, workspace):
 
 def test_add_tool_result_large_offloaded(mmu_with_nimfs, workspace):
     """Large tool results should be offloaded to NimFS."""
-    large = "A" * 1000  # above 500 threshold
+    large = "A" * 3000  # above 500 threshold
 
     mmu_with_nimfs.add_tool_result("call-2", "BashCommand", large)
 
@@ -118,13 +118,13 @@ def test_add_tool_result_large_offloaded(mmu_with_nimfs, workspace):
     assert "NimFS Auto-Offload" in content
     assert "nimfs://artifact/" in content
     # Should NOT contain the original large content inline
-    assert "A" * 1000 not in content
+    assert "A" * 3000 not in content
 
     # NimFS should have the artifact
     manager = NimFSManager(str(workspace))
     artifacts = manager.list_artifacts()
     assert len(artifacts) == 1
-    assert artifacts[0].size_bytes >= 1000
+    assert artifacts[0].size_bytes >= 3000
 
 
 def test_add_tool_result_large_retrieval(mmu_with_nimfs, workspace):

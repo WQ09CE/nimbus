@@ -1,12 +1,13 @@
 """
 NimFS Agent Tools
 
-Six tools that expose NimFSManager capabilities to agents:
+Seven tools that expose NimFSManager capabilities to agents:
   - NimFSWriteArtifact  : Write large pipeline products (IPC)
   - NimFSReadArtifact   : Read artifact by nimfs:// reference
   - NimFSListArtifacts  : List available artifacts
   - NimFSWriteMemory    : Write long-term memory entry
-  - NimFSSearchMemory   : Keyword search over memory
+  - NimFSSearchMemory   : Keyword search over memory (with wildcard support)
+  - NimFSListMemory     : List/browse all memory entries (no query needed)
   - NimFSLoadContext    : Load Anchor context injection package
 
 These tools follow the same dict-based registration pattern as the core tools
@@ -306,6 +307,69 @@ async def nimfs_search_memory(
     return "\n".join(lines)
 
 
+async def nimfs_list_memory(
+    category: str = "",
+    scope: str = "all",
+    top_k: str = "50",
+    **ctx: Any,
+) -> str:
+    """
+    List all memory entries in NimFS with optional category/scope filtering.
+
+    No search query needed — returns all entries. Use this to browse all
+    stored knowledge without needing specific keywords.
+
+    Args:
+        category: Optional category filter (leave empty for all categories).
+        scope:    "project" | "global" | "all" (default "all").
+        top_k:    Maximum number of entries to return (default "50").
+
+    Returns:
+        Formatted list of all memory entries with L0 summaries.
+    """
+    cat_enum: Optional[MemoryCategory] = None
+    if category.strip():
+        try:
+            cat_enum = MemoryCategory(category.lower())
+        except ValueError:
+            valid = [c.value for c in MemoryCategory]
+            return f"❌ Invalid category '{category}'. Must be one of: {valid}"
+
+    try:
+        k = int(top_k)
+    except ValueError:
+        k = 50
+
+    manager = _get_manager(**ctx)
+    results = manager.list_memory(category=cat_enum, scope=scope, top_k=k)
+
+    if not results:
+        filter_msg = f" in category '{category}'" if category.strip() else ""
+        return f"No memory entries found{filter_msg}."
+
+    lines = [f"## NimFS Memory: {len(results)} entries\n"]
+    for entry in results:
+        # Try to load L0 abstract for preview
+        try:
+            l0 = manager.read_memory(entry.memory_id, layer=0)
+            preview = l0[:150] + "..." if len(l0) > 150 else l0
+        except Exception:
+            preview = "(no preview available)"
+
+        lines.append(
+            f"### {entry.title}\n"
+            f"- **Memory ID** : {entry.memory_id}\n"
+            f"- **Category**  : {entry.category.value}\n"
+            f"- **Scope**     : {entry.scope.value}\n"
+            f"- **Confidence**: {entry.confidence:.2f}\n"
+            f"- **Tags**      : {', '.join(entry.tags) or 'none'}\n"
+            f"- **Updated**   : {entry.updated_at}\n"
+            f"- **Abstract**  : {preview}\n"
+        )
+
+    return "\n".join(lines)
+
+
 async def nimfs_load_context(goal: str, max_chars: str = "3000", **ctx: Any) -> str:
     """
     Load an optimized context injection package from NimFS for the Anchor.
@@ -396,6 +460,71 @@ NIMFS_LIST_ARTIFACTS_TOOL: Dict[str, Any] = {
     },
 }
 
+
+async def nimfs_update_profile(
+    target: str,
+    content: str,
+    summary: str = "",
+    **ctx: Any,
+) -> str:
+    """
+    Update the global profile or preferences in NimFS.
+    Overwrites any existing profile/preferences memory.
+
+    Args:
+        target:   Either "profile" or "preferences".
+        content:  Full new content to persist.
+        summary:  Compact abstract for the Anchor (< 200 chars).
+    """
+    if target not in ["profile", "preferences"]:
+        return "Error: target must be 'profile' or 'preferences'."
+        
+    manager = ctx.get("nimfs_manager")
+    if not manager:
+        return "Error: NimFSManager not injected into context."
+        
+    try:
+        from nimbus.core.nimfs.manager import MemoryCategory, MemoryScope
+        import shutil
+        
+        # Clear existing profile/preferences
+        target_dir = manager.global_root / target
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Write new memory
+        category = MemoryCategory(target)
+        memory_id = manager.write_memory(
+            category=category,
+            title=f"Global {target.capitalize()}",
+            content=content,
+            summary=summary or content[:150],
+            scope=MemoryScope.GLOBAL,
+        )
+        return f"Successfully updated global {target}. New memory ID: {memory_id}"
+    except Exception as e:
+        return f"Error updating {target}: {str(e)}"
+
+NIMFS_UPDATE_PROFILE_TOOL: Dict[str, Any] = {
+    "name": "NimFSUpdateProfile",
+    "description": (
+        "Update the global user profile or preferences memory in NimFS. "
+        "Overwrites existing entries to avoid duplication. "
+        "Use this to permanently change how the agent behaves across all sessions."
+    ),
+    "function": nimfs_update_profile,
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "target":  {"type": "string", "description": "Must be 'profile' or 'preferences'"},
+            "content": {"type": "string", "description": "Full new content to persist"},
+            "summary": {"type": "string", "description": "Compact abstract (< 200 chars) used in Anchor injection"},
+        },
+        "required": ["target", "content"],
+    },
+}
+
 NIMFS_WRITE_MEMORY_TOOL: Dict[str, Any] = {
     "name": "NimFSWriteMemory",
     "description": (
@@ -438,6 +567,24 @@ NIMFS_SEARCH_MEMORY_TOOL: Dict[str, Any] = {
     },
 }
 
+NIMFS_LIST_MEMORY_TOOL: Dict[str, Any] = {
+    "name": "NimFSListMemory",
+    "description": (
+        "List all memory entries in NimFS. No search query needed — shows all entries "
+        "with optional category/scope filtering. Use this to browse all stored knowledge."
+    ),
+    "function": nimfs_list_memory,
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "category": {"type": "string", "description": "Optional category filter (e.g. 'patterns', 'entities', 'events', 'cases')"},
+            "scope":    {"type": "string", "description": "project | global | all (default 'all')"},
+            "top_k":    {"type": "string", "description": "Max entries to return (default '50')"},
+        },
+        "required": [],
+    },
+}
+
 NIMFS_LOAD_CONTEXT_TOOL: Dict[str, Any] = {
     "name": "NimFSLoadContext",
     "description": (
@@ -462,7 +609,9 @@ NIMFS_TOOLS: List[Dict[str, Any]] = [
     NIMFS_READ_ARTIFACT_TOOL,
     NIMFS_LIST_ARTIFACTS_TOOL,
     NIMFS_WRITE_MEMORY_TOOL,
+    NIMFS_UPDATE_PROFILE_TOOL,
     NIMFS_SEARCH_MEMORY_TOOL,
+    NIMFS_LIST_MEMORY_TOOL,
     NIMFS_LOAD_CONTEXT_TOOL,
 ]
 
@@ -471,6 +620,8 @@ NIMFS_TOOL_FUNCTIONS: Dict[str, Any] = {
     "NimFSReadArtifact":  nimfs_read_artifact,
     "NimFSListArtifacts": nimfs_list_artifacts,
     "NimFSWriteMemory":   nimfs_write_memory,
+    "NimFSUpdateProfile": nimfs_update_profile,
     "NimFSSearchMemory":  nimfs_search_memory,
+    "NimFSListMemory":    nimfs_list_memory,
     "NimFSLoadContext":   nimfs_load_context,
 }

@@ -152,10 +152,14 @@ export default function Home() {
             <button
               data-testid="new-chat-button"
               onClick={() => createNewSession(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/30 text-sky-300 text-sm font-medium rounded-lg shadow-lg shadow-sky-400/10 transition-all hover:scale-[1.02] active:scale-[0.98]"
+              className="flex items-center gap-1.5 md:gap-2 px-2.5 md:px-4 py-1.5 md:py-2 bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/30 text-sky-300 text-sm font-medium rounded-lg shadow-lg shadow-sky-400/10 transition-all hover:scale-[1.02] active:scale-[0.98]"
+              title="New Chat (⌘K)"
             >
-              <span>New Chat</span>
-              <span className="text-sky-300/60 text-xs bg-sky-500/10 px-1.5 rounded">⌘K</span>
+              <svg className="w-4 h-4 md:hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              <span className="hidden md:inline">New Chat</span>
+              <span className="hidden md:inline text-sky-300/60 text-xs bg-sky-500/10 px-1.5 rounded">⌘K</span>
             </button>
           </div>
         </div>
