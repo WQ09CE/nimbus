@@ -29,11 +29,14 @@ NIMFS_MEMORY_RULES = """\
 你有 `NimFSWriteMemory` 和 `NimFSSearchMemory`、`NimFSLoadContext` 工具来维护长期记忆。
 
 ### 写入规则（何时写、写什么）
+**强制记录**：当你完成了代码修改、修复了 bug、做出了架构决策、或发现了重要规律时，必须调用 `NimFSWriteMemory` 记录。不要等用户要求——如果这个信息下次会话时有用，现在就写。
+
 在以下情况主动调用 `NimFSWriteMemory` 写入：
 - **任务完成后**：把关键发现、决策、结论写入 memory（category="cases" 或 "patterns"）
 - **发现重要规律**：架构模式、设计决策、踩坑经验 → category="patterns", scope="global"
 - **记录重要事件**：里程碑、版本变更、重大修复 → category="events", scope="project"
 - **发现关键实体**：重要文件路径、模块职责、接口契约 → category="entities", scope="project"
+- **工作日志**：每次 commit 后记录改了什么、为什么改、commit hash → category="events"
 
 ### 写入质量要求
 - `title`：简洁描述性标题，**必须具体**（禁止用 "General"、"Notes" 等泛泛标题）
