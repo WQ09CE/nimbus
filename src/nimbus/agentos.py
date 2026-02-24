@@ -38,6 +38,8 @@ from nimbus.core.scheduler import (
 
 # Session and Compaction
 from nimbus.core.session import SessionManager
+from nimbus.core.heart import Heart, HeartConfig
+from nimbus.core.heart_modules.session_monitor import SessionMonitorModule
 from nimbus.os.gate import (
     KernelGate,
     SimpleEventStream,
@@ -266,6 +268,22 @@ class AgentOS:
             config=self.config.compaction_config,
             llm=DefaultCompactionLLM(llm_client),
         )
+
+        # Initialize Heart daemon
+        self.heart = Heart(
+            HeartConfig(
+                workspace=getattr(self.config, "workspace_root", "."),
+                project_id="nimbus",
+                tick_interval=1.0,
+            )
+        )
+        self.heart.add_module(SessionMonitorModule(error_threshold=3))
+        self._heart_task: Optional[asyncio.Task] = None
+
+    def _ensure_heart_running(self) -> None:
+        """Start the Heart background task if not already running."""
+        if self._heart_task is None or self._heart_task.done():
+            self._heart_task = asyncio.create_task(self.heart.start())
 
     def _register_skill_tools(self) -> None:
         """Register all loaded skill tools."""
@@ -1301,6 +1319,7 @@ class AgentOS:
         return True
 
     async def _run_process(self, process: Process) -> ToolResult:
+        self._ensure_heart_running()
         try:
             if process.vcpu is None:
                 raise RuntimeError("Process has no VCPU")
@@ -1375,6 +1394,10 @@ class AgentOS:
                     # Run one final step for the summary
                     final_step = await process.vcpu.step()
                     process.state = "SUCCEEDED"
+                    asyncio.create_task(self.heart.inbox.put(
+                        topic="session.failure",
+                        payload={"session_id": process.session_id, "error": "Iteration budget reached, forced summary"}
+                    ))
                     # Extract LLM's text response as the output
                     summary = ""
                     if final_step.is_final and final_step.final_result:
@@ -1435,6 +1458,10 @@ class AgentOS:
                         )
                         logger.error(f"[{process.pid}] Compaction ineffective: {reason}")
                         process.state = "FAILED"
+                        asyncio.create_task(self.heart.inbox.put(
+                            topic="session.failure",
+                            payload={"session_id": process.session_id, "error": f"Compaction ineffective: {reason}"}
+                        ))
                         return ToolResult(
                             status="ERROR",
                             fault=Fault(
@@ -1481,6 +1508,10 @@ class AgentOS:
         except asyncio.CancelledError:
             process.state = "CANCELLED"
             process.signals["interrupt"] = False  # Clear stale signal so next run isn't auto-cancelled
+            asyncio.create_task(self.heart.inbox.put(
+                topic="session.timeout",
+                payload={"session_id": process.session_id, "error": "Process was cancelled/timed out"}
+            ))
             process.result = ToolResult(
                 status="CANCELLED",
                 fault=Fault(
@@ -1494,6 +1525,10 @@ class AgentOS:
 
         except Exception as e:
             process.state = "FAILED"
+            asyncio.create_task(self.heart.inbox.put(
+                topic="session.error",
+                payload={"session_id": process.session_id, "error": str(e)}
+            ))
             process.result = ToolResult(
                 status="ERROR",
                 fault=Fault(
@@ -1612,6 +1647,16 @@ class AgentOS:
             "tools": self._tools.list_tools(),
             "event_count": len(self._events.events),
         }
+
+    async def shutdown(self) -> None:
+        """Gracefully shut down AgentOS and background tasks."""
+        if self._heart_task and not self._heart_task.done():
+            self.heart.stop()
+            try:
+                await asyncio.wait_for(self._heart_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                self._heart_task.cancel()
+            logger.info("AgentOS shutdown complete.")
 
     # =========================================================================
     # Internal Methods
