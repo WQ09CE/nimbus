@@ -560,6 +560,14 @@ class AgentOS:
                 max_compactions=2,
             )
 
+        # Forward profile's max_consecutive_thoughts to VCPU config
+        if profile and profile.max_consecutive_thoughts:
+            from dataclasses import replace as dc_replace
+            vcpu_config = dc_replace(
+                vcpu_config,
+                max_consecutive_thoughts=profile.max_consecutive_thoughts,
+            )
+
         # Create VCPU
         from dataclasses import replace as _dc_replace
         manifest = _dc_replace(get_model_manifest(llm_client or self._llm), role=_role)

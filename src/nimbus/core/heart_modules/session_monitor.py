@@ -99,6 +99,22 @@ class SessionMonitorModule(HeartModule):
             f"Total errors: {error_count}"
         )
 
+        # Trigger escalation before circuit breaker (e.g. at 2 errors)
+        if error_count == 2:
+            logger.info(f"[SessionMonitor] Requesting model ESCALATION for session {session_id}")
+            await heart.outbox.put(
+                HeartMessage(
+                    id=f"esc-{int(time.time()*1000)}",
+                    topic="system.escalate",
+                    payload={
+                        "session_id": session_id,
+                        "error_count": error_count,
+                        "reason": f"Recurrent errors ({error_count})"
+                    },
+                    priority=MessagePriority.HIGH
+                )
+            )
+
         if error_count >= self.error_threshold:
             await self._generate_alert(heart, session_id, error_count)
 

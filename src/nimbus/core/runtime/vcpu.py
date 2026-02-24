@@ -257,7 +257,7 @@ class VCPU:
 
         # Initialize Model Capability Pipeline
         self.manifest = manifest or get_model_manifest("default")
-        self.pipeline = ResponsePipeline(self.manifest.features)
+        self.pipeline = ResponsePipeline(self.manifest.features, role=self.manifest.role)
 
         # self._message_queue removed in Phase 1 Refactor
 
@@ -1065,10 +1065,7 @@ class VCPU:
         # Poke: remind the specialist to use tools or SubmitResult.
         # MUST be injected as "system" role — if injected as "user", the LLM
         # treats it as a new user request and tries to "answer" it with more text.
-        poke_msg = (
-            "Continue working. If you have finished, call "
-            "SubmitResult(result='your findings') to deliver your answer."
-        )
+        poke_msg = self.manifest.features.poke_message
         self.mmu.add_system_message(poke_msg)
 
         return ToolResult(
@@ -1078,13 +1075,25 @@ class VCPU:
         )
 
     async def _handle_reply(self, action: ActionIR) -> ToolResult:
-        """Handle REPLY action.
-        
-        A REPLY is a definitive conversational response from the LLM.
-        Unlike THOUGHT, it doesn't trigger a continuation poke and
-        immediately marks the current turn as finished (returns to user).
+        """Handle REPLY action — role-aware.
+
+        Frontend roles: REPLY = final answer → terminate.
+        Backend specialists: REPLY should not directly terminate;
+        redirect to THOUGHT path for continuation poke.
         """
-        # A REPLY always acts as a RETURN
+        role = getattr(self.manifest, 'role', 'unknown')
+        BACKEND_ROLES = {"explorer", "implementer", "architect", "tester", "executor"}
+
+        if role in BACKEND_ROLES:
+            # Backend specialist's REPLY must not terminate directly
+            # Redirect to THOUGHT path which applies continuation poke
+            from nimbus.core.logging import get_logger
+            get_logger("kernel.vcpu").warning(
+                f"Backend '{role}' produced REPLY → redirecting to THOUGHT path"
+            )
+            return await self._handle_thought(action)
+
+        # Frontend role: REPLY = final answer
         return await self._handle_return(action)
 
     async def _execute_action(self, action: ActionIR) -> ToolResult:

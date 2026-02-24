@@ -73,19 +73,25 @@ class InstructionDecoder:
     )
 
     @classmethod
-    def _is_conversational_reply(cls, text: str) -> bool:
+    def _is_conversational_reply(cls, text: str, done_max_length: int = 300) -> bool:
         """
         Heuristic: detect whether a pure-text LLM response is a conversational
         final answer (should map to RETURN) rather than an intermediate thought
         (should map to THOUGHT).
 
+        Args:
+            text: The pure-text response from the LLM.
+            done_max_length: Max text length for _DONE_PATTERNS scanning.
+                             0 = disable scanning entirely.
+
         Returns True if the text appears to be a self-contained final answer.
         """
         stripped = text.strip()
 
-        # Rule 1: Explicit done markers
-        if cls._DONE_PATTERNS.search(stripped):
-            return True
+        # Rule 1: Explicit done markers — only scan short text
+        if done_max_length > 0 and len(stripped) <= done_max_length:
+            if cls._DONE_PATTERNS.search(stripped):
+                return True
 
         # Rule 2: Very short responses (≤ 120 chars) with no planning language
         # are almost certainly direct answers or greetings.
@@ -119,6 +125,7 @@ class InstructionDecoder:
         content: Optional[str],
         tool_calls: Optional[List[Any]],
         role: Optional[str] = None,
+        model_features: Optional[Any] = None,
     ) -> List[ActionIR]:
         """
         Decode LLM output into ActionIR instructions.
@@ -176,9 +183,19 @@ class InstructionDecoder:
         # 4. Handle pure thought/text if no tool calls (General Agent logic)
         elif content and content.strip():
             stripped = content.strip()
-            # Heuristic: short conversational replies or explicit "done" signals
-            # should be treated as REPLY, not THOUGHT, to avoid re-prompting loops.
-            kind = "REPLY" if self._is_conversational_reply(stripped) else "THOUGHT"
+
+            BACKEND_ROLES = {"explorer", "implementer", "architect", "tester", "executor"}
+
+            if (role in BACKEND_ROLES
+                    and model_features is not None
+                    and getattr(model_features, 'backend_reply_strategy', 'heuristic') == "strict"):
+                # Strict mode (Claude): backend specialist pure text is always THOUGHT
+                kind = "THOUGHT"
+            else:
+                # Heuristic mode (GPT/Gemini/default): use conversational reply detection
+                done_max = getattr(model_features, 'done_pattern_max_length', 300) if model_features else 300
+                kind = "REPLY" if self._is_conversational_reply(stripped, done_max) else "THOUGHT"
+
             actions.append(ActionIR(kind=kind, name="thought" if kind == "THOUGHT" else "reply", args={"text": stripped}))
 
         return actions

@@ -6,7 +6,7 @@ It replaces hardcoded checks (e.g., if model == "gemini") with feature flags.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Any
 
 
 @dataclass
@@ -31,6 +31,22 @@ class ModelFeatures:
 
     # Does the model need strict tool name correction (e.g. 'read' -> 'Read')?
     force_tool_name_repair: bool = True
+
+    # --- Agentic Loop Strategy (NEW) ---
+
+    # Backend specialist pure-text classification strategy:
+    #   "strict": always THOUGHT, only SubmitResult terminates (needed for Claude)
+    #   "heuristic": use _is_conversational_reply() heuristic (default/GPT)
+    backend_reply_strategy: str = "heuristic"
+
+    # Poke message template for backend specialist text-only responses
+    poke_message: str = (
+        "Continue working. If you have finished, call "
+        "SubmitResult(result='your findings') to deliver your answer."
+    )
+
+    # Max text length for _DONE_PATTERNS scanning (0 = disable scanning)
+    done_pattern_max_length: int = 300
 
 
 @dataclass
@@ -73,19 +89,35 @@ GPT_FEATURES = ModelFeatures(
 # Prone to hallucinating XML tags and simulating tools in text.
 GEMINI_FEATURES = ModelFeatures(
     native_tool_calling=True,
-    split_mixed_responses=True, # Critical for Gemini
+    split_mixed_responses=True,  # Critical for Gemini
     firewall_hallucinations=True,
     hallucination_patterns=DEFAULT_HALLUCINATION_PATTERNS,
     force_tool_name_repair=True,
+    backend_reply_strategy="heuristic",
+    done_pattern_max_length=300,
+    poke_message=(
+        "Your response was empty or did not include a function call. "
+        "You MUST use the function calling API to call tools. "
+        "Do NOT simulate tool calls as text. "
+        "Continue with the task. If done, call SubmitResult."
+    ),
 )
 
 # Claude (Anthropic)
 # Very strict, usually doesn't need much patching.
 CLAUDE_FEATURES = ModelFeatures(
     native_tool_calling=True,
-    split_mixed_responses=False, # Claude separates thought block from tool use usually
+    split_mixed_responses=False,  # Claude separates thought block from tool use usually
     firewall_hallucinations=False,
     force_tool_name_repair=True,
+    backend_reply_strategy="strict",
+    done_pattern_max_length=0,
+    poke_message=(
+        "You output text but did not call any tools. "
+        "You MUST use the Write tool to save your work to a file, "
+        "then call SubmitResult(result='summary') to finish. "
+        "Do NOT output file content as plain text."
+    ),
 )
 
 # Registry
@@ -97,13 +129,22 @@ _REGISTRY: Dict[str, ModelManifest] = {
     "claude": ModelManifest("claude", CLAUDE_FEATURES),
 }
 
-def get_model_manifest(model_id) -> ModelManifest:
+def get_model_manifest(model_id: Any) -> ModelManifest:
     """Get the manifest for a given model ID (fuzzy match).
 
     Args:
         model_id: Model identifier string, or an LLM client object
                   (will extract model name from .config or ._model).
     """
+    # Circular import prevention
+    try:
+        from nimbus.core.models.registry import ModelRegistry
+        info = ModelRegistry.get(str(model_id))
+        if info:
+            return info.manifest
+    except (ImportError, AttributeError):
+        pass
+
     # Accept LLM client objects — extract model string
     if not isinstance(model_id, str):
         model_id = getattr(model_id, "_model", None) or getattr(getattr(model_id, "config", None), "model_id", None) or "default"

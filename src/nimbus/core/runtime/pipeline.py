@@ -54,8 +54,9 @@ class ResponsePipeline:
     """
     Orchestrates a sequence of middleware.
     """
-    def __init__(self, features: ModelFeatures):
+    def __init__(self, features: ModelFeatures, role: str = ""):
         self.features = features
+        self.role = role
         self.middleware: List[ResponseMiddleware] = []
 
         # 1. First sanitize (modify response content)
@@ -99,7 +100,12 @@ class ResponsePipeline:
         # Default behavior: Standard Decode
         # (Only if no middleware produced actions)
         try:
-            actions = decoder.decode(content=response.content, tool_calls=response.tool_calls)
+            actions = decoder.decode(
+                content=response.content,
+                tool_calls=response.tool_calls,
+                role=self.role,
+                model_features=self.features,
+            )
         except Exception as e:
             # If decoding fails, we catch it here or let it propagate?
             # VCPU expects exceptions to propagate or be handled.

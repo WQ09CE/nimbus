@@ -9,6 +9,8 @@ This module provides dynamic system prompt generation based on:
 It replaces static strings with a composable PromptManager.
 """
 
+from nimbus.core.models.registry import ModelRegistry
+
 
 # =============================================================================
 # Base Building Blocks
@@ -294,13 +296,28 @@ class PromptManager:
             parts.append(NIMFS_MEMORY_RULES)
 
         # 4. Model Specifics
-        model_id = model_id.lower()
-        if "gpt" in model_id or "codex" in model_id or "o1" in model_id:
-            parts.append(TRAIT_CODEX)
-        elif "claude" in model_id or "anthropic" in model_id:
-            parts.append(TRAIT_CLAUDE)
-        elif "gemini" in model_id or "google" in model_id:
-            parts.append(TRAIT_GEMINI)
+        info = ModelRegistry.get(model_id)
+        if info:
+            if info.provider in ["openai", "openai-codex"]:
+                parts.append(TRAIT_CODEX)
+            elif info.provider == "anthropic":
+                parts.append(TRAIT_CLAUDE)
+            elif info.provider == "google":
+                parts.append(TRAIT_GEMINI)
+        else:
+            # Fallback for unknown model_id strings
+            model_id_lower = model_id.lower()
+            if "gpt" in model_id_lower or "codex" in model_id_lower or "o1" in model_id_lower:
+                parts.append(TRAIT_CODEX)
+            elif "claude" in model_id_lower or "anthropic" in model_id_lower:
+                parts.append(TRAIT_CLAUDE)
+            elif "gemini" in model_id_lower or "google" in model_id_lower:
+                parts.append(TRAIT_GEMINI)
+
+        # 5. Model Menu (for Orchestrator)
+        if role.lower() == "orchestrator":
+            menu = "## Available Models\n" + ModelRegistry.get_menu_text()
+            parts.append(menu)
 
         return "\n\n".join(parts)
 

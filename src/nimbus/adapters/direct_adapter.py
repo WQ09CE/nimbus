@@ -32,6 +32,7 @@ from litellm.utils import ModelResponse
 
 from nimbus.config import get_config
 from nimbus.adapters.types import LLMConfig, VcpuLLMResponse, LLMStreamEvent
+from nimbus.core.models.registry import ModelRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -150,10 +151,16 @@ class DirectAdapter:
 
     def _is_anthropic_model(self) -> bool:
         """Check if current model is an Anthropic model."""
+        info = ModelRegistry.get(self._model)
+        if info:
+            return info.provider == "anthropic"
         return "claude" in self._model.lower()
 
     def _is_openai_codex_model(self) -> bool:
         """Check if current model uses OpenAI Codex (ChatGPT subscription)."""
+        info = ModelRegistry.get(self._model)
+        if info:
+            return info.provider == "openai-codex"
         return "openai-codex" in self._model.lower()
 
     async def __aenter__(self) -> "DirectAdapter":
@@ -1057,15 +1064,26 @@ class DirectAdapter:
         """
         openai_tools = self._convert_tools(tools)
 
-        # Adjust model name for LiteLLM
+        # Adjust model name for LiteLLM using ModelRegistry
         model = self._model
-        if "gemini" in model:
-             if "google/" in model:
-                 model = model.replace("google/", "gemini/")
-             elif "gemini/" not in model:
-                 model = f"gemini/{model}"
-        elif "claude" in model and "anthropic/" not in model:
-             model = f"anthropic/{model}"
+        info = ModelRegistry.get(model)
+        if info:
+            if info.provider == "google":
+                # LiteLLM uses gemini/ prefix for Google AI Studio
+                model = f"gemini/{info.model_id}"
+            elif info.provider == "anthropic":
+                model = f"anthropic/{info.model_id}"
+            else:
+                model = info.model_id
+        else:
+            # Fallback for unregistered models
+            if "gemini" in model:
+                if "google/" in model:
+                    model = model.replace("google/", "gemini/")
+                elif "gemini/" not in model:
+                    model = f"gemini/{model}"
+            elif "claude" in model and "anthropic/" not in model:
+                model = f"anthropic/{model}"
 
         # Clean messages and convert image blocks to OpenAI format
         clean_messages = []

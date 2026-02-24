@@ -1,0 +1,271 @@
+"""
+Model Registry for Nimbus — Unified Model IDs and Metadata.
+
+This module provides a centralized registry for all LLMs supported by Nimbus.
+It handles ID normalization, provider mapping, and capability tiers.
+"""
+
+import re
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Any
+from nimbus.core.models.manifest import ModelManifest, GPT_FEATURES, GEMINI_FEATURES, CLAUDE_FEATURES
+
+
+@dataclass
+class ModelInfo:
+    """
+    Metadata for a registered model.
+    """
+    model_id: str          # Full ID used by the provider/adapter (e.g. "claude-sonnet-4-6")
+    provider: str          # Provider name (e.g. "anthropic", "google", "openai")
+    tier: str              # Tier: "pro", "flash", "ultra", "coding"
+    aliases: List[str]     # List of aliases (e.g. ["sonnet", "claude"])
+    manifest: ModelManifest # Features and behaviors
+    context_window: int = 200_000  # Context window in tokens (default 200K)
+
+    @property
+    def full_name(self) -> str:
+        """Returns the canonical name in 'provider/model_id' format."""
+        return f"{self.provider}/{self.model_id}"
+
+    @property
+    def rank(self) -> int:
+        """Returns the escalation rank (lower is cheaper/faster, higher is more capable)."""
+        ranks = {
+            "flash": 1,
+            "pro": 2,
+            "ultra": 3,
+            "coding": 4
+        }
+        return ranks.get(self.tier, 0)
+
+
+# ---------------------------------------------------------------------------
+# Helper: parse modifiers from alias strings like "sonnet[1m]"
+# ---------------------------------------------------------------------------
+_MODIFIER_RE = re.compile(r"^(.+?)\[(\w+)\]$")
+
+
+def _strip_modifier(name: str) -> tuple[str, Optional[str]]:
+    """
+    Split 'base[modifier]' → ('base', 'modifier').
+    Returns ('name', None) if no modifier found.
+    """
+    m = _MODIFIER_RE.match(name)
+    if m:
+        return m.group(1), m.group(2)
+    return name, None
+
+
+class ModelRegistry:
+    """
+    Unified registry for all models.
+    """
+    _models: Dict[str, ModelInfo] = {}
+    _alias_map: Dict[str, str] = {}
+
+    @classmethod
+    def register(cls, info: ModelInfo):
+        """Register a model and its aliases."""
+        cls._models[info.full_name] = info
+        for alias in info.aliases:
+            cls._alias_map[alias.lower()] = info.full_name
+
+    @classmethod
+    def get(cls, name: str) -> Optional[ModelInfo]:
+        """Get ModelInfo by alias or full name (supports 'base[modifier]' syntax)."""
+        if not name:
+            return None
+        # Strip optional modifier (e.g. "sonnet[1m]" → look up "sonnet")
+        base, _ = _strip_modifier(name.lower())
+        full_name = cls._alias_map.get(base, base)
+        return cls._models.get(full_name)
+
+    @classmethod
+    def get_next_tier(cls, current_model: str) -> Optional[str]:
+        """
+        Suggests the next model in the escalation ladder.
+        """
+        current_info = cls.get(current_model)
+        if not current_info:
+            return None
+            
+        current_rank = current_info.rank
+        candidates = [m for m in cls._models.values() if m.rank > current_rank]
+        if not candidates:
+            return None
+            
+        # Sort by rank and return the first one (lowest rank above current)
+        candidates.sort(key=lambda x: x.rank)
+        
+        # Try to find one in the same provider first
+        provider_matches = [m for m in candidates if m.provider == current_info.provider]
+        if provider_matches:
+            return provider_matches[0].full_name
+            
+        return candidates[0].full_name
+
+    @classmethod
+    def normalize(cls, name: str) -> str:
+        """
+        Normalize an alias or raw name to the canonical 'provider/model_id' format.
+
+        Supported input formats:
+          - Simple alias:          "sonnet"        → "anthropic/claude-sonnet-4-6"
+          - Alias with modifier:   "sonnet[1m]"    → "anthropic/claude-sonnet-4-6"
+          - Full provider path:    "anthropic/claude-sonnet-4-6" → unchanged (if registered)
+          - Unknown name:          returned as-is
+
+        The modifier (e.g. '[1m]') is accepted and stripped during lookup —
+        runtime context-window selection based on modifiers is handled upstream.
+        """
+        if not name:
+            return name
+        info = cls.get(name)
+        return info.full_name if info else name
+
+    @classmethod
+    def list_models(cls) -> List[ModelInfo]:
+        """Return all registered models."""
+        return list(cls._models.values())
+
+    @classmethod
+    def get_menu_text(cls) -> str:
+        """Generates a text menu of available models for prompts."""
+        lines = []
+        for info in cls.list_models():
+            aliases_str = ", ".join(info.aliases)
+            ctx_k = f"{info.context_window // 1000}K"
+            lines.append(
+                f"- {info.full_name} (Aliases: {aliases_str}) [{info.tier.upper()}] ctx={ctx_k}"
+            )
+        return "\n".join(lines)
+
+
+# =============================================================================
+# Default Registrations  (2026 model standard)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Anthropic
+# ---------------------------------------------------------------------------
+
+# Claude Sonnet 4.6 — primary workhorse, supports up to 1M context via [1m] alias
+ModelRegistry.register(ModelInfo(
+    model_id="claude-sonnet-4-6",
+    provider="anthropic",
+    tier="pro",
+    aliases=[
+        "sonnet",
+        "claude",
+        "claude-sonnet",
+        "claude-sonnet-4-6",
+        "sonnet-4-6",
+        "sonnet[1m]",        # 1M-context alias (modifier stripped during lookup)
+    ],
+    manifest=ModelManifest("claude-sonnet-4-6", CLAUDE_FEATURES),
+    context_window=1_000_000,  # Sonnet 4.6 supports up to 1M tokens
+))
+
+# Claude Haiku — lightweight / fast tier
+ModelRegistry.register(ModelInfo(
+    model_id="claude-haiku-4",
+    provider="anthropic",
+    tier="flash",
+    aliases=["haiku", "claude-haiku", "claude-haiku-4"],
+    manifest=ModelManifest("claude-haiku-4", CLAUDE_FEATURES),
+    context_window=200_000,
+))
+
+# Claude Opus — ultra/flagship tier
+ModelRegistry.register(ModelInfo(
+    model_id="claude-opus-4-6",
+    provider="anthropic",
+    tier="ultra",
+    aliases=[
+        "opus",
+        "claude-opus",
+        "claude-opus-4-6",
+        "opus-4-6"
+    ],
+    manifest=ModelManifest("claude-opus-4-6", CLAUDE_FEATURES),
+    context_window=1_000_000,
+))
+
+# ---------------------------------------------------------------------------
+# OpenAI
+# ---------------------------------------------------------------------------
+
+ModelRegistry.register(ModelInfo(
+    model_id="gpt-4o",
+    provider="openai",
+    tier="pro",
+    aliases=["gpt", "gpt-4o", "4o"],
+    manifest=ModelManifest("gpt-4o", GPT_FEATURES),
+    context_window=128_000,
+))
+
+ModelRegistry.register(ModelInfo(
+    model_id="gpt-4o-mini",
+    provider="openai",
+    tier="flash",
+    aliases=["gpt-mini", "mini"],
+    manifest=ModelManifest("gpt-4o-mini", GPT_FEATURES),
+    context_window=128_000,
+))
+
+ModelRegistry.register(ModelInfo(
+    model_id="gpt-4.5-preview",
+    provider="openai",
+    tier="ultra",
+    aliases=["gpt-4.5", "gpt-5"],
+    manifest=ModelManifest("gpt-4.5", GPT_FEATURES),
+    context_window=128_000,
+))
+
+# ---------------------------------------------------------------------------
+# Google
+# ---------------------------------------------------------------------------
+
+# Gemini 3.1 Pro — current flagship pro tier (2026)
+ModelRegistry.register(ModelInfo(
+    model_id="gemini-3.1-pro-preview",
+    provider="google",
+    tier="pro",
+    aliases=[
+        "gemini",
+        "pro",
+        "gemini-pro",
+        "gemini-3.1-pro",
+        "gemini-3.1-pro-preview",
+    ],
+    manifest=ModelManifest("gemini-pro", GEMINI_FEATURES),
+    context_window=2_000_000,  # Gemini 3.x series supports 2M context
+))
+
+# Gemini 3 Flash — fast/cheap tier (2026)
+ModelRegistry.register(ModelInfo(
+    model_id="gemini-3-flash-preview",
+    provider="google",
+    tier="flash",
+    aliases=[
+        "flash",
+        "gemini-flash",
+        "gemini-3-flash",
+        "gemini-3-flash-preview",
+    ],
+    manifest=ModelManifest("gemini-flash", GEMINI_FEATURES),
+    context_window=1_000_000,
+))
+
+# ---------------------------------------------------------------------------
+# Codex (Special — coding tier)
+# ---------------------------------------------------------------------------
+ModelRegistry.register(ModelInfo(
+    model_id="gpt-5.3-codex",
+    provider="openai-codex",
+    tier="coding",
+    aliases=["codex"],
+    manifest=ModelManifest("codex", GPT_FEATURES),
+    context_window=128_000,
+))
