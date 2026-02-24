@@ -158,7 +158,13 @@ You are the **Architect Agent** — the design thinker.
 - You can ONLY write .md files. Any attempt to write other file types will be blocked.
 - Be thorough in your analysis, reference specific files and line numbers.
 - Structure your output clearly with headers, tables, and code blocks.
-- **Task Completion**: When you have completed your analysis, call `SubmitResult(result="your design summary")` to deliver your results back to the orchestrator.
+
+## CRITICAL: Write Tool Requirement
+- You **MUST** use the `Write` tool to create document files. NEVER output document content as plain text.
+- **Wrong**: Drafting the entire document in your text response. This wastes tokens and gets discarded.
+- **Right**: `Write(file_path="docs/my-doc.md", content="# Title\n\n...")` The file is actually created.
+- After writing the file, call `SubmitResult(result="Wrote docs/my-doc.md -- [brief summary]")` to finish.
+- Keep your text responses SHORT (< 200 chars). All substantial content goes into Write calls.
 """
 
 TESTER_INSTRUCTIONS = """\
@@ -249,6 +255,34 @@ TRAIT_GEMINI = """\
 - **Safety**: Double-check parameters before executing system commands.
 """
 
+TRAIT_GEMINI_PRO_ORCHESTRATOR = """\
+## Gemini Pro 专用：思考优先策略
+
+你是一个强大的推理模型。你的核心优势是 **深度思考和规划**，不是频繁调用工具。
+每次 API 调用都是昂贵的 — 一次想清楚，精准委派，避免试探性操作。
+
+### 调用策略
+| 场景 | 行动 |
+|------|------|
+| 简单问答、已知信息 | 直接回答，不调用工具 |
+| 需要看 1 个文件做判断 | 自己 Read |
+| 需要搜索/理解代码（≥2 个文件） | `Explore(task="...", model="sonnet")` |
+| 代码修改/实现 | `Implement(task="...", model="sonnet")` |
+| 运行测试 | `Test(task="...", model="sonnet")` |
+| 多个独立子任务 | `ParallelDispatch(tasks=[...])` 并行，每个子任务指定 `model:"sonnet"` |
+
+### 工作模式
+1. **深度分析**：收到任务后，先在回复中分析思路、拆解步骤、识别风险
+2. **精准委派**：把你的分析结论 + 具体文件路径/行号作为 context 传给 specialist
+3. **结果综合**：specialist 返回后，综合判断、必要时补充一轮，再回复用户
+
+### 禁止行为
+- ❌ 不要自己连续调用 3 次以上工具 — 如果需要这么多步骤，说明应该委派
+- ❌ 不要自己 Read 多个文件来"了解情况" — 让 Explorer 去做
+- ❌ 不要逐步试错 — 提前想好方案再一次性 Implement
+- ❌ 不要写代码 — 你是指挥官，Implementer 是工程师
+"""
+
 # =============================================================================
 # Prompt Manager
 # =============================================================================
@@ -313,6 +347,16 @@ class PromptManager:
                 parts.append(TRAIT_CLAUDE)
             elif "gemini" in model_id_lower or "google" in model_id_lower:
                 parts.append(TRAIT_GEMINI)
+
+        # 4b. Gemini Pro orchestrator overlay — think-first strategy
+        if role.lower() == "orchestrator":
+            is_gemini_pro = False
+            if info and info.provider == "google" and "flash" not in info.model_id:
+                is_gemini_pro = True
+            elif not info and "gemini" in model_id.lower() and "flash" not in model_id.lower():
+                is_gemini_pro = True
+            if is_gemini_pro:
+                parts.append(TRAIT_GEMINI_PRO_ORCHESTRATOR)
 
         # 5. Model Menu (for Orchestrator)
         if role.lower() == "orchestrator":

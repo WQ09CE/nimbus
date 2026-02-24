@@ -53,6 +53,17 @@ def _sanitize_tool_id(id_str: str) -> str:
     return re.sub(r'[^a-zA-Z0-9_-]', '_', id_str)
 
 
+def _strip_gemini_thought_id(id_str: str) -> str:
+    """Strip Gemini's embedded thinking from tool_call ID.
+    Gemini encodes thinking as: call_{hex}__thought__{base64}
+    """
+    if not id_str or "__thought__" not in id_str:
+        return id_str
+    clean_id = id_str.split("__thought__")[0]
+    logger.debug("Stripped Gemini thinking from tool_call ID: %d -> %d chars", len(id_str), len(clean_id))
+    return clean_id or id_str
+
+
 class DirectAdapter:
     """
     Direct Adapter with three-channel streaming.
@@ -1154,7 +1165,7 @@ class DirectAdapter:
                 yield LLMStreamEvent(
                     type="tool_call",
                     tool_call={
-                        "id": tc_data["id"],
+                        "id": _strip_gemini_thought_id(tc_data["id"]),
                         "name": tc_data["name"],
                         "arguments": args
                     }

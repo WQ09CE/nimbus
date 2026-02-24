@@ -254,13 +254,25 @@ def test_search_memory_empty(manager):
 def test_memory_global_scope(manager):
     mid = manager.write_memory(
         category=MemoryCategory.PROFILE,
-        title="Global profile",
-        content="I am a Nimbus agent",
+        title="User preferences",
+        content="Dark mode enabled, verbose logging",
         scope=MemoryScope.GLOBAL,
     )
     assert mid.startswith("profile-")
     content = manager.read_memory(mid, layer=2)
-    assert "I am a Nimbus agent" in content
+    assert "Dark mode enabled" in content
+
+
+def test_blocked_garbage_profile_write(manager):
+    """Guard should block LLM-hallucinated garbage profile writes."""
+    result = manager.write_memory(
+        category=MemoryCategory.PROFILE,
+        title="Global profile",
+        content="I am a Nimbus agent",
+        scope=MemoryScope.GLOBAL,
+    )
+    assert result.startswith("[Blocked]")
+    assert "Global profile" in result
 
 
 # =============================================================================
@@ -269,8 +281,8 @@ def test_memory_global_scope(manager):
 
 
 def test_load_context_returns_string(manager):
-    manager.write_memory(MemoryCategory.PROFILE, "Agent role", "I am an implementation agent",
-                         summary="Implementation agent", scope=MemoryScope.GLOBAL)
+    manager.write_memory(MemoryCategory.PROFILE, "User preferences", "Prefer concise output",
+                         summary="User prefers concise output", scope=MemoryScope.GLOBAL)
     ctx = manager.load_context("implement NimFS module")
     assert isinstance(ctx, str)
 

@@ -1065,7 +1065,16 @@ class VCPU:
         # Poke: remind the specialist to use tools or SubmitResult.
         # MUST be injected as "system" role — if injected as "user", the LLM
         # treats it as a new user request and tries to "answer" it with more text.
-        poke_msg = self.manifest.features.poke_message
+        text_len = len(current_text)
+        if text_len > 500 and role in ("architect", "implementer"):
+            # Long text without tool calls — model is writing content as text
+            poke_msg = (
+                f"STOP. You just output {text_len} characters of text without calling any tool. "
+                f"This text will be DISCARDED. You MUST use the Write tool to save content to a file. "
+                f"Call Write(file_path='your/path.md', content='...') NOW, then SubmitResult."
+            )
+        else:
+            poke_msg = self.manifest.features.poke_message
         self.mmu.add_system_message(poke_msg)
 
         return ToolResult(

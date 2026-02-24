@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import os
 import re
 import tempfile
@@ -39,6 +40,8 @@ from nimbus.core.nimfs.project_id import (
     make_artifact_ref,
     parse_nimfs_ref,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def get_nimfs_root():
@@ -311,6 +314,21 @@ class NimFSManager:
         Returns:
             memory_id string.
         """
+        # Guard: block garbage profile writes (LLM hallucination)
+        BLOCKED_PROFILE_PATTERNS = [
+            "i am a nimbus agent",
+            "implementation agent",
+            "global profile",
+            "agent role",
+        ]
+        if category == MemoryCategory.PROFILE and scope == MemoryScope.GLOBAL:
+            lower_content = (summary or content[:300]).lower()
+            lower_title = title.lower()
+            for pattern in BLOCKED_PROFILE_PATTERNS:
+                if pattern in lower_content or pattern in lower_title:
+                    logger.warning("Blocked garbage profile write: title=%r", title)
+                    return f"[Blocked] Refused to write garbage profile: '{title}'"
+
         memory_id = f"{category.value}-{uuid.uuid4().hex[:8]}"
         now = _now_iso()
 
