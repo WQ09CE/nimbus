@@ -82,54 +82,40 @@ def manager_b(nimfs_root: Path, workspace_b: Path) -> NimFSManager:
 class TestPathTraversalSecurity:
     """Verify that task_id and memory_id cannot escape NimFS root via ../."""
 
-    @pytest.mark.xfail(reason="C001: no path traversal protection yet")
     def test_task_id_path_traversal(self, manager: NimFSManager):
-        """A malicious task_id with ../../ should not escape artifacts_root."""
+        """A malicious task_id with ../../ should be rejected by _validate_id."""
+        from nimbus.core.nimfs.models import NimFSError
+
         evil_task_id = "../../evil"
-        ref = manager.write_artifact(
-            content="malicious payload",
-            task_id=evil_task_id,
-            producer="attacker",
-        )
-        # The artifact was written. Now verify the content file is INSIDE artifacts_root.
-        manifest = manager.get_artifact_manifest(ref)
-        task_dir = manager.artifacts_root / manifest.task_id
-        content_path = (task_dir / manifest.filename).resolve()
-        artifacts_root_resolved = manager.artifacts_root.resolve()
+        with pytest.raises(NimFSError, match="Invalid task_id"):
+            manager.write_artifact(
+                content="malicious payload",
+                task_id=evil_task_id,
+                producer="attacker",
+            )
 
-        # The content file must be strictly under artifacts_root
-        assert str(content_path).startswith(str(artifacts_root_resolved)), (
-            f"Path traversal! Content written to {content_path}, "
-            f"which is outside artifacts_root {artifacts_root_resolved}"
-        )
+    def test_memory_id_path_traversal_via_read(self, nimfs_root: Path, manager: NimFSManager):
+        """A memory_id with ../ should be rejected."""
+        from nimbus.core.nimfs.models import NimFSError
 
-    @pytest.mark.xfail(
-        reason="C001: no path traversal protection yet",
-        strict=False,
-    )
-    def test_memory_id_path_traversal_via_read(self, manager: NimFSManager):
-        """A memory_id with ../ should not read files outside NimFS.
+        # Patch get_nimfs_root for write_memory's _validate_within_root call
+        with patch("nimbus.core.nimfs.manager.get_nimfs_root", return_value=nimfs_root):
+            # Write a legitimate memory entry first so the category dir exists
+            manager.write_memory(
+                category=MemoryCategory.ENTITIES,
+                title="legit",
+                content="legit content",
+            )
 
-        Note: The current code may raise MemoryNotFoundError accidentally
-        (because _find_memory_dir does not resolve the evil path), but this
-        is NOT true protection -- it only works because the lookup happens
-        to fail. The xfail(strict=False) tolerates both pass and fail.
-        """
-        # Write a legitimate memory entry first so the category dir exists
-        manager.write_memory(
-            category=MemoryCategory.ENTITIES,
-            title="legit",
-            content="legit content",
-        )
-
-        # Try to read with a traversal memory_id
+        # Try to read with a traversal memory_id -- _validate_id rejects it
         evil_id = "entities-../../../../../../etc/passwd"
-        with pytest.raises((MemoryNotFoundError, ValueError, OSError)):
+        with pytest.raises((MemoryNotFoundError, ValueError, OSError, NimFSError)):
             manager.read_memory(evil_id, layer=2)
 
-    @pytest.mark.xfail(reason="C001: no path traversal protection yet")
     def test_manifest_filename_traversal(self, manager: NimFSManager):
         """Tampered manifest.json with filename=../../../etc/passwd should be caught."""
+        from nimbus.core.nimfs.models import NimFSError
+
         # Write a normal artifact
         ref = manager.write_artifact(
             content="normal content",
@@ -145,25 +131,9 @@ class TestPathTraversalSecurity:
         data["filename"] = "../../../etc/passwd"
         manifest_path.write_text(json.dumps(data))
 
-        # Now try to read -- should either raise an error or only read within bounds
-        try:
-            content = manager.read_artifact(ref)
-            # If it returned content, verify it did NOT read /etc/passwd
-            assert "root:" not in content, (
-                "Path traversal: read_artifact returned /etc/passwd content!"
-            )
-        except Exception:
-            # Any exception is acceptable -- it means traversal was blocked
-            pass
-
-        # If no exception and content does NOT contain /etc/passwd, it just means
-        # the file didn't exist. But the real check is that the resolved path
-        # stays within bounds. Verify the would-be path:
-        evil_path = (task_dir / "../../../etc/passwd").resolve()
-        artifacts_root_resolved = manager.artifacts_root.resolve()
-        assert str(evil_path).startswith(str(artifacts_root_resolved)), (
-            f"Filename traversal not blocked: would resolve to {evil_path}"
-        )
+        # read_artifact should reject the tampered filename
+        with pytest.raises(NimFSError, match="Invalid artifact filename"):
+            manager.read_artifact(ref)
 
 
 # =============================================================================
@@ -174,7 +144,6 @@ class TestPathTraversalSecurity:
 class TestConcurrencySafety:
     """Verify NimFS handles concurrent writes without data loss."""
 
-    @pytest.mark.xfail(reason="C003: index.json has no file locking, concurrent writes lose data")
     def test_concurrent_artifact_writes(self, nimfs_root: Path, workspace: Path):
         """10 concurrent writes with different task_ids should all appear in index.json."""
         num_writers = 10

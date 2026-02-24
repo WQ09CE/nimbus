@@ -10,6 +10,7 @@ Storage root: ~/.nimbus/fs/projects/{project_id}/
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -375,6 +376,9 @@ class NimFSManager:
         if layer not in (0, 1, 2):
             raise ValueError(f"Invalid memory layer: {layer}. Must be 0, 1, or 2.")
 
+        # C001: validate memory_id to prevent path traversal
+        _validate_id(memory_id, "memory_id")
+
         entry_dir = self._find_memory_dir(memory_id)
         if entry_dir is None:
             raise MemoryNotFoundError(memory_id)
@@ -641,15 +645,22 @@ class NimFSManager:
         """
         Append an artifact manifest record to artifacts/index.json.
 
-        C003 fix: uses atomic write (write to temp file → os.replace) to prevent
-        concurrent writers from corrupting or losing records. os.replace() is
-        atomic on POSIX systems (same filesystem), so concurrent calls at worst
-        result in one writer's update being applied last — no data corruption.
+        C003 fix: uses an exclusive file lock (fcntl.flock) to serialize
+        the read-modify-write cycle, preventing concurrent writers from
+        losing each other's records. Within the critical section, the
+        write uses atomic rename (tempfile + os.replace) for crash safety.
         """
         index_path = self.artifacts_root / "index.json"
+        lock_path = self.artifacts_root / ".index.lock"
 
-        # Retry loop for TOCTTOU window on first-time creation
-        for _attempt in range(3):
+        # Ensure artifacts root exists
+        self.artifacts_root.mkdir(parents=True, exist_ok=True)
+
+        # Use an exclusive file lock to serialize read-modify-write
+        lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
             try:
                 records = _read_json(index_path)
             except Exception:
@@ -667,21 +678,19 @@ class NimFSManager:
                 records.append(manifest.to_dict())
 
             # Atomic write: write to sibling temp file, then rename
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=self.artifacts_root, prefix=".index_", suffix=".tmp"
+            )
             try:
-                tmp_fd, tmp_path = tempfile.mkstemp(
-                    dir=self.artifacts_root, prefix=".index_", suffix=".tmp"
-                )
-                try:
-                    with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                        json.dump(records, f, ensure_ascii=False, indent=2)
-                except Exception:
-                    os.unlink(tmp_path)
-                    raise
-                os.replace(tmp_path, index_path)
-                return  # success
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    json.dump(records, f, ensure_ascii=False, indent=2)
             except Exception:
-                # Rare: concurrent rename conflict — retry
-                continue
+                os.unlink(tmp_path)
+                raise
+            os.replace(tmp_path, index_path)
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
 
     def _find_memory_dir(self, memory_id: str) -> Optional[Path]:
         """Find the directory for a memory_id by scanning all categories."""
