@@ -40,6 +40,7 @@ interface ToolCallData {
   name?: string;
   args?: Record<string, unknown>;
   arguments?: Record<string, unknown>;
+  parent_action_id?: string;  // For sub_tool_call: routes to the correct ParallelDispatch parent
   [key: string]: unknown;
 }
 
@@ -54,6 +55,7 @@ interface ToolResultData {
   duration_ms?: number;
   status?: string;
   fault?: { message: string;[key: string]: unknown };
+  parent_action_id?: string;  // For sub_tool_result: routes to the correct ParallelDispatch parent
   [key: string]: unknown;
 }
 
@@ -124,7 +126,7 @@ const initialState = {
 };
 
 // Tools that spawn sub-agents and can contain nested sub_tool_call/sub_tool_result
-const META_TOOLS = new Set(["Dispatch", "Explore", "Implement", "Design", "Test"]);
+const META_TOOLS = new Set(["Dispatch", "Explore", "Implement", "Design", "Test", "ParallelDispatch"]);
 
 // Human-readable labels for meta-tools in activity status
 const META_TOOL_LABELS: Record<string, string> = {
@@ -133,6 +135,15 @@ const META_TOOL_LABELS: Record<string, string> = {
   Implement: "Implementer",
   Design: "Architect",
   Test: "Tester",
+  ParallelDispatch: "并行调度",
+};
+
+// Map server-side specialist names to frontend tool names for DispatchCard rendering
+const SPECIALIST_TO_TOOL: Record<string, string> = {
+  Explorer: "Explore",
+  Implementer: "Implement",
+  Architect: "Design",
+  Tester: "Test",
 };
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -463,16 +474,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     // Handle streaming case: Inject message instead of queuing
     if (isStreaming && session) {
-      // Attachments are not supported during inject
-      if (attachments && attachments.length > 0) {
-        set({ error: "Agent 执行中，附件暂不支持" });
-      }
-
-      // Optimistically add to UI (text only, no prefix)
+      // Optimistically add to UI (with attachments if present)
       const userMessage: Message = {
         id: `user-inject-${Date.now()}`,
         role: "user",
         content,
+        attachments: attachments && attachments.length > 0 ? attachments : undefined,
         timestamp: Date.now(),
         isInjection: true,
       };
@@ -483,8 +490,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
 
       try {
-        await injectMessage(session.id, content);
-        console.log(`[Store] Injected message into session ${session.id}`);
+        // Pass attachments along with the message (multimodal injection support)
+        await injectMessage(session.id, content, attachments);
+        console.log(`[Store] Injected message into session ${session.id}${attachments && attachments.length > 0 ? ` with ${attachments.length} attachment(s)` : ""}`);
       } catch (err) {
         console.error("[Store] Failed to inject message:", err);
       }
@@ -713,17 +721,47 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 arguments: d.args || d.arguments || {},
                 agentType: "dispatch",
               };
-              // Nest under the last meta-tool (Dispatch/Explore/Implement/Design/Test)
-              const lastMetaIdx = toolCalls.reduce(
-                (last, tc, i) => META_TOOLS.has(tc.name) ? i : last, -1
-              );
-              if (lastMetaIdx >= 0) {
-                const metaTool = toolCalls[lastMetaIdx];
+
+              // Batch routing: parent_action_id + batch_slot_index -> specialist's subCalls
+              const parentId = d.parent_action_id;
+              const slotIdx = (d as any).batch_slot_index;
+              if (parentId && slotIdx !== undefined) {
+                const metaIdx = toolCalls.findIndex(tc => tc.id === parentId);
+                if (metaIdx >= 0) {
+                  const meta = toolCalls[metaIdx];
+                  const specialistSlot = meta.subCalls?.[slotIdx];
+                  if (specialistSlot) {
+                    if (!specialistSlot.subCalls) specialistSlot.subCalls = [];
+                    specialistSlot.subCalls.push(subTool);
+                    const label = META_TOOL_LABELS[specialistSlot.name] || specialistSlot.name;
+                    set({
+                      streamingToolCalls: [...toolCalls],
+                      currentActivity: `${label}: ${subTool.name}`,
+                      lastHeartbeat: Date.now()
+                    });
+                    break;
+                  }
+                }
+              }
+
+              // Legacy routing (no batch metadata): use parent_action_id or last meta-tool
+              let targetMetaIdx = -1;
+              if (parentId) {
+                targetMetaIdx = toolCalls.findIndex(tc => tc.id === parentId);
+              }
+              // Fallback: last meta-tool
+              if (targetMetaIdx < 0) {
+                targetMetaIdx = toolCalls.reduce(
+                  (last, tc, i) => META_TOOLS.has(tc.name) ? i : last, -1
+                );
+              }
+              if (targetMetaIdx >= 0) {
+                const metaTool = toolCalls[targetMetaIdx];
                 if (!metaTool.subCalls) metaTool.subCalls = [];
                 metaTool.subCalls.push(subTool);
               }
-              const metaLabel = lastMetaIdx >= 0
-                ? META_TOOL_LABELS[toolCalls[lastMetaIdx].name] || toolCalls[lastMetaIdx].name
+              const metaLabel = targetMetaIdx >= 0
+                ? META_TOOL_LABELS[toolCalls[targetMetaIdx].name] || toolCalls[targetMetaIdx].name
                 : "Executor";
               set({
                 streamingToolCalls: [...toolCalls],
@@ -743,17 +781,53 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 error: d.status === "ERROR" ? (d.fault ? d.fault.message : "Error") : undefined,
                 duration: d.duration_ms,
               };
-              // Nest under the last meta-tool (Dispatch/Explore/Implement/Design/Test)
-              const lastMetaIdxForResult = toolCalls.reduce(
-                (last, tc, i) => META_TOOLS.has(tc.name) ? i : last, -1
-              );
-              if (lastMetaIdxForResult >= 0) {
-                const metaTool = toolCalls[lastMetaIdxForResult];
+
+              // Batch routing: parent_action_id + batch_slot_index -> specialist's subResults
+              const parentIdForResult = d.parent_action_id;
+              const slotIdxForResult = (d as any).batch_slot_index;
+              if (parentIdForResult && slotIdxForResult !== undefined) {
+                const metaIdx = toolCalls.findIndex(tc => tc.id === parentIdForResult);
+                if (metaIdx >= 0) {
+                  const meta = toolCalls[metaIdx];
+                  const specialistSlot = meta.subCalls?.[slotIdxForResult];
+                  if (specialistSlot) {
+                    if (!specialistSlot.subResults) specialistSlot.subResults = [];
+                    specialistSlot.subResults.push(subResult);
+                    const label = META_TOOL_LABELS[specialistSlot.name] || specialistSlot.name;
+                    set({
+                      streamingToolCalls: [...toolCalls],
+                      currentActivity: `${label}: ${subResult.name} done`,
+                      lastHeartbeat: Date.now()
+                    });
+                    break;
+                  }
+                }
+              }
+
+              // Legacy routing
+              let targetMetaIdxForResult = -1;
+              if (parentIdForResult) {
+                targetMetaIdxForResult = toolCalls.findIndex(tc => tc.id === parentIdForResult);
+              }
+              // Fallback: find meta-tool that owns the sub-call with matching id
+              if (targetMetaIdxForResult < 0 && subResult.id) {
+                targetMetaIdxForResult = toolCalls.findIndex(
+                  tc => META_TOOLS.has(tc.name) && tc.subCalls?.some(sc => sc.id === subResult.id)
+                );
+              }
+              // Last resort: last meta-tool
+              if (targetMetaIdxForResult < 0) {
+                targetMetaIdxForResult = toolCalls.reduce(
+                  (last, tc, i) => META_TOOLS.has(tc.name) ? i : last, -1
+                );
+              }
+              if (targetMetaIdxForResult >= 0) {
+                const metaTool = toolCalls[targetMetaIdxForResult];
                 if (!metaTool.subResults) metaTool.subResults = [];
                 metaTool.subResults.push(subResult);
               }
-              const metaResultLabel = lastMetaIdxForResult >= 0
-                ? META_TOOL_LABELS[toolCalls[lastMetaIdxForResult].name] || toolCalls[lastMetaIdxForResult].name
+              const metaResultLabel = targetMetaIdxForResult >= 0
+                ? META_TOOL_LABELS[toolCalls[targetMetaIdxForResult].name] || toolCalls[targetMetaIdxForResult].name
                 : "Executor";
               set({
                 streamingToolCalls: [...toolCalls],
@@ -763,19 +837,82 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
             break;
 
-          case "executor_start":
+          case "executor_start": {
+            const esd = data as Record<string, any>;
+            const esParentId = esd?.parent_action_id;
+            const esSlotIdx = esd?.batch_slot_index;
+            const esSpecialist = esd?.specialist;
+            const esPid = esd?._executor_pid;
+
+            if (esParentId && esSlotIdx !== undefined && esSpecialist) {
+              // ParallelDispatch batch: create virtual specialist entry in subCalls
+              const metaIdx = toolCalls.findIndex(tc => tc.id === esParentId);
+              if (metaIdx >= 0) {
+                const meta = toolCalls[metaIdx];
+                if (!meta.subCalls) meta.subCalls = [];
+                const toolName = SPECIALIST_TO_TOOL[esSpecialist] || esSpecialist;
+                // Pull task description from ParallelDispatch args
+                const pdTasks = meta.arguments?.tasks;
+                const taskDesc = Array.isArray(pdTasks) && esSlotIdx < pdTasks.length
+                  ? ((pdTasks[esSlotIdx] as any)?.task || (pdTasks[esSlotIdx] as any)?.context || "")
+                  : "";
+                meta.subCalls[esSlotIdx] = {
+                  id: esPid || `slot-${esSlotIdx}`,
+                  name: toolName,
+                  arguments: { task: taskDesc },
+                  agentType: "dispatch" as const,
+                  subCalls: [],
+                  subResults: [],
+                };
+                set({
+                  streamingToolCalls: [...toolCalls],
+                  currentActivity: `⚡ ${esSpecialist} 已启动...`,
+                  lastHeartbeat: Date.now()
+                });
+                break;
+              }
+            }
+            // Fallback: non-batch executor
             set({
               currentActivity: "⚡ Executor 已启动...",
               lastHeartbeat: Date.now()
             });
             break;
+          }
 
-          case "executor_done":
+          case "executor_done": {
+            const edd = data as Record<string, any>;
+            const edParentId = edd?.parent_action_id;
+            const edSlotIdx = edd?.batch_slot_index;
+
+            if (edParentId && edSlotIdx !== undefined) {
+              // Mark specialist slot as completed by adding a synthetic result
+              const metaIdx = toolCalls.findIndex(tc => tc.id === edParentId);
+              if (metaIdx >= 0) {
+                const meta = toolCalls[metaIdx];
+                const specialistSlot = meta.subCalls?.[edSlotIdx];
+                if (specialistSlot) {
+                  if (!meta.subResults) meta.subResults = [];
+                  meta.subResults.push({
+                    id: specialistSlot.id || `slot-${edSlotIdx}`,
+                    name: specialistSlot.name,
+                    result: "Completed",
+                  });
+                  set({
+                    streamingToolCalls: [...toolCalls],
+                    currentActivity: `⚡ ${specialistSlot.name} 已完成`,
+                    lastHeartbeat: Date.now()
+                  });
+                  break;
+                }
+              }
+            }
             set({
               currentActivity: "⚡ Executor 已完成",
               lastHeartbeat: Date.now()
             });
             break;
+          }
 
           case "permission_request": {
             const permData = data as { action?: string; description?: string } | undefined;

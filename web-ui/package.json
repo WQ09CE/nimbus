@@ -19,6 +19,7 @@
     "test:e2e:report": "npx playwright show-report"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.13.19",
     "clsx": "^2.1.1",
     "diff": "^8.0.3",
     "next": "14.2.35",

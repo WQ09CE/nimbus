@@ -5,6 +5,7 @@ while maintaining compatibility with the v1 server API.
 """
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -482,13 +483,25 @@ class SessionManagerV2:
                     # This was an injection, not a full turn.
                     # We must save the user message immediately because it's not in MMU yet.
                     msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+                    # Extract text content for storage (message may be str or list for multimodal)
+                    if isinstance(message, list):
+                        text_parts = [p.get("text", "") for p in message if isinstance(p, dict) and p.get("type") == "text"]
+                        storage_content = " ".join(text_parts).strip()
+                        has_images = any(isinstance(p, dict) and p.get("type") == "image" for p in message)
+                        if has_images:
+                            storage_content = f"[Intervention] {storage_content} [+image]" if storage_content else "[Intervention] [image]"
+                        else:
+                            storage_content = f"[Intervention] {storage_content}"
+                    else:
+                        storage_content = f"[Intervention] {message}"
                     await self._storage.add_message(
                         message_id=msg_id,
                         session_id=session_id,
                         role="user",
-                        content=f"[Intervention] {message}",  # Mark as intervention
+                        content=storage_content,  # Mark as intervention
                     )
-                    logger.info(f"💾 Saved injected message '{message[:20]}...' to storage")
+                    preview = storage_content[:20]
+                    logger.info(f"💾 Saved injected message '{preview}...' to storage")
 
                     # Emit completion and exit
                     await self._sse_hub.publish(session_id, "dag_complete", {"status": "OK"})
@@ -720,7 +733,10 @@ class SessionManagerV2:
                 msg_id = f"msg_{uuid.uuid4().hex[:12]}"
 
                 # Prepare content - handle tool_calls specially
+                # Multimodal messages (with images) have list content; serialize for SQLite.
                 content = msg.content or ""
+                if isinstance(content, list):
+                    content = json.dumps(content)
                 artifacts = None
 
                 # If this is an assistant message with tool calls, store them as artifacts
@@ -773,6 +789,17 @@ class SessionManagerV2:
         # Core/chat processes use session_id as pid; executor processes use "proc-xxx".
         is_sub_agent = event.pid != session_id
 
+        # Inject batch metadata for sub-agent events (ParallelDispatch routing)
+        if is_sub_agent:
+            agent_os = self._sessions.get(session_id)
+            if agent_os:
+                proc = agent_os._processes.get(event.pid)
+                if proc:
+                    for key in ("parent_action_id", "batch_slot_index", "specialist"):
+                        val = proc.signals.get(key)
+                        if val is not None:
+                            event.data[key] = val
+
         # Map v2 event types to SSE event types
         type_mapping = {
             "tool_started": "tool_call",
@@ -817,8 +844,10 @@ class SessionManagerV2:
                 "data": event.data,
             })
         elif sse_type == "executor_start":
-            # Clear buffer for new executor run
-            self._sub_tool_buffer[session_id] = []
+            # Only clear buffer for non-batch executors (single Dispatch/Explore/etc.)
+            # Batch executors (ParallelDispatch) share the buffer -- don't clear per-executor
+            if not event.data.get("parent_action_id"):
+                self._sub_tool_buffer[session_id] = []
 
         # Emit to SSE hub
         sent_count = await self._sse_hub.publish(
@@ -870,8 +899,8 @@ class SessionManagerV2:
             logger.error(f"Failed to interrupt session {session_id}: {e}")
             return {"success": False, "error": str(e)}
 
-    async def inject_message(self, session_id: str, content: str) -> bool:
-        """Inject user message into running session."""
+    async def inject_message(self, session_id: str, content: "str | list") -> bool:
+        """Inject user message (text or multimodal) into running session."""
         async with self._lock:
             agent_os = self._sessions.get(session_id)
 
@@ -880,6 +909,7 @@ class SessionManagerV2:
 
         # Inject via AgentOS (Phase 1 Kernel)
         # Note: In chat mode, session_id IS the pid
+        # content can be str or list[dict] for multimodal messages
         return agent_os.inject_message(session_id, content)
 
     async def save_session_state(self, session_id: str) -> None:

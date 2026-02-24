@@ -186,6 +186,10 @@ class KernelGate:
                         fault=Fault(domain="PERMISSION", code="WRITE_FILTER", message=error_msg, retryable=False),
                     )
 
+        # Inject parent action ID for tools that spawn sub-agent batches
+        if tool_name == "ParallelDispatch":
+            action.args["_parent_action_id"] = action.id
+
         start_time = time.time_ns()
 
         # 2. Execution with Timeout

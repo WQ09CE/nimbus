@@ -354,8 +354,31 @@ async def inject_message(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    # Build message content (with optional attachments) — same logic as /chat
+    logger.info(f"📎 [inject] Attachments received: {len(data.attachments)} items" if data.attachments else "📎 [inject] No attachments")
+    inject_content: str | list = data.content
+    if data.attachments:
+        content_parts = []
+        if data.content:
+            content_parts.append({"type": "text", "text": data.content})
+        for att in data.attachments:
+            if att.type == "image" and att.content:
+                content_parts.append({
+                    "type": "image",
+                    "data": att.content,
+                    "mimeType": att.mime_type or "image/png",
+                })
+            elif att.type in ("text", "pdf") and att.content:
+                file_label = att.name or "attachment"
+                content_parts.append({
+                    "type": "text",
+                    "text": f"\n\n--- {file_label} ---\n{att.content}\n--- end of {file_label} ---",
+                })
+        if content_parts:
+            inject_content = content_parts
+
     # Inject via SessionManager -> SessionPool -> vCPU
-    success = await session_manager.inject_message(session_id, data.content)
+    success = await session_manager.inject_message(session_id, inject_content)
 
     if success:
         # NOTE: We do NOT save to storage here directly.
@@ -373,13 +396,13 @@ async def inject_message(
             message_id=message_id,
             session_id=session_id,
             role="user",
-            content=data.content,
+            content=data.content,  # Always store text version for persistence
         )
         try:
             agent_os = await session_manager.get_or_create_agent(session_id)
             process = agent_os.get_process(session_id)
             if process and process.mmu:
-                process.mmu.add_user_message(data.content)
+                process.mmu.add_user_message(inject_content)
                 logger.info(f"[inject] Late message written to MMU for {session_id}")
         except Exception as e:
             logger.warning(f"[inject] Could not write late message to MMU: {e}")

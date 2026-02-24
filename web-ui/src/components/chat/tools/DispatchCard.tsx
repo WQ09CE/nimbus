@@ -256,7 +256,7 @@ export function DispatchCard({ tool }: DispatchCardProps) {
     const stripClass = isRunning ? theme.strip.running : isFailed ? theme.strip.failed : theme.strip.normal;
 
     return (
-        <div className={`overflow-hidden rounded-xl border transition-all duration-300 relative ${borderClass} ${bgClass}`}>
+        <div className={`overflow-hidden max-w-full rounded-xl border transition-all duration-300 relative ${borderClass} ${bgClass}`}>
             <div className={`absolute left-0 top-0 bottom-0 w-1 ${stripClass}`} />
 
             <div className="px-4 py-3 pl-5 flex items-center justify-between cursor-pointer select-none" onClick={() => setIsExpanded(!isExpanded)}>

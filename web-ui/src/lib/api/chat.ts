@@ -88,14 +88,25 @@ export interface ChatEvent {
 }
 
 /**
- * Inject message into running session
+ * Inject message into running session (supports multimodal attachments)
  */
 export async function injectMessage(
   sessionId: string,
-  content: string
+  content: string,
+  attachments?: ChatAttachment[]
 ): Promise<void> {
   const endpoint = `/api/v1/sessions/${sessionId}/inject`;
   const request: ChatRequest = { content };
+
+  // Add attachments if present (same format as streamChat)
+  if (attachments && attachments.length > 0) {
+    request.attachments = attachments.map(att => ({
+      type: att.type,
+      content: att.content,
+      name: att.name,
+      mime_type: att.mimeType,
+    }));
+  }
 
   await apiPost(endpoint, request);
 }

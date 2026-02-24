@@ -1745,6 +1745,9 @@ class AgentOS:
         timeout: Optional[float] = None,
         strategy: Literal["wait_all", "wait_any", "wait_threshold"] = "wait_all",
         threshold: float = 0.6,
+        parent_action_id: Optional[str] = None,
+        specialist_names: Optional[List[str]] = None,
+        original_indices: Optional[List[int]] = None,
     ) -> List[ToolResult]:
         """
         Spawn and run multiple sub-processes concurrently (parallel dispatch).
@@ -1807,6 +1810,13 @@ class AgentOS:
             proc = self._processes[pid]
             proc.signals["batch_id"] = batch_id          # type: ignore[assignment]
             proc.signals["sub_session_id"] = pid         # type: ignore[assignment]
+            # Batch routing metadata for frontend (ParallelDispatch)
+            if parent_action_id:
+                proc.signals["parent_action_id"] = parent_action_id  # type: ignore[assignment]
+            slot_index = original_indices[i] if original_indices and i < len(original_indices) else i
+            proc.signals["batch_slot_index"] = slot_index  # type: ignore[assignment]
+            if specialist_names and i < len(specialist_names):
+                proc.signals["specialist"] = specialist_names[i]  # type: ignore[assignment]
             self._emit_event(
                 "BATCH_TASK_SPAWNED",
                 pid,

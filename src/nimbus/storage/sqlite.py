@@ -325,6 +325,12 @@ class SQLiteStorage:
             result = self._row_to_dict(row)
             if result.get("artifacts"):
                 result["artifacts"] = json.loads(result["artifacts"])
+            # Restore multimodal content (stored as JSON list)
+            if result.get("content") and isinstance(result["content"], str) and result["content"].startswith("["):
+                try:
+                    result["content"] = json.loads(result["content"])
+                except (json.JSONDecodeError, ValueError):
+                    pass
             return result
 
     async def get_messages(
@@ -361,6 +367,12 @@ class SQLiteStorage:
                 r = self._row_to_dict(row)
                 if r.get("artifacts"):
                     r["artifacts"] = json.loads(r["artifacts"])
+                # Restore multimodal content (stored as JSON list)
+                if r.get("content") and isinstance(r["content"], str) and r["content"].startswith("["):
+                    try:
+                        r["content"] = json.loads(r["content"])
+                    except (json.JSONDecodeError, ValueError):
+                        pass
                 results.append(r)
             return results
 
@@ -380,6 +392,12 @@ class SQLiteStorage:
                 result = self._row_to_dict(row)
                 if result.get("artifacts"):
                     result["artifacts"] = json.loads(result["artifacts"])
+                # Restore multimodal content (stored as JSON list)
+                if result.get("content") and isinstance(result["content"], str) and result["content"].startswith("["):
+                    try:
+                        result["content"] = json.loads(result["content"])
+                    except (json.JSONDecodeError, ValueError):
+                        pass
                 return result
             return None
 

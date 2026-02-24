@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useState, useRef, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useChatStore } from "@/stores";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatList } from "@/components/chat/ChatList";
 import { ModelSelector } from "@/components/chat/ModelSelector";
 import { FileExplorer } from "@/components/chat/FileExplorer";
 import { WorkingIndicator } from "@/components/chat/WorkingIndicator";
-import { StreamingScroller } from "@/components/chat/StreamingScroller";
+
 import { SessionPanel } from "@/components/session/SessionPanel";
 
 export default function Home() {
@@ -28,9 +28,6 @@ export default function Home() {
   const [mounted, setMounted] = useState(false);
   const [showSessionPanel, setShowSessionPanel] = useState(false);
   const [showFilePanel, setShowFilePanel] = useState(false);
-
-  const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Stable placeholder (only changes when isStreaming changes)
   const placeholder = useMemo(
@@ -172,8 +169,7 @@ export default function Home() {
         <main className="flex-1 flex flex-col min-w-0 relative z-0 bg-transparent">
           {/* Messages */}
           <div
-            ref={messagesContainerRef}
-            className="flex-1 overflow-y-auto px-3 md:px-6 py-4 scroll-smooth custom-scrollbar"
+            className="flex-1 flex flex-col overflow-hidden px-3 md:px-6 py-4"
           >
             {/* Error */}
             {error && (
@@ -196,7 +192,7 @@ export default function Home() {
 
             {/* Loading messages */}
             {isLoading && (
-              <div className="flex flex-col items-center justify-center h-full text-center">
+              <div className="flex flex-col items-center justify-center flex-1 text-center">
                 <div className="text-4xl mb-4 animate-pulse">☁️</div>
                 <p className="text-gray-500 text-sm">Loading session...</p>
               </div>
@@ -204,7 +200,7 @@ export default function Home() {
 
             {/* Welcome Screen */}
             {messages.length === 0 && !isStreaming && !isLoading && (
-              <div data-testid="welcome-screen" className="flex flex-col items-center justify-center h-full text-center animate-in zoom-in-95 duration-500">
+              <div data-testid="welcome-screen" className="flex flex-col items-center justify-center flex-1 text-center animate-in zoom-in-95 duration-500">
                 <div className="w-16 h-16 bg-nimbus-surface backdrop-blur-lg border border-nimbus-border rounded-2xl flex items-center justify-center shadow-2xl shadow-sky-500/10 mb-6">
                   <span className="text-3xl">☁️</span>
                 </div>
@@ -239,7 +235,6 @@ export default function Home() {
             {/* Message list — ChatList subscribes to streaming internally */}
             <ChatList messages={messages} />
 
-            <div ref={messagesEndRef} className="h-4" />
           </div>
 
           {/* Working Indicator — subscribes to streaming state internally */}
@@ -257,8 +252,6 @@ export default function Home() {
             />
           </div>
 
-          {/* Scroll controller — subscribes to streaming state internally */}
-          <StreamingScroller containerRef={messagesContainerRef} />
         </main>
 
         {/* Mobile backdrop */}

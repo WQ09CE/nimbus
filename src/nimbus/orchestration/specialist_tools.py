@@ -260,6 +260,8 @@ class ParallelDispatchTool:
         """
         import json as _json
 
+        parent_action_id = kwargs.pop("_parent_action_id", None)
+
         if tasks is None:
             tasks = kwargs.get("tasks", [])
 
@@ -277,6 +279,7 @@ class ParallelDispatchTool:
 
         # Build spawn_batch task specs
         batch_tasks = []
+        specialist_names = []
         valid_indices = []  # Track which original task indices are valid
         for i, t in enumerate(tasks):
             specialist_name = t.get("specialist", "")
@@ -320,6 +323,7 @@ class ParallelDispatchTool:
                 "profile": profile,
                 "llm_client": llm_client,
             })
+            specialist_names.append(specialist_name)
             valid_indices.append(i)
 
         if not batch_tasks:
@@ -334,6 +338,9 @@ class ParallelDispatchTool:
             timeout=timeout,
             strategy=strategy,
             threshold=threshold,
+            parent_action_id=parent_action_id,
+            specialist_names=specialist_names,
+            original_indices=valid_indices,
         )
 
         # Format aggregated results

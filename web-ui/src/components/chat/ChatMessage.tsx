@@ -82,6 +82,176 @@ function AiAvatar() {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ParallelToolList — renders tool cards with intelligent layout:
+//  - Multiple META_TOOLS (Dispatch/Explore/Implement/Design/Test) → horizontal grid
+//  - Otherwise → vertical stack (original behavior)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PARALLEL_TOOLS = new Set(["Dispatch", "Explore", "Implement", "Design", "Test", "ParallelDispatch"]);
+
+// Map ParallelDispatch specialist names → DispatchCard tool names
+const SPECIALIST_TO_TOOL: Record<string, string> = {
+  Explorer: "Explore",
+  Implementer: "Implement",
+  Architect: "Design",
+  Tester: "Test",
+  Dispatch: "Dispatch",
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FlatEntry — a resolved tool with a stable React key that survives the
+// placeholder→real transition during streaming.
+// ─────────────────────────────────────────────────────────────────────────────
+interface FlatEntry {
+  /** Stable React key that must NOT change when placeholder→real swap happens */
+  stableKey: string;
+  tool: MergedTool;
+}
+
+/**
+ * Flatten the raw merged-tool list so that every `ParallelDispatch` is
+ * replaced by its sub-agent virtual tools, each with a guaranteed stable key.
+ *
+ * Key stability contract:
+ *   - Regular tools          → `reg-${index}` (position-based; tool list is ordered)
+ *   - ParallelDispatch slots → `${parent.id || parentIdx}-slot-${slotIdx}`
+ *     The slot index never changes between placeholder and real sub-call, so
+ *     React keeps the mounted DispatchCard alive.
+ */
+function flattenTools(
+  tools: MergedTool[],
+  getToolKey: (tool: MergedTool, index: number) => string
+): FlatEntry[] {
+  const entries: FlatEntry[] = [];
+
+  tools.forEach((tool, toolIdx) => {
+    if (tool.name !== "ParallelDispatch") {
+      entries.push({
+        stableKey: getToolKey(tool, toolIdx),
+        tool,
+      });
+      return;
+    }
+
+    // ── ParallelDispatch: unroll into virtual sub-agent cards ──────────────
+    const parentKey = tool.id || `pd-${toolIdx}`;
+    const subCalls   = tool.subCalls  || [];
+    const subResults = tool.subResults || [];
+
+    // Build result lookup by ID
+    const resultMap = new Map<string, ToolResult>();
+    subResults.forEach((r) => { if (r.id) resultMap.set(r.id, r); });
+
+    if (subCalls.length > 0) {
+      // Real sub-calls arrived (during or after streaming)
+      subCalls.forEach((call, slotIdx) => {
+        const result = call.id ? resultMap.get(call.id) : subResults[slotIdx];
+        entries.push({
+          // Use slot-based key so it stays the same regardless of call.id value
+          stableKey: `${parentKey}-slot-${slotIdx}`,
+          tool: {
+            // Preserve the real call id for child components that need it, but
+            // our React key comes from stableKey above, not from tool.id
+            id:         call.id || `${parentKey}-sub-${slotIdx}`,
+            name:       call.name,
+            args:       call.arguments,
+            result:     result?.result,
+            error:      result?.error,
+            status:     result ? (result.error ? "failed" : "completed") : "running",
+            duration:   result?.duration,
+            subCalls:   call.subCalls,
+            subResults: call.subResults,
+          },
+        });
+      });
+      return;
+    }
+
+    // No subCalls yet — try to create placeholders from args.tasks
+    const tasks = tool.args?.tasks;
+    if (Array.isArray(tasks) && tasks.length > 0) {
+      // If the parent ParallelDispatch already completed but subCalls were never
+      // populated (can happen in reconnect/reload scenarios), keep status as
+      // "completed" so the card doesn't show a stale "running" spinner.
+      const placeholderStatus = tool.status === "completed" ? "completed" : "running";
+      tasks.forEach((task: any, slotIdx: number) => {
+        const specialist = (task.specialist as string) || "";
+        const toolName = SPECIALIST_TO_TOOL[specialist] || specialist || "Dispatch";
+        entries.push({
+          stableKey: `${parentKey}-slot-${slotIdx}`,
+          tool: {
+            id:     `${parentKey}-placeholder-${slotIdx}`,
+            name:   toolName,
+            args: {
+              task:    task.task    || task.context || "",
+              context: task.context || "",
+            },
+            status: placeholderStatus,
+          },
+        });
+      });
+      return;
+    }
+
+    // ParallelDispatch has neither subCalls nor args.tasks — render it as-is
+    // so it is never invisible (safety fallback).
+    entries.push({
+      stableKey: getToolKey(tool, toolIdx),
+      tool,
+    });
+  });
+
+  return entries;
+}
+
+interface ParallelToolListProps {
+  tools: MergedTool[];
+  getToolKey: (tool: MergedTool, index: number) => string;
+}
+
+function ParallelToolList({ tools, getToolKey }: ParallelToolListProps) {
+  // Flatten ParallelDispatch → virtual sub-agent cards with stable keys
+  const flatEntries = flattenTools(tools, getToolKey);
+
+  // Partition: sub-agent cards that deserve the grid vs other tools
+  const parallelEntries = flatEntries.filter(e => PARALLEL_TOOLS.has(e.tool.name));
+  const otherEntries    = flatEntries.filter(e => !PARALLEL_TOOLS.has(e.tool.name));
+
+  if (parallelEntries.length < 2) {
+    // Single task or no parallel tasks — vertical stack
+    return (
+      <div className="space-y-2">
+        {flatEntries.map(({ stableKey, tool }) => (
+          <ToolCard key={stableKey} tool={tool} />
+        ))}
+      </div>
+    );
+  }
+
+  // Multiple parallel sub-agents → responsive grid
+  return (
+    <div className="space-y-3">
+      {/* Sequential / non-parallel tools rendered first */}
+      {otherEntries.map(({ stableKey, tool }) => (
+        <ToolCard key={stableKey} tool={tool} />
+      ))}
+
+      {/* Parallel sub-agent grid */}
+      <div
+        className="grid gap-5 w-full"
+        style={{ gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, 320px), 1fr))` }}
+      >
+        {parallelEntries.map(({ stableKey, tool }) => (
+          <div key={stableKey} className="min-w-0">
+            <ToolCard tool={tool} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export const ChatMessage = React.memo(function ChatMessage({ message, isStreaming }: ChatMessageProps) {
   const [showTools, setShowTools] = useState(false);
 
@@ -114,8 +284,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
   }, [message.toolCalls, message.toolResults]);
 
   // Auto-expand tool list when sub-agent tools (Dispatch/Explore/Implement/Design/Test) are present
-  const META_TOOLS = new Set(["Dispatch", "Explore", "Implement", "Design", "Test"]);
-  const hasMetaTool = tools.some((t) => META_TOOLS.has(t.name));
+  const hasMetaTool = tools.some((t) => PARALLEL_TOOLS.has(t.name));
   useEffect(() => {
     if (hasMetaTool) {
       setShowTools(true);
@@ -143,6 +312,8 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
   const hasContent = Boolean(message.content);
   const hasTools = tools.length > 0;
   const hasRunningTools = tools.some((t) => t.status === "running");
+  // Parallel tasks should be rendered directly without the collapsible wrapper
+  const showBubble = hasContent || (isStreaming && !hasTools) || (hasTools && isStreaming && !hasContent && !hasRunningTools) || (isUser && message.attachments && message.attachments.length > 0);
 
   const getToolKey = (tool: MergedTool, index: number) => {
     const stableId = tool.id;
@@ -163,7 +334,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
       </div>
 
       {/* Content Container */}
-      <div className={`flex flex-col max-w-[95%] md:max-w-[85%] ${isUser ? "items-end" : "items-start"}`}>
+      <div className={`flex flex-col min-w-0 max-w-[95%] md:max-w-[85%] ${isUser ? "items-end" : "items-start"}`}>
 
         {/* Name & Time (Optional, show on hover or always subtle) */}
         <div className={`flex items-center gap-2 mb-1 px-1 text-[10px] text-gray-500 ${isUser ? "flex-row-reverse" : "flex-row"}`}>
@@ -176,16 +347,17 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
         </div>
 
         {/* Bubble */}
-        <div
-          className={`
-            relative px-3 md:px-5 py-2.5 md:py-3.5 shadow-md pr-10 md:pr-12
-            ${isUser
-              ? "bg-sky-500/15 border border-sky-400/20 backdrop-blur-md text-nimbus-text rounded-2xl rounded-tr-sm"
-              : "bg-nimbus-surface backdrop-blur-xl border border-nimbus-border text-gray-100 rounded-2xl rounded-tl-sm"
-            }
-          `}
-        >
-          {/* Copy button - appears on hover */}
+        {showBubble && (
+          <div
+            className={`
+              relative px-3 md:px-5 py-2.5 md:py-3.5 shadow-md pr-10 md:pr-12
+              ${isUser
+                ? "bg-sky-500/15 border border-sky-400/20 backdrop-blur-md text-nimbus-text rounded-2xl rounded-tr-sm"
+                : "bg-nimbus-surface backdrop-blur-xl border border-nimbus-border text-gray-100 rounded-2xl rounded-tl-sm"
+              }
+            `}
+          >
+            {/* Copy button - appears on hover */}
           {hasContent && (
             <div className="absolute top-2 right-2 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity z-10">
               <CopyButton text={message.content} />
@@ -251,32 +423,48 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
                   )}
                 </>
               )}
-
-              {hasTools && (
-                <div className={hasContent ? "mt-3" : undefined}>
-                  <button
-                    onClick={() => setShowTools(!showTools)}
-                    className="flex items-center gap-2 text-xs font-medium text-nimbus-accent bg-nimbus-surface px-2 py-1 rounded hover:bg-nimbus-surface-hover transition-colors border border-nimbus-border"
-                  >
-                    <span className="text-[10px]">{showTools ? "▼" : "▶"}</span>
-                    <span>Used {tools.length} Tools</span>
-                    {isStreaming && hasRunningTools && (
-                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse ml-1" />
-                    )}
-                  </button>
-
-                  {showTools && (
-                    <div className="mt-2 space-y-2 border-l-2 border-nimbus-border pl-2">
-                      {tools.map((tool, i) => (
-                        <ToolCard key={getToolKey(tool, i)} tool={tool} />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           )}
-        </div>
+          </div>
+        )}
+
+        {/* Tools rendered outside the bubble */}
+        {!isUser && hasTools && (
+          <div className="mt-2 w-full max-w-4xl">
+            {hasMetaTool ? (
+              /* ParallelDispatch: render cards directly without collapsible wrapper */
+              <div className="mt-1">
+                {isStreaming && hasRunningTools && (
+                  <div className="flex items-center gap-2 mb-3 text-xs text-nimbus-accent">
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                    <span>Running parallel tasks…</span>
+                  </div>
+                )}
+                <ParallelToolList tools={tools} getToolKey={getToolKey} />
+              </div>
+            ) : (
+              /* Normal tools: show collapsible "Used X Tools" button */
+              <>
+                <button
+                  onClick={() => setShowTools(!showTools)}
+                  className="flex items-center gap-2 text-xs font-medium text-nimbus-accent bg-nimbus-surface px-2 py-1 rounded hover:bg-nimbus-surface-hover transition-colors border border-nimbus-border"
+                >
+                  <span className="text-[10px]">{showTools ? "▼" : "▶"}</span>
+                  <span>Used {tools.length} Tools</span>
+                  {isStreaming && hasRunningTools && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse ml-1" />
+                  )}
+                </button>
+
+                {showTools && (
+                  <div className="mt-2 border-l-2 border-nimbus-border pl-2">
+                    <ParallelToolList tools={tools} getToolKey={getToolKey} />
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

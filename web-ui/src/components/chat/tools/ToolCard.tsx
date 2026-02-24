@@ -4,7 +4,10 @@ import { DispatchCard } from './DispatchCard';
 import type { ToolCall, ToolResult } from '@/lib/api';
 
 // Tools that spawn sub-agents and get the dedicated DispatchCard treatment
-const META_TOOLS = new Set(["Dispatch", "Explore", "Implement", "Design", "Test"]);
+// NOTE: "ParallelDispatch" should normally be unrolled into virtual sub-agent cards in
+// ChatMessage.tsx before reaching here — but add it as a safety net so it never renders
+// as a plain ToolCard if unrolling failed.
+const META_TOOLS = new Set(["Dispatch", "Explore", "Implement", "Design", "Test", "ParallelDispatch"]);
 
 interface ToolCardProps {
   tool: {
@@ -99,7 +102,7 @@ export function ToolCard({ tool, defaultExpanded }: ToolCardProps) {
 
   return (
     <div data-testid="tool-card" className={`
-      group/card overflow-hidden rounded-lg border transition-all duration-200 relative
+      group/card overflow-hidden max-w-full rounded-lg border transition-all duration-200 relative
       ${isExpanded
         ? `bg-[#0d1117] ${style.border}`
         : isDispatch
@@ -166,7 +169,7 @@ export function ToolCard({ tool, defaultExpanded }: ToolCardProps) {
 
       {/* Body */}
       {isExpanded && (
-        <div className="border-t border-gray-800/50 bg-[#0d1117]/50">
+        <div className="border-t border-gray-800/50 bg-[#0d1117]/50 overflow-x-auto">
           <ToolDisplay tool={tool} isExpanded={true} />
         </div>
       )}
