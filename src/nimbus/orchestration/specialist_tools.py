@@ -62,6 +62,9 @@ class SpecialistTool:
         """
         start_time = time.time()
 
+        # Extract parent action ID for sub-agent event routing
+        parent_action_id = kwargs.pop("_parent_action_id", None)
+
         # Resolve timeout: explicit kwarg > class default
         timeout = kwargs.get("timeout")
         if timeout is not None:
@@ -112,6 +115,11 @@ class SpecialistTool:
             profile=profile,
             llm_client=executor_llm,
         )
+        # Store parent action ID on process for SSE event routing
+        if parent_action_id:
+            proc = self._agent_os._processes.get(pid)
+            if proc:
+                proc.signals["parent_action_id"] = parent_action_id  # type: ignore[assignment]
         logger.info(f"[{self.ROLE}] Spawned {pid} for: {task[:80]}...")
 
         # Wait for completion -- with actionable timeout hint

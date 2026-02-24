@@ -186,8 +186,9 @@ class KernelGate:
                         fault=Fault(domain="PERMISSION", code="WRITE_FILTER", message=error_msg, retryable=False),
                     )
 
-        # Inject parent action ID for tools that spawn sub-agent batches
-        if tool_name == "ParallelDispatch":
+        # Inject parent action ID for all meta-tools that spawn sub-agents
+        _META_TOOL_NAMES = {"Explore", "Implement", "Design", "Test", "Dispatch", "ParallelDispatch"}
+        if tool_name in _META_TOOL_NAMES:
             action.args["_parent_action_id"] = action.id
 
         start_time = time.time_ns()
