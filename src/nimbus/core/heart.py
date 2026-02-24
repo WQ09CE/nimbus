@@ -96,6 +96,7 @@ class Heart:
         self.config = config
         self.state = HeartState.STARTING
         self.inbox = HeartInbox()
+        self.outbox = asyncio.Queue() # Added for upstream intervention signals
         self.nimfs = NimFSManager(config.workspace)
         self.modules: List[HeartModule] = []
         self._stop_event = asyncio.Event()

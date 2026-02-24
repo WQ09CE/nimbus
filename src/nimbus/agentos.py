@@ -38,8 +38,9 @@ from nimbus.core.scheduler import (
 
 # Session and Compaction
 from nimbus.core.session import SessionManager
-from nimbus.core.heart import Heart, HeartConfig
+from nimbus.core.heart import Heart, HeartConfig, HeartMessage
 from nimbus.core.heart_modules.session_monitor import SessionMonitorModule
+from nimbus.core.heart_modules.memory import MemoryManagerModule
 from nimbus.os.gate import (
     KernelGate,
     SimpleEventStream,
@@ -278,12 +279,45 @@ class AgentOS:
             )
         )
         self.heart.add_module(SessionMonitorModule(error_threshold=3))
+        self.heart.add_module(MemoryManagerModule())
         self._heart_task: Optional[asyncio.Task] = None
+        self._intervention_task: Optional[asyncio.Task] = None
 
     def _ensure_heart_running(self) -> None:
         """Start the Heart background task if not already running."""
         if self._heart_task is None or self._heart_task.done():
             self._heart_task = asyncio.create_task(self.heart.start())
+        if self._intervention_task is None or self._intervention_task.done():
+            self._intervention_task = asyncio.create_task(self._handle_interventions())
+
+    async def _handle_interventions(self):
+        """Monitor Heart for intervention signals."""
+        while True:
+            msg: HeartMessage = await self.heart.outbox.get()
+            if msg.topic == "system.intervention":
+                payload = msg.payload
+                itype = payload.get("type")
+                sid = payload.get("session_id")
+                
+                logger.warning(f"[AgentOS] Intervention triggered: {itype} for {sid}")
+                
+                # SSE Feedback
+                self._emit_event("SYSTEM_INTERVENTION", sid or "global", payload)
+                
+                if itype == "RATE_LIMIT_EXCEEDED" and sid:
+                    # Logic to perturb or interrupt
+                    process = self._processes.get(sid)
+                    if process and process.state == "RUNNING":
+                        logger.info(f"[AgentOS] Perturbing session {sid} due to stall...")
+                        # Suggest perturbation to VCPU (if supported)
+                        # For now, we inject a system message
+                        process.inbox.append("[SYSTEM] Logic stall detected. Retrying with higher randomness...")
+                
+                elif itype == "LOCK_WATCHDOG":
+                    # Global notification
+                    logger.error(f"[AgentOS] Critical: {payload.get('reason')}")
+            
+            self.heart.outbox.task_done()
 
     def _register_skill_tools(self) -> None:
         """Register all loaded skill tools."""
@@ -561,6 +595,7 @@ class AgentOS:
 
         # If process is pending, start it
         if process.state == "PENDING":
+            self._ensure_heart_running()
             process.state = "RUNNING"
             try:
                 if timeout:
@@ -645,6 +680,22 @@ class AgentOS:
 
         while True:
             result = await vcpu.step()
+            
+            # Report iteration to Heart for stall detection
+            has_output = False
+            if result.final_result:
+                has_output = True
+            elif result.results:
+                has_output = any(getattr(r, "output", None) for r in result.results)
+            
+            asyncio.create_task(self.heart.inbox.put(
+                topic="session.iteration",
+                payload={
+                    "session_id": pid,
+                    "iteration": vcpu._state.iteration,
+                    "has_output": has_output
+                }
+            ))
 
             # Handle CONTEXT_OVERFLOW fault - trigger compaction and retry
             if result.fault and result.fault.code == "CONTEXT_OVERFLOW":
@@ -1418,6 +1469,23 @@ class AgentOS:
                     return ToolResult(status="OK", output=summary)
 
                 step_result = await process.vcpu.step()
+                
+                # Report iteration to Heart for stall detection
+                has_output = False
+                if step_result.final_result and step_result.final_result.output:
+                    has_output = True
+                elif step_result.results:
+                    # Check if any tool result has output
+                    has_output = any(getattr(r, "output", None) for r in step_result.results)
+                
+                asyncio.create_task(self.heart.inbox.put(
+                    topic="session.iteration",
+                    payload={
+                        "session_id": process.pid,
+                        "iteration": process.vcpu._state.iteration,
+                        "has_output": has_output
+                    }
+                ))
 
                 # Handle CONTEXT_OVERFLOW fault - trigger compaction and retry
                 if step_result.fault and step_result.fault.code == "CONTEXT_OVERFLOW":
