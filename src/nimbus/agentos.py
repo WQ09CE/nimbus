@@ -25,6 +25,7 @@ from nimbus.core.memory.context import PinnedContext
 from nimbus.core.memory.mmu import MMU, MMUConfig
 from nimbus.core.profile import AgentProfile  # NEW
 from nimbus.core.models.manifest import get_model_manifest
+from nimbus.core.models.registry import ModelRegistry
 from nimbus.core.protocol import Event, Fault, ToolResult
 from nimbus.core.runtime.decoder import InstructionDecoder
 from nimbus.core.runtime.vcpu import VCPU, LLMClient, VCPUConfig
@@ -317,6 +318,33 @@ class AgentOS:
                     # Global notification
                     logger.error(f"[AgentOS] Critical: {payload.get('reason')}")
             
+            elif msg.topic == "system.escalate":
+                sid = msg.payload.get("session_id")
+                process = self._processes.get(sid)
+                if process and process.vcpu:
+                    current_model = process.vcpu.manifest.model_id
+                    next_model = ModelRegistry.get_next_tier(current_model)
+                    if next_model:
+                        logger.info(f"[AgentOS] Escalating session {sid}: {current_model} -> {next_model}")
+                        
+                        # Apply escalation
+                        new_manifest = get_model_manifest(next_model)
+                        # Preserve role
+                        from dataclasses import replace as _dc_replace
+                        new_manifest = _dc_replace(new_manifest, role=process.vcpu.manifest.role)
+                        
+                        process.vcpu.manifest = new_manifest
+                        # If the ALU (LLM client) depends on the manifest, we might need to recreate it.
+                        # For most adapters in Nimbus, the manifest model_id is used in the next chat call.
+                        
+                        self._emit_event("MODEL_ESCALATED", sid, {
+                            "from": current_model,
+                            "to": next_model,
+                            "reason": msg.payload.get("reason")
+                        })
+                    else:
+                        logger.warning(f"[AgentOS] Escalation requested for {sid} but already at highest tier.")
+
             self.heart.outbox.task_done()
 
     def _register_skill_tools(self) -> None:
@@ -1573,6 +1601,26 @@ class AgentOS:
 
             return final_result or ToolResult(status="OK")
 
+        except asyncio.TimeoutError:
+            # Timeout: attempt to scavenge partial results before destroying the process
+            process.state = "TIMEOUT"
+            partial_result = self._scavenge_partial_result(process)
+            asyncio.create_task(self.heart.inbox.put(
+                topic="session.timeout",
+                payload={
+                    "session_id": process.pid,
+                    "error": "Process timed out",
+                    "partial_salvaged": partial_result.output is not None,
+                },
+            ))
+            self._emit_event(
+                "PROC_TIMEOUT",
+                process.pid,
+                {"partial_salvaged": partial_result.output is not None},
+            )
+            process.result = partial_result
+            return partial_result
+
         except asyncio.CancelledError:
             process.state = "CANCELLED"
             process.signals["interrupt"] = False  # Clear stale signal so next run isn't auto-cancelled
@@ -1607,6 +1655,269 @@ class AgentOS:
                 ),
             )
             return process.result
+
+    # =========================================================================
+    # Parallel Dispatch & Scavenging
+    # =========================================================================
+
+    def _scavenge_partial_result(self, process: Process) -> ToolResult:
+        """
+        Scavenge partial results from a timed-out process before it is destroyed.
+
+        Accesses the process's current MMU frame, extracts any internal monologue
+        (assistant messages) and artifact references produced so far, and packages
+        them into a ToolResult with ``is_partial=True`` so callers can distinguish
+        salvaged data from a normal completion.
+
+        Args:
+            process: The timed-out Process whose frame will be inspected.
+
+        Returns:
+            ToolResult with status="TIMEOUT", is_partial=True, and whatever
+            partial data could be recovered.
+        """
+        try:
+            frame = process.mmu.current_frame if process.mmu else None
+            internal_monologue: List[str] = []
+            artifacts = []
+
+            if frame is not None:
+                for msg in frame.messages:
+                    if msg.role == "assistant" and msg.content:
+                        internal_monologue.append(msg.content)
+                    # Collect any artifact refs stored in message metadata
+                    if hasattr(msg, "meta") and msg.meta:
+                        for ref in msg.meta.get("artifacts", []):
+                            artifacts.append(ref)
+
+            partial_output = {
+                "is_partial": True,
+                "pid": process.pid,
+                "goal": process.goal,
+                "internal_monologue": internal_monologue,
+                "salvaged_artifacts": artifacts,
+                "frame_id": frame.frame_id if frame else None,
+            }
+
+            logger.info(
+                f"[scavenge] PID={process.pid} salvaged "
+                f"{len(internal_monologue)} thought(s), "
+                f"{len(artifacts)} artifact(s)."
+            )
+
+            return ToolResult(
+                status="TIMEOUT",
+                output=partial_output,
+                is_final=False,
+                fault=Fault(
+                    domain="KERNEL",
+                    code="TIMEOUT",
+                    message=f"Process {process.pid} timed out; partial results salvaged.",
+                    retryable=True,
+                ),
+            )
+
+        except Exception as exc:  # pragma: no cover – best-effort scavenge
+            logger.warning(f"[scavenge] Failed to salvage partial result for PID={process.pid}: {exc}")
+            return ToolResult(
+                status="TIMEOUT",
+                output={"is_partial": True, "pid": process.pid, "goal": process.goal},
+                is_final=False,
+                fault=Fault(
+                    domain="KERNEL",
+                    code="TIMEOUT",
+                    message=f"Process {process.pid} timed out; scavenge also failed: {exc}",
+                    retryable=True,
+                ),
+            )
+
+    async def spawn_batch(
+        self,
+        tasks: List[Dict[str, Any]],
+        timeout: Optional[float] = None,
+        strategy: Literal["wait_all", "wait_any", "wait_threshold"] = "wait_all",
+        threshold: float = 0.6,
+    ) -> List[ToolResult]:
+        """
+        Spawn and run multiple sub-processes concurrently (parallel dispatch).
+
+        Each entry in *tasks* is a dict accepted by :meth:`spawn` – at minimum
+        it must contain a ``"goal"`` key.  Every process is given its own
+        ``sub_session_id`` (equal to its ``pid``) so SSE events can be filtered
+        per sub-task.
+
+        Args:
+            tasks:    List of task dicts.  Supported keys mirror :meth:`spawn`
+                      parameters: ``goal``, ``role``, ``system_rules``,
+                      ``max_iterations``, ``llm_client``, ``tools_override``,
+                      ``profile``.
+            timeout:  Per-task wall-clock timeout in seconds.  When a task
+                      exceeds this limit ``asyncio.wait_for`` raises
+                      ``asyncio.TimeoutError`` which triggers
+                      :meth:`_scavenge_partial_result` inside
+                      :meth:`_run_process`.
+            strategy: Aggregation strategy:
+                      - ``"wait_all"``       – wait for every task (default).
+                      - ``"wait_any"``       – return as soon as the first
+                        task finishes; cancel the rest.
+                      - ``"wait_threshold"`` – return when at least
+                        ``threshold`` fraction of tasks have finished.
+            threshold: Fraction of tasks that must complete for
+                       ``"wait_threshold"`` strategy (default 0.6).
+
+        Returns:
+            List of :class:`ToolResult` in the same order as *tasks*.
+            Failed / timed-out entries contain the salvaged partial result.
+        """
+        if not tasks:
+            return []
+
+        batch_id = f"batch-{uuid.uuid4().hex[:8]}"
+        logger.info(
+            f"[spawn_batch] batch_id={batch_id} launching {len(tasks)} tasks "
+            f"strategy={strategy} timeout={timeout}"
+        )
+
+        # 1. Spawn all processes (synchronous, non-blocking).
+        pids: List[str] = []
+        for i, task_spec in enumerate(tasks):
+            goal = task_spec.get("goal", "")
+            if not goal:
+                raise ValueError(f"tasks[{i}] is missing required 'goal' key")
+
+            pid = self.spawn(
+                goal=goal,
+                role=task_spec.get("role", ""),
+                system_rules=task_spec.get("system_rules"),
+                max_iterations=task_spec.get("max_iterations"),
+                llm_client=task_spec.get("llm_client"),
+                tools_override=task_spec.get("tools_override"),
+                profile=task_spec.get("profile"),
+            )
+            pids.append(pid)
+            # Tag the process so SSE listeners can filter by sub_session_id
+            proc = self._processes[pid]
+            proc.signals["batch_id"] = batch_id          # type: ignore[assignment]
+            proc.signals["sub_session_id"] = pid         # type: ignore[assignment]
+            self._emit_event(
+                "BATCH_TASK_SPAWNED",
+                pid,
+                {"batch_id": batch_id, "sub_session_id": pid, "index": i, "goal": goal},
+            )
+
+        # 2. Build coroutines with per-task timeout wrapping.
+        async def _run_with_timeout(pid: str) -> ToolResult:
+            proc = self._processes[pid]
+            coro = self._run_process(proc)
+            if timeout is not None:
+                try:
+                    return await asyncio.wait_for(coro, timeout=timeout)
+                except asyncio.TimeoutError:
+                    # asyncio.wait_for cancelled the inner coroutine; scavenge now.
+                    proc.state = "TIMEOUT"
+                    partial_result = self._scavenge_partial_result(proc)
+                    asyncio.create_task(self.heart.inbox.put(
+                        topic="session.timeout",
+                        payload={
+                            "session_id": pid,
+                            "error": "Process timed out (spawn_batch)",
+                            "partial_salvaged": partial_result.output is not None,
+                        },
+                    ))
+                    self._emit_event(
+                        "PROC_TIMEOUT",
+                        pid,
+                        {"batch_id": batch_id, "partial_salvaged": partial_result.output is not None},
+                    )
+                    proc.result = partial_result
+                    return partial_result
+            return await coro
+
+        coroutines = [_run_with_timeout(pid) for pid in pids]
+
+        # 3. Execute according to strategy.
+        results: List[Optional[ToolResult]] = [None] * len(pids)
+
+        if strategy == "wait_any":
+            # asyncio.wait FIRST_COMPLETED – cancel remaining tasks
+            aws = {asyncio.ensure_future(c): i for i, c in enumerate(coroutines)}
+            done, pending = await asyncio.wait(
+                list(aws.keys()), return_when=asyncio.FIRST_COMPLETED
+            )
+            for fut in done:
+                idx = aws[fut]
+                try:
+                    results[idx] = fut.result()
+                except Exception as exc:
+                    results[idx] = ToolResult(
+                        status="ERROR",
+                        fault=Fault(domain="KERNEL", code="SYSTEM_ERROR", message=str(exc)),
+                    )
+            for fut in pending:
+                fut.cancel()
+                idx = aws[fut]
+                results[idx] = ToolResult(
+                    status="CANCELLED",
+                    fault=Fault(domain="KERNEL", code="SYSTEM_ERROR", message="Cancelled by wait_any strategy"),
+                )
+
+        elif strategy == "wait_threshold":
+            need = max(1, int(len(pids) * threshold))
+            aws = {asyncio.ensure_future(c): i for i, c in enumerate(coroutines)}
+            completed = 0
+            pending = set(aws.keys())
+            while completed < need and pending:
+                done, pending = await asyncio.wait(
+                    list(pending), return_when=asyncio.FIRST_COMPLETED
+                )
+                for fut in done:
+                    idx = aws[fut]
+                    completed += 1
+                    try:
+                        results[idx] = fut.result()
+                    except Exception as exc:
+                        results[idx] = ToolResult(
+                            status="ERROR",
+                            fault=Fault(domain="KERNEL", code="SYSTEM_ERROR", message=str(exc)),
+                        )
+            # Cancel remaining if threshold reached
+            if completed >= need:
+                for fut in pending:
+                    fut.cancel()
+                    idx = aws[fut]
+                    results[idx] = ToolResult(
+                        status="CANCELLED",
+                        fault=Fault(domain="KERNEL", code="SYSTEM_ERROR", message="Cancelled after threshold reached"),
+                    )
+
+        else:  # wait_all (default)
+            gathered = await asyncio.gather(*coroutines, return_exceptions=True)
+            for i, res in enumerate(gathered):
+                if isinstance(res, Exception):
+                    results[i] = ToolResult(
+                        status="ERROR",
+                        fault=Fault(domain="KERNEL", code="SYSTEM_ERROR", message=str(res)),
+                    )
+                else:
+                    results[i] = res  # type: ignore[assignment]
+
+        self._emit_event(
+            "BATCH_FINISHED",
+            batch_id,
+            {
+                "batch_id": batch_id,
+                "total": len(pids),
+                "succeeded": sum(1 for r in results if r and r.status == "OK"),
+                "failed": sum(1 for r in results if r and r.status in ("ERROR", "TIMEOUT", "CANCELLED")),
+            },
+        )
+
+        logger.info(
+            f"[spawn_batch] batch_id={batch_id} finished. "
+            f"results={[r.status if r else 'None' for r in results]}"
+        )
+
+        return [r or ToolResult(status="ERROR") for r in results]
 
     # =========================================================================
     # Tool Management
