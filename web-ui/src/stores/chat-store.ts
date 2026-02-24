@@ -379,7 +379,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
           content, // Ensure content is never null
           toolCalls,
           toolResults: toolResults && toolResults.length > 0 ? toolResults : undefined,
-          timestamp: !isNaN(new Date(m.created_at).getTime()) ? new Date(m.created_at).getTime() : Date.now(),
+          timestamp: (() => {
+            // Defensive UTC parsing: if the server timestamp lacks a timezone
+            // indicator (e.g. "2024-02-24 12:00:00"), treat it as UTC by
+            // appending "Z". Strings already ending with Z, +00:00, etc. are
+            // parsed correctly by Date as-is.
+            let raw = m.created_at || "";
+            if (raw && !/[Zz]$/.test(raw) && !/[+-]\d{2}:\d{2}$/.test(raw)) {
+              raw = raw.replace(" ", "T") + "Z";
+            }
+            const ts = new Date(raw).getTime();
+            return !isNaN(ts) ? ts : Date.now();
+          })(),
           ...(isInjection ? { isInjection: true } : {}),
         });
       }

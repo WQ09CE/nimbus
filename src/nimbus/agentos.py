@@ -1447,7 +1447,7 @@ class AgentOS:
                     process.state = "SUCCEEDED"
                     asyncio.create_task(self.heart.inbox.put(
                         topic="session.failure",
-                        payload={"session_id": process.session_id, "error": "Iteration budget reached, forced summary"}
+                        payload={"session_id": process.pid, "error": "Iteration budget reached, forced summary"}
                     ))
                     # Extract LLM's text response as the output
                     summary = ""
@@ -1528,7 +1528,7 @@ class AgentOS:
                         process.state = "FAILED"
                         asyncio.create_task(self.heart.inbox.put(
                             topic="session.failure",
-                            payload={"session_id": process.session_id, "error": f"Compaction ineffective: {reason}"}
+                            payload={"session_id": process.pid, "error": f"Compaction ineffective: {reason}"}
                         ))
                         return ToolResult(
                             status="ERROR",
@@ -1578,7 +1578,7 @@ class AgentOS:
             process.signals["interrupt"] = False  # Clear stale signal so next run isn't auto-cancelled
             asyncio.create_task(self.heart.inbox.put(
                 topic="session.timeout",
-                payload={"session_id": process.session_id, "error": "Process was cancelled/timed out"}
+                payload={"session_id": process.pid, "error": "Process was cancelled/timed out"}
             ))
             process.result = ToolResult(
                 status="CANCELLED",
@@ -1595,7 +1595,7 @@ class AgentOS:
             process.state = "FAILED"
             asyncio.create_task(self.heart.inbox.put(
                 topic="session.error",
-                payload={"session_id": process.session_id, "error": str(e)}
+                payload={"session_id": process.pid, "error": str(e)}
             ))
             process.result = ToolResult(
                 status="ERROR",

@@ -1149,8 +1149,20 @@ class SQLiteStorage:
     # Utility Methods
     # =========================================================================
 
+    # Columns whose values are UTC timestamps produced by SQLite CURRENT_TIMESTAMP.
+    # These lack timezone info (e.g. "2024-02-24 12:00:00") and must be suffixed
+    # with "Z" so downstream consumers (especially JS `new Date()`) interpret them
+    # as UTC rather than local time.
+    _TIMESTAMP_COLUMNS = frozenset({
+        "created_at", "updated_at", "archived_at", "completed_at",
+        "resolved_at", "last_message_at", "timestamp",
+    })
+
     def _row_to_dict(self, row: Optional[aiosqlite.Row]) -> Dict[str, Any]:
         """Convert SQLite row to dictionary.
+
+        Ensures all known timestamp columns carry an explicit UTC indicator
+        ('Z' suffix) so that API consumers parse them correctly.
 
         Args:
             row: SQLite row object.
@@ -1160,7 +1172,14 @@ class SQLiteStorage:
         """
         if row is None:
             return {}
-        return dict(row)
+        d = dict(row)
+        for col in self._TIMESTAMP_COLUMNS:
+            v = d.get(col)
+            if isinstance(v, str) and v and not v.endswith(("Z", "+00:00", "+00", "z")):
+                # SQLite CURRENT_TIMESTAMP format: "YYYY-MM-DD HH:MM:SS"
+                # Convert to ISO-8601 with UTC marker: "YYYY-MM-DDTHH:MM:SSZ"
+                d[col] = v.replace(" ", "T") + "Z"
+        return d
 
     def _enrich_session(self, session: Dict[str, Any]) -> Dict[str, Any]:
         """Unpack config_overrides fields into top-level keys for caller convenience.
