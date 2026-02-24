@@ -23,12 +23,14 @@ interface ToolCardProps {
     subResults?: ToolResult[];
   };
   defaultExpanded?: boolean;
+  /** Pass-through for DispatchCard: "collapsed" in parallel grids, "expanded" (default) for solo agents */
+  defaultState?: "collapsed" | "expanded";
 }
 
-export function ToolCard({ tool, defaultExpanded }: ToolCardProps) {
+export function ToolCard({ tool, defaultExpanded, defaultState }: ToolCardProps) {
   // Meta-tools (Dispatch/Explore/Implement/Design/Test) get the dedicated sub-agent card
   if (META_TOOLS.has(tool.name)) {
-    return <DispatchCard tool={tool} />;
+    return <DispatchCard tool={tool} defaultState={defaultState} />;
   }
 
   const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? false);

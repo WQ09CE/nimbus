@@ -1,13 +1,30 @@
-import React, { useState } from 'react';
+"use client";
+
+import React, { useState, useRef, useEffect } from 'react';
 import type { ToolCall, ToolResult } from '@/lib/api';
 import { MarkdownRenderer } from '../MarkdownRenderer';
-import { ToolDisplay } from './ToolDisplay';
 
+// ─────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────
+
+export interface SubCallWithStatus {
+    id?: string;
+    name: string;
+    arguments: Record<string, unknown>;
+    result?: unknown;
+    error?: string;
+    duration?: number;
+    status: "running" | "completed" | "failed";
+}
+
+// ─────────────────────────────────────────────
 // Visual configuration for each specialist type
+// ─────────────────────────────────────────────
+
 interface SpecialistTheme {
     label: string;
     icon: string;
-    // Static Tailwind classes for each color context (cannot use dynamic interpolation)
     border: { running: string; failed: string; normal: string };
     bg: { running: string; failed: string; normal: string };
     strip: { running: string; failed: string; normal: string };
@@ -87,8 +104,11 @@ const SPECIALIST_THEMES: Record<string, SpecialistTheme> = {
     },
 };
 
-// Default fallback (same as Dispatch)
 const DEFAULT_THEME = SPECIALIST_THEMES.Dispatch;
+
+// ─────────────────────────────────────────────
+// Props
+// ─────────────────────────────────────────────
 
 interface DispatchCardProps {
     tool: {
@@ -102,7 +122,13 @@ interface DispatchCardProps {
         subCalls?: ToolCall[];
         subResults?: ToolResult[];
     };
+    /** "collapsed": 并行场景默认折叠; "expanded": 单独 subagent 完成后自动展开 */
+    defaultState?: "collapsed" | "expanded";
 }
+
+// ─────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────
 
 function parseFileChanges(resultText: string): { icon: string; file: string; type: string }[] {
     const changes: { icon: string; file: string; type: string }[] = [];
@@ -126,94 +152,153 @@ function parseExecutorReport(resultText: string): string {
     return report.trim();
 }
 
-function SubToolCallItem({ sub, index }: {
-    sub: {
-        id?: string;
-        name: string;
-        arguments: Record<string, unknown>;
-        result?: unknown;
-        error?: string;
-        duration?: number;
-        status: "running" | "completed" | "failed";
-    };
-    index: number;
-}) {
-    const [isExpanded, setIsExpanded] = useState(false);
-    const isSubRunning = sub.status === "running";
-    const isSubFailed = sub.status === "failed";
-
-    let subSummary = "";
-    const pathArg = sub.arguments?.path || sub.arguments?.file_path || sub.arguments?.target_file;
-    const cmdArg = sub.arguments?.command || sub.arguments?.cmd;
-    if (typeof pathArg === 'string') {
-        const parts = pathArg.split('/');
-        subSummary = parts.pop() || pathArg;
-        // Append line range for Read tool with offset/limit
-        if (sub.name === "Read") {
-            const offset = sub.arguments?.offset as number | undefined;
-            const limit = sub.arguments?.limit as number | undefined;
-            if (offset && limit) subSummary += ` :${offset}-${offset + limit}`;
-            else if (offset) subSummary += ` :${offset}+`;
-            else if (limit) subSummary += ` :1-${limit}`;
-        }
-    } else if (typeof cmdArg === 'string') {
-        subSummary = cmdArg.length > 60 ? cmdArg.slice(0, 60) + '...' : cmdArg;
+function buildArgsSummary(name: string, args: Record<string, unknown>): string {
+    if (name === "Read") {
+        const fp = String(args.file_path || "");
+        const offset = args.offset ? `:${args.offset}` : "";
+        const limit = args.limit ? `-${Number(args.offset || 1) + Number(args.limit)}` : "";
+        return `${fp}${offset}${limit}`;
     }
+    if (name === "Bash") return String(args.command || "").slice(0, 80);
+    if (name === "Write" || name === "Edit") return String(args.file_path || "");
+    const first = Object.values(args)[0];
+    return first != null ? String(first).slice(0, 60) : "";
+}
 
-    const hasDetails = (sub.arguments && Object.keys(sub.arguments).length > 0) || sub.result != null || sub.error;
+// ─────────────────────────────────────────────
+// SubCallRow — individual tool call row
+// ─────────────────────────────────────────────
+
+function SubCallRow({ sub, index, theme }: { sub: SubCallWithStatus; index: number; theme?: SpecialistTheme }) {
+    const [isExpanded, setIsExpanded] = useState(false);
+
+    const isRunning = sub.status === "running";
+    const isFailed = sub.status === "failed";
+
+    const summary = buildArgsSummary(sub.name, sub.arguments);
+    const hasDetails = Object.keys(sub.arguments).length > 0 || sub.result != null || sub.error != null;
+
+    const resultText =
+        typeof sub.result === "string"
+            ? sub.result
+            : sub.result != null
+                ? JSON.stringify(sub.result, null, 2)
+                : null;
+
+    const dotColor = isRunning
+        ? "bg-yellow-400 animate-pulse shadow-[0_0_6px_rgba(250,204,21,0.5)]"
+        : isFailed
+            ? "bg-red-400 shadow-[0_0_6px_rgba(248,113,113,0.4)]"
+            : "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.4)]";
 
     return (
-        <div className="rounded-md border border-white/[0.04] overflow-hidden">
-            <div
-                className={`flex items-center gap-2.5 py-1.5 px-2.5 transition-colors ${hasDetails ? 'cursor-pointer hover:bg-white/[0.03]' : ''}`}
-                onClick={() => hasDetails && setIsExpanded(!isExpanded)}
+        <div className="rounded-lg border border-white/[0.06] overflow-hidden bg-white/[0.02] transition-all">
+            <button
+                type="button"
+                className={`w-full flex items-center gap-2 py-2 px-3 text-left transition-colors ${hasDetails ? "hover:bg-white/[0.04] cursor-pointer" : "cursor-default"}`}
+                onClick={() => hasDetails && setIsExpanded(v => !v)}
+                disabled={!hasDetails}
             >
-                <div className={`w-2 h-2 rounded-full shrink-0 ${isSubRunning
-                    ? 'bg-yellow-400 animate-pulse shadow-[0_0_6px_rgba(250,204,21,0.5)]'
-                    : isSubFailed
-                        ? 'bg-red-400 shadow-[0_0_6px_rgba(248,113,113,0.4)]'
-                        : 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.4)]'
-                    }`} />
-                <span className="text-[10px] font-mono text-gray-600 w-4 text-right shrink-0">{index + 1}.</span>
-                <span className="text-[12px] font-mono text-gray-200 font-medium">{sub.name}</span>
-                {subSummary && (
+                {/* Status dot */}
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor}`} />
+                {/* Index */}
+                <span className="text-[10px] font-mono text-gray-600 w-5 text-right shrink-0">
+                    {index + 1}.
+                </span>
+                {/* Tool name */}
+                <span className="text-[12px] font-mono text-gray-200 font-semibold shrink-0">
+                    {sub.name}
+                </span>
+                {summary && (
                     <>
-                        <span className="text-gray-700 text-[10px]">/</span>
-                        <span className="text-[11px] font-mono text-gray-500 truncate">{subSummary}</span>
+                        <span className="text-gray-700 text-[10px] shrink-0">/</span>
+                        <span className="text-[11px] font-mono text-gray-500 truncate flex-1">
+                            {summary}
+                        </span>
                     </>
                 )}
-                <div className="flex-1" />
-                {sub.duration != null && (
-                    <span className="text-[10px] font-mono text-gray-600 shrink-0">{sub.duration}ms</span>
-                )}
+                {!summary && <span className="flex-1" />}
+                {isRunning ? (
+                    <span className="flex gap-0.5 shrink-0">
+                        <span className={`w-1 h-1 rounded-full ${theme?.dots ?? "bg-purple-400"} animate-bounce`} style={{ animationDelay: '0ms' }} />
+                        <span className={`w-1 h-1 rounded-full ${theme?.dots ?? "bg-purple-400"} animate-bounce`} style={{ animationDelay: '150ms' }} />
+                        <span className={`w-1 h-1 rounded-full ${theme?.dots ?? "bg-purple-400"} animate-bounce`} style={{ animationDelay: '300ms' }} />
+                    </span>
+                ) : sub.duration != null ? (
+                    <span className="font-mono text-[10px] text-gray-600 shrink-0">{sub.duration}ms</span>
+                ) : null}
                 {hasDetails && (
-                    <svg className={`w-2.5 h-2.5 text-gray-600 transition-transform duration-200 shrink-0 ${isExpanded ? "rotate-180" : ""}`}
-                        fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <svg
+                        className={`w-3 h-3 text-gray-500 transition-transform duration-200 shrink-0 ${isExpanded ? "rotate-180" : ""}`}
+                        fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                    >
                         <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
                     </svg>
                 )}
-            </div>
+            </button>
+
+            {/* Expanded detail */}
             {isExpanded && hasDetails && (
-                <div className="border-t border-white/[0.04] bg-black/20 px-3 py-2">
-                    <ToolDisplay
-                        tool={{ id: sub.id, name: sub.name, args: sub.arguments, result: sub.result, error: sub.error, status: sub.status, duration: sub.duration }}
-                        isExpanded={true}
-                    />
+                <div className="border-t border-white/[0.05] bg-black/30 px-3 py-2.5 space-y-2">
+                    {sub.error && (
+                        <div className="text-[11px] font-mono text-red-400 bg-red-500/10 rounded px-2.5 py-1.5 border border-red-500/20 whitespace-pre-wrap break-words">
+                            {sub.error}
+                        </div>
+                    )}
+                    {Object.keys(sub.arguments).length > 0 && (
+                        <details className="group">
+                            <summary className="text-[10px] uppercase tracking-wider text-gray-500 cursor-pointer select-none hover:text-gray-400 transition-colors">
+                                ⚙ Arguments
+                            </summary>
+                            <pre className="mt-1 text-[11px] font-mono text-gray-400 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed">
+                                {JSON.stringify(sub.arguments, null, 2)}
+                            </pre>
+                        </details>
+                    )}
+                    {resultText && (
+                        <details open className="group">
+                            <summary className="text-[10px] uppercase tracking-wider text-gray-500 cursor-pointer select-none hover:text-gray-400 transition-colors">
+                                📤 Result
+                            </summary>
+                            <pre className="mt-1 text-[11px] font-mono text-gray-400 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed max-h-60 overflow-y-auto">
+                                {resultText}
+                            </pre>
+                        </details>
+                    )}
                 </div>
             )}
         </div>
     );
 }
 
-export function DispatchCard({ tool }: DispatchCardProps) {
-    const [isExpanded, setIsExpanded] = useState(true);
-    const [isTaskExpanded, setIsTaskExpanded] = useState(false);
+// ─────────────────────────────────────────────
+// DispatchCard — three-state self-contained card
+// ─────────────────────────────────────────────
 
+export function DispatchCard({ tool, defaultState = "expanded" }: DispatchCardProps) {
     const theme = SPECIALIST_THEMES[tool.name] || DEFAULT_THEME;
     const isRunning = tool.status === "running";
     const isFailed = tool.status === "failed";
 
-    // Recover sub-calls from tool.result if they are missing (e.g. after refresh)
+    // Three view states: "collapsed" | "expanded" | "full"
+    // running 时始终 collapsed；完成后按 defaultState 决定
+    const [viewState, setViewState] = useState<"collapsed" | "expanded" | "full">(
+        isRunning ? "collapsed" : defaultState === "collapsed" ? "collapsed" : "expanded"
+    );
+
+    // running → completed 时自动转换
+    const prevRunningRef = useRef(isRunning);
+    useEffect(() => {
+        if (prevRunningRef.current && !isRunning) {
+            // just completed
+            if (defaultState !== "collapsed") {
+                setViewState("expanded");
+            }
+        }
+        prevRunningRef.current = isRunning;
+    }, [isRunning, defaultState]);
+
+    // ── Sub-call data ──────────────────────────────────
     const toolResult = tool.result as any;
     const recoveredSubCalls = toolResult?.sub_calls || toolResult?.subCalls || [];
     const recoveredSubResults = toolResult?.sub_results || toolResult?.subResults || [];
@@ -221,47 +306,77 @@ export function DispatchCard({ tool }: DispatchCardProps) {
     const subCalls = (tool.subCalls && tool.subCalls.length > 0) ? tool.subCalls : recoveredSubCalls;
     const subResults = (tool.subResults && tool.subResults.length > 0) ? tool.subResults : recoveredSubResults;
 
-    const task = (tool.args?.task as string) || (tool.args?.prompt as string) || (tool.args?.context as string) || "";
-    const taskPreview = task.length > 80 ? task.slice(0, 80) + "..." : task;
-    const hasLongTask = task.length > 80;
-
-    const resultText = typeof tool.result === 'string' ? tool.result : '';
-    const fileChanges = parseFileChanges(resultText);
-    const executorReport = parseExecutorReport(resultText);
-
-    const subCallsWithStatus = subCalls.map((sc: any) => {
-        // Handle both camelCase (ToolCall type) and snake_case (recovered from backend result)
+    const subCallsWithStatus: SubCallWithStatus[] = subCalls.map((sc: any, idx: number) => {
         const callId = sc.id;
         const callName = sc.name || sc.tool;
         const callArgs = sc.arguments || sc.args || {};
-
         const matchedResult = subResults.find((sr: any) => sr.id === callId);
         return {
-            id: callId,
+            id: callId || `${callName}-${idx}`,
             name: callName,
             arguments: callArgs,
             result: matchedResult?.result,
             error: matchedResult?.error,
             duration: matchedResult?.duration,
-            status: (matchedResult ? (matchedResult.error ? "failed" : "completed") : "running") as "running" | "completed" | "failed",
+            status: (matchedResult
+                ? (matchedResult.error ? "failed" : "completed")
+                : "running") as "running" | "completed" | "failed",
         };
     });
 
-    const completedCount = subCallsWithStatus.filter((s: { status: string }) => s.status === 'completed').length;
-    const failedCount = subCallsWithStatus.filter((s: { status: string }) => s.status === 'failed').length;
+    // ── Derived values ────────────────────────────────
+    const task = (tool.args?.task as string) || (tool.args?.prompt as string) || (tool.args?.context as string) || "";
+    // Header task: truncated to ~60 chars
+    const taskHeader = task.length > 60 ? task.slice(0, 60) + "…" : task;
 
-    // Resolve theme classes based on status
+    const resultText = typeof tool.result === 'string' ? tool.result : '';
+    const fileChanges = parseFileChanges(resultText);
+    const executorReport = parseExecutorReport(resultText);
+
+    const completedCount = subCallsWithStatus.filter(s => s.status === 'completed').length;
+    const failedCount = subCallsWithStatus.filter(s => s.status === 'failed').length;
+    const totalTools = subCallsWithStatus.length;
+
+    // live activity 区域自动滚到底部
+    const liveActivityRef = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        if (isRunning && liveActivityRef.current) {
+            liveActivityRef.current.scrollTop = liveActivityRef.current.scrollHeight;
+        }
+    }, [isRunning, totalTools]);
+
+    // ── Theme classes ─────────────────────────────────
     const borderClass = isRunning ? theme.border.running : isFailed ? theme.border.failed : theme.border.normal;
     const bgClass = isRunning ? theme.bg.running : isFailed ? theme.bg.failed : theme.bg.normal;
     const stripClass = isRunning ? theme.strip.running : isFailed ? theme.strip.failed : theme.strip.normal;
 
+    const isCollapsed = viewState === "collapsed";
+    const isExpanded = viewState === "expanded" || viewState === "full";
+    const isFullDetail = viewState === "full";
+
+    // Toggle header click: collapsed ↔ expanded
+    const handleHeaderClick = () => {
+        if (isRunning) return; // no toggle while running
+        if (isCollapsed) {
+            setViewState("expanded");
+        } else {
+            setViewState("collapsed");
+        }
+    };
+
     return (
         <div className={`overflow-hidden max-w-full rounded-xl border transition-all duration-300 relative ${borderClass} ${bgClass}`}>
+            {/* Left accent strip */}
             <div className={`absolute left-0 top-0 bottom-0 w-1 ${stripClass}`} />
 
-            <div className="px-4 py-3 pl-5 flex items-center justify-between cursor-pointer select-none" onClick={() => setIsExpanded(!isExpanded)}>
+            {/* ── Card Header ── */}
+            <div
+                className={`px-4 py-2.5 pl-5 flex items-center justify-between ${!isRunning ? 'cursor-pointer hover:bg-white/[0.02]' : ''} select-none transition-colors`}
+                onClick={handleHeaderClick}
+            >
                 <div className="flex items-center gap-3 min-w-0">
-                    <div className="flex items-center gap-2">
+                    {/* Status indicator */}
+                    <div className="flex items-center shrink-0">
                         {isRunning ? (
                             <div className="flex gap-0.5">
                                 <div className={`w-1.5 h-1.5 rounded-full ${theme.dots} animate-bounce`} style={{ animationDelay: '0ms' }} />
@@ -269,98 +384,178 @@ export function DispatchCard({ tool }: DispatchCardProps) {
                                 <div className={`w-1.5 h-1.5 rounded-full ${theme.dots} animate-bounce`} style={{ animationDelay: '300ms' }} />
                             </div>
                         ) : isFailed ? (
-                            <span className="text-red-400 text-sm">{'\u2717'}</span>
+                            <span className="text-red-400 text-sm">✗</span>
                         ) : (
-                            <span className="text-emerald-400 text-sm">{'\u2713'}</span>
+                            <span className="text-emerald-400 text-sm">✓</span>
                         )}
                     </div>
-                    <span className={`text-[10px] uppercase font-bold ${theme.badge.text} ${theme.badge.bg} px-2 py-0.5 rounded-full border ${theme.badge.border} tracking-wider whitespace-nowrap`}>{theme.icon} {theme.label}</span>
-                    <span className="text-[12px] text-gray-400 truncate">{taskPreview}</span>
-                </div>
-                <div className="flex items-center gap-3 shrink-0 ml-2">
-                    {subCalls.length > 0 && (
-                        <span className={`text-[10px] font-mono ${theme.toolCount}`}>
-                            {isRunning ? `${completedCount}/${subCalls.length} tools` : `${subCalls.length} tool${subCalls.length > 1 ? 's' : ''}`}
-                            {failedCount > 0 && <span className="text-red-400 ml-1">({failedCount} failed)</span>}
+
+                    {/* Role badge */}
+                    <span className={`text-[10px] uppercase font-bold ${theme.badge.text} ${theme.badge.bg} px-2 py-0.5 rounded-full border ${theme.badge.border} tracking-wider whitespace-nowrap shrink-0`}>
+                        {theme.icon} {theme.label}
+                    </span>
+
+                    {/* Task truncated preview */}
+                    {taskHeader && (
+                        <span className="text-[12px] text-gray-400 truncate min-w-0">
+                            {taskHeader}
                         </span>
                     )}
-                    {tool.duration && <span className="text-[10px] font-mono text-gray-600">{(tool.duration / 1000).toFixed(1)}s</span>}
-                    <svg className={`w-3 h-3 text-gray-500 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                    </svg>
+                </div>
+
+                <div className="flex items-center gap-3 shrink-0 ml-2">
+                    {/* Tool count / processing indicator */}
+                    {isRunning ? (
+                        totalTools > 0 ? (
+                            <span className={`text-[10px] font-mono ${theme.toolCount}`}>
+                                {completedCount}/{totalTools} tools
+                            </span>
+                        ) : (
+                            <span className={`flex items-center gap-1 text-[10px] ${theme.processingText}`}>
+                                processing
+                                <span className="flex gap-0.5">
+                                    <span className={`w-1 h-1 rounded-full ${theme.dots} animate-bounce`} style={{ animationDelay: '0ms' }} />
+                                    <span className={`w-1 h-1 rounded-full ${theme.dots} animate-bounce`} style={{ animationDelay: '150ms' }} />
+                                    <span className={`w-1 h-1 rounded-full ${theme.dots} animate-bounce`} style={{ animationDelay: '300ms' }} />
+                                </span>
+                            </span>
+                        )
+                    ) : (
+                        totalTools > 0 && (
+                            <span className={`text-[10px] font-mono ${theme.toolCount}`}>
+                                {`${totalTools} tool${totalTools !== 1 ? 's' : ''}`}
+                                {failedCount > 0 && <span className="text-red-400 ml-1">({failedCount} ✗)</span>}
+                            </span>
+                        )
+                    )}
+                    {/* Duration */}
+                    {tool.duration != null && (
+                        <span className="text-[10px] font-mono text-gray-600">
+                            {(tool.duration / 1000).toFixed(1)}s
+                        </span>
+                    )}
+                    {/* Collapse/expand chevron */}
+                    {!isRunning && (
+                        <svg
+                            className={`w-3 h-3 text-gray-500 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`}
+                            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                        >
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                        </svg>
+                    )}
                 </div>
             </div>
 
+            {/* ── Running: Live Activity Area ── */}
+            {isRunning && totalTools > 0 && (
+                <div
+                    ref={liveActivityRef}
+                    className={`border-t ${theme.borderSection} px-4 py-2 space-y-0.5 max-h-[240px] overflow-y-auto bg-black/10`}
+                >
+                    {subCallsWithStatus.map((sub, idx) => (
+                        <SubCallRow key={sub.id || idx} sub={sub} index={idx} theme={theme} />
+                    ))}
+                </div>
+            )}
+
+            {/* ── Expanded body (State B & C) ── */}
             {isExpanded && (
-                <div className={`border-t ${theme.borderSection} px-4 pl-5 py-3 space-y-3`}>
-                    {task && (
-                        <div className={`rounded-lg border ${theme.borderSection} bg-black/20 overflow-hidden`}>
-                            <div className={`px-3 py-2 flex items-center gap-2 ${hasLongTask ? 'cursor-pointer hover:bg-white/[0.02]' : ''}`} onClick={() => hasLongTask && setIsTaskExpanded(!isTaskExpanded)}>
-                                <span className={`text-[10px] uppercase tracking-wider ${theme.textMuted} font-medium shrink-0`}>{'\uD83D\uDCCB'} Task</span>
-                                <div className="flex-1" />
-                                {hasLongTask && (
-                                    <svg className={`w-2.5 h-2.5 text-gray-600 transition-transform duration-200 shrink-0 ${isTaskExpanded ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                                    </svg>
-                                )}
-                            </div>
-                            <div className={`px-3 pb-2 relative ${!isTaskExpanded && hasLongTask ? 'max-h-[3.5em] overflow-hidden' : ''}`}>
-                                <div className="text-[12px] text-gray-300 font-mono whitespace-pre-wrap leading-relaxed">
-                                    {isTaskExpanded || !hasLongTask ? task : taskPreview}
-                                </div>
-                                {!isTaskExpanded && hasLongTask && (
-                                    <div className="absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-black/60 to-transparent" />
-                                )}
-                            </div>
-                        </div>
-                    )}
+                <div className={`border-t ${theme.borderSection}`}>
 
-                    {subCallsWithStatus.length > 0 && (
-                        <div className="space-y-1">
-                            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1.5 font-medium px-1">{'\uD83D\uDD27'} Tool Calls</div>
-                            {subCallsWithStatus.map((sub: any, i: number) => (
-                                <SubToolCallItem key={sub.id || i} sub={sub} index={i} />
-                            ))}
-                        </div>
-                    )}
-
-                    {isRunning && subCallsWithStatus.length === 0 && (
-                        <div className={`flex items-center gap-2 py-2 text-[12px] ${theme.processingText}`}>
+                    {/* Running indicator — no sub-calls yet */}
+                    {isRunning && totalTools === 0 && (
+                        <div className={`flex items-center gap-2 px-5 py-3 text-[12px] ${theme.processingText}`}>
                             <div className="w-3 h-3 border-2 border-white/20 border-t-white/60 rounded-full animate-spin" />
-                            <span>{theme.label} processing...</span>
+                            <span>{theme.label} processing…</span>
                         </div>
                     )}
 
-                    {executorReport && !isRunning && (
-                        <div className="rounded-lg border border-emerald-500/10 bg-emerald-950/10 overflow-hidden">
-                            <div className="px-3 py-2">
-                                <span className="text-[10px] uppercase tracking-wider text-emerald-400/70 font-medium">{'\uD83D\uDCDD'} Summary</span>
+                    {/* ── Summary Report (Markdown) ── */}
+                    {!isRunning && executorReport && (
+                        <div className="px-5 pt-3 pb-2">
+                            <div className={`text-[10px] uppercase tracking-wider ${theme.textMuted} font-medium mb-2`}>
+                                📋 Summary
                             </div>
-                            <div className="px-3 pb-3 text-[12px] text-gray-300">
-                                <MarkdownRenderer content={executorReport} className="prose-invert prose-sm prose-p:text-[12px] prose-p:leading-relaxed prose-p:mb-2 prose-table:text-[11px] prose-pre:text-[11px]" />
+                            <div className="max-h-[300px] overflow-y-auto rounded-lg">
+                                <MarkdownRenderer content={executorReport} />
                             </div>
                         </div>
                     )}
 
-                    {fileChanges.length > 0 && (
-                        <div className={`pt-1 border-t ${theme.borderSection}`}>
-                            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1.5 font-medium">{'\uD83D\uDCC1'} Files Changed</div>
-                            <div className="flex flex-wrap gap-1.5">
-                                {fileChanges.map((fc, i) => (
-                                    <span key={i} className="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded-md bg-black/30 border border-white/5 text-gray-300">
-                                        <span>{fc.icon}</span>
-                                        <span>{fc.file}</span>
-                                    </span>
+                    {/* ── File Changes ── */}
+                    {!isRunning && fileChanges.length > 0 && (
+                        <div className="px-5 pb-3">
+                            <div className={`text-[10px] uppercase tracking-wider ${theme.textMuted} font-medium mb-2`}>
+                                📁 File Changes
+                            </div>
+                            <div className={`rounded-lg border ${theme.borderSection} bg-black/20 divide-y divide-white/[0.04] overflow-hidden`}>
+                                {fileChanges.map((change, i) => (
+                                    <div key={i} className="flex items-center gap-2 px-3 py-1.5">
+                                        <span className="text-[11px]">{change.icon}</span>
+                                        <span className="text-[11px] font-mono text-gray-300 truncate flex-1">{change.file}</span>
+                                        <span className={`text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded font-medium
+                                            ${change.type === 'created' ? 'bg-emerald-500/15 text-emerald-400' :
+                                              change.type === 'deleted' ? 'bg-red-500/15 text-red-400' :
+                                              'bg-yellow-500/15 text-yellow-400'}`}>
+                                            {change.type}
+                                        </span>
+                                    </div>
                                 ))}
                             </div>
                         </div>
                     )}
 
-                    {tool.error && (
-                        <div className="pt-1 border-t border-red-500/10">
-                            <div className="text-[11px] text-red-400 bg-red-500/10 px-3 py-2 rounded-md border border-red-500/20 font-mono">{tool.error}</div>
+                    {/* ── Execution Details toggle (State B → C) ── */}
+                    {totalTools > 0 && (
+                        <div className={`border-t ${theme.borderSection}`}>
+                            {/* Toggle button */}
+                            <button
+                                type="button"
+                                className={`w-full flex items-center gap-2 px-5 py-2.5 text-left transition-colors hover:bg-white/[0.02] select-none`}
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    setViewState(isFullDetail ? "expanded" : "full");
+                                }}
+                            >
+                                <svg
+                                    className={`w-3 h-3 text-gray-500 transition-transform duration-200 shrink-0 ${isFullDetail ? "rotate-90" : ""}`}
+                                    fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                                >
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                                </svg>
+                                <span className={`text-[11px] ${theme.textMuted}`}>
+                                    {isFullDetail ? "收起执行过程" : `查看执行过程 (${totalTools} calls)`}
+                                </span>
+                                {isRunning && (
+                                    <span className="ml-auto flex items-center gap-1">
+                                        <span className={`text-[10px] font-mono ${theme.toolCount}`}>
+                                            {completedCount}/{totalTools}
+                                        </span>
+                                        <div className="w-2 h-2 border border-white/20 border-t-white/60 rounded-full animate-spin" />
+                                    </span>
+                                )}
+                            </button>
+
+                            {/* Execution Details list (State C) */}
+                            {isFullDetail && (
+                                <div className="bg-black/20 px-4 pb-3 pt-1 space-y-1.5">
+                                    {subCallsWithStatus.map((sub, idx) => (
+                                        <SubCallRow key={sub.id || idx} sub={sub} index={idx} />
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     )}
+
+                    {/* Error display */}
+                    {isFailed && tool.error && (
+                        <div className="px-5 pb-3">
+                            <div className="text-[11px] font-mono text-red-400 bg-red-500/10 rounded-lg px-3 py-2 border border-red-500/20 whitespace-pre-wrap break-words">
+                                {tool.error}
+                            </div>
+                        </div>
+                    )}
+
                 </div>
             )}
         </div>

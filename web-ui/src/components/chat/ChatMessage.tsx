@@ -239,12 +239,12 @@ function ParallelToolList({ tools, getToolKey }: ParallelToolListProps) {
 
       {/* Parallel sub-agent grid */}
       <div
-        className="grid gap-5 w-full"
-        style={{ gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, 320px), 1fr))` }}
+        className="grid gap-3 w-full"
+        style={{ gridTemplateColumns: `repeat(${Math.min(parallelEntries.length, 4)}, minmax(0, 1fr))` }}
       >
         {parallelEntries.map(({ stableKey, tool }) => (
           <div key={stableKey} className="min-w-0">
-            <ToolCard tool={tool} />
+            <ToolCard tool={tool} defaultState="collapsed" />
           </div>
         ))}
       </div>

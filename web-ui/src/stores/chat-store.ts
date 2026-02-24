@@ -896,7 +896,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   meta.subResults.push({
                     id: specialistSlot.id || `slot-${edSlotIdx}`,
                     name: specialistSlot.name,
-                    result: "Completed",
+                    result: edd?.result || "Completed",
                   });
                   set({
                     streamingToolCalls: [...toolCalls],
