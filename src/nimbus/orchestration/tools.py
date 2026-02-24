@@ -365,3 +365,60 @@ TEST_TOOL_DEF = {
         "required": ["task"],
     },
 }
+
+PARALLEL_DISPATCH_TOOL_DEF = {
+    "name": "ParallelDispatch",
+    "description": (
+        "Dispatch multiple specialist tasks in parallel. "
+        "All tasks run concurrently and results are aggregated. "
+        "Use when you need multi-dimensional analysis, parallel exploration, "
+        "or simultaneous implementation of independent modules. "
+        "Much faster than calling specialists sequentially."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "tasks": {
+                "type": "array",
+                "description": "List of specialist tasks to run in parallel.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "specialist": {
+                            "type": "string",
+                            "enum": ["Explorer", "Implementer", "Architect", "Tester"],
+                            "description": "Specialist type to invoke.",
+                        },
+                        "task": {
+                            "type": "string",
+                            "description": "Specific task description for this specialist.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Optional model alias (e.g., 'sonnet', 'flash', 'gemini').",
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "Additional context for this sub-task.",
+                        },
+                    },
+                    "required": ["specialist", "task"],
+                },
+            },
+            "strategy": {
+                "type": "string",
+                "enum": ["wait_all", "wait_any", "wait_threshold"],
+                "description": "Aggregation strategy. Default: wait_all.",
+            },
+            "threshold": {
+                "type": "number",
+                "description": "Completion fraction for wait_threshold (0.0-1.0). Default: 0.6.",
+            },
+            "timeout": {
+                "type": "number",
+                "description": "Per-task timeout in seconds. Default: 600.",
+            },
+        },
+        "required": ["tasks"],
+    },
+}

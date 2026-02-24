@@ -159,6 +159,7 @@ class ExecutionState:
     PRODUCTIVE_TOOLS = frozenset({
         "Write", "Edit", "Bash",
         "Dispatch", "Explore", "Implement", "Design", "Test",
+        "ParallelDispatch",
     })
 
     # Terminal tools = tools that produce direct output artifacts.

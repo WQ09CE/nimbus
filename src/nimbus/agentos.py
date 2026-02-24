@@ -2266,6 +2266,20 @@ def create_agent_os(
                     category="extension",
                 )
 
+            # --- Register ParallelDispatch Tool ---
+            from nimbus.orchestration.specialist_tools import ParallelDispatchTool
+            from nimbus.orchestration.tools import PARALLEL_DISPATCH_TOOL_DEF
+
+            parallel_dispatch_tool = ParallelDispatchTool(agent_os=os, workspace=ws)
+            os.register_tool(
+                name="ParallelDispatch",
+                func=parallel_dispatch_tool.execute,
+                description=PARALLEL_DISPATCH_TOOL_DEF["description"],
+                parameters=PARALLEL_DISPATCH_TOOL_DEF["parameters"],
+                roles=["orchestrator"],
+                category="extension",
+            )
+
             # Register Verify (standalone, no DispatchTool dependency)
             async def _verify_handler(checks=None, **kwargs):
                 import json as _json
