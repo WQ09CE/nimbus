@@ -239,12 +239,14 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
             </div>
           ) : (
             <div className="text-[15px] leading-relaxed min-w-[200px]">
-              {hasContent ? (
+              {hasContent && (
                 <MarkdownRenderer content={message.content} isStreaming={isStreaming && message.id === "streaming"} className="prose-invert prose-p:leading-relaxed prose-pre:bg-black/30 text-gray-100" />
-              ) : (
+              )}
+              
+              {!hasContent && isStreaming && (
                 <>
-                  {isStreaming && !hasTools && <span className="animate-pulse text-gray-500">Thinking...</span>}
-                  {isStreaming && hasTools && !hasRunningTools && (
+                  {!hasTools && <span className="animate-pulse text-gray-500">Thinking...</span>}
+                  {hasTools && !hasRunningTools && (
                     <span className="text-xs text-gray-500">Generating response...</span>
                   )}
                 </>

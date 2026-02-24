@@ -125,7 +125,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.workspace_agents = {}  # Cache for workspace-specific agents
     app.state.llm = llm  # Keep reference to close on shutdown
 
+    agent_os._ensure_heart_running()
+
     yield
+
+    await agent_os.shutdown()
 
     # Cleanup LLM adapter
     await llm.stop()
