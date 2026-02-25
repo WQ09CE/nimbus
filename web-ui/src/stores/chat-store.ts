@@ -15,6 +15,7 @@ import {
   getSessionMessages,
   getSession,
 } from "@/lib/api";
+import { useWorkflowStore } from "./workflow-store";
 
 export interface Message {
   id: string;
@@ -217,6 +218,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (streamAbortController) {
       streamAbortController.abort();
     }
+    useWorkflowStore.getState().reset();
 
     // Handle null session (e.g., when deleting current session)
     if (!session) {
@@ -813,6 +815,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     if (!specialistSlot.subCalls) specialistSlot.subCalls = [];
                     specialistSlot.subCalls.push(subTool);
                     const label = META_TOOL_LABELS[specialistSlot.name] || specialistSlot.name;
+                    useWorkflowStore.getState().upsertCall({
+                      callId: subTool.id || "",
+                      name: subTool.name,
+                      parentId: specialistSlot.id,
+                      status: "running",
+                      args: subTool.arguments as Record<string, unknown>,
+                    });
                     set({
                       streamingToolCalls: [...toolCalls],
                       currentActivity: `${label}: ${subTool.name}`,
@@ -842,6 +851,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
               const metaLabel = targetMetaIdx >= 0
                 ? META_TOOL_LABELS[toolCalls[targetMetaIdx].name] || toolCalls[targetMetaIdx].name
                 : "Executor";
+              if (targetMetaIdx >= 0) {
+                useWorkflowStore.getState().upsertCall({
+                  callId: subTool.id || "",
+                  name: subTool.name,
+                  parentId: toolCalls[targetMetaIdx].id,
+                  status: "running",
+                  args: subTool.arguments as Record<string, unknown>,
+                });
+              }
               set({
                 streamingToolCalls: [...toolCalls],
                 currentActivity: `${metaLabel}: ${subTool.name}`,
@@ -873,6 +891,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     if (!specialistSlot.subResults) specialistSlot.subResults = [];
                     specialistSlot.subResults.push(subResult);
                     const label = META_TOOL_LABELS[specialistSlot.name] || specialistSlot.name;
+                    useWorkflowStore.getState().upsertCall({
+                      callId: subResult.id || "",
+                      name: subResult.name,
+                      parentId: specialistSlot.id,
+                      status: subResult.error ? "failed" : "completed",
+                      result: subResult.result,
+                    });
                     set({
                       streamingToolCalls: [...toolCalls],
                       currentActivity: `${label}: ${subResult.name} done`,
@@ -908,6 +933,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
               const metaResultLabel = targetMetaIdxForResult >= 0
                 ? META_TOOL_LABELS[toolCalls[targetMetaIdxForResult].name] || toolCalls[targetMetaIdxForResult].name
                 : "Executor";
+              if (targetMetaIdxForResult >= 0) {
+                useWorkflowStore.getState().upsertCall({
+                  callId: subResult.id || "",
+                  name: subResult.name,
+                  parentId: toolCalls[targetMetaIdxForResult].id,
+                  status: subResult.error ? "failed" : "completed",
+                  result: subResult.result,
+                });
+              }
               set({
                 streamingToolCalls: [...toolCalls],
                 currentActivity: `${metaResultLabel}: ${d.tool || d.name} done`,
@@ -943,6 +977,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   subCalls: [],
                   subResults: [],
                 };
+                useWorkflowStore.getState().upsertCall({
+                  callId: esPid || `slot-${esSlotIdx}`,
+                  name: toolName,
+                  parentId: esParentId,
+                  specialist: esSpecialist,
+                  batchSlotIndex: esSlotIdx,
+                  status: "running",
+                  args: { task: taskDesc },
+                });
                 set({
                   streamingToolCalls: [...toolCalls],
                   currentActivity: `⚡ ${esSpecialist} 已启动...`,
@@ -976,6 +1019,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     id: specialistSlot.id || `slot-${edSlotIdx}`,
                     name: specialistSlot.name,
                     result: edd?.result || "Completed",
+                  });
+                  useWorkflowStore.getState().upsertCall({
+                    callId: specialistSlot.id || `slot-${edSlotIdx}`,
+                    name: specialistSlot.name,
+                    parentId: edParentId,
+                    status: "completed",
+                    result: edd?.result,
                   });
                   set({
                     streamingToolCalls: [...toolCalls],
@@ -1278,17 +1328,63 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 arguments: (d.args || d.arguments || {}) as Record<string, unknown>,
                 agentType: "dispatch",
               };
-              const lastMetaIdx = toolCalls.reduce(
-                (last, tc, i) => META_TOOLS.has(tc.name) ? i : last, -1
-              );
-              if (lastMetaIdx >= 0) {
-                const metaTool = toolCalls[lastMetaIdx];
+
+              // Batch routing: parent_action_id + batch_slot_index -> specialist's subCalls
+              const parentId = d.parent_action_id as string | undefined;
+              const slotIdx = (d as any).batch_slot_index;
+              if (parentId && slotIdx !== undefined) {
+                const metaIdx = toolCalls.findIndex(tc => tc.id === parentId);
+                if (metaIdx >= 0) {
+                  const meta = toolCalls[metaIdx];
+                  const specialistSlot = meta.subCalls?.[slotIdx];
+                  if (specialistSlot) {
+                    if (!specialistSlot.subCalls) specialistSlot.subCalls = [];
+                    specialistSlot.subCalls.push(subTool);
+                    const label = META_TOOL_LABELS[specialistSlot.name] || specialistSlot.name;
+                    useWorkflowStore.getState().upsertCall({
+                      callId: subTool.id || "",
+                      name: subTool.name,
+                      parentId: specialistSlot.id,
+                      status: "running",
+                      args: subTool.arguments as Record<string, unknown>,
+                    });
+                    set({
+                      streamingToolCalls: [...toolCalls],
+                      currentActivity: `${label}: ${subTool.name}`,
+                      lastHeartbeat: Date.now(),
+                    });
+                    break;
+                  }
+                }
+              }
+
+              // Legacy routing: parent_action_id or last meta-tool
+              let targetMetaIdx = -1;
+              if (parentId) {
+                targetMetaIdx = toolCalls.findIndex(tc => tc.id === parentId);
+              }
+              if (targetMetaIdx < 0) {
+                targetMetaIdx = toolCalls.reduce(
+                  (last, tc, i) => META_TOOLS.has(tc.name) ? i : last, -1
+                );
+              }
+              if (targetMetaIdx >= 0) {
+                const metaTool = toolCalls[targetMetaIdx];
                 if (!metaTool.subCalls) metaTool.subCalls = [];
                 metaTool.subCalls.push(subTool);
               }
-              const metaLabel = lastMetaIdx >= 0
-                ? META_TOOL_LABELS[toolCalls[lastMetaIdx].name] || toolCalls[lastMetaIdx].name
+              const metaLabel = targetMetaIdx >= 0
+                ? META_TOOL_LABELS[toolCalls[targetMetaIdx].name] || toolCalls[targetMetaIdx].name
                 : "Executor";
+              if (targetMetaIdx >= 0) {
+                useWorkflowStore.getState().upsertCall({
+                  callId: subTool.id || "",
+                  name: subTool.name,
+                  parentId: toolCalls[targetMetaIdx].id,
+                  status: "running",
+                  args: subTool.arguments as Record<string, unknown>,
+                });
+              }
               set({
                 streamingToolCalls: [...toolCalls],
                 currentActivity: `${metaLabel}: ${subTool.name}`,
@@ -1308,17 +1404,68 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 error: d.status === "ERROR" ? (fault ? fault.message : "Error") : undefined,
                 duration: d.duration_ms as number | undefined,
               };
-              const lastMetaIdxForResult = toolCalls.reduce(
-                (last, tc, i) => META_TOOLS.has(tc.name) ? i : last, -1
-              );
-              if (lastMetaIdxForResult >= 0) {
-                const metaTool = toolCalls[lastMetaIdxForResult];
+
+              // Batch routing
+              const parentIdForResult = d.parent_action_id as string | undefined;
+              const slotIdxForResult = (d as any).batch_slot_index;
+              if (parentIdForResult && slotIdxForResult !== undefined) {
+                const metaIdx = toolCalls.findIndex(tc => tc.id === parentIdForResult);
+                if (metaIdx >= 0) {
+                  const meta = toolCalls[metaIdx];
+                  const specialistSlot = meta.subCalls?.[slotIdxForResult];
+                  if (specialistSlot) {
+                    if (!specialistSlot.subResults) specialistSlot.subResults = [];
+                    specialistSlot.subResults.push(subResult);
+                    const label = META_TOOL_LABELS[specialistSlot.name] || specialistSlot.name;
+                    useWorkflowStore.getState().upsertCall({
+                      callId: subResult.id || "",
+                      name: subResult.name,
+                      parentId: specialistSlot.id,
+                      status: subResult.error ? "failed" : "completed",
+                      result: subResult.result,
+                    });
+                    set({
+                      streamingToolCalls: [...toolCalls],
+                      currentActivity: `${label}: ${subResult.name} done`,
+                      lastHeartbeat: Date.now(),
+                    });
+                    break;
+                  }
+                }
+              }
+
+              // Legacy routing
+              let targetMetaIdxForResult = -1;
+              if (parentIdForResult) {
+                targetMetaIdxForResult = toolCalls.findIndex(tc => tc.id === parentIdForResult);
+              }
+              if (targetMetaIdxForResult < 0 && subResult.id) {
+                targetMetaIdxForResult = toolCalls.findIndex(
+                  tc => META_TOOLS.has(tc.name) && tc.subCalls?.some(sc => sc.id === subResult.id)
+                );
+              }
+              if (targetMetaIdxForResult < 0) {
+                targetMetaIdxForResult = toolCalls.reduce(
+                  (last, tc, i) => META_TOOLS.has(tc.name) ? i : last, -1
+                );
+              }
+              if (targetMetaIdxForResult >= 0) {
+                const metaTool = toolCalls[targetMetaIdxForResult];
                 if (!metaTool.subResults) metaTool.subResults = [];
                 metaTool.subResults.push(subResult);
               }
-              const metaResultLabel = lastMetaIdxForResult >= 0
-                ? META_TOOL_LABELS[toolCalls[lastMetaIdxForResult].name] || toolCalls[lastMetaIdxForResult].name
+              const metaResultLabel = targetMetaIdxForResult >= 0
+                ? META_TOOL_LABELS[toolCalls[targetMetaIdxForResult].name] || toolCalls[targetMetaIdxForResult].name
                 : "Executor";
+              if (targetMetaIdxForResult >= 0) {
+                useWorkflowStore.getState().upsertCall({
+                  callId: subResult.id || "",
+                  name: subResult.name,
+                  parentId: toolCalls[targetMetaIdxForResult].id,
+                  status: subResult.error ? "failed" : "completed",
+                  result: subResult.result,
+                });
+              }
               set({
                 streamingToolCalls: [...toolCalls],
                 currentActivity: `${metaResultLabel}: ${d.tool || d.name} done`,
@@ -1326,6 +1473,99 @@ export const useChatStore = create<ChatState>((set, get) => ({
               });
             }
             break;
+
+          case "executor_start": {
+            const esd = data as Record<string, any>;
+            const esParentId = esd?.parent_action_id;
+            const esSlotIdx = esd?.batch_slot_index;
+            const esSpecialist = esd?.specialist;
+            const esPid = esd?._executor_pid;
+
+            if (esParentId && esSlotIdx !== undefined && esSpecialist) {
+              // ParallelDispatch batch: create virtual specialist entry in subCalls
+              const metaIdx = toolCalls.findIndex(tc => tc.id === esParentId);
+              if (metaIdx >= 0) {
+                const meta = toolCalls[metaIdx];
+                if (!meta.subCalls) meta.subCalls = [];
+                const toolName = SPECIALIST_TO_TOOL[esSpecialist] || esSpecialist;
+                // Pull task description from ParallelDispatch args
+                const pdTasks = meta.arguments?.tasks;
+                const taskDesc = Array.isArray(pdTasks) && esSlotIdx < pdTasks.length
+                  ? ((pdTasks[esSlotIdx] as any)?.task || (pdTasks[esSlotIdx] as any)?.context || "")
+                  : "";
+                meta.subCalls[esSlotIdx] = {
+                  id: esPid || `slot-${esSlotIdx}`,
+                  name: toolName,
+                  arguments: { task: taskDesc },
+                  agentType: "dispatch" as const,
+                  subCalls: [],
+                  subResults: [],
+                };
+                useWorkflowStore.getState().upsertCall({
+                  callId: esPid || `slot-${esSlotIdx}`,
+                  name: toolName,
+                  parentId: esParentId,
+                  specialist: esSpecialist,
+                  batchSlotIndex: esSlotIdx,
+                  status: "running",
+                  args: { task: taskDesc },
+                });
+                set({
+                  streamingToolCalls: [...toolCalls],
+                  currentActivity: `⚡ ${esSpecialist} 已启动...`,
+                  lastHeartbeat: Date.now(),
+                });
+                break;
+              }
+            }
+            // Fallback: non-batch executor
+            set({
+              currentActivity: "⚡ Executor 已启动...",
+              lastHeartbeat: Date.now(),
+            });
+            break;
+          }
+
+          case "executor_done": {
+            const edd = data as Record<string, any>;
+            const edParentId = edd?.parent_action_id;
+            const edSlotIdx = edd?.batch_slot_index;
+
+            if (edParentId && edSlotIdx !== undefined) {
+              // Mark specialist slot as completed by adding a synthetic result
+              const metaIdx = toolCalls.findIndex(tc => tc.id === edParentId);
+              if (metaIdx >= 0) {
+                const meta = toolCalls[metaIdx];
+                const specialistSlot = meta.subCalls?.[edSlotIdx];
+                if (specialistSlot) {
+                  if (!meta.subResults) meta.subResults = [];
+                  meta.subResults.push({
+                    id: specialistSlot.id || `slot-${edSlotIdx}`,
+                    name: specialistSlot.name,
+                    result: edd?.result || "Completed",
+                  });
+                  useWorkflowStore.getState().upsertCall({
+                    callId: specialistSlot.id || `slot-${edSlotIdx}`,
+                    name: specialistSlot.name,
+                    parentId: edParentId,
+                    status: "completed",
+                    result: edd?.result,
+                  });
+                  set({
+                    streamingToolCalls: [...toolCalls],
+                    currentActivity: `⚡ ${specialistSlot.name} 已完成`,
+                    lastHeartbeat: Date.now(),
+                  });
+                  break;
+                }
+              }
+            }
+            set({
+              currentActivity: "⚡ Executor 已完成",
+              lastHeartbeat: Date.now(),
+            });
+            break;
+          }
 
           case "step_start":
             if (assistantContent || toolCalls.length > 0) {
@@ -1464,5 +1704,5 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  reset: () => set(initialState),
+  reset: () => { useWorkflowStore.getState().reset(); set(initialState); },
 }));

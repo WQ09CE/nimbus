@@ -3,6 +3,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import type { ToolCall, ToolResult } from '@/lib/api';
 import { MarkdownRenderer } from '../MarkdownRenderer';
+import { useWorkflowStore, selectChildren } from "@/stores/workflow-store";
+import { useShallow } from "zustand/react/shallow";
 
 // ─────────────────────────────────────────────
 // Types
@@ -312,20 +314,35 @@ export function DispatchCard({ tool, defaultState = "expanded", isParallel = fal
         prevRunningRef.current = isRunning;
     }, [isRunning, defaultState]);
 
-    // ── Sub-call data ──────────────────────────────────
+    // ── Sub-call data (hybrid: WorkflowStore-first, props-fallback) ──
+    // Store-first: during streaming, store has real-time data
+    const storeChildren = useWorkflowStore(
+      useShallow(s => selectChildren(s.calls, tool.id || ""))
+    );
+
+    // Props-fallback: session reload when store is empty
     const toolResult = tool.result as any;
     const recoveredSubCalls = toolResult?.sub_calls || toolResult?.subCalls || [];
     const recoveredSubResults = toolResult?.sub_results || toolResult?.subResults || [];
-
     const subCalls = (tool.subCalls && tool.subCalls.length > 0) ? tool.subCalls : recoveredSubCalls;
     const subResults = (tool.subResults && tool.subResults.length > 0) ? tool.subResults : recoveredSubResults;
 
-    const subCallsWithStatus: SubCallWithStatus[] = subCalls.map((sc: any, idx: number) => {
-        const callId = sc.id;
-        const callName = sc.name || sc.tool;
-        const callArgs = sc.arguments || sc.args || {};
-        const matchedResult = subResults.find((sr: any) => sr.id === callId);
-        return {
+    const subCallsWithStatus: SubCallWithStatus[] = storeChildren.length > 0
+      ? storeChildren.map(c => ({
+          id: c.callId,
+          name: c.name,
+          arguments: c.args ?? {},
+          result: c.result,
+          error: c.error,
+          duration: c.durationMs,
+          status: c.status as "running" | "completed" | "failed",
+        }))
+      : subCalls.map((sc: any, idx: number) => {
+          const callId = sc.id;
+          const callName = sc.name || sc.tool;
+          const callArgs = sc.arguments || sc.args || {};
+          const matchedResult = subResults.find((sr: any) => sr.id === callId);
+          return {
             id: callId || `${callName}-${idx}`,
             name: callName,
             arguments: callArgs,
@@ -333,10 +350,10 @@ export function DispatchCard({ tool, defaultState = "expanded", isParallel = fal
             error: matchedResult?.error,
             duration: matchedResult?.duration,
             status: (matchedResult
-                ? (matchedResult.error ? "failed" : "completed")
-                : "running") as "running" | "completed" | "failed",
-        };
-    });
+              ? (matchedResult.error ? "failed" : "completed")
+              : "running") as "running" | "completed" | "failed",
+          };
+        });
 
     // ── Derived values ────────────────────────────────
     const task = (tool.args?.task as string) || (tool.args?.prompt as string) || (tool.args?.context as string) || "";

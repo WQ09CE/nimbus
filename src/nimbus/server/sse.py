@@ -61,6 +61,7 @@ class SSEHub:
         """
         self._connections: Dict[str, List[SSEConnection]] = {}
         self._pending_events: Dict[str, List[str]] = {}  # session_id -> buffered event strings
+        self._event_log: Dict[str, List[str]] = {}  # session_id -> all events for replay on reconnect
         self._heartbeat_interval = heartbeat_interval
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
@@ -69,6 +70,7 @@ class SSEHub:
         """Prepare event buffer for a session. Call before starting background work."""
         if session_id not in self._pending_events:
             self._pending_events[session_id] = []
+        self._event_log[session_id] = []  # Reset log for new session run
 
     async def start(self) -> None:
         """Start the heartbeat task."""
@@ -119,10 +121,19 @@ class SSEHub:
                     await old_conn.queue.put(None)  # Signal old connections to close
             self._connections[session_id] = [connection]
 
-            # Replay any buffered events from before subscribe was called
-            pending = self._pending_events.pop(session_id, [])
-            for event_str in pending:
-                await connection.queue.put(event_str)
+            # Replay full event log (reconnect scenario: client refreshed mid-stream)
+            # Event log already contains pending events, so skip pending when log exists
+            event_log = self._event_log.get(session_id, [])
+            if event_log:
+                for event_str in event_log:
+                    await connection.queue.put(event_str)
+                # Discard pending since they are already in the event log
+                self._pending_events.pop(session_id, None)
+            else:
+                # No event log (first connect): replay buffered pending events
+                pending = self._pending_events.pop(session_id, [])
+                for event_str in pending:
+                    await connection.queue.put(event_str)
 
         # Send connected event (after replay, so order is: buffered events -> connected)
         await self._send_to_connection(connection, self.EVENT_CONNECTED, {"session_id": session_id})
@@ -171,16 +182,21 @@ class SSEHub:
             Number of connections the event was sent to.
         """
         sent_count = 0
+        event_str = self._format_sse(event_type, data)
 
         async with self._lock:
+            # Append to event log for replay on reconnect (skip heartbeats)
+            if event_type != self.EVENT_HEARTBEAT and session_id in self._event_log:
+                self._event_log[session_id].append(event_str)
+
             connections = self._connections.get(session_id, [])
             if connections:
                 for conn in connections:
-                    await self._send_to_connection(conn, event_type, data)
+                    await conn.queue.put(event_str)
+                    conn.last_heartbeat = time.time()
                     sent_count += 1
             elif session_id in self._pending_events:
                 # No subscriber yet, buffer the event
-                event_str = self._format_sse(event_type, data)
                 self._pending_events[session_id].append(event_str)
 
         return sent_count
@@ -270,8 +286,9 @@ class SSEHub:
                 await conn.queue.put(None)  # Signal to close
             if session_id in self._connections:
                 del self._connections[session_id]
-            # Also clean up any pending events
+            # Also clean up any pending events and event log
             self._pending_events.pop(session_id, None)
+            self._event_log.pop(session_id, None)
 
     def get_active_sessions(self) -> List[str]:
         """Get list of session IDs with active connections."""
