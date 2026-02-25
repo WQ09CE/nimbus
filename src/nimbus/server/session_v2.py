@@ -789,7 +789,7 @@ class SessionManagerV2:
         # Core/chat processes use session_id as pid; executor processes use "proc-xxx".
         is_sub_agent = event.pid != session_id
 
-        # Inject batch metadata for sub-agent events (ParallelDispatch routing)
+        # Inject batch metadata for sub-agent events (parallel routing)
         if is_sub_agent:
             agent_os = self._sessions.get(session_id)
             if agent_os:
@@ -845,7 +845,7 @@ class SessionManagerV2:
             })
         elif sse_type == "executor_start":
             # Only clear buffer for non-batch executors (single Dispatch/Explore/etc.)
-            # Batch executors (ParallelDispatch) share the buffer -- don't clear per-executor
+            # Batch executors (parallel native calls) share the buffer -- don't clear per-executor
             if not event.data.get("parent_action_id"):
                 self._sub_tool_buffer[session_id] = []
 

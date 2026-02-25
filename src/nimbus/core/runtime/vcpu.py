@@ -262,7 +262,8 @@ class VCPU:
         # self._message_queue removed in Phase 1 Refactor
 
         # Tracing
-        self.tracer = TraceManager(session_id) if self.config.enable_tracing else None
+        _trace_workspace = getattr(mmu, "nimfs_workspace", None) or "."
+        self.tracer = TraceManager(session_id, workspace=_trace_workspace) if self.config.enable_tracing else None
 
         # Centralized execution state (refactored from 15+ instance variables)
         self._state = ExecutionState.from_config(
@@ -1066,7 +1067,7 @@ class VCPU:
         # MUST be injected as "system" role — if injected as "user", the LLM
         # treats it as a new user request and tries to "answer" it with more text.
         text_len = len(current_text)
-        if text_len > 500 and role in ("architect", "implementer"):
+        if text_len > 150 and role in ("architect", "implementer"):
             # Long text without tool calls — model is writing content as text
             poke_msg = (
                 f"STOP. You just output {text_len} characters of text without calling any tool. "

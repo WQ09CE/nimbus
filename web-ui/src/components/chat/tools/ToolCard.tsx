@@ -23,14 +23,23 @@ interface ToolCardProps {
     subResults?: ToolResult[];
   };
   defaultExpanded?: boolean;
-  /** Pass-through for DispatchCard: "collapsed" in parallel grids, "expanded" (default) for solo agents */
+  /**
+   * Pass-through for DispatchCard initial view state.
+   * "collapsed" → header only (use for parallel/stacked grids).
+   * "expanded"  → tool calls visible immediately (default for solo agents).
+   */
   defaultState?: "collapsed" | "expanded";
+  /**
+   * Parallel-task mode: tighter padding, shorter task preview.
+   * Passed through to DispatchCard.
+   */
+  isParallel?: boolean;
 }
 
-export function ToolCard({ tool, defaultExpanded, defaultState }: ToolCardProps) {
+export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: ToolCardProps) {
   // Meta-tools (Dispatch/Explore/Implement/Design/Test) get the dedicated sub-agent card
   if (META_TOOLS.has(tool.name)) {
-    return <DispatchCard tool={tool} defaultState={defaultState} />;
+    return <DispatchCard tool={tool} defaultState={defaultState} isParallel={isParallel} />;
   }
 
   const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? false);

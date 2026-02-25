@@ -1810,7 +1810,7 @@ class AgentOS:
             proc = self._processes[pid]
             proc.signals["batch_id"] = batch_id          # type: ignore[assignment]
             proc.signals["sub_session_id"] = pid         # type: ignore[assignment]
-            # Batch routing metadata for frontend (ParallelDispatch)
+            # Batch routing metadata for frontend (parallel native calls)
             if parent_action_id:
                 proc.signals["parent_action_id"] = parent_action_id  # type: ignore[assignment]
             slot_index = original_indices[i] if original_indices and i < len(original_indices) else i
@@ -2276,19 +2276,6 @@ def create_agent_os(
                     category="extension",
                 )
 
-            # --- Register ParallelDispatch Tool ---
-            from nimbus.orchestration.specialist_tools import ParallelDispatchTool
-            from nimbus.orchestration.tools import PARALLEL_DISPATCH_TOOL_DEF
-
-            parallel_dispatch_tool = ParallelDispatchTool(agent_os=os, workspace=ws)
-            os.register_tool(
-                name="ParallelDispatch",
-                func=parallel_dispatch_tool.execute,
-                description=PARALLEL_DISPATCH_TOOL_DEF["description"],
-                parameters=PARALLEL_DISPATCH_TOOL_DEF["parameters"],
-                roles=["orchestrator"],
-                category="extension",
-            )
 
             # Register Verify (standalone, no DispatchTool dependency)
             async def _verify_handler(checks=None, **kwargs):

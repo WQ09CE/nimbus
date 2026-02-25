@@ -39,7 +39,7 @@ interface SpecialistTheme {
 const SPECIALIST_THEMES: Record<string, SpecialistTheme> = {
     Dispatch: {
         label: "Executor",
-        icon: "\u26A1",
+        icon: "⚡",
         border: { running: "border-purple-500/30", failed: "border-red-500/30", normal: "border-purple-500/20" },
         bg: { running: "bg-purple-950/20 shadow-[0_0_20px_rgba(168,85,247,0.08)]", failed: "bg-red-950/10", normal: "bg-purple-950/10" },
         strip: { running: "bg-purple-500 animate-pulse", failed: "bg-red-500", normal: "bg-purple-500" },
@@ -52,7 +52,7 @@ const SPECIALIST_THEMES: Record<string, SpecialistTheme> = {
     },
     Explore: {
         label: "Explorer",
-        icon: "\uD83D\uDD0D",
+        icon: "🔍",
         border: { running: "border-blue-500/30", failed: "border-red-500/30", normal: "border-blue-500/20" },
         bg: { running: "bg-blue-950/20 shadow-[0_0_20px_rgba(59,130,246,0.08)]", failed: "bg-red-950/10", normal: "bg-blue-950/10" },
         strip: { running: "bg-blue-500 animate-pulse", failed: "bg-red-500", normal: "bg-blue-500" },
@@ -65,7 +65,7 @@ const SPECIALIST_THEMES: Record<string, SpecialistTheme> = {
     },
     Implement: {
         label: "Implementer",
-        icon: "\uD83D\uDD27",
+        icon: "🔧",
         border: { running: "border-emerald-500/30", failed: "border-red-500/30", normal: "border-emerald-500/20" },
         bg: { running: "bg-emerald-950/20 shadow-[0_0_20px_rgba(16,185,129,0.08)]", failed: "bg-red-950/10", normal: "bg-emerald-950/10" },
         strip: { running: "bg-emerald-500 animate-pulse", failed: "bg-red-500", normal: "bg-emerald-500" },
@@ -78,7 +78,7 @@ const SPECIALIST_THEMES: Record<string, SpecialistTheme> = {
     },
     Design: {
         label: "Architect",
-        icon: "\uD83D\uDCD0",
+        icon: "📐",
         border: { running: "border-orange-500/30", failed: "border-red-500/30", normal: "border-orange-500/20" },
         bg: { running: "bg-orange-950/20 shadow-[0_0_20px_rgba(249,115,22,0.08)]", failed: "bg-red-950/10", normal: "bg-orange-950/10" },
         strip: { running: "bg-orange-500 animate-pulse", failed: "bg-red-500", normal: "bg-orange-500" },
@@ -91,7 +91,7 @@ const SPECIALIST_THEMES: Record<string, SpecialistTheme> = {
     },
     Test: {
         label: "Tester",
-        icon: "\uD83E\uDDEA",
+        icon: "🧪",
         border: { running: "border-teal-500/30", failed: "border-red-500/30", normal: "border-teal-500/20" },
         bg: { running: "bg-teal-950/20 shadow-[0_0_20px_rgba(20,184,166,0.08)]", failed: "bg-red-950/10", normal: "bg-teal-950/10" },
         strip: { running: "bg-teal-500 animate-pulse", failed: "bg-red-500", normal: "bg-teal-500" },
@@ -122,8 +122,15 @@ interface DispatchCardProps {
         subCalls?: ToolCall[];
         subResults?: ToolResult[];
     };
-    /** "collapsed": 并行场景默认折叠; "expanded": 单独 subagent 完成后自动展开 */
+    /**
+     * "collapsed" — header only (default for parallel tasks).
+     * "expanded"  — header + tool call list visible immediately.
+     */
     defaultState?: "collapsed" | "expanded";
+    /**
+     * Parallel-task mode: tighter padding, smaller fonts.
+     */
+    isParallel?: boolean;
 }
 
 // ─────────────────────────────────────────────
@@ -272,27 +279,34 @@ function SubCallRow({ sub, index, theme }: { sub: SubCallWithStatus; index: numb
 }
 
 // ─────────────────────────────────────────────
-// DispatchCard — three-state self-contained card
+// DispatchCard — Tri-state: Collapsed / Expanded
+//
+//  Collapsed  : header only — agent name, status badge, task preview, tool count/time
+//  Expanded   : header + tool call list (SubCallRows) + summary report + file changes
+//
+//  Key behaviors:
+//  • Running   → always starts collapsed; header shows live tool count progress
+//  • Completed → auto-expands (unless defaultState="collapsed" e.g. parallel mode)
+//  • Click header to toggle at any time (including while running)
+//  • isParallel → tighter padding/font for stacked parallel-agent grids
 // ─────────────────────────────────────────────
 
-export function DispatchCard({ tool, defaultState = "expanded" }: DispatchCardProps) {
+export function DispatchCard({ tool, defaultState = "expanded", isParallel = false }: DispatchCardProps) {
     const theme = SPECIALIST_THEMES[tool.name] || DEFAULT_THEME;
     const isRunning = tool.status === "running";
     const isFailed = tool.status === "failed";
 
-    // Three view states: "collapsed" | "expanded" | "full"
-    // running 时始终 collapsed；完成后按 defaultState 决定
-    const [viewState, setViewState] = useState<"collapsed" | "expanded" | "full">(
-        isRunning ? "collapsed" : defaultState === "collapsed" ? "collapsed" : "expanded"
-    );
+    // Bi-state: collapsed | expanded
+    // Running always starts collapsed for compact progress view
+    const initialExpanded = !isRunning && defaultState === "expanded";
+    const [isExpanded, setIsExpanded] = useState(initialExpanded);
 
-    // running → completed 时自动转换
+    // When running → completed, auto-expand unless parallel/collapsed mode
     const prevRunningRef = useRef(isRunning);
     useEffect(() => {
         if (prevRunningRef.current && !isRunning) {
-            // just completed
             if (defaultState !== "collapsed") {
-                setViewState("expanded");
+                setIsExpanded(true);
             }
         }
         prevRunningRef.current = isRunning;
@@ -326,8 +340,9 @@ export function DispatchCard({ tool, defaultState = "expanded" }: DispatchCardPr
 
     // ── Derived values ────────────────────────────────
     const task = (tool.args?.task as string) || (tool.args?.prompt as string) || (tool.args?.context as string) || "";
-    // Header task: truncated to ~60 chars
-    const taskHeader = task.length > 60 ? task.slice(0, 60) + "…" : task;
+    // Parallel mode: shorter preview; solo mode: up to 80 chars
+    const maxTaskLen = isParallel ? 48 : 80;
+    const taskPreview = task.length > maxTaskLen ? task.slice(0, maxTaskLen) + "…" : task;
 
     const resultText = typeof tool.result === 'string' ? tool.result : '';
     const fileChanges = parseFileChanges(resultText);
@@ -337,44 +352,33 @@ export function DispatchCard({ tool, defaultState = "expanded" }: DispatchCardPr
     const failedCount = subCallsWithStatus.filter(s => s.status === 'failed').length;
     const totalTools = subCallsWithStatus.length;
 
-    // live activity 区域自动滚到底部
-    const liveActivityRef = useRef<HTMLDivElement>(null);
+    // Live-activity list auto-scrolls to bottom while running
+    const subCallsRef = useRef<HTMLDivElement>(null);
     useEffect(() => {
-        if (isRunning && liveActivityRef.current) {
-            liveActivityRef.current.scrollTop = liveActivityRef.current.scrollHeight;
+        if (isRunning && isExpanded && subCallsRef.current) {
+            subCallsRef.current.scrollTop = subCallsRef.current.scrollHeight;
         }
-    }, [isRunning, totalTools]);
+    }, [isRunning, isExpanded, totalTools]);
 
     // ── Theme classes ─────────────────────────────────
     const borderClass = isRunning ? theme.border.running : isFailed ? theme.border.failed : theme.border.normal;
     const bgClass = isRunning ? theme.bg.running : isFailed ? theme.bg.failed : theme.bg.normal;
     const stripClass = isRunning ? theme.strip.running : isFailed ? theme.strip.failed : theme.strip.normal;
 
-    const isCollapsed = viewState === "collapsed";
-    const isExpanded = viewState === "expanded" || viewState === "full";
-    const isFullDetail = viewState === "full";
-
-    // Toggle header click: collapsed ↔ expanded
-    const handleHeaderClick = () => {
-        if (isRunning) return; // no toggle while running
-        if (isCollapsed) {
-            setViewState("expanded");
-        } else {
-            setViewState("collapsed");
-        }
-    };
+    // Parallel mode: more compact header padding
+    const headerPad = isParallel ? "px-3 py-2 pl-4" : "px-4 py-2.5 pl-5";
 
     return (
         <div className={`overflow-hidden max-w-full rounded-xl border transition-all duration-300 relative ${borderClass} ${bgClass}`}>
             {/* Left accent strip */}
             <div className={`absolute left-0 top-0 bottom-0 w-1 ${stripClass}`} />
 
-            {/* ── Card Header ── */}
+            {/* ── Card Header (always visible) ── */}
             <div
-                className={`px-4 py-2.5 pl-5 flex items-center justify-between ${!isRunning ? 'cursor-pointer hover:bg-white/[0.02]' : ''} select-none transition-colors`}
-                onClick={handleHeaderClick}
+                className={`${headerPad} flex items-center justify-between cursor-pointer hover:bg-white/[0.02] select-none transition-colors`}
+                onClick={() => setIsExpanded(v => !v)}
             >
-                <div className="flex items-center gap-3 min-w-0">
+                <div className="flex items-center gap-2.5 min-w-0">
                     {/* Status indicator */}
                     <div className="flex items-center shrink-0">
                         {isRunning ? (
@@ -395,84 +399,78 @@ export function DispatchCard({ tool, defaultState = "expanded" }: DispatchCardPr
                         {theme.icon} {theme.label}
                     </span>
 
-                    {/* Task truncated preview */}
-                    {taskHeader && (
-                        <span className="text-[12px] text-gray-400 truncate min-w-0">
-                            {taskHeader}
+                    {/* Task preview */}
+                    {taskPreview && (
+                        <span className={`${isParallel ? "text-[11px]" : "text-[12px]"} text-gray-400 truncate min-w-0`}>
+                            {taskPreview}
                         </span>
                     )}
                 </div>
 
-                <div className="flex items-center gap-3 shrink-0 ml-2">
-                    {/* Tool count / processing indicator */}
+                {/* Right side meta */}
+                <div className="flex items-center gap-2.5 shrink-0 ml-2">
+                    {/* Tool count / progress */}
                     {isRunning ? (
                         totalTools > 0 ? (
                             <span className={`text-[10px] font-mono ${theme.toolCount}`}>
-                                {completedCount}/{totalTools} tools
+                                {completedCount}/{totalTools}
                             </span>
                         ) : (
-                            <span className={`flex items-center gap-1 text-[10px] ${theme.processingText}`}>
-                                processing
-                                <span className="flex gap-0.5">
-                                    <span className={`w-1 h-1 rounded-full ${theme.dots} animate-bounce`} style={{ animationDelay: '0ms' }} />
-                                    <span className={`w-1 h-1 rounded-full ${theme.dots} animate-bounce`} style={{ animationDelay: '150ms' }} />
-                                    <span className={`w-1 h-1 rounded-full ${theme.dots} animate-bounce`} style={{ animationDelay: '300ms' }} />
-                                </span>
-                            </span>
+                            <span className={`text-[10px] ${theme.processingText}`}>processing…</span>
                         )
                     ) : (
                         totalTools > 0 && (
                             <span className={`text-[10px] font-mono ${theme.toolCount}`}>
-                                {`${totalTools} tool${totalTools !== 1 ? 's' : ''}`}
-                                {failedCount > 0 && <span className="text-red-400 ml-1">({failedCount} ✗)</span>}
+                                {totalTools} call{totalTools !== 1 ? 's' : ''}
+                                {failedCount > 0 && <span className="text-red-400 ml-1">({failedCount}✗)</span>}
                             </span>
                         )
                     )}
+
                     {/* Duration */}
-                    {tool.duration != null && (
+                    {!isRunning && tool.duration != null && (
                         <span className="text-[10px] font-mono text-gray-600">
                             {(tool.duration / 1000).toFixed(1)}s
                         </span>
                     )}
-                    {/* Collapse/expand chevron */}
-                    {!isRunning && (
-                        <svg
-                            className={`w-3 h-3 text-gray-500 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`}
-                            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
-                        >
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                        </svg>
-                    )}
+
+                    {/* Chevron */}
+                    <svg
+                        className={`w-3 h-3 text-gray-500 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`}
+                        fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                    >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                    </svg>
                 </div>
             </div>
 
-            {/* ── Running: Live Activity Area ── */}
-            {isRunning && totalTools > 0 && (
-                <div
-                    ref={liveActivityRef}
-                    className={`border-t ${theme.borderSection} px-4 py-2 space-y-0.5 max-h-[240px] overflow-y-auto bg-black/10`}
-                >
-                    {subCallsWithStatus.map((sub, idx) => (
-                        <SubCallRow key={sub.id || idx} sub={sub} index={idx} theme={theme} />
-                    ))}
-                </div>
-            )}
-
-            {/* ── Expanded body (State B & C) ── */}
+            {/* ── Expanded body ── */}
             {isExpanded && (
                 <div className={`border-t ${theme.borderSection}`}>
 
-                    {/* Running indicator — no sub-calls yet */}
+                    {/* Running + no sub-calls yet: spinner */}
                     {isRunning && totalTools === 0 && (
                         <div className={`flex items-center gap-2 px-5 py-3 text-[12px] ${theme.processingText}`}>
                             <div className="w-3 h-3 border-2 border-white/20 border-t-white/60 rounded-full animate-spin" />
-                            <span>{theme.label} processing…</span>
+                            <span>{theme.label} initializing…</span>
                         </div>
                     )}
 
-                    {/* ── Summary Report (Markdown) ── */}
+                    {/* Tool calls list — visible while running AND after completion */}
+                    {totalTools > 0 && (
+                        <div
+                            ref={subCallsRef}
+                            className={`px-3 py-2 space-y-1 ${isRunning ? "max-h-[260px] overflow-y-auto" : ""}`}
+                        >
+                            {subCallsWithStatus.map((sub, idx) => (
+                                <SubCallRow key={sub.id || idx} sub={sub} index={idx} theme={theme} />
+                            ))}
+                        </div>
+                    )}
+
+                    {/* ── Summary report (Markdown) — only after completion ── */}
                     {!isRunning && executorReport && (
-                        <div className="px-5 pt-3 pb-2">
+                        <div className={`border-t ${theme.borderSection} px-5 pt-3 pb-2`}>
                             <div className={`text-[10px] uppercase tracking-wider ${theme.textMuted} font-medium mb-2`}>
                                 📋 Summary
                             </div>
@@ -482,11 +480,11 @@ export function DispatchCard({ tool, defaultState = "expanded" }: DispatchCardPr
                         </div>
                     )}
 
-                    {/* ── File Changes ── */}
+                    {/* ── File changes — only after completion ── */}
                     {!isRunning && fileChanges.length > 0 && (
-                        <div className="px-5 pb-3">
+                        <div className={`border-t ${theme.borderSection} px-5 pb-3 pt-2`}>
                             <div className={`text-[10px] uppercase tracking-wider ${theme.textMuted} font-medium mb-2`}>
-                                📁 File Changes
+                                📁 Files Changed
                             </div>
                             <div className={`rounded-lg border ${theme.borderSection} bg-black/20 divide-y divide-white/[0.04] overflow-hidden`}>
                                 {fileChanges.map((change, i) => (
@@ -505,51 +503,9 @@ export function DispatchCard({ tool, defaultState = "expanded" }: DispatchCardPr
                         </div>
                     )}
 
-                    {/* ── Execution Details toggle (State B → C) ── */}
-                    {totalTools > 0 && (
-                        <div className={`border-t ${theme.borderSection}`}>
-                            {/* Toggle button */}
-                            <button
-                                type="button"
-                                className={`w-full flex items-center gap-2 px-5 py-2.5 text-left transition-colors hover:bg-white/[0.02] select-none`}
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    setViewState(isFullDetail ? "expanded" : "full");
-                                }}
-                            >
-                                <svg
-                                    className={`w-3 h-3 text-gray-500 transition-transform duration-200 shrink-0 ${isFullDetail ? "rotate-90" : ""}`}
-                                    fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
-                                >
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                                </svg>
-                                <span className={`text-[11px] ${theme.textMuted}`}>
-                                    {isFullDetail ? "收起执行过程" : `查看执行过程 (${totalTools} calls)`}
-                                </span>
-                                {isRunning && (
-                                    <span className="ml-auto flex items-center gap-1">
-                                        <span className={`text-[10px] font-mono ${theme.toolCount}`}>
-                                            {completedCount}/{totalTools}
-                                        </span>
-                                        <div className="w-2 h-2 border border-white/20 border-t-white/60 rounded-full animate-spin" />
-                                    </span>
-                                )}
-                            </button>
-
-                            {/* Execution Details list (State C) */}
-                            {isFullDetail && (
-                                <div className="bg-black/20 px-4 pb-3 pt-1 space-y-1.5">
-                                    {subCallsWithStatus.map((sub, idx) => (
-                                        <SubCallRow key={sub.id || idx} sub={sub} index={idx} />
-                                    ))}
-                                </div>
-                            )}
-                        </div>
-                    )}
-
-                    {/* Error display */}
+                    {/* ── Error ── */}
                     {isFailed && tool.error && (
-                        <div className="px-5 pb-3">
+                        <div className={`border-t ${theme.borderSection} px-5 pb-3 pt-2`}>
                             <div className="text-[11px] font-mono text-red-400 bg-red-500/10 rounded-lg px-3 py-2 border border-red-500/20 whitespace-pre-wrap break-words">
                                 {tool.error}
                             </div>

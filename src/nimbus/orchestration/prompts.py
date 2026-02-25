@@ -165,6 +165,11 @@ You are the **Architect Agent** — the design thinker.
 - **Right**: `Write(file_path="docs/my-doc.md", content="# Title\n\n...")` The file is actually created.
 - After writing the file, call `SubmitResult(result="Wrote docs/my-doc.md -- [brief summary]")` to finish.
 - Keep your text responses SHORT (< 200 chars). All substantial content goes into Write calls.
+
+## STRICT: No Conversational Pre-announcements
+- Do NOT output conversational pre-announcements like "I will now write the document" or "Let me create the file".
+- Every output MUST contain a tool call if the task is not complete.
+- Text-only responses without tool calls are treated as your FINAL answer and will terminate the task immediately.
 """
 
 TESTER_INSTRUCTIONS = """\
@@ -224,9 +229,10 @@ All specialist tools support optional parameters:
 ## Workflow Principles
 1. **Understand first**: Use Explore to understand before requesting implementation
 2. **Delegate early**: Don't think through the full solution yourself — delegate to specialists
-3. **Verify results**: After implementation, use Test or Verify to check work
-4. **Use NimFS Memory**: After completing tasks, use `NimFSWriteMemory` to persist key decisions, patterns, and findings. Use `NimFSLoadContext` at the start of complex tasks to recall relevant history.
-5. **Respect user's model choice**: If the user specifies a model (e.g., "用 gemini 分析"), pass it via the `model` parameter
+3. **Native Parallelism**: To execute multiple independent specialist tasks concurrently, simply emit multiple tool calls in your single response. The system will execute them in parallel automatically. Do NOT wait for one to finish if they are independent.
+4. **Verify results**: After implementation, use Test or Verify to check work
+5. **Use NimFS Memory**: After completing tasks, use `NimFSWriteMemory` to persist key decisions, patterns, and findings. Use `NimFSLoadContext` at the start of complex tasks to recall relevant history.
+6. **Respect user's model choice**: If the user specifies a model (e.g., "用 gemini 分析"), pass it via the `model` parameter
 """
 
 # =============================================================================
@@ -269,7 +275,7 @@ TRAIT_GEMINI_PRO_ORCHESTRATOR = """\
 | 需要搜索/理解代码（≥2 个文件） | `Explore(task="...", model="sonnet")` |
 | 代码修改/实现 | `Implement(task="...", model="sonnet")` |
 | 运行测试 | `Test(task="...", model="sonnet")` |
-| 多个独立子任务 | `ParallelDispatch(tasks=[...])` 并行，每个子任务指定 `model:"sonnet"` |
+| 多个独立子任务 | 在**同一回复**中同时发出多个工具调用（如同时调 `Explore` + `Implement`），系统自动并行执行，无需等待其中一个完成 |
 
 ### 工作模式
 1. **深度分析**：收到任务后，先在回复中分析思路、拆解步骤、识别风险

@@ -214,37 +214,43 @@ function ParallelToolList({ tools, getToolKey }: ParallelToolListProps) {
   // Flatten ParallelDispatch → virtual sub-agent cards with stable keys
   const flatEntries = flattenTools(tools, getToolKey);
 
-  // Partition: sub-agent cards that deserve the grid vs other tools
-  const parallelEntries = flatEntries.filter(e => PARALLEL_TOOLS.has(e.tool.name));
-  const otherEntries    = flatEntries.filter(e => !PARALLEL_TOOLS.has(e.tool.name));
-
-  if (parallelEntries.length < 2) {
-    // Single task or no parallel tasks — vertical stack
+  // ── Single tool call → plain vertical stack, no isParallel ────────────────
+  if (flatEntries.length <= 1) {
     return (
       <div className="space-y-2">
         {flatEntries.map(({ stableKey, tool }) => (
-          <ToolCard key={stableKey} tool={tool} />
+          <ToolCard key={stableKey} tool={tool} isParallel={false} />
         ))}
       </div>
     );
   }
 
-  // Multiple parallel sub-agents → responsive grid
-  return (
-    <div className="space-y-3">
-      {/* Sequential / non-parallel tools rendered first */}
-      {otherEntries.map(({ stableKey, tool }) => (
-        <ToolCard key={stableKey} tool={tool} />
-      ))}
+  // ── Multiple tool calls (native parallelism) → grid layout ────────────────
+  // Partition META_TOOLS (sub-agent dispatches) vs regular tools so that
+  // meta-tools keep their "collapsed" default state in the grid.
+  const parallelEntries = flatEntries.filter(e => PARALLEL_TOOLS.has(e.tool.name));
+  const otherEntries    = flatEntries.filter(e => !PARALLEL_TOOLS.has(e.tool.name));
 
-      {/* Parallel sub-agent grid */}
+  const cols = Math.min(flatEntries.length, 4);
+
+  return (
+    <div className="space-y-2">
+      {/* Parallel tool grid — all entries share the same grid */}
       <div
-        className="grid gap-3 w-full"
-        style={{ gridTemplateColumns: `repeat(${Math.min(parallelEntries.length, 4)}, minmax(0, 1fr))` }}
+        className="grid gap-2 w-full"
+        style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
       >
+        {/* Regular tools (Read / Write / Bash / …) */}
+        {otherEntries.map(({ stableKey, tool }) => (
+          <div key={stableKey} className="min-w-0">
+            <ToolCard tool={tool} isParallel={true} />
+          </div>
+        ))}
+
+        {/* Meta-tools (Dispatch / Explore / Implement / …) */}
         {parallelEntries.map(({ stableKey, tool }) => (
           <div key={stableKey} className="min-w-0">
-            <ToolCard tool={tool} defaultState="collapsed" />
+            <ToolCard tool={tool} defaultState="collapsed" isParallel={true} />
           </div>
         ))}
       </div>

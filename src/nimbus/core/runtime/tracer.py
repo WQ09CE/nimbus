@@ -10,9 +10,10 @@ import json
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from nimbus.core.nimfs import NimFSManager
+from nimbus.core.nimfs.models import ArtifactTTL
 from nimbus.core.protocol import ActionIR, Fault, ToolResult
 
 
@@ -50,13 +51,11 @@ class ExecutionTrace:
 
 class TraceManager:
     """
-    Manages the recording and persisting of execution traces.
+    Manages the recording and persisting of execution traces via NimFS.
     """
-    def __init__(self, session_id: str, base_dir: str = ".nimbus/traces"):
+    def __init__(self, session_id: str, workspace: str = "."):
         self.session_id = session_id or "unknown_session"
-        # Create trace directory: .nimbus/traces/<session_id>/
-        self.trace_dir = Path(base_dir) / self.session_id
-        self.trace_dir.mkdir(parents=True, exist_ok=True)
+        self._nimfs = NimFSManager(workspace)
 
         # Current active trace
         self._current_step: Optional[ExecutionTrace] = None
@@ -137,36 +136,41 @@ class TraceManager:
         }
 
     def finish_step(self):
-        """Finalize and write the step trace."""
+        """Finalize and write the step trace to NimFS."""
         if not self._current_step: return
 
         # Calculate total time
         duration = (time.time_ns() - self._start_time) // 1_000_000
         self._current_step.timing_ms["total_trace_duration"] = duration
 
-        # 1. Write JSON (Machine Readable)
         step_num = self._current_step.iteration
-        json_path = self.trace_dir / f"step_{step_num:03d}.json"
 
+        # 1. Write JSON artifact (Machine Readable)
+        json_content = json.dumps(asdict(self._current_step), indent=2, ensure_ascii=False)
         try:
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(asdict(self._current_step), f, indent=2, ensure_ascii=False)
+            self._nimfs.write_artifact(
+                content=json_content,
+                task_id=self.session_id,
+                producer="trace-manager",
+                artifact_type="json",
+                ttl=ArtifactTTL.SESSION,
+                summary=f"Execution Trace Step {step_num}",
+                tags=["trace", f"step_{step_num}", self.session_id],
+            )
         except Exception as e:
-            print(f"Failed to write trace JSON: {e}")
+            print(f"Failed to write trace JSON artifact: {e}")
 
-        # 2. Write/Append Markdown (Human Readable)
-        md_path = self.trace_dir / "trace_log.md"
-        self._append_markdown_log(md_path)
+        # 2. Write Markdown artifact (Human Readable)
+        self._write_markdown_artifact(step_num)
 
         self._current_step = None
 
-    def _append_markdown_log(self, path: Path):
-        """Append a human-friendly summary to the markdown log."""
+    def _write_markdown_artifact(self, step_num: int):
+        """Write a human-friendly summary as a NimFS artifact."""
         step = self._current_step
         ctx = step.context
 
-        md_content = f"""
-## Step {step.iteration} [{step.timestamp}]
+        md_content = f"""## Step {step.iteration} [{step.timestamp}]
 
 **Context Stats**: Total Tokens: ~{ctx.total_tokens} (Pinned: {ctx.pinned_tokens}, Frame: {ctx.frame_tokens})
 **Global Summary**: {ctx.summary_preview or "N/A"}
@@ -192,7 +196,14 @@ class TraceManager:
         md_content += "\n---\n"
 
         try:
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(md_content)
+            self._nimfs.write_artifact(
+                content=md_content,
+                task_id=self.session_id,
+                producer="trace-manager",
+                artifact_type="report",
+                ttl=ArtifactTTL.SESSION,
+                summary=f"Execution Trace MD Step {step_num}",
+                tags=["trace_md", f"step_{step_num}", self.session_id],
+            )
         except Exception:
             pass

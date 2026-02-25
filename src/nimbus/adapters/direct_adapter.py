@@ -1112,15 +1112,57 @@ class DirectAdapter:
             t_start = time.monotonic()
             ttfb_logged = False
             chunk_count = 0
+            
+            # Rate limit retry logic
+            current_model = model
+            try:
+                response = await acompletion(
+                    model=current_model,
+                    messages=clean_messages,
+                    tools=openai_tools,
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens,
+                    stream=True,
+                )
+            except Exception as e:
+                # Check for rate limit (429) or resource exhausted
+                err_str = str(e).lower()
+                is_rate_limit = "429" in err_str or "resource exhausted" in err_str or "rate limit" in err_str
+                
+                if is_rate_limit:
+                    fallback = ModelRegistry.get_same_provider_fallback(self._model)
+                    if fallback:
+                        # Normalize fallback model name for LiteLLM
+                        fallback_info = ModelRegistry.get(fallback)
+                        if fallback_info:
+                            if fallback_info.provider == "google":
+                                fallback_model = f"gemini/{fallback_info.model_id}"
+                            elif fallback_info.provider == "anthropic":
+                                fallback_model = f"anthropic/{fallback_info.model_id}"
+                            else:
+                                fallback_model = fallback_info.model_id
+                        else:
+                            fallback_model = fallback
 
-            response = await acompletion(
-                model=model,
-                messages=clean_messages,
-                tools=openai_tools,
-                temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens,
-                stream=True,
-            )
+                        logger.warning(
+                            "Rate limit hit on %s. Falling back to %s", 
+                            current_model, fallback_model
+                        )
+                        
+                        # Retry with fallback
+                        current_model = fallback_model
+                        response = await acompletion(
+                            model=current_model,
+                            messages=clean_messages,
+                            tools=openai_tools,
+                            temperature=self.config.temperature,
+                            max_tokens=self.config.max_tokens,
+                            stream=True,
+                        )
+                    else:
+                        raise e
+                else:
+                    raise e
 
             tool_call_chunks = {}
 
@@ -1128,7 +1170,7 @@ class DirectAdapter:
                 chunk_count += 1
                 if not ttfb_logged:
                     ttfb = time.monotonic() - t_start
-                    logger.info("[LiteLLM] model=%s TTFB=%.1fs", model, ttfb)
+                    logger.info("[LiteLLM] model=%s TTFB=%.1fs", current_model, ttfb)
                     ttfb_logged = True
 
                 delta = chunk.choices[0].delta
@@ -1153,7 +1195,7 @@ class DirectAdapter:
             total = time.monotonic() - t_start
             logger.info(
                 "[LiteLLM] model=%s TTFB=%.1fs total=%.1fs chunks=%d",
-                model, ttfb if ttfb_logged else total, total, chunk_count,
+                current_model, ttfb if ttfb_logged else total, total, chunk_count,
             )
 
             for idx, tc_data in tool_call_chunks.items():

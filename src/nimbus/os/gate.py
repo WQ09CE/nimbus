@@ -187,7 +187,7 @@ class KernelGate:
                     )
 
         # Inject parent action ID for all meta-tools that spawn sub-agents
-        _META_TOOL_NAMES = {"Explore", "Implement", "Design", "Test", "Dispatch", "ParallelDispatch"}
+        _META_TOOL_NAMES = {"Explore", "Implement", "Design", "Test", "Dispatch"}
         if tool_name in _META_TOOL_NAMES:
             action.args["_parent_action_id"] = action.id
 

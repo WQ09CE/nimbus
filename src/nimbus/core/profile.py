@@ -105,7 +105,7 @@ class AgentProfile:
             allowed_tools=["Read", "Write", "SubmitResult"] + _NIMFS_SPECIALIST,
             system_prompt=PromptManager.get_system_prompt("architect", model_id),
             max_iterations=50,
-            max_consecutive_thoughts=2,
+            max_consecutive_thoughts=4,
             write_filter=[".md"],
         )
 
@@ -130,7 +130,7 @@ class AgentProfile:
         return cls(
             name="orchestrator",
             role="orchestrator",
-            allowed_tools=["Read", "Bash", "Explore", "Implement", "Design", "Test", "ParallelDispatch", "Verify", "ReviewCommittee", "Memo"] + _NIMFS_ALL,
+            allowed_tools=["Read", "Bash", "Explore", "Implement", "Design", "Test", "Verify", "ReviewCommittee", "Memo"] + _NIMFS_ALL,
             system_prompt=PromptManager.get_system_prompt("orchestrator", model_id),
             max_iterations=50,
             max_consecutive_thoughts=2,

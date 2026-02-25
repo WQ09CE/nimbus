@@ -106,6 +106,57 @@ class ModelRegistry:
         return candidates[0].full_name
 
     @classmethod
+    def get_same_provider_fallback(cls, current_model: str) -> Optional[str]:
+        """
+        Returns a fallback model ID from the same provider (toggling tiers).
+        Logic:
+          - Google: 3.1 Pro -> 3 Pro -> 3 Flash -> 3.1 Pro (cycle)
+          - Other: Pro -> Flash -> Pro (cycle)
+        """
+        info = cls.get(current_model)
+        if not info:
+            return None
+
+        # Google Specific Logic
+        if info.provider == "google":
+            # 3.1 Pro -> 3 Pro
+            if "3.1-pro" in info.model_id:
+                fallback = cls.get("gemini-3-pro-preview")
+                if fallback: return fallback.full_name
+            # 3 Pro -> 3.1 Pro (Cycle back to 3.1 directly, skipping flash as per user request "3.1 used up -> 3, 3 used up -> 3.1")
+            if "3-pro" in info.model_id:
+                fallback = cls.get("gemini-3.1-pro-preview")
+                if fallback: return fallback.full_name
+            # 3 Flash -> 3.1 Pro (In case they start with flash)
+            if "flash" in info.tier:
+                fallback = cls.get("gemini-3.1-pro-preview")
+                if fallback: return fallback.full_name
+        
+        # Generic Logic: Pro <-> Flash
+        same_provider_models = [
+            m for m in cls._models.values() 
+            if m.provider == info.provider and m.model_id != info.model_id
+        ]
+        
+        if info.tier == "pro":
+            # Try to find flash
+            flash_models = [m for m in same_provider_models if m.tier == "flash"]
+            if flash_models:
+                return flash_models[0].full_name
+        
+        elif info.tier == "flash":
+            # Try to find pro
+            pro_models = [m for m in same_provider_models if m.tier == "pro"]
+            if pro_models:
+                return pro_models[0].full_name
+
+        # Fallback: Just return any other model from same provider
+        if same_provider_models:
+            return same_provider_models[0].full_name
+
+        return None
+
+    @classmethod
     def normalize(cls, name: str) -> str:
         """
         Normalize an alias or raw name to the canonical 'provider/model_id' format.
@@ -241,6 +292,19 @@ ModelRegistry.register(ModelInfo(
     ],
     manifest=ModelManifest("gemini-pro", GEMINI_FEATURES),
     context_window=2_000_000,  # Gemini 3.x series supports 2M context
+))
+
+# Gemini 3 Pro — previous flagship pro tier (2026)
+ModelRegistry.register(ModelInfo(
+    model_id="gemini-3-pro-preview",
+    provider="google",
+    tier="pro",
+    aliases=[
+        "gemini-3-pro",
+        "gemini-3-pro-preview",
+    ],
+    manifest=ModelManifest("gemini-pro", GEMINI_FEATURES),
+    context_window=2_000_000,
 ))
 
 # Gemini 3 Flash — fast/cheap tier (2026)

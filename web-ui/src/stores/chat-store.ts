@@ -982,6 +982,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
         isInterrupting: false,
       });
 
+      // Reload session from server to replace any optimistic injection messages
+      // with the real persisted ones (server strips [Intervention] prefix automatically)
+      const sessionAfterDag = get().session;
+      if (sessionAfterDag) {
+        try {
+          await get().switchSession(sessionAfterDag);
+        } catch {
+          // Non-critical: local state is still usable
+        }
+      }
+
       // Process next message in queue
       const { messageQueue: queue } = get();
       if (queue.length > 0) {
