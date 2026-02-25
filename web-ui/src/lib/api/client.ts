@@ -153,8 +153,11 @@ export async function* apiStream(
   const response = await fetch(url, fetchOptions);
 
   if (!response.ok) {
-    logger.error(`[API] Stream Error ${response.status} (req_id=${reqId})`);
-    throw new ApiError(response.status, "Stream request failed");
+    let errorBody = "";
+    try { errorBody = await response.text(); } catch { /* ignore */ }
+    const detail = errorBody ? `: ${errorBody.slice(0, 300)}` : "";
+    logger.error(`[API] Stream Error ${response.status}${detail} (req_id=${reqId})`);
+    throw new ApiError(response.status, errorBody || "Stream request failed");
   }
 
   const reader = response.body?.getReader();

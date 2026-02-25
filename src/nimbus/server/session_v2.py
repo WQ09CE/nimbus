@@ -509,7 +509,25 @@ class SessionManagerV2:
                     return
 
                 if result.status == "ERROR":
-                    logger.error(f"[stream_chat] Result Error: {result.fault}")
+                    fault = result.fault
+                    logger.error(f"[stream_chat] Result Error: {fault}")
+                    # Send structured error event to frontend so it can display a meaningful message
+                    try:
+                        if fault and hasattr(fault, 'domain'):
+                            error_payload = {
+                                "code": f"{fault.domain.lower()}_{fault.code.lower()}",
+                                "message": fault.message,
+                                "retryable": fault.retryable,
+                            }
+                        else:
+                            error_payload = {
+                                "code": "agent_error",
+                                "message": str(fault) if fault else "Agent execution failed",
+                                "retryable": False,
+                            }
+                        await self._sse_hub.publish(session_id, "error", error_payload)
+                    except Exception as _pub_err:
+                        logger.warning(f"Failed to publish error event: {_pub_err}")
                 elif result.status == "CANCELLED":
                     logger.info("[stream_chat] Execution cancelled by interrupt request")
                     # Manual Fix: Drain pending injection queue from Process Inbox to MMU
@@ -670,11 +688,24 @@ class SessionManagerV2:
             # Already handled above, just propagate
             raise
         except Exception as e:
-            logger.error(f"Error in stream_chat: {e}", exc_info=True)
+            import uuid as _uuid
+            _error_id = _uuid.uuid4().hex[:8]
+            logger.error(f"Error in stream_chat [#{_error_id}]: {e}", exc_info=True)
+            _err_str = str(e).lower()
+            if "rate limit" in _err_str or "429" in _err_str or "resource exhausted" in _err_str:
+                _code, _msg, _retry = "llm_rate_limit", "模型请求过频，请稍后重试", True
+            elif "timeout" in _err_str or "timed out" in _err_str:
+                _code, _msg, _retry = "resource_timeout", "请求超时，请重试", True
+            elif "budget" in _err_str or "ctx_overflow" in _err_str or "context" in _err_str:
+                _code, _msg, _retry = "llm_ctx_overflow", "上下文长度已超限", False
+            elif "auth" in _err_str or "401" in _err_str or "403" in _err_str or "forbidden" in _err_str:
+                _code, _msg, _retry = "auth_error", "认证失败，请检查 API 密钥", False
+            else:
+                _code, _msg, _retry = "kernel_system_error", f"系统错误 [#{_error_id}]", False
             await self._sse_hub.publish(
                 session_id,
                 "error",
-                {"message": str(e)},
+                {"code": _code, "message": _msg, "retryable": _retry, "error_id": _error_id},
             )
 
     async def _save_conversation_to_storage(

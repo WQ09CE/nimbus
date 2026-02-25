@@ -514,21 +514,39 @@ async def chat(
             raise  # Re-raise to properly cancel the task
         except Exception as e:
             import logging
-            import traceback
+            import traceback as _tb
+            import uuid as _uuid
 
             error_logger = logging.getLogger(__name__)
-            error_logger.error(f"❌ Error in stream_chat: {e}", exc_info=True)
-            # Emit error event
+            _error_id = _uuid.uuid4().hex[:8]
+            # Log full traceback server-side only (never expose to client)
+            error_logger.error(
+                f"❌ Error in stream_chat [#{_error_id}]: {e}\n{_tb.format_exc()}"
+            )
+            # Classify for user-facing message
+            _err_str = str(e).lower()
+            if "rate limit" in _err_str or "429" in _err_str or "resource exhausted" in _err_str:
+                _code, _msg, _retry = "llm_rate_limit", "模型请求过频，请稍后重试", True
+            elif "timeout" in _err_str or "timed out" in _err_str:
+                _code, _msg, _retry = "resource_timeout", "请求超时，请重试", True
+            elif "budget" in _err_str or "budget_exceeded" in _err_str:
+                _code, _msg, _retry = "llm_ctx_overflow", "上下文长度已超限", False
+            elif "auth" in _err_str or "401" in _err_str or "403" in _err_str:
+                _code, _msg, _retry = "auth_error", "认证失败，请检查 API 密钥", False
+            else:
+                _code, _msg, _retry = "kernel_system_error", f"系统错误 [#{_error_id}]", False
             try:
                 await sse_hub.publish(
                     session_id,
                     "error",
                     {
-                        "code": "server_error",
-                        "message": str(e),
-                        "traceback": traceback.format_exc(),
+                        "code": _code,
+                        "message": _msg,
+                        "retryable": _retry,
+                        "error_id": _error_id,
                     },
                 )
+                await sse_hub.publish(session_id, "dag_complete", {"status": "ERROR"})
             except Exception as pub_err:
                 error_logger.error(f"❌ Failed to publish error event: {pub_err}")
         finally:

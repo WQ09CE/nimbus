@@ -16,6 +16,7 @@ export default function Home() {
   const messages = useChatStore(s => s.messages);
   const isStreaming = useChatStore(s => s.isStreaming);
   const error = useChatStore(s => s.error);
+  const errorInfo = useChatStore(s => s.errorInfo);
   const isLoading = useChatStore(s => s.isLoading);
 
   // Actions — stable references from Zustand
@@ -173,20 +174,53 @@ export default function Home() {
           >
             {/* Error */}
             {error && (
-              <div data-testid="error-banner" className="mb-4 p-3 bg-red-900/20 border border-red-800 rounded text-red-400 text-sm animate-in fade-in slide-in-from-top-2">
-                <span className="font-semibold">Error:</span> {error}
-                <button
-                  onClick={() => useChatStore.getState().retryLastMessage()}
-                  className="ml-3 text-sky-400 hover:text-sky-300 underline"
-                >
-                  Retry
-                </button>
-                <button
-                  onClick={clearError}
-                  className="ml-3 underline hover:no-underline"
-                >
-                  Dismiss
-                </button>
+              <div
+                data-testid="error-banner"
+                className={`mb-4 p-3 rounded text-sm animate-in fade-in slide-in-from-top-2 border ${
+                  errorInfo?.code === "llm_rate_limit" || errorInfo?.code === "resource_timeout"
+                    ? "bg-amber-900/20 border-amber-700/50 text-amber-300"
+                    : errorInfo?.code === "auth_error"
+                    ? "bg-orange-900/20 border-orange-700/50 text-orange-300"
+                    : "bg-red-900/20 border-red-800/50 text-red-400"
+                }`}
+              >
+                <div className="flex items-start gap-2">
+                  <span className="shrink-0 mt-0.5">
+                    {errorInfo?.code === "llm_rate_limit" ? "\u23F3" :
+                     errorInfo?.code === "resource_timeout" ? "\u23F1\uFE0F" :
+                     errorInfo?.code === "auth_error" ? "\uD83D\uDD11" :
+                     errorInfo?.code === "llm_ctx_overflow" ? "\uD83D\uDCCF" : "\uD83D\uDD34"}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <span className="font-semibold">
+                      {errorInfo?.code === "llm_rate_limit" ? "Request Throttled" :
+                       errorInfo?.code === "resource_timeout" ? "Request Timeout" :
+                       errorInfo?.code === "auth_error" ? "Auth Error" :
+                       errorInfo?.code === "llm_ctx_overflow" ? "Context Overflow" :
+                       "Error"}
+                    </span>
+                    <span className="ml-2 opacity-80">{errorInfo?.message ?? error}</span>
+                    {errorInfo?.errorId && (
+                      <span className="ml-2 text-xs opacity-40">#{errorInfo.errorId}</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {errorInfo?.retryable && (
+                      <button
+                        onClick={() => useChatStore.getState().retryLastMessage()}
+                        className="text-sky-400 hover:text-sky-300 underline text-xs"
+                      >
+                        Retry
+                      </button>
+                    )}
+                    <button
+                      onClick={clearError}
+                      className="opacity-60 hover:opacity-100 text-xs underline"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
 

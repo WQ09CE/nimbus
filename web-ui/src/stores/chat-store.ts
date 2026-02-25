@@ -85,6 +85,7 @@ interface ChatState {
   // UI state
   isLoading: boolean;
   error: string | null;
+  errorInfo: { code: string; message: string; retryable: boolean; errorId?: string } | null;
   isCreatingSession: boolean;  // Prevent concurrent session creation
 
   // Actions
@@ -122,6 +123,7 @@ const initialState = {
   streamAbortController: null,
   isLoading: false,
   error: null,
+  errorInfo: null,
   isCreatingSession: false,
 };
 
@@ -1026,8 +1028,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
             shouldContinue = false;
             break;
 
-          case "error":
-            throw new Error(typeof data === "string" ? data : "Stream error");
+          case "error": {
+            const errData = data as { code?: string; message?: string; retryable?: boolean; error_id?: string } | string;
+            const code = typeof errData === "object" ? (errData.code ?? "stream_error") : "stream_error";
+            const message = typeof errData === "object"
+              ? (errData.message ?? "Stream error")
+              : (typeof errData === "string" ? errData : "Stream error");
+            const retryable = typeof errData === "object" ? (errData.retryable ?? false) : false;
+            const errorId = typeof errData === "object" ? errData.error_id : undefined;
+            const typedErr = new Error(message) as Error & { errorCode: string; retryable: boolean; errorId?: string };
+            typedErr.errorCode = code;
+            typedErr.retryable = retryable;
+            if (errorId) typedErr.errorId = errorId;
+            throw typedErr;
+          }
         }
 
         // Exit loop if dag_complete received
@@ -1124,10 +1138,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
           error: null,
         });
       } else {
-        // Real error occurred
-        const errorMessage = err instanceof Error ? err.message : "Failed to send message";
+        // Real error occurred - extract structured error info if available
+        const errorCode = (err as any).errorCode as string | undefined;
+        const isRetryable = (err as any).retryable as boolean | undefined;
+        const errorId = (err as any).errorId as string | undefined;
+        const rawMessage = err instanceof Error ? err.message : "Failed to send message";
+
+        // Map code to user-friendly display message with icon hint
+        let errorMessage: string;
+        switch (errorCode) {
+          case "llm_rate_limit":      errorMessage = rawMessage; break;
+          case "resource_timeout":    errorMessage = rawMessage; break;
+          case "llm_ctx_overflow":    errorMessage = rawMessage; break;
+          case "auth_error":          errorMessage = rawMessage; break;
+          case "agent_error":
+          case "kernel_system_error": errorMessage = rawMessage; break;
+          default:                    errorMessage = rawMessage;
+        }
+
+        const errorInfo = errorCode
+          ? { code: errorCode, message: rawMessage, retryable: isRetryable ?? false, errorId }
+          : null;
+
         set({
           error: errorMessage,
+          errorInfo,
           isStreaming: false,
           streamingContent: "",
           streamingToolCalls: [],
@@ -1407,7 +1442,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     get().sendMessage(lastUserMsg.content, lastUserMsg.attachments);
   },
 
-  clearError: () => set({ error: null }),
+  clearError: () => set({ error: null, errorInfo: null }),
 
   interruptMessage: () => {
     const { streamAbortController, isStreaming, session } = get();
