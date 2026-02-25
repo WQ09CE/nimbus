@@ -287,9 +287,21 @@ export function ChatList({ messages }: ChatListProps) {
     overscan: 10,
   });
 
-  // Scroll to bottom on new messages or start of streaming
+  // Scroll to bottom when messages are first loaded (page refresh / session switch)
+  const prevItemsLen = useRef(0);
   useEffect(() => {
-    // Only auto-scroll if near bottom (avoid jumping when browsing history)
+    const wasEmpty = prevItemsLen.current === 0;
+    prevItemsLen.current = items.length;
+    if (wasEmpty && items.length > 0) {
+      requestAnimationFrame(() => {
+        const el = parentRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    }
+  }, [items.length]);
+
+  // Scroll to bottom on new messages or start of streaming (only if near bottom)
+  useEffect(() => {
     const el = parentRef.current;
     if (!el) return;
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
