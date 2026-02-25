@@ -721,8 +721,10 @@ class SessionManagerV2:
             start_idx = msg_watermark
             for msg in messages[start_idx:]:
                 # Skip the user message itself (already saved by frontend)
-                if msg.role == "user" and msg.content == user_message:
-                    continue
+                if msg.role == "user":
+                    compare_content = json.dumps(user_message, ensure_ascii=False) if isinstance(user_message, list) else user_message
+                    if msg.content == compare_content:
+                        continue
                 # Skip ephemeral messages (internal system hints, not for user)
                 if msg.meta.get("ephemeral", False):
                     continue

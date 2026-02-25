@@ -285,37 +285,114 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           // Then, extract sub_tool_events if present (attached to Dispatch tool results)
           if (toolCallId) {
+            // Get tool name from the tool_result artifact to determine grouping strategy
+            let toolName = '';
+            for (const artifact of m.artifacts) {
+              if (artifact && typeof artifact === 'object') {
+                const a = artifact as Record<string, unknown>;
+                if (a.type === 'tool_result' && a.name) {
+                  toolName = String(a.name);
+                  break;
+                }
+              }
+            }
+
             for (const artifact of m.artifacts) {
               if (artifact && typeof artifact === 'object') {
                 const art = artifact as Record<string, unknown>;
                 if (art.type === 'sub_tool_events' && Array.isArray(art.events)) {
-                  const subCalls: ToolCall[] = [];
-                  const subResults: ToolResult[] = [];
+                  const evts = art.events as Array<{ type: string; data: Record<string, unknown> }>;
 
-                  for (const evt of art.events as Array<{ type: string; data: Record<string, unknown> }>) {
-                    if (evt.type === 'sub_tool_call' && evt.data) {
-                      subCalls.push({
-                        id: String(evt.data.action_id || evt.data.id || ''),
-                        name: String(evt.data.tool || evt.data.name || 'unknown'),
-                        arguments: (evt.data.args || evt.data.arguments || {}) as Record<string, unknown>,
-                        agentType: 'dispatch',
-                      });
-                    } else if (evt.type === 'sub_tool_result' && evt.data) {
-                      const fault = evt.data.fault as { message: string } | undefined;
-                      subResults.push({
-                        id: String(evt.data.action_id || evt.data.id || ''),
-                        name: String(evt.data.tool || evt.data.name || 'unknown'),
-                        result: evt.data.output !== undefined ? evt.data.output : evt.data.result,
-                        error: evt.data.status === 'ERROR'
-                          ? (fault ? fault.message : 'Error')
-                          : undefined,
-                        duration: evt.data.duration_ms as number | undefined,
-                      });
+                  if (toolName === 'ParallelDispatch') {
+                    // ── ParallelDispatch: group sub-events by batch_slot_index to reconstruct specialist slots
+                    const SPEC_TO_TOOL: Record<string, string> = {
+                      Explorer: 'Explore', Implementer: 'Implement', Architect: 'Design', Tester: 'Test',
+                    };
+                    const slotMap = new Map<number, { specialist: string; subCalls: ToolCall[]; subResults: ToolResult[] }>();
+                    const actionIdToSlot = new Map<string, number>();
+                    let autoSlot = 0;
+
+                    for (const evt of evts) {
+                      if (evt.type === 'sub_tool_call' && evt.data) {
+                        const slotIdx = typeof evt.data.batch_slot_index === 'number'
+                          ? evt.data.batch_slot_index
+                          : autoSlot++;
+                        const specialist = String(evt.data.specialist || '');
+                        const actionId = String(evt.data.action_id || evt.data.id || '');
+
+                        if (!slotMap.has(slotIdx)) {
+                          slotMap.set(slotIdx, { specialist, subCalls: [], subResults: [] });
+                        }
+                        const slot = slotMap.get(slotIdx)!;
+                        slot.subCalls.push({
+                          id: actionId,
+                          name: String(evt.data.tool || evt.data.name || 'unknown'),
+                          arguments: (evt.data.args || evt.data.arguments || {}) as Record<string, unknown>,
+                          agentType: 'dispatch',
+                        });
+                        if (actionId) actionIdToSlot.set(actionId, slotIdx);
+
+                      } else if (evt.type === 'sub_tool_result' && evt.data) {
+                        const actionId = String(evt.data.action_id || evt.data.id || '');
+                        const slotIdx = actionIdToSlot.get(actionId);
+                        if (slotIdx !== undefined && slotMap.has(slotIdx)) {
+                          const slot = slotMap.get(slotIdx)!;
+                          const fault = evt.data.fault as { message: string } | undefined;
+                          slot.subResults.push({
+                            id: actionId,
+                            name: String(evt.data.tool || evt.data.name || 'unknown'),
+                            result: evt.data.output !== undefined ? evt.data.output : evt.data.result,
+                            error: evt.data.status === 'ERROR' ? (fault ? fault.message : 'Error') : undefined,
+                            duration: evt.data.duration_ms as number | undefined,
+                          });
+                        }
+                      }
                     }
-                  }
 
-                  if (subCalls.length > 0 || subResults.length > 0) {
-                    subEventsMap.set(toolCallId, { subCalls, subResults });
+                    if (slotMap.size > 0) {
+                      const sortedSlots = Array.from(slotMap.entries()).sort((a, b) => a[0] - b[0]);
+                      const specialistCalls: ToolCall[] = sortedSlots.map(([slotIdx, slot]) => {
+                        const sName = SPEC_TO_TOOL[slot.specialist] || slot.specialist || 'Dispatch';
+                        return {
+                          id: `${toolCallId}-slot-${slotIdx}`,
+                          name: sName,
+                          arguments: {},
+                          agentType: 'dispatch' as const,
+                          subCalls: slot.subCalls,
+                          subResults: slot.subResults,
+                        };
+                      });
+                      subEventsMap.set(toolCallId, { subCalls: specialistCalls, subResults: [] });
+                    }
+
+                  } else {
+                    // ── Regular specialist tool (Explore/Implement/etc.): flat list of sub-tool-calls
+                    const subCalls: ToolCall[] = [];
+                    const subResults: ToolResult[] = [];
+
+                    for (const evt of evts) {
+                      if (evt.type === 'sub_tool_call' && evt.data) {
+                        subCalls.push({
+                          id: String(evt.data.action_id || evt.data.id || ''),
+                          name: String(evt.data.tool || evt.data.name || 'unknown'),
+                          arguments: (evt.data.args || evt.data.arguments || {}) as Record<string, unknown>,
+                          agentType: 'dispatch',
+                        });
+                      } else if (evt.type === 'sub_tool_result' && evt.data) {
+                        const fault = evt.data.fault as { message: string } | undefined;
+                        subResults.push({
+                          id: String(evt.data.action_id || evt.data.id || ''),
+                          name: String(evt.data.tool || evt.data.name || 'unknown'),
+                          result: evt.data.output !== undefined ? evt.data.output : evt.data.result,
+                          error: evt.data.status === 'ERROR' ? (fault ? fault.message : 'Error') : undefined,
+                          duration: evt.data.duration_ms as number | undefined,
+                        });
+                      }
+                    }
+
+                    if (subCalls.length > 0 || subResults.length > 0) {
+                      subEventsMap.set(toolCallId, { subCalls, subResults });
+                    }
                   }
                 }
               }
@@ -353,8 +430,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     name: tc.function?.name || '',
                     arguments: tc.function?.arguments
                       ? (typeof tc.function.arguments === 'string'
-                        ? JSON.parse(tc.function.arguments)
-                        : tc.function.arguments)
+                        ? (() => { try { return JSON.parse(tc.function.arguments as string); } catch { return {}; } })()
+                        : tc.function.arguments as Record<string, unknown>)
                       : {},
                   };
 

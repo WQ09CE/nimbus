@@ -121,7 +121,8 @@ interface FlatEntry {
  */
 function flattenTools(
   tools: MergedTool[],
-  getToolKey: (tool: MergedTool, index: number) => string
+  getToolKey: (tool: MergedTool, index: number) => string,
+  isStreaming?: boolean
 ): FlatEntry[] {
   const entries: FlatEntry[] = [];
 
@@ -174,7 +175,7 @@ function flattenTools(
       // If the parent ParallelDispatch already completed but subCalls were never
       // populated (can happen in reconnect/reload scenarios), keep status as
       // "completed" so the card doesn't show a stale "running" spinner.
-      const placeholderStatus = tool.status === "completed" ? "completed" : "running";
+      const placeholderStatus = (!isStreaming || tool.status === "completed") ? "completed" : "running";
       tasks.forEach((task: any, slotIdx: number) => {
         const specialist = (task.specialist as string) || "";
         const toolName = SPECIALIST_TO_TOOL[specialist] || specialist || "Dispatch";
@@ -208,11 +209,12 @@ function flattenTools(
 interface ParallelToolListProps {
   tools: MergedTool[];
   getToolKey: (tool: MergedTool, index: number) => string;
+  isStreaming?: boolean;
 }
 
-function ParallelToolList({ tools, getToolKey }: ParallelToolListProps) {
+function ParallelToolList({ tools, getToolKey, isStreaming }: ParallelToolListProps) {
   // Flatten ParallelDispatch → virtual sub-agent cards with stable keys
-  const flatEntries = flattenTools(tools, getToolKey);
+  const flatEntries = flattenTools(tools, getToolKey, isStreaming);
 
   // ── Single tool call → plain vertical stack, no isParallel ────────────────
   if (flatEntries.length <= 1) {
@@ -446,7 +448,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
                     <span>Running parallel tasks…</span>
                   </div>
                 )}
-                <ParallelToolList tools={tools} getToolKey={getToolKey} />
+                <ParallelToolList tools={tools} getToolKey={getToolKey} isStreaming={isStreaming} />
               </div>
             ) : (
               /* Normal tools: show collapsible "Used X Tools" button */
@@ -464,7 +466,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
 
                 {showTools && (
                   <div className="mt-2 border-l-2 border-nimbus-border pl-2">
-                    <ParallelToolList tools={tools} getToolKey={getToolKey} />
+                    <ParallelToolList tools={tools} getToolKey={getToolKey} isStreaming={isStreaming} />
                   </div>
                 )}
               </>
