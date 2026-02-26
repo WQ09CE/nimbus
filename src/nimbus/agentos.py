@@ -597,7 +597,11 @@ class AgentOS:
         self._processes[pid] = process
 
         # Emit spawn event
-        self._emit_event("PROC_SPAWNED", pid, {"goal": goal, "role": _role})
+        # 提取 model 短名（去掉 provider 前缀）
+        _manifest_model = getattr(manifest, "model_id", "") or ""
+        _model_short = _manifest_model.split("/")[-1] if "/" in _manifest_model else _manifest_model
+
+        self._emit_event("PROC_SPAWNED", pid, {"goal": goal, "role": _role, "model": _model_short, "model_full": _manifest_model})
 
         return pid
 

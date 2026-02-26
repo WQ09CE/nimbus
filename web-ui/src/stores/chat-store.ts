@@ -1008,7 +1008,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 meta.subCalls[esSlotIdx] = {
                   id: esPid || `slot-${esSlotIdx}`,
                   name: toolName,
-                  arguments: { task: taskDesc, context: contextDesc, goal: esGoal },
+                  arguments: { task: taskDesc, context: contextDesc, goal: esGoal, model: esd?.model || "" },
                   agentType: "dispatch" as const,
                   subCalls: [],
                   subResults: [],
@@ -1020,7 +1020,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   specialist: esSpecialist,
                   batchSlotIndex: esSlotIdx,
                   status: "running",
-                  args: { task: taskDesc, context: contextDesc, goal: esGoal },
+                  args: { task: taskDesc, context: contextDesc, goal: esGoal, model: esd?.model || "" },
                 });
                 set({
                   streamingToolCalls: [...toolCalls],
@@ -1536,7 +1536,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 meta.subCalls[esSlotIdx] = {
                   id: esPid || `slot-${esSlotIdx}`,
                   name: toolName,
-                  arguments: { task: taskDesc, context: contextDesc, goal: esGoal },
+                  arguments: { task: taskDesc, context: contextDesc, goal: esGoal, model: esd?.model || "" },
                   agentType: "dispatch" as const,
                   subCalls: [],
                   subResults: [],
@@ -1548,7 +1548,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   specialist: esSpecialist,
                   batchSlotIndex: esSlotIdx,
                   status: "running",
-                  args: { task: taskDesc, context: contextDesc, goal: esGoal },
+                  args: { task: taskDesc, context: contextDesc, goal: esGoal, model: esd?.model || "" },
                 });
                 set({
                   streamingToolCalls: [...toolCalls],
