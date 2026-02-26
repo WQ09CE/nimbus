@@ -490,7 +490,7 @@ class VCPU:
 
                     # Add completion marker to history to prevent context bleeding
                     # This tells the LLM that the previous goal is DONE.
-                    result_preview = str(final_result.output)[:100].replace("\n", " ")
+                    result_preview = str(final_result.output if hasattr(final_result, 'output') else final_result)[:100].replace("\n", " ")
                     self.mmu.add_system_message(f"✓ Task completed. Result: {result_preview}...")
 
                     return final_result
@@ -542,7 +542,11 @@ class VCPU:
             partial_output = self._collect_partial_results()
             res = StepResult(
                 is_final=True,
-                final_result=partial_output or "(specialist timed out before producing output)",
+                final_result=ToolResult(
+                    status="SOFT_TIMEOUT",
+                    output=partial_output or "(specialist timed out before producing output)",
+                    is_final=True,
+                ),
                 fault=Fault(
                     domain="VCPU",
                     code="SOFT_TIMEOUT",
