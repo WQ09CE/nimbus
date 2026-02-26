@@ -373,6 +373,18 @@ export function DispatchCard({ tool, defaultState = "expanded", isParallel = fal
     // ── Derived values ────────────────────────────────
     const task = (tool.args?.task as string) || (tool.args?.prompt as string) || "";
     const context = (tool.args?.context as string) || "";
+    const model = (tool.args?.model as string) || "";
+    // 只取模型简称：如 "google/gemini-3-flash-preview" → "gemini-flash"
+    // "anthropic/claude-sonnet-4-6" → "claude-sonnet"
+    // 如果是简写（不含 "/"）直接用
+    const modelShort = model
+      ? model.includes("/")
+        ? model.split("/")[1]
+            .replace(/-preview$/, "")
+            .replace(/-\d{4}-\d{2}-\d{2}.*$/, "")
+            .replace(/^(claude|gpt|gemini)-/, "$1-")
+        : model
+      : "";
     // Header 只显示第一行，超过 60 字符截断加省略号
     const taskFirstLine = task.split('\n')[0].trim();
     const taskPreview = taskFirstLine.length > 60
@@ -443,6 +455,13 @@ export function DispatchCard({ tool, defaultState = "expanded", isParallel = fal
                             {taskPreview}
                         </span>
                     )}
+
+                    {/* Model badge */}
+                    {modelShort && (
+                        <span className={`shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded border ${theme.badge.border} ${theme.textMuted} bg-black/20 leading-none`}>
+                            {modelShort}
+                        </span>
+                    )}
                 </div>
 
                 {/* Right side meta */}
@@ -491,7 +510,7 @@ export function DispatchCard({ tool, defaultState = "expanded", isParallel = fal
                         <div className={`border-b ${theme.borderSection} px-4 py-2.5`}>
                             {task && (
                                 <div className="space-y-1">
-                                    <div className="text-[10px] text-gray-600 uppercase tracking-wider font-medium">Task</div>
+                                    <div className={`text-[10px] uppercase tracking-wider font-medium select-none ${theme.textMuted}`}>Task</div>
                                     <div className="text-[12px] text-gray-300 leading-relaxed whitespace-pre-wrap">
                                         {task}
                                     </div>
