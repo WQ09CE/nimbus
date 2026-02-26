@@ -7,6 +7,7 @@ while maintaining compatibility with the v1 server API.
 import asyncio
 import json
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,6 +49,8 @@ class SessionManagerV2:
         self._shared_llm_lock = asyncio.Lock()
         self._shared_llm_client = None
         self._sub_tool_buffer: Dict[str, list] = {}  # session_id -> list of sub-tool events
+        self._turn_counters: Dict[str, int] = {}  # session_id -> turn index for NimFS conversation log
+        self._conv_tracers: Dict[str, "ConversationTracer"] = {}  # session_id -> ConversationTracer
 
     def register_task(self, session_id: str, task: asyncio.Task):
         """Register a running task for a session."""
@@ -472,6 +475,7 @@ class SessionManagerV2:
             if _pre_process and _pre_process.mmu and _pre_process.mmu._stack:
                 _msg_watermark = len(_pre_process.mmu.current_frame.messages)
 
+            _chat_start_ms = int(time.monotonic() * 1000)
             try:
                 result = await agent_os.chat(message, session_id=session_id)
 
@@ -577,6 +581,10 @@ class SessionManagerV2:
                         logger.info("[stream_chat] Saving partial progress before interruption...")
                         await self._save_conversation_to_storage(session_id, agent_os, message, _msg_watermark)
 
+                        # Persist cancelled turn to NimFS
+                        _cancel_ms = int(time.monotonic() * 1000) - _chat_start_ms
+                        await self._save_turn_to_nimfs(session_id, agent_os, message, status="CANCELLED", duration_ms=_cancel_ms)
+
                         # Save checkpoint on interruption
                         try:
                             if process.vcpu:
@@ -622,6 +630,10 @@ class SessionManagerV2:
 
             # Save assistant messages to storage
             await self._save_conversation_to_storage(session_id, agent_os, message, _msg_watermark)
+
+            # Persist this turn to NimFS for conversation history
+            _ok_ms = int(time.monotonic() * 1000) - _chat_start_ms
+            await self._save_turn_to_nimfs(session_id, agent_os, message, status="OK", duration_ms=_ok_ms)
 
             # Check for late-arriving injected messages (race condition fix)
             # There's a narrow window where inject_message() succeeds (state was still
@@ -707,6 +719,64 @@ class SessionManagerV2:
                 "error",
                 {"code": _code, "message": _msg, "retryable": _retry, "error_id": _error_id},
             )
+
+    async def _save_turn_to_nimfs(
+        self,
+        session_id: str,
+        agent_os: AgentOS,
+        user_message: "str | list",
+        status: str = "OK",
+        duration_ms: int = 0,
+    ) -> None:
+        """
+        Persist one conversation turn (user message + assistant reply) to NimFS.
+
+        Each call writes a new immutable artifact grouped under task_id=f"conv-{session_id}".
+        Failures are silently logged to avoid disrupting the main flow.
+        Delegates to ConversationTracer for formatting and writing.
+        """
+        try:
+            from nimbus.core.nimfs.manager import NimFSManager
+            from nimbus.server.conv_tracer import ConversationTracer
+
+            # Resolve NimFSManager from the process MMU
+            process = agent_os.get_process(session_id)
+            nimfs_manager: Optional[NimFSManager] = None
+            if process and process.mmu and hasattr(process.mmu, "_nimfs_manager"):
+                nimfs_manager = process.mmu._nimfs_manager
+
+            if nimfs_manager is None:
+                logger.warning(
+                    f"[_save_turn_to_nimfs] No NimFSManager found for session {session_id}, skipping"
+                )
+                return
+
+            # Get or create ConversationTracer for this session
+            if session_id not in self._conv_tracers:
+                self._conv_tracers[session_id] = ConversationTracer(session_id, nimfs_manager)
+            tracer = self._conv_tracers[session_id]
+
+            # Extract last assistant reply from MMU
+            assistant_text = ""
+            if process and process.mmu and process.mmu._stack:
+                messages = process.mmu.current_frame.messages
+                for msg in reversed(messages):
+                    if msg.role == "assistant" and msg.content:
+                        assistant_text = (
+                            msg.content
+                            if isinstance(msg.content, str)
+                            else json.dumps(msg.content, ensure_ascii=False)
+                        )
+                        break
+
+            tracer.record_turn(
+                user_message=user_message,
+                assistant_reply=assistant_text,
+                duration_ms=duration_ms,
+                status=status,
+            )
+        except Exception as e:
+            logger.warning(f"[_save_turn_to_nimfs] Failed to write to NimFS (non-fatal): {e}")
 
     async def _save_conversation_to_storage(
         self, session_id: str, agent_os: AgentOS, user_message: "str | list", msg_watermark: int = 0

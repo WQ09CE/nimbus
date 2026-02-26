@@ -49,20 +49,29 @@ export default function Home() {
   }, []);
 
   // Auto-recover when page becomes visible (iOS app switch, desktop tab switch)
+  // Debounced 300ms to avoid rapid Tab-switch triggering multiple reloads
   useEffect(() => {
+    let visibilityTimer: ReturnType<typeof setTimeout> | null = null;
+
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        const state = useChatStore.getState();
-        const currentSession = state.session;
-        if (currentSession && !state.isStreaming) {
-          console.log("[Page] Visibility restored, reloading session...");
-          state.loadSession(currentSession.id);
-        }
+        if (visibilityTimer) clearTimeout(visibilityTimer);
+        visibilityTimer = setTimeout(() => {
+          const state = useChatStore.getState();
+          const currentSession = state.session;
+          if (currentSession && !state.isStreaming) {
+            console.log("[Page] Visibility restored, reloading session...");
+            state.loadSession(currentSession.id);
+          }
+        }, 300);
       }
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      if (visibilityTimer) clearTimeout(visibilityTimer);
+    };
   }, []);
 
   // Register Cmd+K / Ctrl+K shortcut for New Chat
@@ -86,7 +95,7 @@ export default function Home() {
   }
 
   return (
-    <div className="h-screen flex flex-col font-sans overflow-hidden relative">
+    <div className="h-screen h-[100dvh] flex flex-col font-sans overflow-hidden relative">
       {/* Ambient Glow Effects */}
       <div className="fixed inset-0 pointer-events-none z-0">
         <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-sky-400/[0.06] rounded-full blur-[160px]" />

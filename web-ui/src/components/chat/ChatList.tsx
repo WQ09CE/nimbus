@@ -253,7 +253,7 @@ export function ChatList({ messages }: ChatListProps) {
       if (msg.role === 'user') {
         // During streaming, skip injection messages — they'll be rendered
         // in InjectionTail after StreamingTail to preserve visual ordering.
-        if (msg.isInjection && isStreaming) return;
+        if (msg.isInjection) return;
         flushAgentGroup();
         result.push({ type: 'user', key: msg.id, message: msg });
       } else if (msg.role === 'assistant') {
@@ -293,10 +293,18 @@ export function ChatList({ messages }: ChatListProps) {
     const wasEmpty = prevItemsLen.current === 0;
     prevItemsLen.current = items.length;
     if (wasEmpty && items.length > 0) {
+      // 双重 rAF：第一帧触发布局测量，第二帧读取真实 scrollHeight（iOS Safari ResizeObserver 延迟更长）
       requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const el = parentRef.current;
+          if (el) el.scrollTop = el.scrollHeight;
+        });
+      });
+      // setTimeout 兜底：确保 virtual scroller measureElement 回调已完成
+      setTimeout(() => {
         const el = parentRef.current;
         if (el) el.scrollTop = el.scrollHeight;
-      });
+      }, 150);
     }
   }, [items.length]);
 
@@ -315,7 +323,7 @@ export function ChatList({ messages }: ChatListProps) {
     // Outer scroll container — virtualizer attaches here
     <div
       ref={parentRef}
-      className="flex-1 min-h-0 overflow-y-auto scroll-smooth custom-scrollbar"
+      className="flex-1 min-h-0 overflow-y-auto custom-scrollbar"
     >
       {/* Virtual list inner container */}
       <div

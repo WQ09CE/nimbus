@@ -241,9 +241,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
 
     // Switch to an existing session and load its messages
+    // NOTE: Do NOT clear messages here to avoid white-screen flash.
+    // Messages will be replaced atomically after fetch completes.
     set({
       session,
-      messages: [],
       isStreaming: false,
       streamingContent: "",
       streamingToolCalls: [],
@@ -491,6 +492,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages.sort((a, b) => a.timestamp - b.timestamp);
 
       console.log("[Store] Parsed messages:", messages);
+
+      // Guard against stale fetch: discard result if session has already switched
+      const currentSession = get().session;
+      if (!currentSession || currentSession.id !== session.id) {
+        console.log(`[Store] Session switched during fetch (expected ${session.id}, got ${currentSession?.id}), discarding stale messages`);
+        return;
+      }
+
       set({ messages, isLoading: false });
       console.log(`[Store] Loaded ${messages.length} messages for session ${session.id}`);
 
@@ -1594,14 +1603,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
             break;
 
           case "dag_complete":
-            // Agent finished - reload all messages from DB for complete view
+            // Agent finished - reload messages directly without calling switchSession
+            // (switchSession would abort+reconnect, causing cascading side effects in multi-tab)
             try {
               const { getSessionMessages } = await import("@/lib/api/sessions");
               const serverMessages = await getSessionMessages(sessionId);
               // Use current session from store (not stale closure reference)
-              const currentSession = get().session;
-              if (serverMessages.length > 0 && currentSession && currentSession.id === sessionId) {
-                await get().switchSession(currentSession);
+              const currentSessionForDag = get().session;
+              if (serverMessages.length > 0 && currentSessionForDag && currentSessionForDag.id === sessionId) {
+                // Re-use switchSession to parse messages, but it will guard stale writes via session ID check
+                await get().switchSession(currentSessionForDag);
               }
             } catch {
               // Fallback: just finalize what we have

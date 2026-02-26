@@ -34,7 +34,7 @@ class SpecialistTool:
 
     # Subclasses override these
     ROLE = "specialist"
-    DEFAULT_TIMEOUT = 600.0  # 10 min default for all specialists
+    DEFAULT_TIMEOUT = 1200.0  # 20 min default for all specialists
     TRACK_DIFF = False  # Only Implementer tracks workspace diffs
 
     def __init__(
@@ -195,7 +195,7 @@ class SpecialistTool:
 class ExploreTool(SpecialistTool):
     """Read-only codebase exploration."""
     ROLE = "explorer"
-    DEFAULT_TIMEOUT = 600.0  # 10 min default for all specialists
+    DEFAULT_TIMEOUT = 1200.0  # 20 min default for all specialists
     TRACK_DIFF = False
 
     def _create_profile(self, model_id: str = "default") -> AgentProfile:
@@ -205,7 +205,7 @@ class ExploreTool(SpecialistTool):
 class ImplementTool(SpecialistTool):
     """Code implementation with full tool access."""
     ROLE = "implementer"
-    DEFAULT_TIMEOUT = 600.0  # 10 min default for all specialists
+    DEFAULT_TIMEOUT = 1200.0  # 20 min default for all specialists
     TRACK_DIFF = True
 
     def _create_profile(self, model_id: str = "default") -> AgentProfile:
@@ -215,7 +215,7 @@ class ImplementTool(SpecialistTool):
 class DesignTool(SpecialistTool):
     """Architecture and design document creation."""
     ROLE = "architect"
-    DEFAULT_TIMEOUT = 600.0  # 10 min default for all specialists
+    DEFAULT_TIMEOUT = 1200.0  # 20 min default for all specialists
     TRACK_DIFF = True  # Track .md file creation
 
     def _create_profile(self, model_id: str = "default") -> AgentProfile:
@@ -225,7 +225,7 @@ class DesignTool(SpecialistTool):
 class TestTool(SpecialistTool):
     """Test execution and verification."""
     ROLE = "tester"
-    DEFAULT_TIMEOUT = 600.0  # 10 min default for all specialists
+    DEFAULT_TIMEOUT = 1200.0  # 20 min default for all specialists
     TRACK_DIFF = False
 
     def _create_profile(self, model_id: str = "default") -> AgentProfile:
