@@ -38,14 +38,14 @@ class LLMConfig:
     """Configuration for LLM client.
 
     Attributes:
-        model: Model identifier (e.g., "claude-3-5-sonnet", "gpt-4").
+        model: Model identifier (e.g., "claude-sonnet-4-6", "gpt-4").
         temperature: Sampling temperature (0.0-1.0).
         max_tokens: Maximum tokens in response.
         api_key_env: Environment variable name for API key.
         base_url: Optional base URL for API endpoint.
     """
 
-    model: str = "claude-3-5-sonnet"
+    model: str = "claude-sonnet-4-6"
     temperature: float = 0.7
     max_tokens: int = 4096
     api_key_env: str = "ANTHROPIC_API_KEY"
@@ -62,7 +62,7 @@ class LLMConfig:
             LLMConfig instance.
         """
         return cls(
-            model=data.get("model", "claude-3-5-sonnet"),
+            model=data.get("model", "claude-sonnet-4-6"),
             temperature=data.get("temperature", 0.7),
             max_tokens=data.get("max_tokens", 4096),
             api_key_env=data.get("api_key_env", "ANTHROPIC_API_KEY"),

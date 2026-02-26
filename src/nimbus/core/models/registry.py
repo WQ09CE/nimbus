@@ -218,6 +218,9 @@ ModelRegistry.register(ModelInfo(
         "claude-sonnet-4-6",
         "sonnet-4-6",
         "sonnet[1m]",        # 1M-context alias (modifier stripped during lookup)
+        # Backward-compatible aliases for old model names
+        "claude-3-5-sonnet",
+        "claude-3-5-sonnet-20241022",
     ],
     manifest=ModelManifest("claude-sonnet-4-6", CLAUDE_FEATURES),
     context_window=1_000_000,  # Sonnet 4.6 supports up to 1M tokens
