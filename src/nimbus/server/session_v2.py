@@ -855,8 +855,11 @@ class SessionManagerV2:
                             "name": msg.name,
                         }
                     ]
-                    # Attach buffered sub-tool events to meta-tool results
-                    if session_id in self._sub_tool_buffer:
+                    # Only pop sub_tool_buffer for meta-tools (specialist agents)
+                    # Non-meta tools (Bash, Read, etc.) should NOT consume the buffer
+                    META_TOOLS = {"Dispatch", "Explore", "Implement", "Design", "Test", "Verify",
+                                  "ReviewCommittee", "ParallelDispatch"}
+                    if session_id in self._sub_tool_buffer and msg.name in META_TOOLS:
                         sub_events = self._sub_tool_buffer.pop(session_id)
                         if sub_events:
                             artifacts.append({

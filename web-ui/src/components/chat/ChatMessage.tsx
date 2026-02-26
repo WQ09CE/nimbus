@@ -82,6 +82,22 @@ function AiAvatar() {
   );
 }
 
+// Render a single thought line
+function ThoughtBlock({ content }: { content: string }) {
+  // Remove `thought:` or `thought: ` or backticked version
+  const displayContent = content.replace(/^`?thought:`?\s*/i, "");
+  if (!displayContent) return null;
+
+  return (
+    <div className="my-2 pl-3 py-1 border-l-2 border-blue-500/30 bg-blue-500/5 rounded-r-lg flex items-start gap-2 group/thought">
+      <span className="text-sm mt-0.5 opacity-70 group-hover/thought:opacity-100 transition-opacity" title="Thinking">🧠</span>
+      <div className="text-sm italic text-gray-400 font-sans leading-relaxed">
+        {displayContent}
+      </div>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ParallelToolList — renders tool cards with intelligent layout:
 //  - Multiple META_TOOLS (Dispatch/Explore/Implement/Design/Test) → horizontal grid
@@ -299,9 +315,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
     );
   }
 
-  const cleanContent = useMemo(() => {
-    return message.content.replace(/^thought:\s?[\s\S]*?(\n\n|$)/g, "").trim();
-  }, [message.content]);
+  const cleanContent = message.content.trim();
   const hasContent = Boolean(cleanContent);
   const hasTools = tools.length > 0;
   const hasRunningTools = tools.some((t) => t.status === "running");
@@ -405,11 +419,41 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
           ) : (
             <div className="text-[15px] leading-relaxed min-w-[200px]">
               {hasContent && (
-                <MarkdownRenderer 
-                  content={cleanContent} 
-                  isStreaming={isStreaming && message.id === "streaming"} 
-                  className="prose-invert prose-p:leading-relaxed prose-pre:bg-black/30 text-gray-100" 
-                />
+                <div className="flex flex-col gap-1">
+                  {(() => {
+                    const lines = cleanContent.split("\n");
+                    const processed: React.ReactNode[] = [];
+                    let currentMarkdown: string[] = [];
+
+                    const flushMarkdown = () => {
+                      if (currentMarkdown.length > 0) {
+                        const content = currentMarkdown.join("\n");
+                        processed.push(
+                          <MarkdownRenderer
+                            key={`md-${processed.length}`}
+                            content={content}
+                            isStreaming={isStreaming && message.id === "streaming"}
+                            className="prose-invert prose-p:leading-relaxed prose-pre:bg-black/30 text-gray-100"
+                          />
+                        );
+                        currentMarkdown = [];
+                      }
+                    };
+
+                    lines.forEach((line, i) => {
+                      // Check if line starts with thought: or `thought:` (case insensitive)
+                      const isThought = /^`?thought:`?/i.test(line.trim());
+                      if (isThought) {
+                        flushMarkdown();
+                        processed.push(<ThoughtBlock key={`thought-${i}`} content={line.trim()} />);
+                      } else {
+                        currentMarkdown.push(line);
+                      }
+                    });
+                    flushMarkdown();
+                    return processed;
+                  })()}
+                </div>
               )}
               
               {!hasContent && isStreaming && (

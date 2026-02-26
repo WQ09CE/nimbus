@@ -122,7 +122,7 @@ CLAUDE_FEATURES = ModelFeatures(
 
 # Registry
 _REGISTRY: Dict[str, ModelManifest] = {
-    "default": ModelManifest("default", GPT_FEATURES),
+    "default": ModelManifest("anthropic/claude-sonnet-4-6", CLAUDE_FEATURES),
     "gpt-4": ModelManifest("gpt-4", GPT_FEATURES),
     "gpt-5": ModelManifest("gpt-5", GPT_FEATURES), # Assuming similar to 4
     "gemini": ModelManifest("gemini", GEMINI_FEATURES),

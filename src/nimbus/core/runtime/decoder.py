@@ -162,9 +162,11 @@ class InstructionDecoder:
             # split_mixed_responses=True. The text is just the LLM explaining
             # what it's doing — it must NOT trigger REPLY/RETURN termination.
             if content and content.strip():
+                stripped = content.strip()
+                clean_text = re.sub(r"^(?:`+)?thought:(?:`+)?\s*", "", stripped, flags=re.IGNORECASE)
                 actions.append(ActionIR(
                     kind="THOUGHT", name="thought",
-                    args={"text": content.strip()},
+                    args={"text": clean_text},
                     meta={"non_blocking": True},
                 ))
             return actions
@@ -184,6 +186,11 @@ class InstructionDecoder:
         elif content and content.strip():
             stripped = content.strip()
 
+            # Clean thought: prefix if present (case insensitive, handle backticks)
+            # Match "thought:" or "`thought:`" or "```thought:```" etc.
+            # Use regex to find and remove the prefix and leading whitespace.
+            clean_text = re.sub(r"^(?:`+)?thought:(?:`+)?\s*", "", stripped, flags=re.IGNORECASE)
+
             BACKEND_ROLES = {"explorer", "implementer", "architect", "tester", "executor"}
 
             if (role in BACKEND_ROLES
@@ -194,9 +201,9 @@ class InstructionDecoder:
             else:
                 # Heuristic mode (GPT/Gemini/default): use conversational reply detection
                 done_max = getattr(model_features, 'done_pattern_max_length', 300) if model_features else 300
-                kind = "REPLY" if self._is_conversational_reply(stripped, done_max) else "THOUGHT"
+                kind = "REPLY" if self._is_conversational_reply(clean_text, done_max) else "THOUGHT"
 
-            actions.append(ActionIR(kind=kind, name="thought" if kind == "THOUGHT" else "reply", args={"text": stripped}))
+            actions.append(ActionIR(kind=kind, name="thought" if kind == "THOUGHT" else "reply", args={"text": clean_text}))
 
         return actions
 

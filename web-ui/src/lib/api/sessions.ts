@@ -133,7 +133,7 @@ export interface ToolResultArtifact {
 export interface ServerMessage {
   id: string;
   role: "user" | "assistant" | "system" | "tool";
-  content: string;
+  content: any;
   created_at: string;
   artifacts?: (ToolCallArtifact | ToolResultArtifact | unknown)[];
   dag_id?: string;

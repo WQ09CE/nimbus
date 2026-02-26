@@ -59,19 +59,18 @@ const InjectionTail = memo(function InjectionTail() {
   const isStreaming = useChatStore(s => s.isStreaming);
   const messages = useChatStore(s => s.messages);
 
-  if (!isStreaming) return null;
+  if (!isStreaming || messages.length === 0) return null;
 
-  const injections = messages.filter(m => m.isInjection && m.role === 'user');
-  if (injections.length === 0) return null;
+  // Only show the injection if it's the very last message (active intervention)
+  const lastMsg = messages[messages.length - 1];
+  const isActiveInjection = lastMsg.role === 'user' && lastMsg.isInjection;
+
+  if (!isActiveInjection) return null;
 
   return (
-    <>
-      {injections.map(msg => (
-        <div key={msg.id} className="max-w-4xl mx-auto px-4 py-3">
-          <ChatMessage message={msg} />
-        </div>
-      ))}
-    </>
+    <div key={lastMsg.id} className="max-w-4xl mx-auto px-4 py-3">
+      <ChatMessage message={lastMsg} />
+    </div>
   );
 });
 
@@ -249,11 +248,14 @@ export function ChatList({ messages }: ChatListProps) {
       });
     };
 
-    messages.forEach((msg) => {
+    messages.forEach((msg, index) => {
       if (msg.role === 'user') {
         // During streaming, skip injection messages — they'll be rendered
         // in InjectionTail after StreamingTail to preserve visual ordering.
-        if (msg.isInjection) return;
+        // Only skip the *active* injection (last message), historical ones stay in place.
+        const isActiveInjection = isStreaming && msg.isInjection && index === messages.length - 1;
+        if (isActiveInjection) return;
+
         flushAgentGroup();
         result.push({ type: 'user', key: msg.id, message: msg });
       } else if (msg.role === 'assistant') {

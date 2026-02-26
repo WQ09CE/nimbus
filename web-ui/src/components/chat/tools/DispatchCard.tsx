@@ -5,6 +5,7 @@ import type { ToolCall, ToolResult } from '@/lib/api';
 import { MarkdownRenderer } from '../MarkdownRenderer';
 import { useWorkflowStore, selectChildren } from "@/stores/workflow-store";
 import { useShallow } from "zustand/react/shallow";
+import { ToolDisplay } from './ToolDisplay';
 
 // ─────────────────────────────────────────────
 // Types
@@ -162,14 +163,43 @@ function parseExecutorReport(resultText: string): string {
 }
 
 function buildArgsSummary(name: string, args: Record<string, unknown>): string {
-    if (name === "Read") {
-        const fp = String(args.file_path || "");
-        const offset = args.offset ? `:${args.offset}` : "";
-        const limit = args.limit ? `-${Number(args.offset || 1) + Number(args.limit)}` : "";
-        return `${fp}${offset}${limit}`;
+    if (!args) return "";
+
+    // Try to find a file path argument by common names
+    const pathArg = args.path || args.file_path || args.target_file || args.TargetFile || args.AbsolutePath || args.filename || args.file || args.ref;
+
+    // Try to find a command argument
+    const cmdArg = args.command || args.cmd || args.CommandLine || args.command_line;
+
+    if (["Read", "Write", "Edit", "view_file", "replace_file_content", "write_to_file", "edit_file", "ReadArtifact"].some(n => name.toLowerCase().includes(n.toLowerCase()))) {
+        if (typeof pathArg === 'string') {
+            const parts = pathArg.split('/');
+            const fileName = parts.pop() || pathArg;
+            const parentDir = parts.pop();
+            let summary = parentDir ? `${parentDir}/${fileName}` : fileName;
+
+            // Append line range for Read tool with offset/limit
+            if (name === "Read") {
+                const offset = args.offset as number | undefined;
+                const limit = args.limit as number | undefined;
+                if (offset && limit) {
+                    summary += ` :${offset}-${offset + limit}`;
+                } else if (offset) {
+                    summary += ` :${offset}+`;
+                } else if (limit) {
+                    summary += ` :1-${limit}`;
+                }
+            }
+            return summary;
+        }
+    } else if (["Bash", "RunCommand", "run_command", "execute"].some(n => name.toLowerCase().includes(n.toLowerCase()))) {
+        if (typeof cmdArg === 'string') {
+            return cmdArg;
+        }
+    } else if ((name.toLowerCase().includes("search") || name === "LoadContext") && (args.query || args.Query || args.goal)) {
+        return (args.query || args.Query || args.goal) as string;
     }
-    if (name === "Bash") return String(args.command || "").slice(0, 80);
-    if (name === "Write" || name === "Edit") return String(args.file_path || "");
+
     const first = Object.values(args)[0];
     return first != null ? String(first).slice(0, 60) : "";
 }
@@ -248,32 +278,17 @@ function SubCallRow({ sub, index, theme }: { sub: SubCallWithStatus; index: numb
 
             {/* Expanded detail */}
             {isExpanded && hasDetails && (
-                <div className="border-t border-white/[0.05] bg-black/30 px-3 py-2.5 space-y-2">
-                    {sub.error && (
-                        <div className="text-[11px] font-mono text-red-400 bg-red-500/10 rounded px-2.5 py-1.5 border border-red-500/20 whitespace-pre-wrap break-words">
-                            {sub.error}
-                        </div>
-                    )}
-                    {Object.keys(sub.arguments).length > 0 && (
-                        <details className="group">
-                            <summary className="text-[10px] uppercase tracking-wider text-gray-500 cursor-pointer select-none hover:text-gray-400 transition-colors">
-                                ⚙ Arguments
-                            </summary>
-                            <pre className="mt-1 text-[11px] font-mono text-gray-400 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed">
-                                {JSON.stringify(sub.arguments, null, 2)}
-                            </pre>
-                        </details>
-                    )}
-                    {resultText && (
-                        <details open className="group">
-                            <summary className="text-[10px] uppercase tracking-wider text-gray-500 cursor-pointer select-none hover:text-gray-400 transition-colors">
-                                📤 Result
-                            </summary>
-                            <pre className="mt-1 text-[11px] font-mono text-gray-400 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed max-h-60 overflow-y-auto">
-                                {resultText}
-                            </pre>
-                        </details>
-                    )}
+                <div className="border-t border-white/[0.05] bg-black/30 overflow-x-auto">
+                    <ToolDisplay
+                        tool={{
+                            name: sub.name,
+                            args: sub.arguments,
+                            result: sub.result,
+                            error: sub.error,
+                            status: sub.status
+                        }}
+                        isExpanded={true}
+                    />
                 </div>
             )}
         </div>

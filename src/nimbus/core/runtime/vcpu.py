@@ -786,11 +786,10 @@ class VCPU:
                 is_split = has_thought and has_tools
 
             if is_split:
-                 # Add thought content
+                 # Standard split response: Text + Tool Calls
+                 # We combine them into a single assistant message to keep context clean
                  thought_text = actions[0].args.get("text", "")
-                 self.mmu.add_assistant_message(thought_text)
-                 # Add tools (using original tool_calls from response)
-                 self.mmu.add_assistant_with_tool_calls(content=None, tool_calls=response.tool_calls)
+                 self.mmu.add_assistant_with_tool_calls(content=thought_text, tool_calls=response.tool_calls)
 
             elif response.tool_calls:
                  # Standard Tool Call (or stripped content)

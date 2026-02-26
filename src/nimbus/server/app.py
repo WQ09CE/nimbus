@@ -169,6 +169,18 @@ def create_app() -> FastAPI:
         expose_headers=["*"],
     )
 
+    # Middleware to support Private Network Access (CORS)
+    @app.middleware("http")
+    async def add_private_network_access_header(request: Request, call_next):
+        """
+        Handle Private Network Access headers.
+        If request asks for private network access, allow it in response.
+        """
+        response = await call_next(request)
+        if request.headers.get("Access-Control-Request-Private-Network") == "true":
+            response.headers["Access-Control-Allow-Private-Network"] = "true"
+        return response
+
     # Add global exception handler to ensure CORS headers on errors
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):

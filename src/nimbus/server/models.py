@@ -144,7 +144,7 @@ class MessageResponse(BaseModel):
 
     id: str
     role: str  # user | assistant | system | tool
-    content: str
+    content: Any
     created_at: datetime
     artifacts: List[Any] = Field(default_factory=list)  # Flexible artifact format
     dag_id: Optional[str] = None
