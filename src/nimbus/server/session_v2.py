@@ -51,6 +51,7 @@ class SessionManagerV2:
         self._sub_tool_buffer: Dict[str, list] = {}  # session_id -> list of sub-tool events
         self._turn_counters: Dict[str, int] = {}  # session_id -> turn index for NimFS conversation log
         self._conv_tracers: Dict[str, "ConversationTracer"] = {}  # session_id -> ConversationTracer
+        self._injection_persisted_sessions: set = set()  # sessions where injection already persisted user message
 
     def register_task(self, session_id: str, task: asyncio.Task):
         """Register a running task for a session."""
@@ -487,23 +488,20 @@ class SessionManagerV2:
                     # This was an injection, not a full turn.
                     # We must save the user message immediately because it's not in MMU yet.
                     msg_id = f"msg_{uuid.uuid4().hex[:12]}"
-                    # Extract text content for storage (message may be str or list for multimodal)
+                    # Store complete content (multimodal JSON or plain string)
                     if isinstance(message, list):
-                        text_parts = [p.get("text", "") for p in message if isinstance(p, dict) and p.get("type") == "text"]
-                        storage_content = " ".join(text_parts).strip()
-                        has_images = any(isinstance(p, dict) and p.get("type") == "image" for p in message)
-                        if has_images:
-                            storage_content = f"[Intervention] {storage_content} [+image]" if storage_content else "[Intervention] [image]"
-                        else:
-                            storage_content = f"[Intervention] {storage_content}"
+                        storage_content = json.dumps(message, ensure_ascii=False)
                     else:
-                        storage_content = f"[Intervention] {message}"
+                        storage_content = message
                     await self._storage.add_message(
                         message_id=msg_id,
                         session_id=session_id,
                         role="user",
-                        content=storage_content,  # Mark as intervention
+                        content=storage_content,
                     )
+                    # Mark that user message has already been persisted for this injection
+                    # so late_messages path and _save_conversation_to_storage won't save it again
+                    self._injection_persisted_sessions.add(session_id)
                     preview = storage_content[:20]
                     logger.info(f"💾 Saved injected message '{preview}...' to storage")
 
@@ -647,17 +645,26 @@ class SessionManagerV2:
                     f"[stream_chat] Found {len(late_messages)} late-arriving message(s) "
                     f"in inbox after process finished. Persisting to storage + MMU."
                 )
-                for late_msg in late_messages:
-                    msg_id = f"msg_{uuid.uuid4().hex[:12]}"
-                    await self._storage.add_message(
-                        message_id=msg_id,
-                        session_id=session_id,
-                        role="user",
-                        content=late_msg,
-                    )
-                    if process.mmu:
-                        process.mmu.add_user_message(late_msg)
-                    logger.info(f"[stream_chat] Saved late message: {late_msg[:50]}...")
+                # Skip storage if injection path already persisted this user message
+                if session_id in self._injection_persisted_sessions:
+                    self._injection_persisted_sessions.discard(session_id)
+                    # Still add to MMU for context, but don't re-persist to storage
+                    for late_msg in late_messages:
+                        if process.mmu:
+                            process.mmu.add_user_message(late_msg)
+                        logger.info(f"[stream_chat] Skipped re-saving late message (injection already persisted): {str(late_msg)[:50]}...")
+                else:
+                    for late_msg in late_messages:
+                        msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+                        await self._storage.add_message(
+                            message_id=msg_id,
+                            session_id=session_id,
+                            role="user",
+                            content=late_msg if isinstance(late_msg, str) else json.dumps(late_msg, ensure_ascii=False),
+                        )
+                        if process.mmu:
+                            process.mmu.add_user_message(late_msg)
+                        logger.info(f"[stream_chat] Saved late message: {str(late_msg)[:50]}...")
                 # Re-check: more messages may have arrived during the await calls above
                 if process.inbox:
                     extras, process.inbox = process.inbox, []
@@ -667,11 +674,11 @@ class SessionManagerV2:
                             message_id=msg_id,
                             session_id=session_id,
                             role="user",
-                            content=extra_msg,
+                            content=extra_msg if isinstance(extra_msg, str) else json.dumps(extra_msg, ensure_ascii=False),
                         )
                         if process.mmu:
                             process.mmu.add_user_message(extra_msg)
-                        logger.info(f"[stream_chat] Saved extra late message: {extra_msg[:50]}...")
+                        logger.info(f"[stream_chat] Saved extra late message: {str(extra_msg)[:50]}...")
 
             # Save session checkpoint (for persistence/restore)
             try:
@@ -823,6 +830,10 @@ class SessionManagerV2:
             for msg in messages[start_idx:]:
                 # Skip the user message itself (already saved by frontend)
                 if msg.role == "user":
+                    # If injection path already persisted this user message, skip entirely
+                    if session_id in self._injection_persisted_sessions:
+                        self._injection_persisted_sessions.discard(session_id)
+                        continue
                     # Skip the triggering user message to avoid duplicates.
                     # The frontend already shows it via optimistic update.
                     # Use robust comparison: handle both str and list (multimodal) content.
