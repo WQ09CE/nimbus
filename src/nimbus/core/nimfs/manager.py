@@ -329,6 +329,26 @@ class NimFSManager:
                     logger.warning("Blocked garbage profile write: title=%r", title)
                     return f"[Blocked] Refused to write garbage profile: '{title}'"
 
+        # Dedup: for profile/preferences, reject if identical summary already exists
+        if category in (MemoryCategory.PROFILE, MemoryCategory.PREFERENCES):
+            check_text = (summary or content[:300]).strip().lower()
+            if scope == MemoryScope.GLOBAL:
+                check_dir = self.global_root / category.value
+            else:
+                check_dir = self.memory_root / category.value
+
+            if check_dir.exists():
+                for existing in check_dir.iterdir():
+                    if not existing.is_dir():
+                        continue
+                    l0_file = existing / "l0.abstract"
+                    if l0_file.exists():
+                        existing_text = l0_file.read_text(encoding="utf-8").strip().lower()
+                        if existing_text == check_text:
+                            logger.info("Dedup: skipping duplicate %s write: '%s' (existing: %s)",
+                                       category.value, title, existing.name)
+                            return f"[Dedup] Already exists: {existing.name}"
+
         memory_id = f"{category.value}-{uuid.uuid4().hex[:8]}"
         now = _now_iso()
 

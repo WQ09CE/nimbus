@@ -252,15 +252,17 @@ def test_search_memory_empty(manager):
 
 
 def test_memory_global_scope(manager):
+    import uuid as _uuid
+    unique_tag = _uuid.uuid4().hex[:8]
     mid = manager.write_memory(
         category=MemoryCategory.PROFILE,
-        title="User preferences",
-        content="Dark mode enabled, verbose logging",
+        title=f"Test preferences {unique_tag}",
+        content=f"Test global scope content {unique_tag}",
         scope=MemoryScope.GLOBAL,
     )
     assert mid.startswith("profile-")
     content = manager.read_memory(mid, layer=2)
-    assert "Dark mode enabled" in content
+    assert f"Test global scope content {unique_tag}" in content
 
 
 def test_blocked_garbage_profile_write(manager):

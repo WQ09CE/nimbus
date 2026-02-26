@@ -202,6 +202,15 @@ async def nimfs_write_memory(
     Returns:
         Confirmation with memory_id.
     """
+    # Warn if writing to profile/preferences — should use NimFSUpdateProfile instead
+    if category in ("profile", "preferences"):
+        # Still allow the write (with dedup in manager), but log a warning
+        from nimbus.core.logging import get_logger
+        get_logger("nimfs.tools").warning(
+            "NimFSWriteMemory called with category='%s' — consider using NimFSUpdateProfile for idempotent writes",
+            category,
+        )
+
     try:
         cat_enum = MemoryCategory(category.lower())
     except ValueError:
