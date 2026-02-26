@@ -541,8 +541,8 @@ class VCPU:
             _gl("kernel.vcpu").warning("vCPU received soft_timeout signal, collecting partial results...")
             partial_output = self._collect_partial_results()
             res = StepResult(
-                output=partial_output or "(specialist timed out before producing output)",
                 is_final=True,
+                final_result=partial_output or "(specialist timed out before producing output)",
                 fault=Fault(
                     domain="VCPU",
                     code="SOFT_TIMEOUT",
