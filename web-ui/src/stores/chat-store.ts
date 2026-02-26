@@ -269,7 +269,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const toolResultsMap = new Map<string, ToolResult>();
       const subEventsMap = new Map<string, { subCalls: ToolCall[]; subResults: ToolResult[] }>();
 
-      for (const m of serverMessages) {
+      for (let m of serverMessages) {
+        // Normalize content if it's an array (e.g. multimodal list of blocks)
+        if (Array.isArray(m.content)) {
+          m.content = m.content.map(b => typeof b === 'string' ? b : b?.text || '').join('\n');
+        } else if (typeof m.content === 'object' && m.content !== null) {
+          m.content = JSON.stringify(m.content);
+        } else {
+          m.content = String(m.content || '');
+        }
+
         if (m.role === 'tool' && m.artifacts) {
           // First, find the tool_call_id for this tool message
           let toolCallId: string | null = null;
@@ -339,17 +348,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
                       } else if (evt.type === 'sub_tool_result' && evt.data) {
                         const actionId = String(evt.data.action_id || evt.data.id || '');
+                        const fault = evt.data.fault as { message: string } | undefined;
+                        const subRes: ToolResult = {
+                          id: actionId,
+                          name: String(evt.data.tool || evt.data.name || 'unknown'),
+                          result: evt.data.output !== undefined ? evt.data.output : evt.data.result,
+                          error: evt.data.status === 'ERROR' ? (fault ? fault.message : 'Error') : undefined,
+                          duration: evt.data.duration_ms as number | undefined,
+                        };
+
+                        // 1. Add to the slot for rendering hierarchy
                         const slotIdx = actionIdToSlot.get(actionId);
                         if (slotIdx !== undefined && slotMap.has(slotIdx)) {
-                          const slot = slotMap.get(slotIdx)!;
-                          const fault = evt.data.fault as { message: string } | undefined;
-                          slot.subResults.push({
-                            id: actionId,
-                            name: String(evt.data.tool || evt.data.name || 'unknown'),
-                            result: evt.data.output !== undefined ? evt.data.output : evt.data.result,
-                            error: evt.data.status === 'ERROR' ? (fault ? fault.message : 'Error') : undefined,
-                            duration: evt.data.duration_ms as number | undefined,
-                          });
+                          slotMap.get(slotIdx)!.subResults.push(subRes);
+                        }
+
+                        // 2. IMPORTANT: Also flatten to toolResultsMap so the second pass can find it by action_id
+                        if (actionId) {
+                          toolResultsMap.set(actionId, subRes);
                         }
                       }
                     }
@@ -396,6 +412,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     }
 
                     if (subCalls.length > 0 || subResults.length > 0) {
+                      console.log('[DEBUG] subEventsMap.set (Regular)', toolCallId, 'subCalls:', subCalls.length, 'subResults:', subResults.length);
                       subEventsMap.set(toolCallId, { subCalls, subResults });
                     }
                   }
@@ -426,7 +443,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
               // Handle tool_calls artifact
               if (art.type === 'tool_calls' && Array.isArray(art.tool_calls)) {
-                toolCalls = (art.tool_calls as Array<{
+                const parsedCalls = (art.tool_calls as Array<{
                   id?: string;
                   function?: { name?: string; arguments?: string };
                 }>).map(tc => {
@@ -441,7 +458,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   };
 
                   // Restore sub-agent tool calls/results for meta-tools (Dispatch, etc.)
+                  console.log('[DEBUG] checking call.id:', call.id, 'subEventsMap size:', subEventsMap.size, 'has?', subEventsMap.has(call.id || ''));
                   if (call.id && subEventsMap.has(call.id)) {
+                    console.log('[DEBUG] injecting subCalls for call.id:', call.id);
                     const sub = subEventsMap.get(call.id)!;
                     if (sub.subCalls.length > 0) call.subCalls = sub.subCalls;
                     if (sub.subResults.length > 0) call.subResults = sub.subResults;
@@ -450,11 +469,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   return call;
                 });
 
+                toolCalls = toolCalls ? [...toolCalls, ...parsedCalls] : parsedCalls;
+
                 // Match tool results from the map
-                toolResults = toolCalls
+                const parsedResults = parsedCalls
                   .filter(tc => tc.id)
                   .map(tc => toolResultsMap.get(tc.id!))
                   .filter((r): r is ToolResult => r !== undefined);
+                
+                toolResults = toolResults ? [...toolResults, ...parsedResults] : parsedResults;
               }
             }
           }

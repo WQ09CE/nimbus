@@ -1100,6 +1100,19 @@ class DirectAdapter:
         clean_messages = []
         for m in messages:
             msg = m.copy()
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                # LiteLLM's Gemini/other transformers expect tool_call arguments as JSON strings, not dicts
+                tool_calls = []
+                for tc in msg["tool_calls"]:
+                    tc_copy = tc.copy()
+                    if "function" in tc_copy:
+                        func = tc_copy["function"].copy()
+                        if isinstance(func.get("arguments"), dict):
+                            func["arguments"] = json.dumps(func["arguments"])
+                        tc_copy["function"] = func
+                    tool_calls.append(tc_copy)
+                msg["tool_calls"] = tool_calls
+
             if msg.get("content") is None:
                 msg["content"] = ""
             elif isinstance(msg.get("content"), list):

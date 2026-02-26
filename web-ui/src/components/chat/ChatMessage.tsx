@@ -299,7 +299,10 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
     );
   }
 
-  const hasContent = Boolean(message.content);
+  const cleanContent = useMemo(() => {
+    return message.content.replace(/^thought:\s?[\s\S]*?(\n\n|$)/g, "").trim();
+  }, [message.content]);
+  const hasContent = Boolean(cleanContent);
   const hasTools = tools.length > 0;
   const hasRunningTools = tools.some((t) => t.status === "running");
   // Parallel tasks should be rendered directly without the collapsible wrapper
@@ -402,7 +405,11 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
           ) : (
             <div className="text-[15px] leading-relaxed min-w-[200px]">
               {hasContent && (
-                <MarkdownRenderer content={message.content} isStreaming={isStreaming && message.id === "streaming"} className="prose-invert prose-p:leading-relaxed prose-pre:bg-black/30 text-gray-100" />
+                <MarkdownRenderer 
+                  content={cleanContent} 
+                  isStreaming={isStreaming && message.id === "streaming"} 
+                  className="prose-invert prose-p:leading-relaxed prose-pre:bg-black/30 text-gray-100" 
+                />
               )}
               
               {!hasContent && isStreaming && (
@@ -424,12 +431,12 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
             {hasMetaTool ? (
               /* ParallelDispatch: render cards directly without collapsible wrapper */
               <div className="mt-1">
-                {isStreaming && hasRunningTools && (
+                {/* {isStreaming && hasRunningTools && (
                   <div className="flex items-center gap-2 mb-3 text-xs text-nimbus-accent">
                     <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
                     <span>Running parallel tasks…</span>
                   </div>
-                )}
+                )} */}
                 <ParallelToolList tools={tools} getToolKey={getToolKey} isStreaming={isStreaming} />
               </div>
             ) : (

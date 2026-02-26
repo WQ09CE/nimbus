@@ -44,7 +44,7 @@ const SPECIALIST_THEMES: Record<string, SpecialistTheme> = {
         icon: "⚡",
         border: { running: "border-purple-500/30", failed: "border-red-500/30", normal: "border-purple-500/20" },
         bg: { running: "bg-purple-950/20 shadow-[0_0_20px_rgba(168,85,247,0.08)]", failed: "bg-red-950/10", normal: "bg-purple-950/10" },
-        strip: { running: "bg-purple-500 animate-pulse", failed: "bg-red-500", normal: "bg-purple-500" },
+        strip: { running: "bg-gradient-to-b from-purple-400 to-purple-600 animate-pulse", failed: "bg-red-500", normal: "bg-gradient-to-b from-purple-500/80 to-purple-600/80" },
         badge: { text: "text-purple-300", bg: "bg-purple-500/15", border: "border-purple-500/20" },
         textMuted: "text-purple-400/70",
         borderSection: "border-purple-500/10",
@@ -57,7 +57,7 @@ const SPECIALIST_THEMES: Record<string, SpecialistTheme> = {
         icon: "🔍",
         border: { running: "border-blue-500/30", failed: "border-red-500/30", normal: "border-blue-500/20" },
         bg: { running: "bg-blue-950/20 shadow-[0_0_20px_rgba(59,130,246,0.08)]", failed: "bg-red-950/10", normal: "bg-blue-950/10" },
-        strip: { running: "bg-blue-500 animate-pulse", failed: "bg-red-500", normal: "bg-blue-500" },
+        strip: { running: "bg-gradient-to-b from-blue-400 to-blue-600 animate-pulse", failed: "bg-red-500", normal: "bg-gradient-to-b from-blue-500/80 to-blue-600/80" },
         badge: { text: "text-blue-300", bg: "bg-blue-500/15", border: "border-blue-500/20" },
         textMuted: "text-blue-400/70",
         borderSection: "border-blue-500/10",
@@ -70,7 +70,7 @@ const SPECIALIST_THEMES: Record<string, SpecialistTheme> = {
         icon: "🔧",
         border: { running: "border-emerald-500/30", failed: "border-red-500/30", normal: "border-emerald-500/20" },
         bg: { running: "bg-emerald-950/20 shadow-[0_0_20px_rgba(16,185,129,0.08)]", failed: "bg-red-950/10", normal: "bg-emerald-950/10" },
-        strip: { running: "bg-emerald-500 animate-pulse", failed: "bg-red-500", normal: "bg-emerald-500" },
+        strip: { running: "bg-gradient-to-b from-emerald-400 to-emerald-600 animate-pulse", failed: "bg-red-500", normal: "bg-gradient-to-b from-emerald-500/80 to-emerald-600/80" },
         badge: { text: "text-emerald-300", bg: "bg-emerald-500/15", border: "border-emerald-500/20" },
         textMuted: "text-emerald-400/70",
         borderSection: "border-emerald-500/10",
@@ -83,7 +83,7 @@ const SPECIALIST_THEMES: Record<string, SpecialistTheme> = {
         icon: "📐",
         border: { running: "border-orange-500/30", failed: "border-red-500/30", normal: "border-orange-500/20" },
         bg: { running: "bg-orange-950/20 shadow-[0_0_20px_rgba(249,115,22,0.08)]", failed: "bg-red-950/10", normal: "bg-orange-950/10" },
-        strip: { running: "bg-orange-500 animate-pulse", failed: "bg-red-500", normal: "bg-orange-500" },
+        strip: { running: "bg-gradient-to-b from-orange-400 to-orange-600 animate-pulse", failed: "bg-red-500", normal: "bg-gradient-to-b from-orange-500/80 to-orange-600/80" },
         badge: { text: "text-orange-300", bg: "bg-orange-500/15", border: "border-orange-500/20" },
         textMuted: "text-orange-400/70",
         borderSection: "border-orange-500/10",
@@ -96,7 +96,7 @@ const SPECIALIST_THEMES: Record<string, SpecialistTheme> = {
         icon: "🧪",
         border: { running: "border-teal-500/30", failed: "border-red-500/30", normal: "border-teal-500/20" },
         bg: { running: "bg-teal-950/20 shadow-[0_0_20px_rgba(20,184,166,0.08)]", failed: "bg-red-950/10", normal: "bg-teal-950/10" },
-        strip: { running: "bg-teal-500 animate-pulse", failed: "bg-red-500", normal: "bg-teal-500" },
+        strip: { running: "bg-gradient-to-b from-teal-400 to-teal-600 animate-pulse", failed: "bg-red-500", normal: "bg-gradient-to-b from-teal-500/80 to-teal-600/80" },
         badge: { text: "text-teal-300", bg: "bg-teal-500/15", border: "border-teal-500/20" },
         textMuted: "text-teal-400/70",
         borderSection: "border-teal-500/10",
@@ -357,9 +357,8 @@ export function DispatchCard({ tool, defaultState = "expanded", isParallel = fal
 
     // ── Derived values ────────────────────────────────
     const task = (tool.args?.task as string) || (tool.args?.prompt as string) || (tool.args?.context as string) || "";
-    // Parallel mode: shorter preview; solo mode: up to 80 chars
-    const maxTaskLen = isParallel ? 48 : 80;
-    const taskPreview = task.length > maxTaskLen ? task.slice(0, maxTaskLen) + "…" : task;
+    // Show full task text (multi-line display, no truncation)
+    const taskPreview = task;
 
     const resultText = typeof tool.result === 'string' ? tool.result : '';
     const fileChanges = parseFileChanges(resultText);
@@ -388,7 +387,7 @@ export function DispatchCard({ tool, defaultState = "expanded", isParallel = fal
     return (
         <div className={`overflow-hidden max-w-full rounded-xl border transition-all duration-300 relative ${borderClass} ${bgClass}`}>
             {/* Left accent strip */}
-            <div className={`absolute left-0 top-0 bottom-0 w-1 ${stripClass}`} />
+            <div className={`absolute left-0.5 top-2 bottom-2 w-[3px] rounded-full z-10 ${stripClass}`} />
 
             {/* ── Card Header (always visible) ── */}
             <div
@@ -418,7 +417,7 @@ export function DispatchCard({ tool, defaultState = "expanded", isParallel = fal
 
                     {/* Task preview */}
                     {taskPreview && (
-                        <span className={`${isParallel ? "text-[11px]" : "text-[12px]"} text-gray-400 truncate min-w-0`}>
+                        <span className={`${isParallel ? "text-[11px]" : "text-[12px]"} text-gray-400 min-w-0 leading-relaxed break-words`}>
                             {taskPreview}
                         </span>
                     )}
@@ -491,7 +490,7 @@ export function DispatchCard({ tool, defaultState = "expanded", isParallel = fal
                             <div className={`text-[10px] uppercase tracking-wider ${theme.textMuted} font-medium mb-2`}>
                                 📋 Summary
                             </div>
-                            <div className="max-h-[300px] overflow-y-auto rounded-lg">
+                            <div className="max-h-[800px] overflow-y-auto rounded-lg scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
                                 <MarkdownRenderer content={executorReport} />
                             </div>
                         </div>
