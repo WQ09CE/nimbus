@@ -28,6 +28,37 @@ from .utils import (
 )
 
 
+def _extract_relevant_context(content: str, old_text: str, context_lines: int = 25) -> str:
+    """找到文件中与 old_text 最相似的区域，返回带行号的原文片段（可直接复制）。"""
+    import difflib
+    content_lines = content.split('\n')
+    old_lines = [l for l in old_text.split('\n') if l.strip()]  # 忽略空行做锚点
+
+    if not old_lines:
+        return "(empty old_text)"
+
+    # 用第一行（非空）作为锚点
+    first_old_line = old_lines[0].strip()
+    best_ratio = 0.0
+    best_start = 0
+
+    for i, line in enumerate(content_lines):
+        ratio = difflib.SequenceMatcher(None, first_old_line, line.strip()).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_start = i
+
+    # 返回锚点周围的 context_lines 行，带行号
+    start = max(0, best_start - 3)
+    end = min(len(content_lines), best_start + context_lines)
+
+    result_lines = []
+    for i in range(start, end):
+        result_lines.append(f"{i+1:4d} | {content_lines[i]}")
+
+    return '\n'.join(result_lines)
+
+
 async def edit_file(
     file_path: str,
     old_text: Optional[str] = None,
@@ -106,47 +137,26 @@ async def edit_file(
     match_result = fuzzy_find_text(normalized_content, normalized_old_text)
 
     if not match_result["found"]:
-        # Find closest matching block for diagnostic diff
-        from difflib import SequenceMatcher, unified_diff
+        context_snippet = _extract_relevant_context(normalized_content, normalized_old_text)
 
-        closest = None
-        old_lines = normalized_old_text.splitlines()
-        content_lines = normalized_content.splitlines()
-
-        # Search for the first non-empty line of old_text in file content
-        first_line = next((l.strip() for l in old_lines if l.strip()), "")
-        if first_line and content_lines:
-            best_ratio = 0.0
-            best_idx = -1
-            for i, line in enumerate(content_lines):
-                ratio = SequenceMatcher(None, first_line, line.strip()).ratio()
-                if ratio > best_ratio:
-                    best_ratio = ratio
-                    best_idx = i
-
-            if best_ratio >= 0.4 and best_idx >= 0:
-                block_size = len(old_lines)
-                end = min(best_idx + block_size, len(content_lines))
-                closest = "\n".join(content_lines[best_idx:end])
-
-        if closest:
-            diff_lines = list(unified_diff(
-                normalized_old_text.splitlines(keepends=True),
-                closest.splitlines(keepends=True),
-                fromfile="your old_string",
-                tofile="actual content in file",
-                n=2,
-            ))
-            diff_text = "".join(diff_lines[:30])  # Cap at 30 lines
+        if context_snippet != "(empty old_text)":
             raise ValueError(
-                f"Could not find the exact text to replace in {file_path}.\n"
-                f"Closest match found (similarity diff):\n{diff_text}\n"
-                f"Check for whitespace, indentation, or content differences."
+                f"EDIT FAILED: old_text not found in {file_path}.\n"
+                f"\n"
+                f"Your old_text (first 3 lines):\n"
+                f"{chr(10).join(old_text.splitlines()[:3])}\n"
+                f"\n"
+                f"Most similar region in the ACTUAL file (copy from here):\n"
+                f"{context_snippet}\n"
+                f"\n"
+                f"ACTION: Copy text EXACTLY from 'Most similar region' above as your new old_text. "
+                f"Do NOT type from memory."
             )
         else:
             raise ValueError(
-                f"Could not find the exact text to replace in {file_path}. "
-                f"No similar text found. The content may have changed — use Read to re-read the file."
+                f"EDIT FAILED: old_text not found in {file_path}, and no similar text was found.\n"
+                f"The file may have been modified, or old_text is completely wrong.\n"
+                f"ACTION: Read('{file_path}') first to see the current content, then retry Edit."
             )
 
     # Count occurrences using fuzzy-normalized content

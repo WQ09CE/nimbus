@@ -41,6 +41,7 @@ from nimbus.core.protocol import ActionIR, Event, Fault, ToolResult
 from nimbus.core.runtime.checkpoint_manager import CheckpointManager
 from nimbus.core.runtime.decoder import InstructionDecoder
 from nimbus.core.runtime.doom_loop import DoomLoopDetector
+from nimbus.core.runtime.edit_fuse import EditFuse
 from nimbus.core.runtime.empty_result_handler import EmptyResultHandler
 from nimbus.core.runtime.error_handler import ErrorHandlerRegistry
 from nimbus.core.runtime.execution_state import ExecutionState
@@ -277,6 +278,7 @@ class VCPU:
 
         # Extracted components (single responsibility)
         self._doom_detector = DoomLoopDetector(threshold=DOOM_LOOP_THRESHOLD)
+        self._edit_fuse = EditFuse(max_failures_per_file=4)
         self._error_registry = ErrorHandlerRegistry()
         self._recovery_executor = RecoveryExecutor(
             tool_executor=self.gate.syscall_tool,
@@ -1339,8 +1341,23 @@ class VCPU:
         # Note: Custom tools (not in TOOL_NAME_CANONICAL) are allowed to pass through.
         # The gate will handle unknown tool errors if the tool doesn't exist.
 
+        # EditFuse: 检查该文件是否已熔断
+        if action.name == "Edit":
+            _fuse_file = action.args.get("file_path", "")
+            _fuse_block = self._edit_fuse.check_before_edit(_fuse_file)
+            if _fuse_block is not None:
+                return _fuse_block
+
         # Execute the tool (gate handles param validation internally)
         result = await self.gate.syscall_tool(action)
+
+        # EditFuse: 记录成功/失败
+        if action.name == "Edit":
+            _fuse_file = action.args.get("file_path", "")
+            if result.status == "OK":
+                self._edit_fuse.on_edit_success(_fuse_file)
+            elif result.fault:
+                self._edit_fuse.on_edit_failure(_fuse_file)
 
         # Check for doom loop AFTER executing
         # This way, param validation failures from gate don't pollute doom detection.

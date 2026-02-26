@@ -359,36 +359,41 @@ class EditStringNotFoundHandler(ErrorHandler):
         file_path = args.get("file_path", args.get("path", ""))
 
         if attempt == 1:
-            # First attempt: Inject precise diagnostic hint
-            # (edit.py's ValueError now includes fuzzy diff diagnostics)
-            # Transparently pass the error message with actionable advice
-            hint = (
-                f"Edit failed: {error_msg}\n\n"
-                f"Action: Use Read to re-read {file_path}, then retry Edit with the correct old_string. "
-                f"Pay attention to the diff above — it shows exactly what's different."
+            # 防线2 attempt1：透传增强错误消息 + 简短行动指令
+            # edit.py 已返回最相似区域原文，只追加一条命令式指令
+            return RecoveryAction.inject(
+                f"{error_msg}\n\n"
+                f"⚡ INSTRUCTION: Copy the exact text from 'Most similar region' above "
+                f"as your new old_text. Do NOT type from memory. "
+                f"If the change is already applied, STOP and move on."
             )
-            return RecoveryAction.inject(hint)
 
         elif attempt == 2:
-            # Second attempt: auto-Read the target file
+            # 防线2 attempt2：auto_tool Read 读取文件（仍 ERROR 状态，但消息格式重构）
+            # 关键：hint 放在文件内容前面，作为上下文框架
             return RecoveryAction.auto_execute(
                 tool="Read",
                 args={"file_path": file_path},
-                hint=f"✏️ Edit still failing. Re-reading {file_path} for you:",
+                hint=(
+                    f"⚠️ EDIT FAILED TWICE on '{file_path}'.\n"
+                    f"Below is the COMPLETE current file content (ground truth).\n"
+                    f"You MUST use text copied EXACTLY from below as old_text, "
+                    f"or use Write('{file_path}', content=...) to rewrite the entire file.\n"
+                    f"DO NOT guess old_text from memory.\n"
+                    f"── CURRENT FILE CONTENT ──"
+                ),
             )
 
         else:
-            # Third attempt and beyond: keep existing generic hint
+            # 防线2 attempt3+：全大写命令式，强制降级 Write
             return RecoveryAction.inject(
-                f"✏️ Edit failed: string not found after {attempt} attempts.\n\n"
-                f"Possible reasons:\n"
-                f"1. The file was already modified by a previous edit\n"
-                f"2. Whitespace or indentation mismatch\n"
-                f"3. The string appears differently than expected\n\n"
-                f"Next steps:\n"
-                f"1. Read the file to see current state\n"
-                f"2. If your change is already there, finish by responding with your result\n"
-                f"3. If not, use the exact text from the Read output"
+                f"🛑 EDIT HAS FAILED {attempt} TIMES ON '{file_path}'.\n\n"
+                f"STOP USING EDIT FOR THIS FILE. The text matching cannot succeed.\n\n"
+                f"YOU MUST NOW CHOOSE ONE:\n"
+                f"  Option A: Read(file_path='{file_path}') → inspect content → "
+                f"Write(file_path='{file_path}', content='COMPLETE NEW FILE CONTENT')\n"
+                f"  Option B: Skip this change entirely and proceed to next task.\n\n"
+                f"DO NOT CALL Edit ON '{file_path}' AGAIN."
             )
 
 

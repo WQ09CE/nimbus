@@ -226,7 +226,7 @@ class TestEditTool:
         test_file = temp_workspace / "test.py"
         test_file.write_text("def hello():\n    pass\n")
 
-        with pytest.raises(ValueError, match="Could not find"):
+        with pytest.raises(ValueError, match="EDIT FAILED"):
             await edit_file(
                 str(test_file),
                 old_text="nonexistent text",

@@ -183,7 +183,7 @@ class TestEditTool:
             file_path = workspace / "test.py"
             file_path.write_text("def hello():\n    pass\n")
 
-            with pytest.raises(ValueError, match="Could not find"):
+            with pytest.raises(ValueError, match="EDIT FAILED"):
                 await edit_file(
                     str(file_path),
                     old_text="def nonexistent():",
