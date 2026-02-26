@@ -85,3 +85,13 @@ test_report.txt
 reproduction_scripts/
 *.patch
 NimFS_Memo_Refactoring_Design.md
+
+# Legacy UI build artifacts
+web-ui-legacy/.next/
+web-ui-legacy/tsconfig.tsbuildinfo
+
+# Temp/test scripts
+patch_css*.py
+patch_theme.py
+test_post.js
+web-ui/src/app/test.tsx
