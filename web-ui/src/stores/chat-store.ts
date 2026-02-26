@@ -181,13 +181,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       set({ isLoading: true, isCreatingSession: true, error: null });
 
+      // Inherit model from current session, fall back to server default
+      const currentSession = get().session;
+      const inheritedLlmConfig = currentSession?.llm_config && currentSession.llm_config.model_id && currentSession.llm_config.model_id !== "default"
+        ? { provider: currentSession.llm_config.provider || "", model_id: currentSession.llm_config.model_id }
+        : undefined;
+
       const newSession = await createSession({
         // Default to dual_agent unless specified otherwise
         agent_mode: options?.agent_mode || "dual_agent",
-        llm_config: options?.llm_config || {
-          provider: "",
-          model_id: "default",
-        },
+        llm_config: options?.llm_config || inheritedLlmConfig,
         ...options,
       });
       console.log("[Store] Session created:", newSession.id);
@@ -1067,7 +1070,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 meta.subCalls[esSlotIdx] = {
                   id: esPid || `slot-${esSlotIdx}`,
                   name: toolName,
-                  arguments: { task: taskDesc, context: contextDesc, goal: esGoal, model: esd?.model || "" },
+                  arguments: { task: taskDesc, context: contextDesc, goal: esGoal, model: esd?.resolved_model || esd?.model || "" },
                   agentType: "dispatch" as const,
                   subCalls: [],
                   subResults: [],
@@ -1079,7 +1082,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   specialist: esSpecialist,
                   batchSlotIndex: esSlotIdx,
                   status: "running",
-                  args: { task: taskDesc, context: contextDesc, goal: esGoal, model: esd?.model || "" },
+                  args: { task: taskDesc, context: contextDesc, goal: esGoal, model: esd?.resolved_model || esd?.model || "" },
                 });
                 set({
                   streamingToolCalls: [...toolCalls],
@@ -1090,8 +1093,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
               }
             }
             // Fallback: non-batch executor — propagate resolved model to parent tool
-            if (esd?.model_full || esd?.model) {
-              const resolvedModel = esd.model_full || esd.model || "";
+            if (esd?.resolved_model || esd?.model_full || esd?.model) {
+              const resolvedModel = esd.resolved_model || esd.model_full || esd.model || "";
               // Find the running specialist tool call and inject model into its args
               const runningSpecialist = [...toolCalls].reverse().find(
                 tc => META_TOOLS.has(tc.name)
@@ -1606,7 +1609,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 meta.subCalls[esSlotIdx] = {
                   id: esPid || `slot-${esSlotIdx}`,
                   name: toolName,
-                  arguments: { task: taskDesc, context: contextDesc, goal: esGoal, model: esd?.model || "" },
+                  arguments: { task: taskDesc, context: contextDesc, goal: esGoal, model: esd?.resolved_model || esd?.model || "" },
                   agentType: "dispatch" as const,
                   subCalls: [],
                   subResults: [],
@@ -1618,7 +1621,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   specialist: esSpecialist,
                   batchSlotIndex: esSlotIdx,
                   status: "running",
-                  args: { task: taskDesc, context: contextDesc, goal: esGoal, model: esd?.model || "" },
+                  args: { task: taskDesc, context: contextDesc, goal: esGoal, model: esd?.resolved_model || esd?.model || "" },
                 });
                 set({
                   streamingToolCalls: [...toolCalls],
@@ -1629,8 +1632,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
               }
             }
             // Fallback: non-batch executor — propagate resolved model to parent tool
-            if (esd?.model_full || esd?.model) {
-              const resolvedModel = esd.model_full || esd.model || "";
+            if (esd?.resolved_model || esd?.model_full || esd?.model) {
+              const resolvedModel = esd.resolved_model || esd.model_full || esd.model || "";
               const runningSpecialist = [...toolCalls].reverse().find(
                 tc => META_TOOLS.has(tc.name)
               );

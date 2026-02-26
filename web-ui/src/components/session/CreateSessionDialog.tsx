@@ -32,10 +32,9 @@ const DEFAULT_MODELS = {
         "gemini-1.5-flash",
     ],
     anthropic: [
+        "claude-sonnet-4-6",
         "claude-opus-4-6",
-        "claude-sonnet-4-20250514",
-        "claude-3-5-sonnet-20241022",
-        "claude-3-opus-20240229",
+        "claude-haiku-4",
     ],
     openai: ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"],
     "openai-codex": ["gpt-5.3-codex", "gpt-4o", "o3-mini"],
