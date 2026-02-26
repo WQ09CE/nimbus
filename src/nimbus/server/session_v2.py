@@ -238,7 +238,10 @@ class SessionManagerV2:
 
                 # Construct full model name (provider/model_id)
                 provider = model_config.get("provider", "google")
-                full_model = f"{provider}/{model_id}"
+                if provider:
+                    full_model = f"{provider}/{model_id}"
+                else:
+                    full_model = model_id
 
                 # Use factory to create DirectAdapter
                 from nimbus.adapters.llm_factory import create_llm_client
@@ -948,7 +951,7 @@ class SessionManagerV2:
             if agent_os:
                 proc = agent_os._processes.get(event.pid)
                 if proc:
-                    for key in ("parent_action_id", "batch_slot_index", "specialist"):
+                    for key in ("parent_action_id", "batch_slot_index", "specialist", "resolved_model"):
                         val = proc.signals.get(key)
                         if val is not None:
                             event.data[key] = val

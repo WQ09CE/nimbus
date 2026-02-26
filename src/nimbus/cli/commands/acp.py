@@ -37,7 +37,7 @@ def acp(
         None,
         "--model",
         "-m",
-        help="LLM model name (e.g., claude-3-5-sonnet-20241022, qwen3:8b)",
+        help="LLM model name (e.g., claude-sonnet-4-6, qwen3:8b)",
         envvar="NIMBUS_MODEL",
     ),
     url: Optional[str] = typer.Option(

@@ -316,6 +316,7 @@ class ServerConfig(BaseModel):
     default_planner_type: str = "dag"
     max_concurrent_sessions: int = 10
     mcp_servers: List[str] = Field(default_factory=list)
+    default_model: str = ""
 
 
 class HealthResponse(BaseModel):

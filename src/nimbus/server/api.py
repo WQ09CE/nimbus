@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from nimbus.config import get_config as get_nimbus_config
 
 from .models import (
     # Message
@@ -130,13 +131,15 @@ async def health_check():
 
 
 @router.get("/config", response_model=ServerConfig)
-async def get_config():
+async def get_server_config():
     """Get server configuration."""
+    nimbus_config = get_nimbus_config()
     return ServerConfig(
         default_memory_type="tiered",
         default_planner_type="dag",
         max_concurrent_sessions=10,
         mcp_servers=[],
+        default_model=nimbus_config.default_model,
     )
 
 
