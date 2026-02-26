@@ -122,7 +122,6 @@ CLAUDE_FEATURES = ModelFeatures(
 
 # Registry
 _REGISTRY: Dict[str, ModelManifest] = {
-    "default": ModelManifest("anthropic/claude-sonnet-4-6", CLAUDE_FEATURES),
     "gpt-4": ModelManifest("gpt-4", GPT_FEATURES),
     "gpt-5": ModelManifest("gpt-5", GPT_FEATURES), # Assuming similar to 4
     "gemini": ModelManifest("gemini", GEMINI_FEATURES),
@@ -148,10 +147,15 @@ def get_model_manifest(model_id: Any) -> ModelManifest:
     # Accept LLM client objects — extract model string
     if not isinstance(model_id, str):
         model_id = getattr(model_id, "_model", None) or getattr(getattr(model_id, "config", None), "model_id", None) or "default"
+    if model_id == "default" or not model_id:
+        from nimbus.config import get_config
+        model_id = get_config().default_model
     model_id = model_id.lower()
     if "gemini" in model_id:
         return _REGISTRY["gemini"]
     if "claude" in model_id:
         return _REGISTRY["claude"]
-    # Default to GPT behavior for others
-    return _REGISTRY["default"]
+    # Default to GPT behavior for unknown models
+    if "gpt" in model_id or "openai" in model_id:
+        return _REGISTRY["gpt-4"]
+    return _REGISTRY["claude"]

@@ -184,6 +184,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const newSession = await createSession({
         // Default to dual_agent unless specified otherwise
         agent_mode: options?.agent_mode || "dual_agent",
+        llm_config: options?.llm_config || {
+          provider: "",
+          model_id: "default",
+        },
         ...options,
       });
       console.log("[Store] Session created:", newSession.id);
@@ -1085,8 +1089,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 break;
               }
             }
-            // Fallback: non-batch executor
+            // Fallback: non-batch executor — propagate resolved model to parent tool
+            if (esd?.model_full || esd?.model) {
+              const resolvedModel = esd.model_full || esd.model || "";
+              // Find the running specialist tool call and inject model into its args
+              const runningSpecialist = [...toolCalls].reverse().find(
+                tc => META_TOOLS.has(tc.name)
+              );
+              if (runningSpecialist && runningSpecialist.arguments) {
+                (runningSpecialist.arguments as Record<string, unknown>).model = resolvedModel;
+              }
+            }
             set({
+              streamingToolCalls: [...toolCalls],
               currentActivity: "⚡ Executor 已启动...",
               lastHeartbeat: Date.now()
             });
@@ -1613,8 +1628,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 break;
               }
             }
-            // Fallback: non-batch executor
+            // Fallback: non-batch executor — propagate resolved model to parent tool
+            if (esd?.model_full || esd?.model) {
+              const resolvedModel = esd.model_full || esd.model || "";
+              const runningSpecialist = [...toolCalls].reverse().find(
+                tc => META_TOOLS.has(tc.name)
+              );
+              if (runningSpecialist && runningSpecialist.arguments) {
+                (runningSpecialist.arguments as Record<string, unknown>).model = resolvedModel;
+              }
+            }
             set({
+              streamingToolCalls: [...toolCalls],
               currentActivity: "⚡ Executor 已启动...",
               lastHeartbeat: Date.now(),
             });

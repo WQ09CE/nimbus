@@ -85,6 +85,19 @@ class SpecialistTool:
             except Exception as e:
                 logger.warning(f"  [{self.ROLE}] Failed to create LLM for {model_name}: {e}")
 
+        # Resolve the actual model for display
+        # If no model specified, will inherit from orchestrator — extract its model name
+        if executor_llm:
+            resolved_model = getattr(executor_llm, '_model', model_name)
+        else:
+            resolved_model = getattr(self._agent_os._llm, '_model', '')
+        # Normalize to full provider/model_id format
+        from nimbus.core.models.registry import ModelRegistry
+        try:
+            resolved_model = ModelRegistry.normalize(resolved_model)
+        except Exception:
+            pass
+
         # Resolve instructions
         instructions = kwargs.get("instructions", "")
 
@@ -115,11 +128,12 @@ class SpecialistTool:
             profile=profile,
             llm_client=executor_llm,
         )
-        # Store parent action ID on process for SSE event routing
-        if parent_action_id:
-            proc = self._agent_os._processes.get(pid)
-            if proc:
+        # Store parent action ID and resolved model on process for SSE event routing
+        proc = self._agent_os._processes.get(pid)
+        if proc:
+            if parent_action_id:
                 proc.signals["parent_action_id"] = parent_action_id  # type: ignore[assignment]
+            proc.signals["resolved_model"] = resolved_model  # type: ignore[assignment]
         logger.info(f"[{self.ROLE}] Spawned {pid} for: {task[:80]}...")
 
         # Wait for completion -- with actionable timeout hint

@@ -74,6 +74,8 @@ class ModelRegistry:
     @classmethod
     def get(cls, name: str) -> Optional[ModelInfo]:
         """Get ModelInfo by alias or full name (supports 'base[modifier]' syntax)."""
+        if not isinstance(name, str):
+            return None
         if not name:
             return None
         # Strip optional modifier (e.g. "sonnet[1m]" → look up "sonnet")
@@ -123,9 +125,9 @@ class ModelRegistry:
             if "3.1-pro" in info.model_id:
                 fallback = cls.get("gemini-3-pro-preview")
                 if fallback: return fallback.full_name
-            # 3 Pro -> 3.1 Pro (Cycle back to 3.1 directly, skipping flash as per user request "3.1 used up -> 3, 3 used up -> 3.1")
+            # 3 Pro -> 3 Flash (三角轮转：3.1-pro → 3-pro → 3-flash → 3.1-pro)
             if "3-pro" in info.model_id:
-                fallback = cls.get("gemini-3.1-pro-preview")
+                fallback = cls.get("gemini-3-flash-preview")
                 if fallback: return fallback.full_name
             # 3 Flash -> 3.1 Pro (In case they start with flash)
             if "flash" in info.tier:
@@ -170,8 +172,11 @@ class ModelRegistry:
         The modifier (e.g. '[1m]') is accepted and stripped during lookup —
         runtime context-window selection based on modifiers is handled upstream.
         """
-        if not name:
-            return name
+        if not isinstance(name, str):
+            name = str(name) if name else ""
+        if not name or name.lower() == "default":
+            from nimbus.config import get_config
+            name = get_config().default_model
         info = cls.get(name)
         return info.full_name if info else name
 
