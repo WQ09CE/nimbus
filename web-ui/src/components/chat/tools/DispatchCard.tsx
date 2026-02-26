@@ -371,9 +371,13 @@ export function DispatchCard({ tool, defaultState = "expanded", isParallel = fal
         });
 
     // ── Derived values ────────────────────────────────
-    const task = (tool.args?.task as string) || (tool.args?.prompt as string) || (tool.args?.context as string) || "";
-    // Show full task text (multi-line display, no truncation)
-    const taskPreview = task;
+    const task = (tool.args?.task as string) || (tool.args?.prompt as string) || "";
+    const context = (tool.args?.context as string) || "";
+    // Header 只显示第一行，超过 60 字符截断加省略号
+    const taskFirstLine = task.split('\n')[0].trim();
+    const taskPreview = taskFirstLine.length > 60
+        ? taskFirstLine.slice(0, 60) + '…'
+        : taskFirstLine;
 
     const resultText = typeof tool.result === 'string' ? tool.result : '';
     const fileChanges = parseFileChanges(resultText);
@@ -432,7 +436,10 @@ export function DispatchCard({ tool, defaultState = "expanded", isParallel = fal
 
                     {/* Task preview */}
                     {taskPreview && (
-                        <span className={`${isParallel ? "text-[11px]" : "text-[12px]"} text-gray-400 min-w-0 leading-relaxed break-words`}>
+                        <span
+                            className={`${isParallel ? "text-[11px]" : "text-[12px]"} text-gray-500 min-w-0 leading-none truncate max-w-[420px]`}
+                            title={task}
+                        >
                             {taskPreview}
                         </span>
                     )}
@@ -478,6 +485,30 @@ export function DispatchCard({ tool, defaultState = "expanded", isParallel = fal
             {/* ── Expanded body ── */}
             {isExpanded && (
                 <div className={`border-t ${theme.borderSection}`}>
+
+                    {/* ── Prompt/Context — shows what orchestrator sent to this specialist ── */}
+                    {(task || context) && (
+                        <div className={`border-b ${theme.borderSection} px-4 py-2.5`}>
+                            {task && (
+                                <div className="space-y-1">
+                                    <div className="text-[10px] text-gray-600 uppercase tracking-wider font-medium">Task</div>
+                                    <div className="text-[12px] text-gray-300 leading-relaxed whitespace-pre-wrap">
+                                        {task}
+                                    </div>
+                                </div>
+                            )}
+                            {context && (
+                                <details className="mt-2">
+                                    <summary className={`text-[10px] uppercase tracking-wider ${theme.textMuted} cursor-pointer select-none hover:opacity-80 transition-opacity font-medium`}>
+                                        📋 Context
+                                    </summary>
+                                    <div className="mt-1.5 text-[11px] text-gray-400 leading-relaxed max-h-[200px] overflow-y-auto whitespace-pre-wrap rounded bg-black/20 px-3 py-2">
+                                        {context}
+                                    </div>
+                                </details>
+                            )}
+                        </div>
+                    )}
 
                     {/* Running + no sub-calls yet: spinner */}
                     {isRunning && totalTools === 0 && (

@@ -1001,10 +1001,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 const taskDesc = Array.isArray(pdTasks) && esSlotIdx < pdTasks.length
                   ? ((pdTasks[esSlotIdx] as any)?.task || (pdTasks[esSlotIdx] as any)?.context || "")
                   : "";
+                const contextDesc = Array.isArray(pdTasks) && esSlotIdx < pdTasks.length
+                  ? ((pdTasks[esSlotIdx] as any)?.context || "")
+                  : "";
+                const esGoal = esd?.goal || "";
                 meta.subCalls[esSlotIdx] = {
                   id: esPid || `slot-${esSlotIdx}`,
                   name: toolName,
-                  arguments: { task: taskDesc },
+                  arguments: { task: taskDesc, context: contextDesc, goal: esGoal },
                   agentType: "dispatch" as const,
                   subCalls: [],
                   subResults: [],
@@ -1016,7 +1020,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   specialist: esSpecialist,
                   batchSlotIndex: esSlotIdx,
                   status: "running",
-                  args: { task: taskDesc },
+                  args: { task: taskDesc, context: contextDesc, goal: esGoal },
                 });
                 set({
                   streamingToolCalls: [...toolCalls],
@@ -1525,10 +1529,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 const taskDesc = Array.isArray(pdTasks) && esSlotIdx < pdTasks.length
                   ? ((pdTasks[esSlotIdx] as any)?.task || (pdTasks[esSlotIdx] as any)?.context || "")
                   : "";
+                const contextDesc = Array.isArray(pdTasks) && esSlotIdx < pdTasks.length
+                  ? ((pdTasks[esSlotIdx] as any)?.context || "")
+                  : "";
+                const esGoal = esd?.goal || "";
                 meta.subCalls[esSlotIdx] = {
                   id: esPid || `slot-${esSlotIdx}`,
                   name: toolName,
-                  arguments: { task: taskDesc },
+                  arguments: { task: taskDesc, context: contextDesc, goal: esGoal },
                   agentType: "dispatch" as const,
                   subCalls: [],
                   subResults: [],
@@ -1540,7 +1548,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   specialist: esSpecialist,
                   batchSlotIndex: esSlotIdx,
                   status: "running",
-                  args: { task: taskDesc },
+                  args: { task: taskDesc, context: contextDesc, goal: esGoal },
                 });
                 set({
                   streamingToolCalls: [...toolCalls],
