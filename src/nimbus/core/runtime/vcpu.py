@@ -162,6 +162,8 @@ class VCPUConfig:
     # Goal pinning
     pin_goal: bool = True  # Pin user goal to survive compaction
     goal_max_length: int = 500  # Summarize goal if longer than this
+    # LLM call watchdog
+    llm_call_timeout: float = 300.0  # Single LLM call timeout (seconds), prevents streaming hang
     # Tracing
     enable_tracing: bool = True  # Enable structural trace logs
 
@@ -295,12 +297,42 @@ class VCPU:
         # Legacy compatibility properties (will be removed in future)
         self._max_consecutive_empty = 5  # Stop after 5 consecutive empty responses
 
+        # External signals dict (shared with AgentOS process for soft-timeout)
+        self.signals: Dict[str, Any] = {}
+
     def request_pause(self) -> None:
         """Request the vCPU to pause execution at the next safe point."""
         self._state.interruption_requested = True
         from nimbus.core.logging import get_logger
 
         get_logger("kernel.vcpu").info("Interruption requested for next step.")
+
+    def _collect_partial_results(self) -> Optional[str]:
+        """Collect any partial results produced during this session (for soft-timeout)."""
+        # Check for Write tool calls that succeeded
+        written_files = []
+        for msg in self.mmu.current_frame.messages:
+            if msg.role == "tool":
+                content = msg.content or ""
+                if isinstance(content, str) and "Successfully wrote" in content and " to " in content:
+                    path = content.split(" to ")[-1].strip()
+                    written_files.append(path)
+
+        if written_files:
+            return (
+                "(specialist timed out but produced partial output)\n\n"
+                "Files written before timeout:\n" +
+                "\n".join(f"  - {f}" for f in written_files)
+            )
+
+        # Fall back to last substantial assistant message
+        for msg in reversed(self.mmu.current_frame.messages):
+            if msg.role == "assistant" and msg.content:
+                text = str(msg.content)
+                if len(text) > 200:
+                    return f"(specialist timed out, last output fragment):\n\n{text[:2000]}"
+
+        return None
 
     def inject_message(self, content: str) -> None:
         """
@@ -503,6 +535,25 @@ class VCPU:
         if self.tracer:
             self.tracer.start_step(self._state.iteration + 1)
 
+        # Check soft_timeout signal — finalize immediately with partial results
+        if self.signals.get("soft_timeout"):
+            from nimbus.core.logging import get_logger as _gl
+            _gl("kernel.vcpu").warning("vCPU received soft_timeout signal, collecting partial results...")
+            partial_output = self._collect_partial_results()
+            res = StepResult(
+                output=partial_output or "(specialist timed out before producing output)",
+                is_final=True,
+                fault=Fault(
+                    domain="VCPU",
+                    code="SOFT_TIMEOUT",
+                    message="Specialist soft-timed out, returning partial results",
+                ),
+            )
+            if self.tracer:
+                self.tracer.record_fault(res.fault)
+                self.tracer.finish_step()
+            return res
+
         # Check interruption request at step start (Legacy support for vCPU-driven interrupt)
         # In Phase 1, AgentOS handles this before calling step(), but we keep this as safety net.
         if self._state.interruption_requested:
@@ -613,7 +664,19 @@ class VCPU:
                 if processed and not self._state.suppress_streaming:
                     self._emit_event("THINKING", {"content": processed})
 
-            response = await self.alu.chat(messages, tools=tools_to_pass, on_chunk=on_think_chunk)
+            try:
+                response = await asyncio.wait_for(
+                    self.alu.chat(messages, tools=tools_to_pass, on_chunk=on_think_chunk),
+                    timeout=self.config.llm_call_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"LLM single-call timeout after {self.config.llm_call_timeout}s "
+                    f"(iteration {self._state.iteration})"
+                )
+                # Treat as empty response -- will trigger thought handling / poke
+                from nimbus.adapters.types import VcpuLLMResponse
+                response = VcpuLLMResponse(content="", tool_calls=[])
 
             # Reset suppress flag after receiving response
             self._state.suppress_streaming = False
@@ -1005,6 +1068,55 @@ class VCPU:
             return True
         return False
 
+    def _detect_promise_gate(self, text: str) -> bool:
+        """Detect if the LLM is making promises to act without actually calling tools.
+
+        Promise Gate: LLM outputs text like "Now let me write..." or "I'll create the file..."
+        but doesn't include any tool calls. Intentionally permissive — false positives only
+        cause a stronger poke, while false negatives let the model spin.
+        """
+        if not text or len(text) < 20:
+            return False
+
+        text_lower = text.lower()
+
+        # English promise patterns
+        promise_patterns_en = [
+            "let me ",
+            "i'll ",
+            "i will ",
+            "now i ",
+            "now let",
+            "now write",
+            "now create",
+            "let's ",
+            "going to ",
+            "about to ",
+            "proceed to ",
+            "next i ",
+            "writing the ",
+            "creating the ",
+        ]
+
+        # Chinese promise patterns
+        promise_patterns_zh = [
+            "让我",
+            "我来",
+            "我将",
+            "现在",
+            "接下来",
+            "下面",
+            "开始写",
+            "开始创建",
+            "马上",
+        ]
+
+        for pattern in promise_patterns_en + promise_patterns_zh:
+            if pattern in text_lower:
+                return True
+
+        return False
+
     async def _handle_thought(self, action: ActionIR) -> ToolResult:
         """Handle THOUGHT action.
 
@@ -1064,19 +1176,41 @@ class VCPU:
             )
             return await self._handle_return(action)
 
+        # --- Promise Gate Detection & Escalating Poke ---
         # Poke: remind the specialist to use tools or SubmitResult.
         # MUST be injected as "system" role — if injected as "user", the LLM
         # treats it as a new user request and tries to "answer" it with more text.
         text_len = len(current_text)
-        if text_len > 150 and role in ("architect", "implementer"):
-            # Long text without tool calls — model is writing content as text
+        is_promise_gate = self._detect_promise_gate(current_text)
+
+        if is_promise_gate:
+            logger.warning(
+                f"VCPU: Promise Gate detected from {role} "
+                f"(thought #{thought_count}): '{current_text[:100]}...'"
+            )
+
+        # Escalating poke based on consecutive thoughts + promise gate
+        if thought_count >= 2 and is_promise_gate:
+            # Level 3: Critical - about to force return
+            poke_msg = (
+                "CRITICAL: You have now said you would take action {n} times without "
+                "actually calling any tool. Your text output is DISCARDED — only tool "
+                "calls produce results. You MUST call a tool in your VERY NEXT response "
+                "or you will be terminated. If your task is complete, call SubmitResult. "
+                "If you need to write a file, call Write. DO NOT output any more text "
+                "without a tool call."
+            ).format(n=thought_count)
+        elif is_promise_gate or (text_len > 150 and role in ("architect", "implementer")):
+            # Level 2: Strong warning
             poke_msg = (
                 f"STOP. You just output {text_len} characters of text without calling any tool. "
                 f"This text will be DISCARDED. You MUST use the Write tool to save content to a file. "
                 f"Call Write(file_path='your/path.md', content='...') NOW, then SubmitResult."
             )
         else:
+            # Level 1: Gentle poke
             poke_msg = self.manifest.features.poke_message
+
         self.mmu.add_system_message(poke_msg)
 
         return ToolResult(

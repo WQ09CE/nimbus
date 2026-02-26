@@ -633,23 +633,54 @@ class AgentOS:
                 ),
             )
 
+        async def _run_with_soft_timeout(coro):
+            """Two-phase timeout: soft signal at 85%, hard kill in remaining 15%."""
+            if not timeout:
+                return await coro
+
+            # Phase durations
+            t_soft = timeout * 0.85
+            t_finalize = min(max(timeout * 0.15, 30.0), 60.0)
+
+            task = asyncio.ensure_future(coro)
+
+            # Phase 1: wait for soft timeout
+            try:
+                return await asyncio.wait_for(asyncio.shield(task), timeout=t_soft)
+            except asyncio.TimeoutError:
+                # Signal the vCPU to finalize with partial results
+                if process.vcpu:
+                    process.vcpu.signals["soft_timeout"] = True
+                process.signals["soft_timeout"] = True
+                logger.warning(
+                    f"Process {pid} hit soft timeout at {t_soft:.0f}s, "
+                    f"giving {t_finalize:.0f}s to finalize"
+                )
+
+            # Phase 2: wait for finalize window
+            try:
+                return await asyncio.wait_for(task, timeout=t_finalize)
+            except asyncio.TimeoutError:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                raise asyncio.TimeoutError()
+
         # If process is pending, start it
         if process.state == "PENDING":
             self._ensure_heart_running()
             process.state = "RUNNING"
             try:
-                if timeout:
-                    return await asyncio.wait_for(self._run_process(process), timeout=timeout)
-                return await self._run_process(process)
+                return await _run_with_soft_timeout(self._run_process(process))
             except asyncio.TimeoutError:
                 return _timeout_result()
 
         # If process is already running with a task, wait for it
         if process.task and not process.task.done():
             try:
-                if timeout:
-                    return await asyncio.wait_for(process.task, timeout=timeout)
-                return await process.task
+                return await _run_with_soft_timeout(process.task)
             except asyncio.TimeoutError:
                 return _timeout_result()
 
@@ -660,9 +691,7 @@ class AgentOS:
         # Otherwise, run the process
         process.state = "RUNNING"
         try:
-            if timeout:
-                return await asyncio.wait_for(self._run_process(process), timeout=timeout)
-            return await self._run_process(process)
+            return await _run_with_soft_timeout(self._run_process(process))
         except asyncio.TimeoutError:
             return _timeout_result()
 

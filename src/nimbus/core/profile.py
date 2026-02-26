@@ -105,7 +105,7 @@ class AgentProfile:
             allowed_tools=["Read", "Write", "SubmitResult"] + _NIMFS_SPECIALIST,
             system_prompt=PromptManager.get_system_prompt("architect", model_id),
             max_iterations=50,
-            max_consecutive_thoughts=4,
+            max_consecutive_thoughts=2,
             write_filter=[".md"],
         )
 

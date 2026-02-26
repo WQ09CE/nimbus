@@ -110,7 +110,15 @@ class KernelGate:
             ToolResult with status, output, and optional fault
         """
         tool_name = action.name
-        timeout = timeout_sec or _META_TOOL_TIMEOUTS.get(tool_name, self.default_timeout)
+        # Resolve timeout: explicit meta-tool override > caller-specified > default
+        # None in _META_TOOL_TIMEOUTS means "no Gate-level timeout" (specialist self-manages)
+        meta_timeout = _META_TOOL_TIMEOUTS.get(tool_name, _SENTINEL)
+        if meta_timeout is not _SENTINEL:
+            timeout = meta_timeout  # Could be None (no timeout) or a positive number
+        elif timeout_sec:
+            timeout = timeout_sec
+        else:
+            timeout = self.default_timeout
 
         # 1. Emit Start Event
         self._emit_event(
@@ -212,15 +220,21 @@ class KernelGate:
             if tool_name in self.local_tools:
                 func = self.local_tools[tool_name]
                 if asyncio.iscoroutinefunction(func):
-                    output = await asyncio.wait_for(func(**action.args), timeout=timeout)
+                    coro = func(**action.args)
+                    if timeout and timeout > 0:
+                        output = await asyncio.wait_for(coro, timeout=timeout)
+                    else:
+                        output = await coro  # No Gate-level timeout for meta-tools
                 else:
                     # Run sync function in thread pool to avoid blocking loop
                     output = await asyncio.to_thread(func, **action.args)
             else:
                 # Fallback to global registry
-                output = await asyncio.wait_for(
-                    self.executor.execute(tool_name, action.args), timeout=timeout
-                )
+                coro = self.executor.execute(tool_name, action.args)
+                if timeout and timeout > 0:
+                    output = await asyncio.wait_for(coro, timeout=timeout)
+                else:
+                    output = await coro  # No Gate-level timeout for meta-tools
             status = "OK"
 
         except asyncio.TimeoutError:
@@ -369,14 +383,16 @@ class SimpleEventStream:
 # Tool Argument Normalization (LLM hallucination tolerance)
 # =============================================================================
 
-# All meta-tools get 10 min -- specialist manages its own timeout
-_META_TOOL_TIMEOUTS: Dict[str, float] = {
-    "Dispatch": 600.0,
-    "Verify": 600.0,
-    "Explore": 600.0,
-    "Implement": 600.0,
-    "Design": 600.0,
-    "Test": 600.0,
+_SENTINEL = object()  # Sentinel to distinguish "not in dict" from "explicitly None"
+
+# Meta-tool timeouts: None = no Gate-level timeout (SpecialistTool manages its own soft-timeout)
+_META_TOOL_TIMEOUTS: Dict[str, Optional[float]] = {
+    "Dispatch": None,
+    "Verify": None,
+    "Explore": None,
+    "Implement": None,
+    "Design": None,
+    "Test": None,
 }
 
 # Maps tool_name -> {alias: canonical_name}
