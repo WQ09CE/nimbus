@@ -823,8 +823,44 @@ class SessionManagerV2:
             for msg in messages[start_idx:]:
                 # Skip the user message itself (already saved by frontend)
                 if msg.role == "user":
-                    compare_content = json.dumps(user_message, ensure_ascii=False) if isinstance(user_message, list) else user_message
-                    if msg.content == compare_content:
+                    # Skip the triggering user message to avoid duplicates.
+                    # The frontend already shows it via optimistic update.
+                    # Use robust comparison: handle both str and list (multimodal) content.
+                    def _content_matches(stored: any, original: any) -> bool:
+                        if stored == original:
+                            return True
+                        # Both might be list (multimodal) in different serialization forms
+                        if isinstance(original, list) and isinstance(stored, str):
+                            try:
+                                return json.loads(stored) == original
+                            except Exception:
+                                pass
+                        if isinstance(original, str) and isinstance(stored, list):
+                            try:
+                                return stored == json.loads(original)
+                            except Exception:
+                                pass
+                        # Fallback: compare text content only
+                        if isinstance(original, list):
+                            orig_text = " ".join(p.get("text", "") for p in original if isinstance(p, dict) and p.get("type") == "text").strip()
+                        else:
+                            orig_text = str(original).strip()
+                        if isinstance(stored, list):
+                            stored_text = " ".join(p.get("text", "") for p in stored if isinstance(p, dict) and p.get("type") == "text").strip()
+                        elif isinstance(stored, str):
+                            try:
+                                parsed = json.loads(stored)
+                                if isinstance(parsed, list):
+                                    stored_text = " ".join(p.get("text", "") for p in parsed if isinstance(p, dict) and p.get("type") == "text").strip()
+                                else:
+                                    stored_text = str(stored).strip()
+                            except Exception:
+                                stored_text = str(stored).strip()
+                        else:
+                            stored_text = str(stored).strip()
+                        return orig_text == stored_text and bool(orig_text)
+
+                    if _content_matches(msg.content, user_message):
                         continue
                 # Skip ephemeral messages (internal system hints, not for user)
                 if msg.meta.get("ephemeral", False):

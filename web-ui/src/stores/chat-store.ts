@@ -270,9 +270,41 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const subEventsMap = new Map<string, { subCalls: ToolCall[]; subResults: ToolResult[] }>();
 
       for (let m of serverMessages) {
+        // Try to parse JSON-serialized multimodal content (e.g. "[{\"type\":\"image\",...}]")
+        if (typeof m.content === 'string' && m.content.startsWith('[')) {
+          try {
+            const parsed = JSON.parse(m.content);
+            if (Array.isArray(parsed)) {
+              m.content = parsed;  // restore as array for further processing below
+            }
+          } catch {
+            // not JSON, keep as string
+          }
+        }
+
         // Normalize content if it's an array (e.g. multimodal list of blocks)
         if (Array.isArray(m.content)) {
-          m.content = m.content.map(b => typeof b === 'string' ? b : b?.text || '').join('\n');
+          // Extract image blocks as attachments
+          const imageBlocks = m.content.filter((b: any) => b?.type === 'image' || b?.type === 'image_url');
+          if (imageBlocks.length > 0 && m.role === 'user') {
+            (m as any)._parsedAttachments = imageBlocks.map((b: any) => {
+              // Anthropic format: { type: 'image', source: { type: 'base64', media_type, data } }
+              if (b.source?.type === 'base64') {
+                return {
+                  type: 'image' as const,
+                  url: `data:${b.source.media_type};base64,${b.source.data}`,
+                  name: 'image',
+                };
+              }
+              // URL format
+              if (b.image_url?.url) {
+                return { type: 'image' as const, url: b.image_url.url, name: 'image' };
+              }
+              return null;
+            }).filter(Boolean);
+          }
+          // Extract text content
+          m.content = m.content.map((b: any) => typeof b === 'string' ? b : b?.text || '').join('\n').trim();
         } else if (typeof m.content === 'object' && m.content !== null) {
           m.content = JSON.stringify(m.content);
         } else {
@@ -508,6 +540,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             return !isNaN(ts) ? ts : Date.now();
           })(),
           ...(isInjection ? { isInjection: true } : {}),
+          ...((m as any)._parsedAttachments?.length > 0 ? { attachments: (m as any)._parsedAttachments as ChatAttachment[] } : {}),
         });
       }
 
