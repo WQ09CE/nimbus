@@ -556,8 +556,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return;
       }
 
-      set({ messages, isLoading: false });
-      console.log(`[Store] Loaded ${messages.length} messages for session ${session.id}`);
+      // Merge: 服务器数据为权威，但补全图片 attachments（服务器存储丢失了图片 base64）
+      // 同时过滤掉已被服务器数据覆盖的乐观更新 user 消息（id 以 user- 开头）
+      const existingMessages = get().messages;
+      const optimisticUserMsgs = existingMessages.filter(m =>
+        m.id.startsWith('user-') || m.id.startsWith('user-inject-')
+      );
+
+      // 对服务器返回的每条 user message，尝试从乐观消息里找到对应的 attachments 补进去
+      const mergedMessages: Message[] = messages.map(m => {
+        if (m.role !== 'user' || m.attachments) return m;
+        // 找内容相同的乐观消息
+        const match = optimisticUserMsgs.find(o => {
+          const oText = o.content?.trim() || '';
+          const mText = m.content?.trim() || '';
+          return oText === mText && oText.length > 0;
+        });
+        if (match?.attachments) {
+          return { ...m, attachments: match.attachments };
+        }
+        return m;
+      });
+
+      set({ messages: mergedMessages, isLoading: false });
+      console.log(`[Store] Loaded ${mergedMessages.length} messages for session ${session.id} (merged from server, dropped ${existingMessages.length - mergedMessages.length < 0 ? 0 : existingMessages.length - mergedMessages.length} optimistic duplicates)`);
 
       // Check if session has an active task (agent still running)
       try {
