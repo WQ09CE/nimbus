@@ -974,6 +974,15 @@ class SessionManagerV2:
 
         sse_type = type_mapping.get(event_type, "heartbeat")
 
+        # Special handling for "thinking" token streams to ensure proper text streaming
+        if event_type == "thinking":
+            sse_type = "message"
+            chunk_text = event.data.get("chunk", "")
+            # Forward chunk correctly instead of nesting inside another generic data dict
+            if chunk_text:
+                await self._sse_hub.publish(session_id, "message", {"chunk": chunk_text})
+            return
+
         if is_sub_agent:
             # For sub-agent events, only forward tool calls/results (prefixed)
             # and lifecycle events. Suppress step_start/heartbeat to avoid

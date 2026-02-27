@@ -246,13 +246,26 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, classN
     img: ({ src, alt }: any) => <div className="mb-4 text-center"><img src={src} alt={alt} className="max-w-full h-auto rounded-lg border border-gray-700 shadow-lg inline-block" loading="lazy" /></div>,
   }), []);
 
+  // Auto-close code blocks during streaming to ensure syntax highlighting works in real-time
+  const processedContent = useMemo(() => {
+    if (!isStreaming) return content;
+    // Count occurrences of ```
+    const ticks = (content.match(/```/g) || []).length;
+    // If odd number of ```, the last code block is unclosed
+    if (ticks % 2 !== 0) {
+      // Find the last ``` to see if it has a language tag, but we just need to close it
+      return content + '\n```';
+    }
+    return content;
+  }, [content, isStreaming]);
+
   return (
     <div className={`markdown-content ${className}`}>
       <ReactMarkdown
         remarkPlugins={plugins}
         components={components}
       >
-        {content}
+        {processedContent}
       </ReactMarkdown>
       {isStreaming && <span className="animate-pulse text-blue-400 font-mono ml-1">▍</span>}
     </div>

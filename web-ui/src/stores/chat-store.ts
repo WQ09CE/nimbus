@@ -533,7 +533,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   .filter(tc => tc.id)
                   .map(tc => toolResultsMap.get(tc.id!))
                   .filter((r): r is ToolResult => r !== undefined);
-                
+
                 toolResults = toolResults ? [...toolResults, ...parsedResults] : parsedResults;
               }
             }
@@ -839,14 +839,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
             break;
 
+          case "thinking":
           case "message":
             let newContent = "";
             if (typeof data === "string") {
               newContent = data;
-            } else if (typeof data === "object" && data && "content" in data) {
-              const c = (data as { content?: unknown }).content;
-              if (typeof c === "string") {
-                newContent = c;
+            } else if (typeof data === "object" && data) {
+              const d = data as { content?: unknown; chunk?: unknown };
+              if ("content" in d && typeof d.content === "string") {
+                newContent = d.content;
+              } else if ("chunk" in d && typeof d.chunk === "string") {
+                newContent = d.chunk;
               }
             }
 
@@ -1198,7 +1201,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   const { getSession } = await import("@/lib/api/sessions");
                   const updated = await getSession(currentSession.id);
                   set({ session: updated });
-                } catch {}
+                } catch { }
               }, 5000);
             }
             // Stream completed successfully, exit loop
@@ -1296,8 +1299,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       } else if (
         err instanceof TypeError &&
         (err.message.includes("Load failed") ||
-         err.message.includes("Failed to fetch") ||
-         err.message.includes("network"))
+          err.message.includes("Failed to fetch") ||
+          err.message.includes("network"))
       ) {
         // Network error (e.g., iOS Safari kills fetch when switching apps)
         // Don't show error — visibility change handler will recover
@@ -1324,13 +1327,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // Map code to user-friendly display message with icon hint
         let errorMessage: string;
         switch (errorCode) {
-          case "llm_rate_limit":      errorMessage = rawMessage; break;
-          case "resource_timeout":    errorMessage = rawMessage; break;
-          case "llm_ctx_overflow":    errorMessage = rawMessage; break;
-          case "auth_error":          errorMessage = rawMessage; break;
+          case "llm_rate_limit": errorMessage = rawMessage; break;
+          case "resource_timeout": errorMessage = rawMessage; break;
+          case "llm_ctx_overflow": errorMessage = rawMessage; break;
+          case "auth_error": errorMessage = rawMessage; break;
           case "agent_error":
           case "kernel_system_error": errorMessage = rawMessage; break;
-          default:                    errorMessage = rawMessage;
+          default: errorMessage = rawMessage;
         }
 
         const errorInfo = errorCode
@@ -1390,13 +1393,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
             set({ currentActivity: "已重新连接", lastHeartbeat: Date.now() });
             break;
 
+          case "thinking":
           case "message": {
             let newContent = "";
             if (typeof data === "string") {
               newContent = data;
-            } else if (typeof data === "object" && data && "content" in data) {
-              const c = (data as { content?: unknown }).content;
-              if (typeof c === "string") newContent = c;
+            } else if (typeof data === "object" && data) {
+              const d = data as { content?: unknown; chunk?: unknown };
+              if ("content" in d && typeof d.content === "string") {
+                newContent = d.content;
+              } else if ("chunk" in d && typeof d.chunk === "string") {
+                newContent = d.chunk;
+              }
             }
             if (newContent) {
               assistantContent += newContent;

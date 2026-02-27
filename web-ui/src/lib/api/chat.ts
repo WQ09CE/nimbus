@@ -80,7 +80,8 @@ export type ChatEventType =
   | "dag_complete"
   | "message"
   | "error"
-  | "heartbeat";
+  | "heartbeat"
+  | "thinking";
 
 export interface ChatEvent {
   type: ChatEventType;
