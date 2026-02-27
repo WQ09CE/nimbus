@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .sandbox import Sandbox, SandboxError
-from .utils import DEFAULT_MAX_BYTES, truncate_tail
+from .utils import DEFAULT_MAX_BYTES, auto_offload_result, truncate_tail
 
 
 async def bash_command(
@@ -170,32 +170,32 @@ async def bash_command(
 
         # Build final output
         # Reconstruct from Head + Tail (Memory Safe)
-        full_output = b"".join(chunks) + tail_buffer
+        reconstructed_output = b"".join(chunks) + tail_buffer
         
         is_internal_truncated = False
         # If we dropped data in the middle (between head and tail), insert a marker
-        if total_bytes > len(full_output):
+        if total_bytes > len(reconstructed_output):
              is_internal_truncated = True
-             dropped = total_bytes - len(full_output)
+             dropped = total_bytes - len(reconstructed_output)
              marker = f"\n\n... [Skipped {dropped} bytes of intermediate output] ...\n\n".encode("utf-8")
              # Insert marker between head (chunks) and tail (tail_buffer)
-             full_output = b"".join(chunks) + marker + tail_buffer
+             reconstructed_output = b"".join(chunks) + marker + tail_buffer
 
-        full_text = full_output.decode("utf-8", errors="replace")
+        reconstructed_text = reconstructed_output.decode("utf-8", errors="replace")
         
         if is_internal_truncated:
             # We already truncated strategically (Ring Buffer).
             # Do NOT call truncate_tail(), as it might blindly cut the Head we preserved.
             truncation = {
-                "content": full_text,
+                "content": reconstructed_text,
                 "truncated": True,
                 "total_lines": -1, # Unknown/Irrelevant
-                "output_lines": full_text.count('\n') + 1
+                "output_lines": reconstructed_text.count('\n') + 1
             }
         else:
-            truncation = truncate_tail(full_text)
+            truncation = truncate_tail(reconstructed_text)
 
-        output_text = truncation["content"] or "(no output)"
+        preview_text = truncation["content"] or "(no output)"
 
         # Add truncation notice
         if truncation.get("truncated") or temp_file_path:
@@ -214,13 +214,36 @@ async def bash_command(
             if temp_file_path:
                 extra_info += f" Full output saved to: {temp_file_path}"
                 
-            output_text += f"\n\n[{extra_info}]"
+            preview_text += f"\n\n[{extra_info}]"
 
         # Add exit code info if non-zero (don't raise - let LLM see the error)
         if process.returncode != 0:
-            output_text += f"\n\nCommand exited with code {process.returncode}"
+            preview_text += f"\n\nCommand exited with code {process.returncode}"
 
-        return output_text
+        # If we have a temp file, read the REAL full content from it for offloading
+        # Otherwise use the reconstructed text
+        full_text_for_offload = reconstructed_text
+        if temp_file_path and Path(temp_file_path).exists():
+            try:
+                with open(temp_file_path, "r", encoding="utf-8", errors="replace") as f:
+                    full_text_for_offload = f.read()
+                # Append exit code to full text as well
+                if process.returncode != 0:
+                    full_text_for_offload += f"\n\nCommand exited with code {process.returncode}"
+            except Exception:
+                pass
+
+        # Auto-offload
+        result = auto_offload_result(
+            tool_name="Bash",
+            full_content=full_text_for_offload,
+            truncated_content=preview_text,
+            total_bytes=total_bytes,
+            workspace=workspace,
+            **kwargs,
+        )
+
+        return result
 
     except Exception as e:
         # Re-raise known exceptions

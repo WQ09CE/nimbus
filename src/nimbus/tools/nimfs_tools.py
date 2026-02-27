@@ -106,26 +106,58 @@ async def nimfs_write_artifact(
     )
 
 
-async def nimfs_read_artifact(ref: str, **ctx: Any) -> str:
+async def nimfs_read_artifact(
+    ref: str, offset: int = 1, limit: int = 2000, grep_pattern: Optional[str] = None, **ctx: Any
+) -> str:
     """
-    Read the full content of a NimFS artifact by its nimfs:// reference.
+    Read the content of a NimFS artifact by its nimfs:// reference.
+
+    When reading large artifacts (e.g. from Auto-Offload), use offset/limit to paginate
+    or grep_pattern to filter content to avoid context overflow.
 
     Args:
         ref: "nimfs://artifact/{id}" reference returned by NimFSWriteArtifact.
+        offset: Starting line number (1-indexed). Default is 1.
+        limit: Maximum number of lines to read. Default is 2000.
+        grep_pattern: Optional substring to filter lines.
 
     Returns:
-        Full artifact content string.
+        Artifact content (possibly filtered or paginated).
     """
     manager = _get_manager(**ctx)
     try:
         content = manager.read_artifact(ref)
         manifest = manager.get_artifact_manifest(ref)
+
+        lines = content.splitlines()
+        total_lines = len(lines)
+
+        if grep_pattern:
+            # Filter lines and keep track of original line numbers (1-indexed)
+            filtered_lines = [
+                f"{i+1}: {line}"
+                for i, line in enumerate(lines)
+                if grep_pattern.lower() in line.lower()
+            ]
+            result_content = "\n".join(filtered_lines)
+            if not result_content:
+                result_content = f"No lines matching pattern '{grep_pattern}' found."
+        else:
+            # Paginate
+            start = max(0, offset - 1)
+            end = start + limit
+            chunk = lines[start:end]
+            result_content = "\n".join(chunk)
+
+            if end < total_lines:
+                result_content += f"\n\n[System: Artifact has more lines. Use offset={end + 1} to read next chunk.]"
+
         header = (
             f"<!-- NimFS Artifact: {ref} | "
             f"type={manifest.type} | size={manifest.size_bytes:,}B | "
-            f"producer={manifest.producer} | summary={manifest.summary} -->\n\n"
+            f"lines={total_lines} | producer={manifest.producer} -->\n\n"
         )
-        return header + content
+        return header + result_content
     except ArtifactExpiredError as e:
         return f"❌ ArtifactExpiredError: {e}\nThe artifact has been GC'd. Check if a newer version exists."
     except ArtifactNotFoundError as e:
@@ -440,14 +472,27 @@ NIMFS_WRITE_ARTIFACT_TOOL: Dict[str, Any] = {
 NIMFS_READ_ARTIFACT_TOOL: Dict[str, Any] = {
     "name": "NimFSReadArtifact",
     "description": (
-        "Read the full content of a NimFS artifact by its nimfs://artifact/{id} reference. "
-        "No size limit — retrieves the complete content regardless of file size."
+        "Read the content of a NimFS artifact by its nimfs://artifact/{id} reference. "
+        "When reading large artifacts (e.g. from Auto-Offload), use offset/limit to paginate "
+        "or grep_pattern to filter content to avoid context overflow."
     ),
     "function": nimfs_read_artifact,
     "parameters": {
         "type": "object",
         "properties": {
             "ref": {"type": "string", "description": "nimfs://artifact/{id} reference string"},
+            "offset": {
+                "type": "integer",
+                "description": "Starting line number (1-indexed). Default is 1.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of lines to read. Default is 2000.",
+            },
+            "grep_pattern": {
+                "type": "string",
+                "description": "Optional substring to filter lines.",
+            },
         },
         "required": ["ref"],
     },

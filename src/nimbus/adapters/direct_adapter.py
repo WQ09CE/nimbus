@@ -19,10 +19,14 @@ import logging
 import os
 import platform
 import re
+import socket
+import ssl
 import time
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
+
+from nimbus.core.protocol import Fault
 
 import httpx
 
@@ -62,6 +66,56 @@ def _strip_gemini_thought_id(id_str: str) -> str:
     clean_id = id_str.split("__thought__")[0]
     logger.debug("Stripped Gemini thinking from tool_call ID: %d -> %d chars", len(id_str), len(clean_id))
     return clean_id or id_str
+
+
+def _classify_llm_exception(exc: Exception) -> Fault:
+    """Map transient network/LLM upstream errors to retryable Fault."""
+    msg = str(exc)
+    root = exc.__cause__ or exc
+    root_type = type(root).__name__
+
+    network_types = (
+        asyncio.TimeoutError,
+        TimeoutError,
+        socket.timeout,
+        ConnectionError,
+        ssl.SSLError,
+        httpx.TimeoutException,
+        httpx.ConnectError,
+        httpx.ReadError,
+        httpx.WriteError,
+        httpx.NetworkError,
+        httpx.ProtocolError,
+        httpx.RemoteProtocolError,
+        httpx.ProxyError,
+    )
+
+    retryable = isinstance(exc, network_types) or isinstance(root, network_types)
+    domain = "NETWORK" if retryable else "LLM"
+    code = "TIMEOUT" if isinstance(exc, (asyncio.TimeoutError, TimeoutError, socket.timeout, httpx.TimeoutException)) else "SYSTEM_ERROR"
+
+    # HTTP status based transient classification (5xx / 429)
+    response = getattr(exc, "response", None) or getattr(root, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code is not None:
+        if status_code >= 500 or status_code == 429:
+            retryable = True
+            domain = "NETWORK"
+        else:
+            domain = "LLM"
+
+    return Fault(
+        domain=domain,
+        code=code,
+        message=f"LLM call failed: {msg}",
+        retryable=retryable,
+        context={
+            "exception_type": type(exc).__name__,
+            "root_exception_type": root_type,
+            "status_code": status_code,
+            "error": msg,
+        },
+    )
 
 
 class DirectAdapter:
@@ -316,7 +370,9 @@ class DirectAdapter:
 
         except Exception as e:
             logger.error(f"DirectAdapter chat failed: {e}")
-            raise RuntimeError(f"LLM call failed: {e}")
+            if isinstance(e, Fault):
+                raise
+            raise _classify_llm_exception(e)
 
         content = "".join(full_content)
 

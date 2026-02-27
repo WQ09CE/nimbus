@@ -131,8 +131,9 @@ export async function* apiStream(
   endpoint: string,
   data?: unknown,
   signal?: AbortSignal,
-  method: string = "POST"
-): AsyncGenerator<{ type: string; data: unknown }> {
+  method: string = "POST",
+  headers?: Record<string, string>
+): AsyncGenerator<{ type: string; data: unknown; id?: string }> {
   const url = `${STREAM_BASE}${endpoint}`;
   const reqId = generateRequestId();
   logger.info(`[API] Stream ${method} ${url} (req_id=${reqId})`);
@@ -142,6 +143,7 @@ export async function* apiStream(
     headers: {
       "Content-Type": "application/json",
       "X-Request-ID": reqId,
+      ...headers,
     },
     signal,
   };
@@ -170,6 +172,7 @@ export async function* apiStream(
 
   try {
     let currentEvent = "message";
+    let lastEventId = "";
 
     while (true) {
       const { done, value } = await reader.read();
@@ -188,15 +191,17 @@ export async function* apiStream(
 
         if (line.startsWith("event: ")) {
           currentEvent = line.slice(7).trim();
+        } else if (line.startsWith("id: ")) {
+          lastEventId = line.slice(4).trim();
         } else if (line.startsWith("data: ")) {
           const dataStr = line.slice(6);
           logger.debug(`[API] Event: ${currentEvent} (req_id=${reqId})`, dataStr.slice(0, 50));
           try {
             const data = JSON.parse(dataStr);
-            yield { type: currentEvent, data };
+            yield { type: currentEvent, data, id: lastEventId };
           } catch {
             // Non-JSON data
-            yield { type: currentEvent, data: dataStr };
+            yield { type: currentEvent, data: dataStr, id: lastEventId };
           }
         }
       }

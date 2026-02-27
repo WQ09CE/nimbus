@@ -9,13 +9,22 @@ import {
   type ToolResult,
   type ServerMessage,
   type ChatAttachment,
+  type ChatEvent,
   createSession,
   streamChat,
   injectMessage,
   getSessionMessages,
   getSession,
+  subscribeToEvents,
 } from "@/lib/api";
 import { useWorkflowStore } from "./workflow-store";
+
+// Use BroadcastChannel for multi-tab event distribution
+const BC_NAME = "nimbus_chat_events";
+let broadcastChannel: BroadcastChannel | null = null;
+if (typeof window !== "undefined") {
+  broadcastChannel = new BroadcastChannel(BC_NAME);
+}
 
 export interface Message {
   id: string;
@@ -42,6 +51,7 @@ interface ToolCallData {
   args?: Record<string, unknown>;
   arguments?: Record<string, unknown>;
   parent_action_id?: string;  // For sub_tool_call: routes to the correct ParallelDispatch parent
+  event_id?: string;
   [key: string]: unknown;
 }
 
@@ -57,6 +67,7 @@ interface ToolResultData {
   status?: string;
   fault?: { message: string;[key: string]: unknown };
   parent_action_id?: string;  // For sub_tool_result: routes to the correct ParallelDispatch parent
+  event_id?: string;
   [key: string]: unknown;
 }
 
@@ -73,6 +84,7 @@ interface ChatState {
   streamingToolCalls: ToolCall[];
   streamingToolResults: ToolResult[];
   messageQueue: string[]; // Queued user messages
+  lastEventId: string | null;
 
   // Real-time progress indicators
   thinkingIteration: number | null;  // Current thinking iteration
@@ -89,6 +101,9 @@ interface ChatState {
   errorInfo: { code: string; message: string; retryable: boolean; errorId?: string } | null;
   isCreatingSession: boolean;  // Prevent concurrent session creation
 
+  // Internal
+  isLeader: boolean;
+
   // Actions
   createNewSession: (
     force?: boolean,
@@ -103,6 +118,7 @@ interface ChatState {
   loadSession: (sessionId: string) => Promise<void>;
   sendMessage: (content: string, attachments?: ChatAttachment[]) => Promise<void>;
   reconnectToSession: (sessionId: string) => Promise<void>;
+  handleServerEvent: (event: ChatEvent, isForwarded?: boolean) => void;
   retryLastMessage: () => void;
   interruptMessage: () => void;
   clearError: () => void;
@@ -117,6 +133,7 @@ const initialState = {
   streamingToolCalls: [],
   streamingToolResults: [],
   messageQueue: [],
+  lastEventId: null,
   thinkingIteration: null,
   currentActivity: null,
   lastHeartbeat: null,
@@ -126,6 +143,7 @@ const initialState = {
   error: null,
   errorInfo: null,
   isCreatingSession: false,
+  isLeader: false,
 };
 
 // Tools that spawn sub-agents and can contain nested sub_tool_call/sub_tool_result
@@ -1827,6 +1845,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Abort the client-side SSE stream
       streamAbortController.abort();
     }
+  },
+
+  handleServerEvent: (event: ChatEvent, isForwarded?: boolean) => {
+    // This action can be used to manually inject events into the store's stream logic
+    // or handle events broadcasted from other tabs.
+    // Currently, streamChat handles events internally, but this is required by ChatState.
+    console.debug("[Store] handleServerEvent", event, isForwarded);
   },
 
   reset: () => { useWorkflowStore.getState().reset(); set(initialState); },

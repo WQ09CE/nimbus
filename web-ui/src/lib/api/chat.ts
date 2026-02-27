@@ -85,6 +85,7 @@ export type ChatEventType =
 export interface ChatEvent {
   type: ChatEventType;
   data: unknown;
+  id?: string;
 }
 
 /**
@@ -143,10 +144,15 @@ export async function* streamChat(
  */
 export async function* subscribeToEvents(
   sessionId: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  lastEventId?: string
 ): AsyncGenerator<ChatEvent> {
   const endpoint = `/api/v1/sessions/${sessionId}/events`;
-  for await (const event of apiStream(endpoint, undefined, signal, "GET")) {
+  const headers: Record<string, string> = {};
+  if (lastEventId) {
+    headers["Last-Event-ID"] = lastEventId;
+  }
+  for await (const event of apiStream(endpoint, undefined, signal, "GET", headers)) {
     yield event as ChatEvent;
   }
 }

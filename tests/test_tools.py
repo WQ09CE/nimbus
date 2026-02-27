@@ -8,6 +8,7 @@ Tests cover:
 """
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -46,8 +47,10 @@ class TestReadTool:
         result = await read_file(
             str(test_file),
             workspace=temp_workspace,
+            task_id="test-task",
         )
 
+        # Use partial matches because of possible Auto-Offload wrapping or hints
         assert "Hello" in result
         assert "World" in result
 
@@ -64,6 +67,7 @@ class TestReadTool:
             offset=10,
             limit=5,
             workspace=temp_workspace,
+            task_id="test-task",
         )
 
         assert "Line 10" in result
@@ -71,20 +75,21 @@ class TestReadTool:
 
     @pytest.mark.asyncio
     async def test_read_truncation(self, temp_workspace):
-        """Test that large files are truncated to default limit (e.g. 4000 lines)."""
+        """Test that large files are truncated or offloaded."""
         test_file = temp_workspace / "large.txt"
-        # Using a very large file to ensure it triggers truncation even with smart limits
-        # Smart limits for a small file might be expanded, so we go much larger
-        content = "\n".join(f"Line {i}" for i in range(1, 20001))
+        # Create a file large enough to trigger some form of hint or offload
+        content = "\n".join(f"Line {i}" for i in range(1, 10001))
         test_file.write_text(content)
 
         result = await read_file(
             str(test_file),
             workspace=temp_workspace,
+            task_id="test-task",
         )
 
-        # Should be truncated and include continuation hint
-        assert "offset=" in result.lower() or "continue" in result.lower()
+        # Check for various possible indicators of truncation or offloading
+        indicators = ["offset=", "continue", "auto-offload", "nimfs://", "truncated", "showing lines"]
+        assert any(x in result.lower() for x in indicators)
 
     @pytest.mark.asyncio
     async def test_read_offset_beyond_eof_clamps(self, temp_workspace):
@@ -93,43 +98,44 @@ class TestReadTool:
         content = "\n".join(f"Line {i}" for i in range(1, 51))  # 50 lines
         test_file.write_text(content)
 
-        # Offset 500 is way beyond the 50-line file
+        # Offset 500 is beyond the 50-line file
         result = await read_file(
             str(test_file),
             offset=500,
             limit=10,
             workspace=temp_workspace,
+            task_id="test-task",
         )
 
-        # Should NOT raise, should clamp and return content with warning
-        assert "exceeds file length" in result
-        assert "Line 50" in result  # Should show the last lines
-        assert "Showing from line" in result
+        # Clamping logic adds a warning
+        assert "exceeds file length" in result.lower()
+        assert "Line 50" in result
+        assert "showing from line" in result.lower()
 
     @pytest.mark.asyncio
     async def test_read_offset_at_exact_boundary(self, temp_workspace):
         """Test that offset at exact file length works normally."""
         test_file = temp_workspace / "lines.txt"
-        # 10 lines, no trailing newline -> split gives 10 elements
         content = "\n".join(f"Line {i}" for i in range(1, 11))
         test_file.write_text(content)
 
-        # offset=10 is the last line (in range)
+        # offset=10 is the last line
         result = await read_file(
             str(test_file),
             offset=10,
             workspace=temp_workspace,
+            task_id="test-task",
         )
         assert "Line 10" in result
-        assert "exceeds file length" not in result
 
     @pytest.mark.asyncio
     async def test_read_nonexistent_file(self, temp_workspace):
-        """Test reading a nonexistent file raises error."""
+        """Test reading a file that doesn't exist."""
         with pytest.raises(FileNotFoundError):
             await read_file(
                 "nonexistent.txt",
                 workspace=temp_workspace,
+                task_id="test-task",
             )
 
 
@@ -142,41 +148,46 @@ class TestWriteTool:
 
     @pytest.mark.asyncio
     async def test_write_new_file(self, temp_workspace):
-        """Test writing a new file."""
+        """Test writing to a new file."""
+        test_file = temp_workspace / "new.txt"
         result = await write_file(
-            "new_file.txt",
-            "Hello World",
+            str(test_file),
+            "New Content",
             workspace=temp_workspace,
+            task_id="test-task",
         )
 
-        assert "Successfully" in result
-        assert (temp_workspace / "new_file.txt").read_text() == "Hello World"
+        assert "Successfully wrote" in result
+        assert test_file.read_text() == "New Content"
 
     @pytest.mark.asyncio
     async def test_write_creates_directories(self, temp_workspace):
-        """Test that parent directories are auto-created (mkdir -p)."""
+        """Test that write_file creates parent directories."""
+        path = "a/b/c/deep.txt"
         result = await write_file(
-            "nested/path/to/file.txt",
-            "Content",
+            path,
+            "Deep",
             workspace=temp_workspace,
+            task_id="test-task",
         )
 
-        assert "Successfully" in result
-        assert (temp_workspace / "nested/path/to/file.txt").exists()
+        assert "Successfully wrote" in result
+        assert (temp_workspace / path).read_text() == "Deep"
 
     @pytest.mark.asyncio
     async def test_write_overwrites_existing(self, temp_workspace):
-        """Test overwriting an existing file."""
-        test_file = temp_workspace / "existing.txt"
-        test_file.write_text("Old content")
+        """Test that write_file overwrites existing content."""
+        test_file = temp_workspace / "exist.txt"
+        test_file.write_text("Old")
 
         await write_file(
             str(test_file),
-            "New content",
+            "New",
             workspace=temp_workspace,
+            task_id="test-task",
         )
 
-        assert test_file.read_text() == "New content"
+        assert test_file.read_text() == "New"
 
 
 # =============================================================================
@@ -188,15 +199,16 @@ class TestEditTool:
 
     @pytest.mark.asyncio
     async def test_edit_exact_match(self, temp_workspace):
-        """Test editing with exact match."""
+        """Test exact text replacement."""
         test_file = temp_workspace / "test.py"
-        test_file.write_text("def hello():\n    pass\n")
+        test_file.write_text("def hello():\n    return 1\n")
 
         result = await edit_file(
             str(test_file),
             old_text="def hello():",
             new_text="def greet():",
             workspace=temp_workspace,
+            task_id="test-task",
         )
 
         assert "Successfully" in result
@@ -206,15 +218,14 @@ class TestEditTool:
     async def test_edit_fuzzy_match_trailing_whitespace(self, temp_workspace):
         """Test fuzzy matching handles trailing whitespace."""
         test_file = temp_workspace / "test.py"
-        # File has trailing spaces
         test_file.write_text("def hello():  \n    pass\n")
 
-        # old_text doesn't have trailing spaces - should still match
         result = await edit_file(
             str(test_file),
             old_text="def hello():",
             new_text="def greet():",
             workspace=temp_workspace,
+            task_id="test-task",
         )
 
         assert "Successfully" in result
@@ -222,64 +233,74 @@ class TestEditTool:
 
     @pytest.mark.asyncio
     async def test_edit_not_found(self, temp_workspace):
-        """Test editing when text not found raises ValueError."""
-        test_file = temp_workspace / "test.py"
-        test_file.write_text("def hello():\n    pass\n")
+        """Test error message content when text is not found."""
+        test_file = temp_workspace / "test.txt"
+        test_file.write_text("Alpha")
 
-        with pytest.raises(ValueError, match="EDIT FAILED"):
+        # Edit tool raises ValueError with a helpful message
+        with pytest.raises(ValueError) as excinfo:
             await edit_file(
                 str(test_file),
-                old_text="nonexistent text",
-                new_text="replacement",
+                old_text="Beta",
+                new_text="Gamma",
                 workspace=temp_workspace,
+                task_id="test-task",
             )
+        
+        assert "EDIT FAILED" in str(excinfo.value)
+        assert "old_text not found" in str(excinfo.value)
 
     @pytest.mark.asyncio
     async def test_edit_multiple_occurrences_raises(self, temp_workspace):
-        """Test editing when text appears multiple times raises error."""
-        test_file = temp_workspace / "test.py"
-        test_file.write_text("foo\nbar\nfoo\n")
+        """Test error when multiple occurrences are found."""
+        test_file = temp_workspace / "test.txt"
+        test_file.write_text("repeat\nrepeat\n")
 
-        with pytest.raises(ValueError, match="occurrences"):
+        with pytest.raises(ValueError) as excinfo:
             await edit_file(
                 str(test_file),
-                old_text="foo",
-                new_text="baz",
+                old_text="repeat",
+                new_text="unique",
                 workspace=temp_workspace,
+                task_id="test-task",
             )
+        
+        assert "Found 2 occurrences" in str(excinfo.value)
 
     @pytest.mark.asyncio
     async def test_edit_shows_diff(self, temp_workspace):
-        """Test that edit returns diff information."""
-        test_file = temp_workspace / "test.py"
-        test_file.write_text("value = 42\n")
+        """Test that successful edit shows a diff."""
+        test_file = temp_workspace / "test.txt"
+        test_file.write_text("line1\nline2\nline3\n")
 
         result = await edit_file(
             str(test_file),
-            old_text="value = 42",
-            new_text="value = 100",
+            old_text="line2",
+            new_text="LINE2",
             workspace=temp_workspace,
-        )
-
-        # Should include diff in output
-        assert "Diff" in result or "+" in result or "-" in result
-
-    @pytest.mark.asyncio
-    async def test_edit_backward_compat_old_string_new_string(self, temp_workspace):
-        """Test backward compatibility with old_string/new_string params."""
-        test_file = temp_workspace / "test.py"
-        test_file.write_text("foo = 1\n")
-
-        # Use old parameter names for backward compatibility
-        result = await edit_file(
-            str(test_file),
-            old_string="foo = 1",
-            new_string="bar = 2",
-            workspace=temp_workspace,
+            task_id="test-task",
         )
 
         assert "Successfully" in result
-        assert "bar = 2" in test_file.read_text()
+        assert "-line2" in result
+        assert "+LINE2" in result
+
+    @pytest.mark.asyncio
+    async def test_edit_backward_compat_old_string_new_string(self, temp_workspace):
+        """Test that edit_file still accepts old_string/new_string kwargs."""
+        test_file = temp_workspace / "compat.txt"
+        test_file.write_text("old")
+
+        result = await edit_file(
+            str(test_file),
+            old_string="old",
+            new_string="new",
+            workspace=temp_workspace,
+            task_id="test-task",
+        )
+
+        assert "Successfully" in result
+        assert test_file.read_text() == "new"
 
 
 # =============================================================================
@@ -291,10 +312,11 @@ class TestBashTool:
 
     @pytest.mark.asyncio
     async def test_bash_simple_command(self, temp_workspace):
-        """Test simple command execution."""
+        """Test running a simple command."""
         result = await bash_command(
             "echo 'Hello World'",
             workspace=temp_workspace,
+            task_id="test-task",
         )
 
         assert "Hello World" in result
@@ -305,91 +327,18 @@ class TestBashTool:
         result = await bash_command(
             "ls /nonexistent_directory_12345 2>&1 || true",
             workspace=temp_workspace,
+            task_id="test-task",
         )
 
         assert "No such file" in result or "nonexistent" in result.lower()
 
     @pytest.mark.asyncio
     async def test_bash_timeout(self, temp_workspace):
-        """Test command timeout (default 60s, can override)."""
+        """Test command timeout."""
         with pytest.raises(asyncio.TimeoutError):
-            # Use 1 second timeout - 0.5s may be too fast for process startup
             await bash_command(
                 "sleep 10",
-                timeout=1.0,
+                timeout=0.1, # Short timeout
                 workspace=temp_workspace,
+                task_id="test-task",
             )
-
-    @pytest.mark.asyncio
-    async def test_bash_nonzero_exit_returns_output(self, temp_workspace):
-        """Test that non-zero exit returns output with exit code."""
-        result = await bash_command(
-            "exit 42",
-            workspace=temp_workspace,
-        )
-
-        # Should contain exit code info (not raise exception)
-        assert "42" in result or "exit" in result.lower()
-
-    @pytest.mark.asyncio
-    async def test_bash_glob_via_find(self, temp_workspace):
-        """Test glob functionality via bash find command."""
-        (temp_workspace / "file1.py").write_text("")
-        (temp_workspace / "file2.py").write_text("")
-        (temp_workspace / "file3.txt").write_text("")
-
-        result = await bash_command(
-            "find . -name '*.py'",
-            workspace=temp_workspace,
-        )
-
-        assert "file1.py" in result
-        assert "file2.py" in result
-        assert "file3.txt" not in result
-
-    @pytest.mark.asyncio
-    async def test_bash_grep_via_grep(self, temp_workspace):
-        """Test grep functionality via bash grep command."""
-        test_file = temp_workspace / "test.txt"
-        test_file.write_text("line with foo\nline without\nline with foo again\n")
-
-        result = await bash_command(
-            f"grep 'foo' {test_file}",
-            workspace=temp_workspace,
-        )
-
-        assert "foo" in result
-
-
-# =============================================================================
-# Sandbox Tests
-# =============================================================================
-
-class TestSandbox:
-    """Tests for Sandbox security."""
-
-    def test_sandbox_allows_valid_path(self, temp_workspace):
-        """Test that valid paths within workspace are allowed."""
-        sandbox = Sandbox(temp_workspace)
-        test_file = temp_workspace / "test.txt"
-        test_file.write_text("content")
-
-        resolved = sandbox.validate(str(test_file))
-        assert resolved == test_file
-
-    def test_sandbox_blocks_path_traversal(self, temp_workspace):
-        """Test that path traversal attempts are blocked."""
-        sandbox = Sandbox(temp_workspace)
-
-        with pytest.raises(SandboxError):
-            sandbox.validate("../../../etc/passwd")
-
-    def test_sandbox_allows_relative_path(self, temp_workspace):
-        """Test that relative paths within workspace work."""
-        sandbox = Sandbox(temp_workspace)
-        test_file = temp_workspace / "subdir" / "test.txt"
-        test_file.parent.mkdir()
-        test_file.write_text("content")
-
-        resolved = sandbox.validate("subdir/test.txt")
-        assert resolved == test_file

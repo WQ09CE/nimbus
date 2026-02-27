@@ -6,19 +6,26 @@ Based on pi-coding-agent source code.
 
 import difflib
 import re
-from typing import Any, Dict, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from nimbus.core.nimfs.manager import NimFSManager
+from nimbus.core.nimfs.models import ArtifactTTL
 
 # =============================================================================
 # Constants
 # =============================================================================
 
 # SMART LIMITS: Optimized for modern 100k+ context LLMs (Claude, GPT-4, etc.)
-# Previous: 300 lines / 12KB (too conservative for modern models)
-# Current: Intelligent scaling based on context capacity and file size
+# Previous: 4000 lines / 200KB
+# Current: Support Auto-Offload with massive default limits to prevent manual pagination
 
-# Base limits for 100k+ context models (generous for modern LLMs)
-DEFAULT_MAX_LINES = 4000  # ~200KB for typical code files
-DEFAULT_MAX_BYTES = 200 * 1024  # 200KB ≈ 66k tokens (vs old 100KB)
+# Large default limits for Auto-Offload safety net
+DEFAULT_MAX_LINES = 100000  # 100k lines
+DEFAULT_MAX_BYTES = 5 * 1024 * 1024  # 5MB ≈ 1.5M tokens
+
+# Threshold for Auto-Offload to NimFS
+OFFLOAD_THRESHOLD_BYTES = 100 * 1024  # 100KB
 
 
 def get_smart_limits(context_capacity: Optional[int] = None, file_size: Optional[int] = None) -> tuple[int, int]:
@@ -358,3 +365,197 @@ def truncate_tail(
         "output_lines": len(output_lines),
         "output_bytes": len(output_content.encode("utf-8")),
     }
+
+
+# =============================================================================
+# NimFS Auto-Offload (Claim-Check Pattern)
+# =============================================================================
+
+
+def auto_offload_result(
+    tool_name: str,
+    full_content: str,
+    truncated_content: str,
+    total_bytes: int,
+    threshold: int = OFFLOAD_THRESHOLD_BYTES,
+    **ctx: Any,
+) -> str:
+    """
+    Automatically offload large tool output to NimFS Artifact.
+
+    Args:
+        tool_name: Name of the tool (e.g., 'Bash', 'Read')
+        full_content: The complete, non-truncated output
+        truncated_content: The preview/summary content to show to the model
+        total_bytes: Total size of the full content
+        threshold: Size threshold to trigger offload
+        **ctx: Tool execution context (must contain workspace/task_id)
+
+    Returns:
+        Formatted string for the model, including NimFS reference if offloaded.
+    """
+    if total_bytes <= threshold:
+        return truncated_content
+
+    workspace = ctx.get("workspace") or ctx.get("cwd") or str(Path.cwd())
+    task_id = ctx.get("task_id") or "auto-offload"
+    role = ctx.get("agent_role") or ctx.get("role") or "agent"
+
+    try:
+        manager = NimFSManager(str(workspace))
+        ref = manager.write_artifact(
+            content=full_content,
+            task_id=task_id,
+            producer=role,
+            artifact_type="text",
+            ttl=ArtifactTTL.SESSION,
+            summary=f"Auto-offloaded output from tool '{tool_name}' ({format_size(total_bytes)})",
+            tags=["auto-offload", tool_name.lower()],
+        )
+
+        offload_msg = (
+            f"[NimFS Auto-Offload] Tool '{tool_name}' returned {total_bytes:,} bytes "
+            f"(exceeded {threshold // 1024}KB threshold).\n"
+            f"Full output stored at: {ref}\n"
+            f"Use NimFSReadArtifact(ref='{ref}') to retrieve the complete content.\n\n"
+            f"Preview:\n{truncated_content}"
+        )
+        return offload_msg
+    except Exception as e:
+        # Fallback to standard truncation message if NimFS fails
+        return (
+            f"⚠️ [Truncated] Output too large ({format_size(total_bytes)}). "
+            f"NimFS offload failed: {str(e)}\n\n"
+            f"Preview:\n{truncated_content}"
+        )
+
+
+import os
+from nimbus.core.nimfs.manager import NimFSManager
+from nimbus.core.nimfs.models import ArtifactTTL
+
+def auto_offload_file(file_path, tool_name="Read", workspace=None):
+    """Stream a file directly to NimFS Artifact and return the summary response."""
+    manager = NimFSManager()
+    file_size = os.path.get_size(file_path)
+    
+    # Create artifact via stream
+    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+        content = f.read() # Still reading to memory for now to keep it simple, but we can optimize later
+        # Actually, let's just use the manager's write method which is what we have
+        artifact = manager.write_artifact(
+            content=content,
+            type="text",
+            summary=f"Auto-offloaded large output from {tool_name} ({file_size/1024:.1f}KB)",
+            ttl=ArtifactTTL.SESSION
+        )
+    
+    ref = f"nimfs://artifact/{artifact.id}"
+    return (
+        f"[NimFS Auto-Offload] {tool_name} output ({file_size/1024:.1f}KB) "
+        f"exceeded threshold. Full content stored at: {ref}\n\n"
+        f"Use NimFSReadArtifact(ref='{ref}') to retrieve the complete content."
+    )
+
+# Now read existing utils.py and append this
+with open('src/nimbus/tools/utils.py', 'r') as f:
+    lines = f.readlines()
+
+# Check if already exists
+if 'def auto_offload_file' not in "".join(lines):
+    with open('src/nimbus/tools/utils.py', 'a') as f:
+        f.write("\n\n" + open('fix_utils.py').read())
+    print("Updated utils.py")
+else:
+    print("utils.py already updated")
+
+import os
+import uuid
+import json
+import logging
+from pathlib import Path
+from typing import Optional, List
+
+from nimbus.core.nimfs.manager import NimFSManager
+from nimbus.core.nimfs.models import ArtifactTTL, ArtifactStatus, ArtifactManifest
+
+logger = logging.getLogger(__name__)
+
+def auto_offload_file(file_path: str, tool_name: str = "Read", workspace: Optional[str] = None) -> str:
+    """
+    Stream a large file directly to NimFS Artifact to prevent OOM and context overflow.
+    Returns a nimfs:// reference and a summary.
+    """
+    if workspace is None:
+        workspace = str(Path.cwd())
+        
+    try:
+        manager = NimFSManager(workspace)
+        file_size = os.path.getsize(file_path)
+        
+        # 1. Prepare Artifact ID and Metadata
+        task_id = "auto-offload"
+        artifact_id = f"{task_id}-{uuid.uuid4().hex[:8]}"
+        artifact_type = "text"
+        filename = "content.txt"
+        
+        task_dir = manager.artifacts_root / task_id
+        task_dir.mkdir(parents=True, exist_ok=True)
+        
+        manifest_path = task_dir / "manifest.json"
+        
+        # 2. Phase 1: Create PENDING manifest
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+        
+        manifest_data = {
+            "artifact_id": artifact_id,
+            "task_id": task_id,
+            "producer": "agent",
+            "type": artifact_type,
+            "filename": filename,
+            "size_bytes": file_size,
+            "created_at": now_iso,
+            "ttl": ArtifactTTL.SESSION.value,
+            "status": ArtifactStatus.PENDING.value,
+            "summary": f"Auto-offloaded large file from {tool_name} ({file_size/1024:.1f}KB)",
+            "tags": ["auto-offload", tool_name.lower()]
+        }
+        
+        with open(manifest_path, 'w', encoding='utf-8') as f:
+            json.dump(manifest_data, f, indent=2)
+            
+        # 3. Phase 2: Stream content (64KB chunks)
+        content_path = task_dir / filename
+        with open(file_path, 'r', encoding='utf-8', errors='replace') as src:
+            with open(content_path, 'w', encoding='utf-8') as dst:
+                while True:
+                    chunk = src.read(64 * 1024)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+                    
+        # 4. Phase 3: Commit
+        manifest_data["status"] = ArtifactStatus.COMMITTED.value
+        with open(manifest_path, 'w', encoding='utf-8') as f:
+            json.dump(manifest_data, f, indent=2)
+            
+        # 5. Phase 4: Update Index (using manager's internal method if possible, 
+        # but since it's private and handles locking, we'll try to use the public API if it existed)
+        # Actually, manager._append_to_index is what we need.
+        try:
+            manifest_obj = ArtifactManifest.from_dict(manifest_data)
+            manager._append_to_index(manifest_obj)
+        except Exception as e:
+            logger.error(f"Failed to update NimFS index: {e}")
+            
+        ref = f"nimfs://artifact/{artifact_id}"
+        return (
+            f"[NimFS Auto-Offload] {tool_name} output ({file_size/1024:.1f}KB) "
+            f"exceeded threshold. Full content stored at: {ref}\n\n"
+            f"Use NimFSReadArtifact(ref='{ref}') to retrieve the complete content."
+        )
+        
+    except Exception as e:
+        logger.error(f"Auto-offload failed: {e}")
+        return f"⚠️ [Error] Auto-offload failed for {file_path}: {str(e)}"

@@ -22,11 +22,13 @@ Examples:
 """
 
 import mimetypes
+import os
 from pathlib import Path
 from typing import Any, Optional
 
 from .utils import (
     DEFAULT_MAX_BYTES,
+    auto_offload_result,
     format_size,
     get_smart_limits,
     truncate_head,
@@ -43,10 +45,14 @@ async def read_file(
     """
     Read the contents of a file. Supports text files and images.
 
+    Do NOT manually paginate (e.g., limit=10). Always read the entire file at once
+    by omitting offset and limit. The system has an Auto-Offload safety net that
+    will safely handle large files.
+
     For text files:
-    - Output is truncated to 2000 lines or 50KB (whichever is hit first)
-    - Use offset/limit for large files
-    - Lines are 1-indexed (user-friendly)
+    - Output is truncated to 100,000 lines or 5MB (whichever is hit first)
+    - If output is very large, it will be automatically offloaded to a reference
+    - Use offset/limit ONLY if you specifically need a small sub-segment
 
     For images (jpg, png, gif, webp):
     - Returned as base64 attachments
@@ -144,12 +150,18 @@ async def _read_text(
     except Exception as e:
         raise OSError(f"Failed to stat file: {str(e)}")
 
-    # If file is "small" (< 1MB), read fully for accurate line counts (legacy behavior)
-    if file_size < 1024 * 1024:
-        return await _read_small_text(file_path, offset, limit, original_path)
+    # FAST PATH: Auto-offload large full file read without loading into memory
+    if offset is None and limit is None and file_size > 500 * 1024:
+        from .utils import auto_offload_file
 
-    # Large file optimization
-    return await _read_large_text(file_path, offset, limit, original_path, file_size)
+        return auto_offload_file(str(file_path), tool_name="Read")
+
+    # Large file optimization (> 1MB)
+    if file_size >= 1024 * 1024:
+        return await _read_large_text(file_path, offset, limit, original_path, file_size)
+
+    # Small file path
+    return await _read_small_text(file_path, offset, limit, original_path)
 
 
 async def _read_small_text(
@@ -182,7 +194,7 @@ async def _read_small_text(
         effective_limit = limit if limit is not None else smart_max_lines
         start_line = max(0, total_lines - effective_limit)
         clamp_warning = (
-            f"\u26a0\ufe0f Requested offset {original_offset} exceeds file length "
+            f"⚠️ Requested offset {original_offset} exceeds file length "
             f"({total_lines} lines). Showing from line {start_line + 1}.\n\n"
         )
 
@@ -207,31 +219,39 @@ async def _read_small_text(
             f"Use bash: sed -n '{start_line + 1}p' {file_path.name} | head -c {smart_max_bytes}]"
         )
 
-    output_text = truncation["content"]
+    preview_text = truncation["content"]
 
     if truncation["truncated"]:
         end_line_display = start_line + truncation["output_lines"]
         next_offset = end_line_display + 1
 
         if truncation["truncated_by"] == "lines":
-            output_text += (
+            preview_text += (
                 f"\n\n[Showing lines {start_line + 1}-{end_line_display} of {total_lines}. "
                 f"Use offset={next_offset} to continue.]"
             )
         else:
             max_size = format_size(smart_max_bytes)
-            output_text += (
+            preview_text += (
                 f"\n\n[Showing lines {start_line + 1}-{end_line_display} of {total_lines} "
                 f"({max_size} limit). Use offset={next_offset} to continue.]"
             )
     elif user_limited_lines is not None and start_line + user_limited_lines < total_lines:
         remaining = total_lines - (start_line + user_limited_lines)
         next_offset = start_line + user_limited_lines + 1
-        output_text += (
+        preview_text += (
             f"\n\n[{remaining} more lines in file. Use offset={next_offset} to continue.]"
         )
 
-    return clamp_warning + output_text
+    # Auto-offload if original selected content is large
+    result = auto_offload_result(
+        tool_name="Read",
+        full_content=selected_content,
+        truncated_content=preview_text,
+        total_bytes=len(selected_content.encode("utf-8")),
+    )
+
+    return clamp_warning + result
 
 
 async def _read_large_text(
@@ -256,10 +276,10 @@ async def _read_large_text(
     bytes_read = 0
 
     # Use smart limits unless user specified a smaller limit
-    max_lines = limit if limit is not None else smart_max_lines
+    max_lines = limit if limit is not None else DEFAULT_MAX_LINES
     # Cap to smart limit if user limit is too large
-    if limit is None or limit > smart_max_lines:
-        max_lines = smart_max_lines
+    if limit is None or limit > DEFAULT_MAX_LINES:
+        max_lines = DEFAULT_MAX_LINES
 
     truncated_by_bytes = False
     truncated_by_lines = False
@@ -281,7 +301,7 @@ async def _read_large_text(
                 effective_limit = limit if limit is not None else max_lines
                 clamped_start = max(0, total_lines - effective_limit)
                 clamp_warning = (
-                    f"\u26a0\ufe0f Requested offset {original_offset} exceeds file length "
+                    f"⚠️ Requested offset {original_offset} exceeds file length "
                     f"({total_lines} lines). Showing from line {clamped_start + 1}.\n\n"
                 )
                 # Re-read from clamped position
@@ -314,16 +334,7 @@ async def _read_large_text(
                     truncated_by_bytes = True
                     break
 
-                lines_read.append(line.rstrip("\n")) # strip for display, add back later?
-                # Wait, original implementation kept newlines?
-                # lines = content.split("\n") removes them from the list elements if using split
-                # But then join adds them back.
-                # readline() keeps \n.
-                # If we use .rstrip("\n"), we lose it.
-                # Let's keep consistent with _read_small_text which splits by \n
-                # content.split("\n") -> ["line1", "line2", ...] (no \n at end of strings)
-                # So we should strip \n here.
-
+                lines_read.append(line.rstrip("\n"))
                 bytes_read += line_bytes
 
             # Check if there is more content (for truncation flags)
@@ -359,21 +370,17 @@ async def _read_large_text(
 
     if truncated_by_bytes or truncated_by_lines:
         hint += f". Use offset={next_offset} to read more.]"
-    else:
-        # We don't know if there are more lines unless we counted them all or hit EOF
-        # If we hit EOF (loop ended naturally and not truncated), we are done.
-        # But wait, lines_read < max_lines means we hit EOF.
-        # So we only need hint if truncated.
-        pass
 
+    preview_text = output_text
     if truncated_by_bytes or truncated_by_lines:
-        output_text += hint
-    elif len(lines_read) < max_lines and limit is not None:
-         # User set a limit, and we read less than limit -> EOF reached.
-         # Or user set a limit, and we read exactly limit -> Maybe more?
-         pass
+        preview_text += hint
 
-    # For large files, we might not know total_lines without scanning.
-    # We omit "of {total_lines}" to save time.
+    # Auto-offload
+    result = auto_offload_result(
+        tool_name="Read",
+        full_content=output_text,
+        truncated_content=preview_text,
+        total_bytes=bytes_read,
+    )
 
-    return clamp_warning + output_text
+    return clamp_warning + result
