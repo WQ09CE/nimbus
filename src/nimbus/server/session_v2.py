@@ -976,6 +976,10 @@ class SessionManagerV2:
 
         # Special handling for "thinking" token streams to ensure proper text streaming
         if event_type == "thinking":
+            if is_sub_agent:
+                # Suppress sub-agent thinking tokens -- they should NOT appear
+                # in the orchestrator's message stream.
+                return
             sse_type = "message"
             chunk_text = event.data.get("chunk", "")
             # Forward chunk correctly instead of nesting inside another generic data dict
