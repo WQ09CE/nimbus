@@ -5,6 +5,7 @@ These classes encapsulate the logic for each stage of the Think-Act-Observe loop
 and dictating strict transitions.
 """
 
+import asyncio
 import json
 import logging
 import traceback
@@ -240,35 +241,70 @@ class StateActionExecution(VCPUState):
     async def execute(self, ctx: FSMContext) -> VCPUState:
         logger.debug(f"[vCPU] State: {self.name} - Executing {len(ctx.current_actions)} actions")
         
-        for action in ctx.current_actions:
-             if action.kind == "THOUGHT":
-                 # Thought is non-blocking, we just write it to MMU later
-                 continue
-                 
-             if action.kind in ("TOOL_CALL", "SUB_CALL"):
-                 logger.info(f"⚙️  [vCPU] Executing Tool: {action.name}")
-                 try:
-                     # Execute via Gate
-                     result = await ctx.gate.syscall_tool(action)
-                     
-                     # Store in action context to be written to MMU later
-                     if not hasattr(action, 'result'):
-                         action.result = result
-                     ctx.current_results.append(result)
-                         
-                 except Exception as e:
-                     logger.warning(f"Tool {action.name} failed with Exception: {e}")
-                     # In a strict FSM, a tool failure interrupts the current cycle.
-                     # We record the failure and bounce to Recovery.
-                     result = ToolResult(
-                         status="ERROR",
-                         output=f"Tool failed: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
-                     )
-                     action.result = result
-                     ctx.current_results.append(result)
-                     ctx.pending_error = e
-                     return StateErrorRecovery()
-                     
+        # 1. Filter executable actions (skip THOUGHT)
+        executable_actions = [
+            action for action in ctx.current_actions
+            if action.kind in ("TOOL_CALL", "SUB_CALL")
+        ]
+        
+        # 2. Serial path: 0 or 1 executable action — no concurrency overhead
+        if len(executable_actions) <= 1:
+            for action in executable_actions:
+                logger.info(f"⚙️  [vCPU] Executing Tool: {action.name}")
+                try:
+                    result = await ctx.gate.syscall_tool(action)
+                    if not hasattr(action, 'result'):
+                        action.result = result
+                    ctx.current_results.append(result)
+                except Exception as e:
+                    logger.warning(f"Tool {action.name} failed with Exception: {e}")
+                    result = ToolResult(
+                        status="ERROR",
+                        output=f"Tool failed: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+                    )
+                    action.result = result
+                    ctx.current_results.append(result)
+                    ctx.pending_error = e
+                    return StateErrorRecovery()
+            return StateObservation()
+        
+        # 3. Concurrent path: 2+ executable actions
+        tool_names = [action.name for action in executable_actions]
+        logger.info(f"⚡ [vCPU] Executing {len(executable_actions)} tools concurrently: {tool_names}")
+        
+        async def _execute_one(action):
+            """Execute a single action with independent error handling."""
+            try:
+                result = await ctx.gate.syscall_tool(action)
+                if not hasattr(action, 'result'):
+                    action.result = result
+                return result, None
+            except Exception as e:
+                logger.warning(f"Tool {action.name} failed with Exception: {e}")
+                result = ToolResult(
+                    status="ERROR",
+                    output=f"Tool failed: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+                )
+                action.result = result
+                return result, e
+        
+        # Launch all concurrently and collect results in original order
+        outcomes = await asyncio.gather(*[
+            _execute_one(action) for action in executable_actions
+        ])
+        
+        # 4. Collect results in order and check for errors
+        first_error = None
+        for result, error in outcomes:
+            ctx.current_results.append(result)
+            if error is not None and first_error is None:
+                first_error = error
+        
+        # 5. If any action failed, record and enter error recovery
+        if first_error is not None:
+            ctx.pending_error = first_error
+            return StateErrorRecovery()
+        
         return StateObservation()
 
 
