@@ -36,7 +36,26 @@ class SessionMonitorModule(HeartModule):
                 del self.iteration_history[sid]
 
     async def handle_message(self, heart: Heart, msg: HeartMessage):
-        payload = msg.payload or {}
+        payload = msg.payload
+        if payload is None:
+            logger.warning(f"[SessionMonitor] Received message {msg.topic} with null payload")
+            return
+
+        # Only process session-related topics
+        if msg.topic not in ("session.error", "session.timeout", "session.failure", "session.iteration"):
+            return
+
+        # Ensure payload is a dictionary for consistent access for session topics
+        if not hasattr(payload, "get"):
+            # Attempt to convert Pydantic models to dict if needed, or just fail cleanly
+            if hasattr(payload, "model_dump"):
+                payload = payload.model_dump()
+            elif hasattr(payload, "dict"):
+                payload = payload.dict()
+            else:
+                logger.error(f"[SessionMonitor] Expected dict payload for {msg.topic}, got {type(payload)}")
+                return
+
         session_id = payload.get("session_id", "unknown_session")
 
         if msg.topic in ("session.error", "session.timeout", "session.failure"):
