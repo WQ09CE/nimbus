@@ -43,6 +43,7 @@ from nimbus.core.memory.context import (
     create_root_frame,
 )
 from nimbus.core.memory.state_manager import StateManager
+from nimbus.core.memory.context_assembler import _NIMFS_NO_OFFLOAD
 from nimbus.core.persistence import (
     MemorySnapshotModel,
     MessageModel,
@@ -51,22 +52,8 @@ from nimbus.core.persistence import (
 )
 
 
-# NimFS tools whose output should never be re-offloaded.
-# Without this guard, reading back an offloaded artifact would itself exceed the
-# threshold, producing a NEW artifact reference — leading to infinite nesting.
-_NIMFS_NO_OFFLOAD = frozenset({
-    "NimFSReadArtifact",
-    "NimFSListArtifacts",
-    "NimFSSearchMemory",
-    "NimFSLoadContext",
-    "NimFSWriteArtifact",
-    "NimFSWriteMemory",
-})
-
-# Lazy Expansion: auto-expand NimFS refs in _optimize_context
-_NIMFS_REF_PATTERN = re.compile(r"nimfs://artifact/([\w\-]+)")
+# NimFS auto-offload marker (used by ContextAssembler)
 _NIMFS_OFFLOAD_MARKER = "[NimFS Auto-Offload]"
-_INLINE_EXPAND_MAX_CHARS = 15_000   # Don't expand artifacts larger than this
 
 
 @dataclass
@@ -136,12 +123,10 @@ class MMU:
         # Extract original goal from pinned context (try multiple sources)
         goal_text = ""
 
-        # Source 1: pinned custom_anchors (e.g. "# Current Goal\n...")
+        # Source 1: pinned custom_anchors (e.g. key "Goal")
         if self._pinned:
-            for anchor in self._pinned.custom_anchors:
-                if anchor.startswith("# Current Goal"):
-                    goal_text = anchor.replace("# Current Goal", "").strip()
-                    break
+            if "Goal" in self._pinned.custom_anchors:
+                goal_text = self._pinned.custom_anchors["Goal"].strip()
 
         # Source 2: root frame goal
         if not goal_text and self._stack:
@@ -198,36 +183,26 @@ class MMU:
         if self._pinned is None:
             self._pinned = PinnedContext()
 
-        # Remove existing goal
-        goal_prefix = "# Current Goal\n"
-        self._pinned.custom_anchors = [
-            a for a in self._pinned.custom_anchors if not a.startswith(goal_prefix)
-        ]
-
-        # Add new goal
-        self._pinned.custom_anchors.append(f"{goal_prefix}{goal}")
+        # Replace existing goal (or add new one)
+        self._pinned.custom_anchors["Goal"] = goal
 
     def add_milestones(self, milestones: List[str]) -> None:
         """Add completed milestones to persistent context."""
         if not self._pinned:
             self._pinned = PinnedContext()
 
-        anchor_prefix = "# ✅ Milestones\n"
-        existing_idx = -1
-        for i, anchor in enumerate(self._pinned.custom_anchors):
-            if anchor.startswith(anchor_prefix):
-                existing_idx = i
-                break
-
+        anchor_key = "Milestones"
+        
         new_items = ""
         for m in milestones:
              new_items += f"- [x] {m}\n"
-
-        if existing_idx != -1:
-            if new_items.strip() not in self._pinned.custom_anchors[existing_idx]:
-                 self._pinned.custom_anchors[existing_idx] += new_items
+             
+        if anchor_key in self._pinned.custom_anchors:
+            # Append if not identical
+            if new_items.strip() not in self._pinned.custom_anchors[anchor_key]:
+                 self._pinned.custom_anchors[anchor_key] += "\n" + new_items
         else:
-            self._pinned.custom_anchors.append(anchor_prefix + new_items)
+            self._pinned.custom_anchors[anchor_key] = new_items
 
     # =========================================================================
     # Stack Management (Simplified)
@@ -522,478 +497,43 @@ class MMU:
         mime = block.get("mimeType", "")
         return f"{mime}:{digest}"
 
-    def _downgrade_seen_images(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Downgrade duplicate/budget-exceeding images (alias for _optimize_context image logic)."""
-        return self._optimize_context(messages)
-
-    def _optimize_context(self, messages: List[Dict[str, Any]], hot_count: int = 0) -> List[Dict[str, Any]]:
-        """
-        Optimize context by:
-        0. Lazy-expand NimFS offloaded refs if token budget allows (hot context only).
-        1. Downgrading duplicate/budget-exceeding images.
-        2. Truncating massive tool outputs in the view (preserving storage).
-        """
-        # --- Config Constants ---
-        VIEW_MAX_TOOL_CHARS = 10_000      # Hot context: 保留详细内容
-        HISTORY_MAX_TOOL_CHARS = 1_000    # History: 只保留摘要级内容
-
-        total = len(messages)
-        hot_boundary = 0 if hot_count == 0 else total - hot_count
-
-        # --- Phase 0: NimFS Lazy Expansion ---
-        # For hot-context tool results that were auto-offloaded, expand them
-        # back inline if we have enough token budget. This eliminates the
-        # "useless round-trip" where the agent manually calls NimFSReadArtifact.
-        if self.nimfs_workspace:
-            # Estimate current total chars (rough: only count string content)
-            total_chars = 0
-            for m in messages:
-                c = m.get("content", "")
-                if isinstance(c, str):
-                    total_chars += len(c)
-                elif isinstance(c, list):
-                    for block in c:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            total_chars += len(block.get("text", ""))
-
-            budget_chars = (self.config.max_context_tokens * 4) - total_chars  # ~1 token ≈ 4 chars
-
-            # Scan hot context from most recent → oldest (most recent = most relevant)
-            for i in range(total - 1, max(hot_boundary - 1, -1), -1):
-                msg = messages[i]
-                if msg.get("role") != "tool":
-                    continue
-                content = msg.get("content", "")
-                if not isinstance(content, str):
-                    continue
-                if _NIMFS_OFFLOAD_MARKER not in content:
-                    continue
-
-                ref_match = _NIMFS_REF_PATTERN.search(content)
-                if not ref_match:
-                    continue
-
-                ref = f"nimfs://artifact/{ref_match.group(1)}"
-
-                try:
-                    from nimbus.core.nimfs.manager import NimFSManager
-                    manager = NimFSManager(self.nimfs_workspace)
-                    manifest = manager.get_artifact_manifest(ref)
-                    artifact_size = manifest.size_bytes
-
-                    if (artifact_size <= _INLINE_EXPAND_MAX_CHARS
-                            and artifact_size <= budget_chars * 0.5):
-                        # Budget allows: expand inline
-                        full_content = manager.read_artifact(ref)
-                        new_msg = dict(msg)
-                        new_msg["content"] = full_content
-                        messages[i] = new_msg
-                        budget_chars -= artifact_size
-                        total_chars += artifact_size - len(content)
-                    # else: leave the offload ref as-is, will get enhanced preview below
-                except Exception:
-                    pass  # Expansion failed — keep original ref message
-
-        # --- Phase 1: Image Downgrade Logic (backwards scan) ---
-        keep_indices = set()
-        seen_keys = set()
-        current_image_tokens = 0
-        
-        for i in range(len(messages) - 1, -1, -1):
-            msg = messages[i]
-            content = msg.get("content")
-            if isinstance(content, list):
-                for j in range(len(content) - 1, -1, -1):
-                    block = content[j]
-                    if isinstance(block, dict) and block.get("type") == "image":
-                        key = self._image_key(block)
-                        if key in seen_keys: continue
-                        img_tokens = IMAGE_TOKEN_ESTIMATE 
-                        if current_image_tokens + img_tokens <= self.config.max_image_tokens:
-                            keep_indices.add((i, j))
-                            seen_keys.add(key)
-                            current_image_tokens += img_tokens
-                        else:
-                            seen_keys.add(key)
-
-        # --- Phase 2: Rebuild with Optimizations ---
-        result = []
-        for i, msg in enumerate(messages):
-            # --- Tool Output Truncation ---
-            if msg.get("role") == "tool":
-                content = msg.get("content")
-                if isinstance(content, str):
-                    is_hot = (i >= hot_boundary)
-                    max_chars = VIEW_MAX_TOOL_CHARS if is_hot else HISTORY_MAX_TOOL_CHARS
-                    if len(content) > max_chars:
-                        new_content = content[:max_chars] + \
-                            f"\n... [{len(content):,} chars total, compressed for context efficiency]"
-                        new_msg = dict(msg)
-                        new_msg["content"] = new_content
-                        result.append(new_msg)
-                        continue
-
-            # --- Image Processing ---
-            content = msg.get("content")
-            if not isinstance(content, list):
-                result.append(msg)
-                continue
-                
-            new_content = []
-            changed = False
-            for j, block in enumerate(content):
-                if isinstance(block, dict) and block.get("type") == "image":
-                    if (i, j) in keep_indices:
-                        new_content.append(block)
-                    else:
-                        mime = block.get("mimeType", "image/unknown")
-                        new_content.append({
-                            "type": "text",
-                            "text": f"\n[📷 Image ({mime}) — Omitted to save tokens (duplicate or budget limit)]\n"
-                        })
-                        changed = True
-                else:
-                    new_content.append(block)
-            
-            if changed:
-                new_msg = dict(msg)
-                new_msg["content"] = new_content
-                result.append(new_msg)
-            else:
-                result.append(msg)
-                
-        return result
+    # =========================================================================
+    # Context Assembly (The "Smart Drop" Strategy)
+    # =========================================================================
 
     def assemble_context(
         self,
-        max_tokens: Optional[int] = None,
-        filter_discardable: bool = True,
+        system_prefix: Optional[str] = None,
+        model_features: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Assemble the full context with "Recent-Anchored Sliding Window".
-        
-        Structure:
-        1. Pinned Context (Goal/Rules)
-        2. [System: Historical View Indicator]
-        3. Historical Window (auto-managed sliding window)
-        4. [System: Gap Indicator]
-        5. Hot Context (Recent messages, always visible)
+        Delegates the context window generation to the ContextAssembler.
         """
-        max_tokens = max_tokens or self.config.max_context_tokens
-        messages: List[Dict[str, Any]] = []
-        token_count = 0
-
-        # --- 1. Pinned Context ---
-        if self._pinned:
-            pinned_msg = self._pinned.to_system_message()
-            token_count += pinned_msg.token_estimate()
-            messages.append(pinned_msg.to_dict())
-
-        # Project State & Summary
-        project_state = self._state_manager.render()
-        if project_state:
-            state_msg = Message(role="system", content=project_state, meta={"type": "project_state"})
-            token_count += state_msg.token_estimate()
-            messages.append(state_msg.to_dict())
-
-        if self._global_summary:
-            # Simplified summary assembly
-            task_stack_view = "📋 [Mission Control]\n-------------------\n"
-            root_goal = self._stack[0].goal or "Main Task"
-            task_stack_view += f"🎯 Main Goal: {root_goal}\n-------------------\n"
-            full_summary = f"{task_stack_view}\n{self._global_summary}"
-            summary_msg = Message(role="system", content=full_summary, meta={"type": "global_summary"})
-            token_count += summary_msg.token_estimate()
-            messages.append(summary_msg.to_dict())
-
-        # --- NimFS Knowledge Injection (replaces old Global Memo + Session Memo) ---
-        # Phase 1: Load curated context from NimFS Memory (replaces global memo)
-        NIMFS_CONTEXT_TOKEN_CAP = 2000
-        nimfs_context_loaded = False
-        if hasattr(self, '_nimfs_manager') and self._nimfs_manager:
-            try:
-                # Derive goal from pinned context or fallback
-                _goal = "General project knowledge"
-                if self._pinned and self._pinned.goal:
-                    _goal = self._pinned.goal
-                nimfs_context = self._nimfs_manager.load_context(
-                    current_goal=_goal, max_chars=3000
-                )
-                if nimfs_context and nimfs_context.strip():
-                    nimfs_msg = Message(
-                        role="system",
-                        content=f"🌐 [Global Memo - 跨会话知识]:\n{nimfs_context}",
-                        meta={"type": "nimfs_context"}
-                    )
-                    ctx_tokens = min(nimfs_msg.token_estimate(), NIMFS_CONTEXT_TOKEN_CAP)
-                    if token_count + ctx_tokens < max_tokens:
-                        messages.append(nimfs_msg.to_dict())
-                        token_count += ctx_tokens
-                        nimfs_context_loaded = True
-            except Exception:
-                pass
-
-        # Fallback: legacy global memo adapter (backward compat during migration)
-        if not nimfs_context_loaded:
-            GLOBAL_MEMO_TOKEN_CAP = 2000
-            if hasattr(self, '_global_memo_manager') and self._global_memo_manager:
-                try:
-                    global_content = self._global_memo_manager.read()
-                    if global_content and global_content.strip():
-                        global_msg = Message(
-                            role="system",
-                            content=f"🌐 [Global Memo - 跨会话知识]:\n{global_content}",
-                            meta={"type": "global_memo"}
-                        )
-                        global_tokens = min(global_msg.token_estimate(), GLOBAL_MEMO_TOKEN_CAP)
-                        if token_count + global_tokens < max_tokens:
-                            messages.append(global_msg.to_dict())
-                            token_count += global_tokens
-                except Exception:
-                    pass
-
-        # Phase 2: Session memo (NimFS Artifact-backed or legacy adapter)
-        if hasattr(self, '_memo_manager') and self._memo_manager:
-            try:
-                memo_content = self._memo_manager.read()
-                if memo_content and memo_content.strip():
-                    memo_msg = Message(
-                        role="system",
-                        content=f"📝 [Your Memo - 你的记忆笔记]:\n{memo_content}",
-                        meta={"type": "memo"}
-                    )
-                    SESSION_MEMO_TOKEN_CAP = 5000
-                    memo_tokens = memo_msg.token_estimate()
-                    if memo_tokens > SESSION_MEMO_TOKEN_CAP:
-                        memo_tokens = SESSION_MEMO_TOKEN_CAP
-                    if token_count + memo_tokens < max_tokens:
-                        messages.append(memo_msg.to_dict())
-                        token_count += memo_tokens
-            except Exception:
-                pass  # Memo read failed, continue without it
-
-        remaining_budget = max_tokens - token_count
-
-        # Debug: Log budget allocation
-        from nimbus.core.logging import get_logger as _get_logger
-        _mmu_logger = _get_logger("memory.mmu")
-        _mmu_logger.debug(
-            f"📊 assemble_context budget: max={max_tokens}, "
-            f"pinned+state+memo={token_count}, remaining={remaining_budget}, "
-            f"stream_msgs={sum(len(f.messages) for f in self._stack)}"
-        )
-
-        if remaining_budget < 500:
-            # Emergency: Pinned context too large
-            return messages
-
-        # --- Prepare Stream ---
-        stream_messages = []
-        for frame in self._stack:
-            for msg in frame.to_context_messages():
-                # Filter out discarded messages if requested
-                if filter_discardable and msg.meta.get("discard"):
-                    continue
-                # Filter out assistant messages with discarded tool calls
-                if filter_discardable and msg.role == "assistant" and msg.tool_calls:
-                    discard_list = msg.meta.get("discard_tool_calls", [])
-                    if discard_list:
-                        valid_calls = [
-                            tc for tc in msg.tool_calls
-                            if (tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)) not in discard_list
-                        ]
-                        if not valid_calls and not msg.content:
-                            continue  # All discarded and no text -> skip entirely
-                        if len(valid_calls) < len(msg.tool_calls):
-                            # Partial discard: create new message with only valid tool calls
-                            msg = Message(
-                                role=msg.role,
-                                content=msg.content,
-                                tool_calls=valid_calls if valid_calls else None,
-                                meta=msg.meta,
-                            )
-                stream_messages.append(msg)
-        total_msgs = len(stream_messages)
-
-        # --- 2. Hot Context (Always Visible) ---
-        # Keep last N messages to ensure Agent knows current instruction
-
-        HOT_COUNT = 15  # Keep last 15 messages always (expanded for better context retention)
-        hot_messages = []
-        hot_tokens = 0
-
-        if total_msgs > 0:
-            # Initial slice index
-            hot_start_idx = max(0, total_msgs - HOT_COUNT)
-
-            # SAFETY ADJUSTMENT: Ensure Hot Context doesn't start with 'tool' (orphaned result)
-            # We extend the hot context BACKWARDS to include the parent assistant call.
-            # This ensures we don't present a Tool Result without its Call.
-            while hot_start_idx > 0:
-                msg = stream_messages[hot_start_idx]
-                if msg.role == "tool":
-                    hot_start_idx -= 1
-                else:
-                    # Found a non-tool message (likely the assistant call or user)
-                    break
-
-            hot_slice = stream_messages[hot_start_idx:]
-
-            # Verify they fit in budget (at least half of remaining)
-            # Note: We process from end to start to ensure we keep the absolute latest
-            for m in reversed(hot_slice):
-                t = m.token_estimate()
-                if hot_tokens + t > remaining_budget * 0.5:
-                    break
-                hot_messages.insert(0, m)
-                hot_tokens += t
-
-            # If we had to truncate hot_messages due to budget, we might have created
-            # a NEW orphan problem at the beginning of hot_messages!
-            # So we must apply the same safety check again on the final hot_messages list.
-            while hot_messages and hot_messages[0].role == "tool":
-                 hot_messages.pop(0)
-
-            # TAIL guard: Remove assistant messages with tool_calls at the end.
-            # Their tool_results may have been truncated by budget, leaving
-            # orphan tool_use blocks that violate the Anthropic API contract.
-            while hot_messages and hot_messages[-1].role == "assistant" and hot_messages[-1].tool_calls:
-                hot_messages.pop()
-
-        # Adjust remaining budget for History Window
-        history_budget = remaining_budget - hot_tokens
-
-        _mmu_logger.debug(
-            f"📊 hot: {len(hot_messages)}/{total_msgs} msgs, {hot_tokens} tokens "
-            f"(budget={int(remaining_budget*0.5)}), "
-            f"history_budget={history_budget}"
-        )
-
-        # --- 3. Historical Window ---
-        # The window ends at: total - len(hot_messages)
-        # Note: We must use the ACTUAL length of hot_messages here,
-        # because hot_start_idx might have overlapped with history window if we didn't account for it.
-
-        history_stream_end = max(0, total_msgs - len(hot_messages))
-
-        # Target end based on user scroll
-        # offset=0 means we want to see up to history_stream_end
-        # offset=10 means we want to see up to history_stream_end - 10
-        target_end = max(0, history_stream_end - self._view_offset)
-
-        window_messages = []
-        window_tokens = 0
-        start_index = target_end
-
-        # Scan backwards from target_end
-        for i in range(target_end - 1, -1, -1):
-            msg = stream_messages[i]
-            t = msg.token_estimate()
-            if window_tokens + t > history_budget:
-                break
-            window_tokens += t
-            window_messages.insert(0, msg)
-            start_index = i
-
-        # SAFETY ADJUSTMENT 1: Start Integrity
-        # Avoid starting with a 'tool' message (orphaned result)
-        while start_index < target_end:
-            if stream_messages[start_index].role == "tool":
-                start_index += 1
-                if window_messages: window_messages.pop(0)
-            else:
-                break
-
-        # SAFETY ADJUSTMENT 2: End Integrity
-        # Avoid ending with an 'assistant' message that has tool_calls (orphaned call)
-        while target_end > start_index:
-            last_msg = stream_messages[target_end - 1]
-            if last_msg.role == "assistant" and last_msg.tool_calls:
-                target_end -= 1
-                if window_messages: window_messages.pop()
-            else:
-                break
-
-        # Re-sync view_messages if indices shifted (actually window_messages is already updated above)
-        # But let's just re-slice to be safe and consistent with indices
-        view_messages = stream_messages[start_index:target_end]
-
-        # --- Assemble Final Sequence ---
-
-        # Indicator: More history above?
-        if start_index > 0:
-            messages.append({
-                "role": "system",
-                "content": f"⬆️ [History: {start_index} older messages truncated. Use Memo to save important info!]"
-            })
-
-        for m in window_messages:
-            messages.append(m.to_dict())
-
-        # Indicator: Gap between Window and Hot Context?
-        gap_size = history_stream_end - target_end
-        if gap_size > 0:
-            messages.append({
-                "role": "system",
-                "content": f"⬇️ [Gap: {gap_size} messages skipped. Important info should be in your Memo!]"
-            })
-        elif self._view_offset > 0:
-             # We are scrolling, but we managed to connect to hot context?
-             # Unlikely if offset > 0.
-             pass
-
-        # Add Hot Context
-        if hot_messages:
-            if gap_size > 0 or start_index > 0:
-                 messages.append({
-                    "role": "system",
-                    "content": "👇 [Current Context (Recent Messages)]"
-                })
-            for m in hot_messages:
-                messages.append(m.to_dict())
-
-        # Phase 2: Optimize Context (Downgrade images, Truncate large tool outputs)
-        messages = self._optimize_context(messages, hot_count=len(hot_messages))
-
-        return messages
-
-    def _filter_discarded(self, messages: List[Message]) -> List[Message]:
-        """Filter out messages marked as discarded."""
-        filtered = []
-        for msg in messages:
-            if msg.role == "tool" and msg.meta.get("discard"):
-                continue
-
-            if msg.role == "assistant" and msg.tool_calls:
-                discard_ids = msg.meta.get("discard_tool_calls", [])
-                if discard_ids:
-                    # Filter specific tool calls from the list
-                    valid_calls = [tc for tc in msg.tool_calls if tc.get("id") not in discard_ids]
-                    if valid_calls or msg.content:
-                        # Create copy with filtered calls
-                        new_msg = Message(
-                            role=msg.role,
-                            content=msg.content,
-                            tool_calls=valid_calls if valid_calls else None,
-                            meta=msg.meta
-                        )
-                        filtered.append(new_msg)
-                    continue # Message handled
-
-            filtered.append(msg)
-        return filtered
+        from nimbus.core.memory.context_assembler import ContextAssembler
+        assembler = ContextAssembler(self)
+        return assembler.assemble(system_prefix, model_features)
 
     # =========================================================================
     # State & Utils
     # =========================================================================
 
     def estimate_tokens(self) -> int:
-        total = 0
-        if self._pinned: total += self._pinned.token_estimate()
+        """Estimate total tokens currently tracked by the MMU."""
+        from nimbus.core.memory.token_budget import estimate_total_tokens, _approx_tokens
+        
+        # Calculate pinned tokens roughly
+        pinned_text = ""
+        if self._pinned:
+            if getattr(self._pinned, "system_rules", None):
+                pinned_text += self._pinned.system_rules
+                
+        # Gather all stream messages for counting
+        stream_messages = []
         for frame in self._stack:
-            for msg in frame.messages:
-                total += msg.token_estimate_view()
-        return total
+            stream_messages.extend([msg.to_dict() for msg in frame.to_context_messages()])
+            
+        return estimate_total_tokens(_approx_tokens(pinned_text), stream_messages)
+
 
     def needs_compression(self) -> bool:
         """Safety net: fires inside VCPU.step() if proactive check missed."""
