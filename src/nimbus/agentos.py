@@ -2299,7 +2299,7 @@ def create_agent_os(
                 roles=["executor", "implementer", "architect", "tester"])
             # WriteMemory: orchestrator + implementation roles (not explorer, not tester)
             register_default_tools(os, workspace=ws, tools=["NimFSWriteMemory"],
-                roles=["orchestrator", "executor", "implementer", "architect"])
+                roles=["orchestrator", "chat", "executor", "implementer", "architect"])
 
             # --- Register SubmitResult pseudo-tool (for specialist agents only) ---
             # This is a "fake tool" — VCPU intercepts it in _handle_tool_call before
