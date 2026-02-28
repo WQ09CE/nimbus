@@ -9,7 +9,8 @@ while processing information that exceeds its context window.
 
 Scenario:
     "Summarize VCPU architecture and Agentic Workflow implementation."
-    This requires reading `vcpu.py`, `agentos.py`, `scheduler.py`, etc.
+    This requires reading `vcpu.py`, `agentos.py`, etc.
+    We test if the model can accurately track the relationship between them.
     These files are large (~1000-1500 lines), which will force Token Overflows.
 
 Configuration:
@@ -53,14 +54,11 @@ I need a technical deep dive into the Nimbus architecture.
 Please read the following files in detail:
 1. `src/nimbus/core/runtime/vcpu.py`
 2. `src/nimbus/agentos.py`
-3. `src/nimbus/core/scheduler.py`
 
 After reading them, output a comprehensive report explaining:
 1. The VCPU instruction cycle (Think-Act-Observe).
 2. How AgentOS orchestrates processes.
 3. How the DAG Scheduler manages dependencies.
-
-Focus on the code implementation details.
 """
 
 # =============================================================================
@@ -120,8 +118,8 @@ class TraceAnalyzer:
             # Simple keyword check
             has_vcpu = "VCPU" in summary or "vcpu" in summary
             has_agentos = "AgentOS" in summary or "agentos" in summary
-            has_scheduler = "Scheduler" in summary or "scheduler" in summary
             
+            # We accept any mention of the files
             status = "✅" if (has_vcpu or has_agentos) else "⚠️ DRIFT?"
             print(f"  Step {i+1}: {status} Summary start: {summary[:60]}...")
 

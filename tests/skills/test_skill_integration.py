@@ -2,7 +2,7 @@ import asyncio
 import pytest
 from pathlib import Path
 from nimbus.agentos import AgentOS, AgentOSConfig
-from nimbus.core.runtime.vcpu import LLMClient
+from nimbus.core.runtime.failure_reporter import LLMClient
 
 # Mock LLM Client
 class MockLLM(LLMClient):

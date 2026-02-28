@@ -10,7 +10,7 @@ from typing import Optional
 from nimbus.core.logging import get_logger
 from nimbus.core.protocol import ActionIR, Fault, ToolResult
 from nimbus.core.runtime.error_handler import ErrorHandlerRegistry
-from nimbus.core.runtime.execution_state import ExecutionState
+from nimbus.core.runtime.states import FSMExecutionState
 
 logger = get_logger("kernel.vcpu.empty_result")
 
@@ -28,7 +28,7 @@ class EmptyResultHandler:
 
     def __init__(
         self,
-        state: ExecutionState,
+        state: FSMExecutionState,
         error_registry: ErrorHandlerRegistry,
         max_tool_failures: int = 6,
     ):

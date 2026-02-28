@@ -21,7 +21,7 @@ from nimbus.core.runtime.checkpoint_manager import CheckpointManager
 from nimbus.core.runtime.decoder import BaseDecoder, DefaultDecoder
 from nimbus.core.runtime.fsm import FSMContext, VCPUState
 from nimbus.core.runtime.pipeline import ResponsePipeline
-from nimbus.core.runtime.states import StateInit, StateCompleted, StateReasoning, StateObservation, FSMExecutionState
+from nimbus.core.runtime.states import StateInit, StateCompleted, StateReasoning, StateObservation, FSMExecutionState, StateErrorRecovery
 from nimbus.core.runtime.config import VCPUConfig
 from nimbus.core.runtime.tracer import TraceManager
 
@@ -140,8 +140,8 @@ class VCPU:
                 self._is_active = False
                 return step_result
 
-            # 3. Fast-forward simple setup states (Init, Completed)
-            while isinstance(self._current_state, StateInit) or isinstance(self._current_state, StateCompleted):
+            # 3. Fast-forward simple setup states (Init, Completed, ErrorRecovery)
+            while isinstance(self._current_state, StateInit) or isinstance(self._current_state, StateCompleted) or isinstance(self._current_state, StateErrorRecovery):
                 if isinstance(self._current_state, StateCompleted):
                     step_result.is_final = True
                     step_result.fault = self._fsm_ctx.fault

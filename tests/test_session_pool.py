@@ -15,7 +15,7 @@ from typing import Any, List, Optional
 
 import pytest
 
-from nimbus.core.persistence import ExecutionStateModel, MemorySnapshotModel, SessionCheckpointModel
+from nimbus.core.persistence import FSMExecutionStateModel as ExecutionStateModel, MemorySnapshotModel, SessionCheckpointModel
 from nimbus.core.session_pool import SessionPool
 from nimbus.storage.sqlite import SQLiteStorage
 

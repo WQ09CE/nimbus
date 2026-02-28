@@ -17,6 +17,7 @@ Example:
 from pathlib import Path
 from typing import Any, Optional
 
+from .base import tool
 from .utils import (
     detect_line_ending,
     fuzzy_find_text,
@@ -59,6 +60,14 @@ def _extract_relevant_context(content: str, old_text: str, context_lines: int = 
     return '\n'.join(result_lines)
 
 
+@tool(
+    name="Edit",
+    description=(
+        "Edit a file by replacing exact text. The oldText must match exactly (including whitespace). "
+        "Use this for precise, surgical edits. Falls back to fuzzy matching if exact match fails."
+    ),
+    category="core",
+)
 async def edit_file(
     file_path: str,
     old_text: Optional[str] = None,

@@ -39,6 +39,7 @@ NIMFS_MEMORY_RULES = """\
 - **记录重要事件**：里程碑、版本变更、重大修复 → category="events", scope="project"
 - **发现关键实体**：重要文件路径、模块职责、接口契约 → category="entities", scope="project"
 - **工作日志**：每次 commit 后记录改了什么、为什么改、commit hash → category="events"
+- **架构自愈 (Living Architecture Update)**: 每当修改了核心模块的关键逻辑（如改变了接口签名、新增了类、重构了依赖关系），**必须**先用 `NimFSSearchMemory` 查找该模块的 `category="entities"` 记忆。若存在则更新其内容（补充新特性、新约束），若不存在则新建一条，保持核心组件的“活地图”不腐化。
 
 ### 写入质量要求
 - `title`：简洁描述性标题，**必须具体**（禁止用 "General"、"Notes" 等泛泛标题）

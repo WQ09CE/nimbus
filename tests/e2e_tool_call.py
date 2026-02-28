@@ -352,7 +352,7 @@ class NimbusTestClient:
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"{self.server_url}/health",
+                    f"{self.server_url}/api/v1/health",
                     timeout=5.0
                 )
                 if response.status_code == 200:
@@ -725,8 +725,8 @@ class ToolCallE2ETest:
         # Run test cases
         test_methods = [
             self.test_basic_read,
-            self.test_glob_tool,
-            self.test_grep_tool,
+            self.test_bash_list_files,
+            self.test_bash_search,
             self.test_tool_chain,
         ]
 

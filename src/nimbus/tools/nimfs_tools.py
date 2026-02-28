@@ -26,9 +26,11 @@ from nimbus.core.nimfs.models import (
     ArtifactPendingError,
     ArtifactTTL,
     MemoryCategory,
+    MemoryNotFoundError,
     MemoryScope,
     NimFSError,
 )
+from nimbus.tools.base import tool
 
 # =============================================================================
 # Context Helper
@@ -50,6 +52,16 @@ def _agent_role(**ctx: Any) -> str:
 # =============================================================================
 
 
+@tool(
+    name="NimFSWriteArtifact",
+    description=(
+        "Write a large pipeline product (code, report, diff, etc.) to NimFS shared disk and return "
+        "a nimfs:// reference. Use this instead of returning huge strings in ToolResult — share the "
+        "reference with other agents who can read it via NimFSReadArtifact. "
+        "Solves the 16K context truncation problem for large outputs."
+    ),
+    category="nimfs",
+)
 async def nimfs_write_artifact(
     content: str,
     task_id: str,
@@ -106,6 +118,15 @@ async def nimfs_write_artifact(
     )
 
 
+@tool(
+    name="NimFSReadArtifact",
+    description=(
+        "Read the content of a NimFS artifact by its nimfs://artifact/{id} reference. "
+        "When reading large artifacts (e.g. from Auto-Offload), use offset/limit to paginate "
+        "or grep_pattern to filter content to avoid context overflow."
+    ),
+    category="nimfs",
+)
 async def nimfs_read_artifact(
     ref: str, offset: int = 1, limit: int = 2000, grep_pattern: Optional[str] = None, **ctx: Any
 ) -> str:
@@ -168,6 +189,14 @@ async def nimfs_read_artifact(
         return f"❌ NimFSError: {e}"
 
 
+@tool(
+    name="NimFSListArtifacts",
+    description=(
+        "List all available COMMITTED artifacts in NimFS for this project. "
+        "Optionally filter by task_id. Shows references, sizes, and summaries."
+    ),
+    category="nimfs",
+)
 async def nimfs_list_artifacts(task_id: str = "", **ctx: Any) -> str:
     """
     List available COMMITTED artifacts in NimFS, optionally filtered by task_id.
@@ -201,6 +230,14 @@ async def nimfs_list_artifacts(task_id: str = "", **ctx: Any) -> str:
     return "\n".join(lines)
 
 
+@tool(
+    name="NimFSWriteMemory",
+    description=(
+        "Write a long-term memory entry in NimFS. Use to persist knowledge that should survive "
+        "across sessions: profile, preferences, entities, events, cases, patterns."
+    ),
+    category="nimfs",
+)
 async def nimfs_write_memory(
     category: str,
     title: str,
@@ -285,6 +322,58 @@ async def nimfs_write_memory(
     )
 
 
+@tool(
+    name="NimFSReadMemory",
+    description=(
+        "Read the detailed content of a long-term memory entry by its ID. "
+        "Specify layer='l0' for summary, 'l1' for medium detail, 'l2' for full content."
+    ),
+    category="nimfs",
+)
+async def nimfs_read_memory(memory_id: str, layer: str = "l2", **ctx: Any) -> str:
+    """
+    Read the detailed content of a long-term memory entry.
+
+    Args:
+        memory_id: The unique ID of the memory entry (e.g., "patterns-abc12345").
+        layer:     Detail level to read:
+                   - "l0": short abstract
+                   - "l1": overview/summary
+                   - "l2": full detailed content (default)
+
+    Returns:
+        The content of the memory entry at the requested layer.
+    """
+    manager = _get_manager(**ctx)
+    layer_map = {"l0": 0, "l1": 1, "l2": 2}
+    layer_idx = layer_map.get(layer.lower(), 2)
+
+    try:
+        # 1. Get metadata
+        entry = manager.get_memory_entry(memory_id)
+        # 2. Get content
+        content = manager.read_memory(memory_id, layer=layer_idx)
+
+        header = (
+            f"<!-- NimFS Memory: {memory_id} | layer={layer} | "
+            f"category={entry.category.value} | title={entry.title} -->\n\n"
+        )
+        return header + content
+
+    except MemoryNotFoundError:
+        return f"❌ MemoryNotFoundError: Memory entry '{memory_id}' not found."
+    except Exception as e:
+        return f"❌ Error reading memory '{memory_id}': {str(e)}"
+
+
+@tool(
+    name="NimFSSearchMemory",
+    description=(
+        "Search long-term memory entries in NimFS by keyword. "
+        "Searches titles and tags (case-insensitive). Returns L0 summaries for matching entries."
+    ),
+    category="nimfs",
+)
 async def nimfs_search_memory(
     query: str,
     category: str = "",
@@ -348,6 +437,14 @@ async def nimfs_search_memory(
     return "\n".join(lines)
 
 
+@tool(
+    name="NimFSListMemory",
+    description=(
+        "List all memory entries in NimFS. No query needed — returns all entries. "
+        "Use this to browse all memories or filter by category/scope."
+    ),
+    category="nimfs",
+)
 async def nimfs_list_memory(
     category: str = "",
     scope: str = "all",
@@ -411,6 +508,15 @@ async def nimfs_list_memory(
     return "\n".join(lines)
 
 
+@tool(
+    name="NimFSLoadContext",
+    description=(
+        "Load an optimized context package from NimFS for the current goal. "
+        "Combines global profile/preferences with relevant project knowledge (L0 summaries). "
+        "Use at task start to pre-load relevant knowledge into the Anchor."
+    ),
+    category="nimfs",
+)
 async def nimfs_load_context(goal: str, max_chars: str = "3000", **ctx: Any) -> str:
     """
     Load an optimized context injection package from NimFS for the Anchor.
@@ -515,6 +621,14 @@ NIMFS_LIST_ARTIFACTS_TOOL: Dict[str, Any] = {
 }
 
 
+@tool(
+    name="NimFSUpdateProfile",
+    description=(
+        "Update the global profile or preferences in NimFS. "
+        "Set target='profile' for user profile, or 'preferences' for coding preferences."
+    ),
+    category="nimfs",
+)
 async def nimfs_update_profile(
     target: str,
     content: str,
@@ -578,6 +692,31 @@ NIMFS_UPDATE_PROFILE_TOOL: Dict[str, Any] = {
         "required": ["target", "content"],
     },
 }
+
+NIMFS_READ_MEMORY_TOOL: Dict[str, Any] = {
+    "name": "NimFSReadMemory",
+    "description": (
+        "Read the detailed content of a long-term memory entry by its memory_id. "
+        "Allows choosing between short abstract (l0), overview (l1), or full detailed content (l2)."
+    ),
+    "function": nimfs_read_memory,
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "memory_id": {
+                "type": "string",
+                "description": "The unique ID of the memory entry (e.g., 'patterns-abc12345').",
+            },
+            "layer": {
+                "type": "string",
+                "description": "Detail level to read: 'l0' (abstract), 'l1' (overview), 'l2' (full content). Default is 'l2'.",
+                "enum": ["l0", "l1", "l2"],
+            },
+        },
+        "required": ["memory_id"],
+    },
+}
+
 
 NIMFS_WRITE_MEMORY_TOOL: Dict[str, Any] = {
     "name": "NimFSWriteMemory",
@@ -662,6 +801,7 @@ NIMFS_TOOLS: List[Dict[str, Any]] = [
     NIMFS_WRITE_ARTIFACT_TOOL,
     NIMFS_READ_ARTIFACT_TOOL,
     NIMFS_LIST_ARTIFACTS_TOOL,
+    NIMFS_READ_MEMORY_TOOL,
     NIMFS_WRITE_MEMORY_TOOL,
     NIMFS_UPDATE_PROFILE_TOOL,
     NIMFS_SEARCH_MEMORY_TOOL,
@@ -673,6 +813,7 @@ NIMFS_TOOL_FUNCTIONS: Dict[str, Any] = {
     "NimFSWriteArtifact": nimfs_write_artifact,
     "NimFSReadArtifact":  nimfs_read_artifact,
     "NimFSListArtifacts": nimfs_list_artifacts,
+    "NimFSReadMemory":    nimfs_read_memory,
     "NimFSWriteMemory":   nimfs_write_memory,
     "NimFSUpdateProfile": nimfs_update_profile,
     "NimFSSearchMemory":  nimfs_search_memory,

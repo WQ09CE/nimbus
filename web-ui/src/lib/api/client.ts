@@ -18,10 +18,17 @@ const getApiBase = () => {
 };
 
 const getStreamBase = () => {
-  // In Next.js, SSE works through rewrites as long as we don't hit the Edge runtime buffering limit
+  // For SSE streaming, bypass Next.js proxy to avoid response buffering.
+  // Next.js rewrites buffer the entire SSE response, breaking real-time streaming.
   if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
-  // Default: use relative URL — Next.js rewrites proxy /api/v1/* to nimbus server
-  return "";
+  // In browser context, connect directly to nimbus backend using current hostname
+  if (typeof window !== "undefined") {
+    const nimbusPort = process.env.NEXT_PUBLIC_NIMBUS_PORT || "4096";
+    const protocol = window.location.protocol;
+    return `${protocol}//${window.location.hostname}:${nimbusPort}`;
+  }
+  // Server-side fallback
+  return "http://localhost:4096";
 };
 
 const API_BASE = getApiBase();

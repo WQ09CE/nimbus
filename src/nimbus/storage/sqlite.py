@@ -845,7 +845,7 @@ class SQLiteStorage:
         #     session_id: str
         #     timestamp: float = Field(default_factory=time.time)
         #     step_index: int
-        #     execution_state: ExecutionStateModel
+        #     execution_state: FSMExecutionStateModel
         #     memory_snapshot: MemorySnapshotModel
         #     reason: str = "periodic"
         #     can_resume: bool = True

@@ -15,12 +15,19 @@ class CompositeToolRegistry:
                 return await registry.execute(tool_name, args)
         raise ValueError(f"Tool '{tool_name}' not found in any registry")
 
-    def get_definitions(self, format: str = "claude", role: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get definitions from all registries."""
-        all_defs = []
+    def get_definitions(self, format: str = "openai", role: str = "") -> List[Dict[str, Any]]:
+        """Get all tool definitions across all registries."""
+        definitions = []
         for registry in self.registries:
-            all_defs.extend(registry.get_definitions(format=format, role=role))
-        return all_defs
+            definitions.extend(registry.get_definitions(format=format, role=role))
+        return definitions
+
+    def get_all_funcs(self) -> Dict[str, Callable]:
+        """Get a dictionary of all registered functions across all registries."""
+        funcs = {}
+        for registry in self.registries:
+            funcs.update(registry.get_all_funcs())
+        return funcs
 
     def list_tools(self) -> List[str]:
         """List all tools."""

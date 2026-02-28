@@ -3,7 +3,6 @@
 包含：
 - 日志、类型、配置
 - vCPU 运行时 (core.runtime)
-- 调度器 (core.scheduler)
 - 内存管理 (core.memory)
 - 上下文压缩 (core.compaction)
 """

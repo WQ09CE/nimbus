@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional
 
 from nimbus.agentos import AgentOS, AgentOSConfig
-from nimbus.core.runtime.vcpu import LLMClient
+from nimbus.core.runtime.failure_reporter import LLMClient
 from nimbus.storage.sqlite import SQLiteStorage
 
 logger = logging.getLogger("nimbus.pool")

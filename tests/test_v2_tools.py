@@ -231,7 +231,6 @@ class TestToolRegistry:
 
         assert read_tool is not None
         assert read_tool["name"] == "Read"
-        assert "function" in read_tool
         assert "parameters" in read_tool
 
     def test_get_tool_not_found(self):
@@ -256,7 +255,7 @@ class TestToolRegistry:
             assert isinstance(name, str)
             assert callable(func)
             assert isinstance(desc, str)
-            assert isinstance(params, dict)
+            assert isinstance(params, list)
 
 
 class TestAgentOSIntegration:

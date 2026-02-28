@@ -10,182 +10,125 @@ Based on pi-coding-agent design philosophy: 4 tools are all you need.
 For glob/grep functionality, use Bash:
 - `bash "find . -name '*.py'"`
 - `bash "rg 'pattern' ."`
+
+Tool registration is now declarative: each tool module uses the @tool decorator
+to self-register into the global ToolRegistry. This __init__.py imports the
+modules (triggering decorator execution) and exposes helpers for consumers.
 """
 
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
-# Base classes
+# Base classes — must be imported first (no @tool dependency)
 from nimbus.tools.base import (
     ToolDefinition,
     ToolExecutionError,
     ToolParameter,
     ToolRegistry,
     get_default_registry,
+    infer_parameters_from_func,
     register_tool,
     tool,
 )
+
+# Sandbox — no @tool, just infrastructure
+from nimbus.tools.sandbox import Sandbox, SandboxError
+
+# ---------------------------------------------------------------------------
+# Import tool modules — each uses @tool to mark the function, then we
+# explicitly register them into the global registry here.
+# ---------------------------------------------------------------------------
 from nimbus.tools.bash import bash_command
 from nimbus.tools.edit import edit_file
-
-# Core Tool functions (4 tools based on pi-coding-agent)
 from nimbus.tools.read import read_file
-
-# Sandbox
-from nimbus.tools.sandbox import Sandbox, SandboxError
 from nimbus.tools.write import write_file
 
-# NimFS tools (shared virtual disk + Agent IPC)
-from nimbus.tools.nimfs_tools import (
-    NIMFS_TOOLS,
-    NIMFS_TOOL_FUNCTIONS,
-    nimfs_write_artifact,
-    nimfs_read_artifact,
-    nimfs_list_artifacts,
-    nimfs_write_memory,
-    nimfs_search_memory,
-    nimfs_list_memory,
+# NimFS tools
+from nimbus.tools.nimfs_tools import (              # noqa: F401
     nimfs_load_context,
+    nimfs_list_artifacts,
+    nimfs_list_memory,
+    nimfs_read_artifact,
+    nimfs_read_memory,
+    nimfs_search_memory,
     nimfs_update_profile,
+    nimfs_write_artifact,
+    nimfs_write_memory,
 )
+
+# ---------------------------------------------------------------------------
+# Explicitly register all @tool-decorated functions into the default registry.
+# The @tool decorator only attaches _tool_definition; it does NOT auto-register.
+# Registration must happen here (the package init) so that all importers that
+# do `from nimbus.tools.base import get_default_registry` see the same registry.
+# ---------------------------------------------------------------------------
+_registry = get_default_registry()
+for _fn in [
+    bash_command,
+    edit_file,
+    read_file,
+    write_file,
+    nimfs_load_context,
+    nimfs_list_artifacts,
+    nimfs_list_memory,
+    nimfs_read_artifact,
+    nimfs_read_memory,
+    nimfs_search_memory,
+    nimfs_update_profile,
+    nimfs_write_artifact,
+    nimfs_write_memory,
+]:
+    if hasattr(_fn, "_tool_definition"):
+        try:
+            _registry.register_decorated(_fn)
+        except ValueError:
+            pass  # Already registered (e.g. re-import in tests)
 
 if TYPE_CHECKING:
     from nimbus.agentos import AgentOS
 
 
 # =============================================================================
-# Tool Definitions
+# Backward-compatible collections (derived from registry, no longer hardcoded)
 # =============================================================================
 
-READ_TOOL: Dict[str, Any] = {
-    "name": "Read",
-    "description": (
-        "Read the contents of a file. Supports text files and images (jpg, png, gif, webp). "
-        "Images are sent as attachments. For text files, output is truncated to 4000 lines "
-        "or 200KB (whichever is hit first). Most files fit in a single read — just pass file_path "
-        "without offset/limit. Only use offset/limit for very large files (>4000 lines). "
-        "When you need the full file, continue with offset until complete."
-    ),
-    "function": read_file,
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "file_path": {
-                "type": "string",
-                "description": "Path to the file to read (relative or absolute)",
-            },
-            "offset": {
-                "type": "integer",
-                "description": "Line number to start reading from (1-indexed)",
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Maximum number of lines to read (default: 4000, usually no need to set this)",
-            },
-        },
-        "required": ["file_path"],
-    },
-}
+def _build_legacy_collections() -> Tuple[List[Dict[str, Any]], Dict[str, Callable]]:
+    """Build ALL_TOOLS / TOOL_FUNCTIONS from the global registry (lazy, called once)."""
+    registry = get_default_registry()
+    all_tools: List[Dict[str, Any]] = []
+    tool_functions: Dict[str, Callable] = {}
 
-WRITE_TOOL: Dict[str, Any] = {
-    "name": "Write",
-    "description": (
-        "Write content to a file. Creates the file if it doesn't exist, "
-        "overwrites if it does. Automatically creates parent directories."
-    ),
-    "function": write_file,
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "file_path": {
-                "type": "string",
-                "description": "Path to the file to write (relative or absolute)",
-            },
-            "content": {
-                "type": "string",
-                "description": "Content to write to the file",
-            },
-        },
-        "required": ["file_path", "content"],
-    },
-}
+    for name in registry.list_tools():
+        entry = registry.get(name)
+        if entry is None:
+            continue
+        td, func = entry
+        all_tools.append(td.to_dict())
+        tool_functions[name] = func
 
-EDIT_TOOL: Dict[str, Any] = {
-    "name": "Edit",
-    "description": (
-        "Edit a file by replacing exact text. The oldText must match exactly "
-        "(including whitespace). Use this for precise, surgical edits. "
-        "Falls back to fuzzy matching if exact match fails."
-    ),
-    "function": edit_file,
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "file_path": {
-                "type": "string",
-                "description": "Path to the file to edit (relative or absolute)",
-            },
-            "old_text": {
-                "type": "string",
-                "description": "Exact text to find and replace (must match exactly)",
-            },
-            "new_text": {
-                "type": "string",
-                "description": "New text to replace the old text with",
-            },
-        },
-        "required": ["file_path", "old_text", "new_text"],
-    },
-}
-
-BASH_TOOL: Dict[str, Any] = {
-    "name": "Bash",
-    "description": (
-        "Execute a bash command in the current working directory. Returns stdout and stderr. "
-        "Output is truncated to last 2000 lines or 50KB (whichever is hit first). "
-        "If truncated, full output is saved to a temp file. "
-        "Optionally provide a timeout in seconds (default: 60s). "
-        "Use for: running tests (pytest), searching files (find, rg, grep), "
-        "listing directories (ls), git operations, installing packages, etc."
-    ),
-    "function": bash_command,
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "command": {
-                "type": "string",
-                "description": "Bash command to execute",
-            },
-            "timeout": {
-                "type": "number",
-                "description": "Timeout in seconds (default: 60)",
-            },
-        },
-        "required": ["command"],
-    },
-}
+    return all_tools, tool_functions
 
 
-# =============================================================================
-# Tool Collections
-# =============================================================================
+ALL_TOOLS, TOOL_FUNCTIONS = _build_legacy_collections()
 
-ALL_TOOLS: List[Dict[str, Any]] = [
-    READ_TOOL,
-    WRITE_TOOL,
-    EDIT_TOOL,
-    BASH_TOOL,
-    # NimFS tools: shared virtual disk + Agent IPC (H002 fix: registered in ALL_TOOLS)
-    *NIMFS_TOOLS,
+# Legacy per-tool aliases (still used by some tests / consumers)
+def _get_tool_dict(name: str) -> Dict[str, Any]:
+    for t in ALL_TOOLS:
+        if t["name"] == name:
+            return t
+    raise KeyError(f"Tool '{name}' not found in registry")
+
+READ_TOOL  = _get_tool_dict("Read")
+WRITE_TOOL = _get_tool_dict("Write")
+EDIT_TOOL  = _get_tool_dict("Edit")
+BASH_TOOL  = _get_tool_dict("Bash")
+
+# NimFS collections (kept for backward compat with callers that imported them)
+NIMFS_TOOLS: List[Dict[str, Any]] = [
+    t for t in ALL_TOOLS if t["name"].startswith("NimFS")
 ]
-
-TOOL_FUNCTIONS: Dict[str, Callable] = {
-    "Read": read_file,
-    "Write": write_file,
-    "Edit": edit_file,
-    "Bash": bash_command,
-    # NimFS tool functions
-    **NIMFS_TOOL_FUNCTIONS,
+NIMFS_TOOL_FUNCTIONS: Dict[str, Callable] = {
+    name: fn for name, fn in TOOL_FUNCTIONS.items() if name.startswith("NimFS")
 }
 
 
@@ -195,31 +138,52 @@ TOOL_FUNCTIONS: Dict[str, Callable] = {
 
 
 def get_all_tools() -> List[Dict[str, Any]]:
-    """Get all tool definitions."""
-    return ALL_TOOLS.copy()
+    """Get all tool definitions (as dicts) from the registry."""
+    registry = get_default_registry()
+    result = []
+    for name in registry.list_tools():
+        entry = registry.get(name)
+        if entry:
+            td, _ = entry
+            result.append(td.to_dict())
+    return result
 
 
 def get_tool(name: str) -> Dict[str, Any] | None:
-    """Get a tool definition by name."""
-    for tool_def in ALL_TOOLS:
-        if tool_def["name"] == name:
-            return tool_def
-    return None
+    """Get a tool definition dict by name."""
+    registry = get_default_registry()
+    entry = registry.get(name)
+    if entry is None:
+        return None
+    td, _ = entry
+    return td.to_dict()
 
 
 def get_tool_function(name: str) -> Callable | None:
     """Get a tool function by name."""
-    return TOOL_FUNCTIONS.get(name)
+    return get_default_registry().get_function(name)
 
 
-def create_workspace_wrapper(func: Callable, workspace: Path, allowed_paths: Optional[List[Path]] = None) -> Callable:
-    """Create a wrapper that injects workspace and allowed_paths into tool calls."""
+def create_workspace_wrapper(
+    func: Callable,
+    workspace: Path,
+    allowed_paths: Optional[List[Path]] = None,
+) -> Callable:
+    """Create a wrapper that injects workspace and allowed_paths into tool calls.
+
+    The wrapper preserves the _tool_definition attribute so that AgentOS
+    can detect the @tool decorator and use the pre-built ToolDefinition.
+    """
 
     async def wrapper(**kwargs: Any) -> Any:
         kwargs["workspace"] = workspace
         if allowed_paths:
             kwargs["allowed_paths"] = allowed_paths
         return await func(**kwargs)
+
+    # Preserve @tool decorator metadata so AgentOS recognises this as a decorated tool
+    if hasattr(func, "_tool_definition"):
+        wrapper._tool_definition = func._tool_definition  # type: ignore[attr-defined]
 
     return wrapper
 
@@ -244,15 +208,15 @@ def register_default_tools(
     if workspace is None:
         workspace = Path.cwd()
 
+    registry = get_default_registry()
+    tools_to_register = tools or registry.list_tools()
+
     registered = []
-    tools_to_register = tools or list(TOOL_FUNCTIONS.keys())
-
     for name in tools_to_register:
-        tool_def = get_tool(name)
-        func = get_tool_function(name)
-
-        if tool_def is None or func is None:
+        entry = registry.get(name)
+        if entry is None:
             continue
+        td, func = entry
 
         nimbus_home = Path.home() / ".nimbus"
         wrapped_func = create_workspace_wrapper(func, workspace, allowed_paths=[nimbus_home])
@@ -264,18 +228,14 @@ def register_default_tools(
         elif isinstance(roles, dict):
             tool_roles = roles.get(name)
 
-        # Handle both dict and object
-        description = tool_def.get("description", "") if hasattr(tool_def, "get") else getattr(tool_def, "description", "")
-        parameters = tool_def.get("parameters") if hasattr(tool_def, "get") else getattr(tool_def, "parameters", None)
-
+        tool_dict = td.to_dict()
         os.register_tool(
             name=name,
             func=wrapped_func,
-            description=description,
-            parameters=parameters,
+            description=tool_dict.get("description", ""),
+            parameters=tool_dict.get("parameters"),
             roles=tool_roles,
         )
-
         registered.append(name)
 
     return registered
@@ -295,19 +255,21 @@ def iterate_tools(
     if workspace is None:
         workspace = Path.cwd()
 
+    registry = get_default_registry()
     result = []
-    for tool_def in ALL_TOOLS:
-        name = tool_def["name"]
-        func = TOOL_FUNCTIONS.get(name)
-        if func is None:
+    for name in registry.list_tools():
+        entry = registry.get(name)
+        if entry is None:
             continue
-
+        td, func = entry
         wrapped_func = create_workspace_wrapper(func, workspace)
-        description = tool_def.get("description", "")
-        parameters = tool_def.get("parameters", {})
-
-        result.append((name, wrapped_func, description, parameters))
-
+        tool_dict = td.to_dict()
+        result.append((
+            name,
+            wrapped_func,
+            tool_dict.get("description", ""),
+            tool_dict.get("parameters", {}),
+        ))
     return result
 
 
@@ -320,21 +282,34 @@ __all__ = [
     "tool",
     "get_default_registry",
     "register_tool",
+    "infer_parameters_from_func",
     # Sandbox
     "Sandbox",
     "SandboxError",
-    # Tool functions
+    # Tool functions — core
     "read_file",
     "write_file",
     "edit_file",
     "bash_command",
-    # Tool definitions
+    # Tool functions — NimFS
+    "nimfs_write_artifact",
+    "nimfs_read_artifact",
+    "nimfs_list_artifacts",
+    "nimfs_write_memory",
+    "nimfs_read_memory",
+    "nimfs_search_memory",
+    "nimfs_list_memory",
+    "nimfs_load_context",
+    "nimfs_update_profile",
+    # Backward-compat collections
     "READ_TOOL",
     "WRITE_TOOL",
     "EDIT_TOOL",
     "BASH_TOOL",
     "ALL_TOOLS",
     "TOOL_FUNCTIONS",
+    "NIMFS_TOOLS",
+    "NIMFS_TOOL_FUNCTIONS",
     # Helper functions
     "get_all_tools",
     "get_tool",

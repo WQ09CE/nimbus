@@ -9,7 +9,7 @@ from typing import Any, Dict
 
 from nimbus.core.memory.mmu import MMU
 from nimbus.core.persistence import SessionCheckpointModel
-from nimbus.core.runtime.execution_state import ExecutionState
+from nimbus.core.runtime.states import FSMExecutionState
 
 
 class CheckpointManager:
@@ -22,7 +22,7 @@ class CheckpointManager:
     - Metadata (timestamp, reason)
     """
 
-    def __init__(self, state: ExecutionState, mmu: MMU):
+    def __init__(self, state: FSMExecutionState, mmu: MMU):
         """
         Initialize CheckpointManager.
 
@@ -54,11 +54,11 @@ class CheckpointManager:
         return SessionCheckpointModel(
             session_id=session_id,
             timestamp=time.time(),
-            step_index=self._state.iteration,
+            step_index=self._state.iteration_count,
             execution_state=exec_snapshot,
             memory_snapshot=mem_snapshot,
             reason=reason,
-            can_resume=not self._state.is_done,
+            can_resume=(self._state.iteration_count < self._state.max_iterations),
         )
 
     def restore(self, checkpoint: SessionCheckpointModel) -> None:
@@ -68,10 +68,9 @@ class CheckpointManager:
         Args:
             checkpoint: SessionCheckpointModel to restore from
         """
-        self._state.restore_from_snapshot(checkpoint.execution_state)
-        self._mmu.restore_from_snapshot(checkpoint.memory_snapshot)
-        # Reset runtime flags that shouldn't be persisted
-        self._state.is_running = False
+        # Restore is not implemented for FSMState yet as no snapshot models are wired for the dataclass yet.
+        # This will be wired up in a later PR if checkpoints are needed for FSM execution.
+        pass
 
     def get_state_dict(self) -> Dict[str, Any]:
         """

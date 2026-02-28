@@ -185,7 +185,7 @@ class PinnedContext:
     workspace_info: str = ""
     env_state: str = ""  # Dynamic environment state (e.g. key vars, paths)
     capabilities: str = ""
-    custom_anchors: List[str] = field(default_factory=list)
+    custom_anchors: Dict[str, str] = field(default_factory=dict)
     version: str = "1.0"
 
     def to_system_message(self) -> Message:
@@ -204,8 +204,8 @@ class PinnedContext:
         if self.capabilities:
             parts.append(f"# Capabilities\n{self.capabilities}")
 
-        for anchor in self.custom_anchors:
-            parts.append(anchor)
+        for k, v in self.custom_anchors.items():
+            parts.append(f"{k}:\n{v}")
 
         content = "\n\n".join(parts)
         return Message(role="system", content=content, meta={"pinned": True})
@@ -216,13 +216,13 @@ class PinnedContext:
         total += Message._estimate_text(self.workspace_info)
         total += Message._estimate_text(self.env_state)
         total += Message._estimate_text(self.capabilities)
-        for anchor in self.custom_anchors:
-            total += Message._estimate_text(anchor)
+        for k, v in self.custom_anchors.items():
+            total += Message._estimate_text(k) + Message._estimate_text(v)
         return total
 
-    def add_anchor(self, content: str) -> None:
+    def add_anchor(self, key: str, content: str) -> None:
         """Add a custom anchor."""
-        self.custom_anchors.append(content)
+        self.custom_anchors[key] = content
 
     def update_workspace(self, info: str) -> None:
         """Update workspace information."""

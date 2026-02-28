@@ -43,9 +43,11 @@ __layer__ = 0  # Infrastructure Layer
 __role__ = "ISA"  # Instruction Set Architecture - tool interface definitions
 
 import asyncio
+import inspect
+import re
 from dataclasses import dataclass, field
 from functools import wraps
-from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, TypeVar
+from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, TypeVar, get_type_hints
 
 # Type for decorated tool functions
 F = TypeVar("F", bound=Callable[..., Any])
@@ -561,6 +563,10 @@ class ToolRegistry:
         else:
             raise ValueError(f"Unknown format: {format}. Use 'claude' or 'openai'.")
 
+    def get_all_funcs(self) -> Dict[str, Callable]:
+        """Get a dictionary of all registered tool names to their callables."""
+        return {name: func for name, (_, func) in self._tools.items()}
+
     async def execute(
         self,
         name: str,
@@ -639,6 +645,113 @@ class ToolRegistry:
         return iter(self._tools.keys())
 
 
+def _py_type_to_json_schema_type(annotation: Any) -> str:
+    """Map Python type annotation to JSON Schema type string."""
+    import typing
+
+    origin = getattr(annotation, "__origin__", None)
+
+    # Handle Optional[X] -> unwrap to X
+    if origin is typing.Union:
+        args = [a for a in annotation.__args__ if a is not type(None)]
+        if args:
+            return _py_type_to_json_schema_type(args[0])
+        return "string"
+
+    type_map = {
+        str: "string",
+        int: "integer",
+        float: "number",
+        bool: "boolean",
+        list: "array",
+        dict: "object",
+        bytes: "string",
+    }
+    return type_map.get(annotation, "string")
+
+
+def _parse_docstring_args(doc: str) -> Dict[str, str]:
+    """Parse Args section from a Google-style docstring.
+
+    Returns mapping of param_name -> description.
+    """
+    if not doc:
+        return {}
+
+    result: Dict[str, str] = {}
+    # Find the Args: block
+    args_match = re.search(r"\n\s*Args:\s*\n(.*?)(\n\s*\n|\n\s*Returns:|\n\s*Raises:|$)", doc, re.DOTALL)
+    if not args_match:
+        return {}
+
+    args_block = args_match.group(1)
+    # Each line: "    param_name: description"
+    param_pattern = re.compile(r"^\s{4,}(\w+)\s*:\s*(.+?)(?=\n\s{4,}\w+\s*:|\Z)", re.MULTILINE | re.DOTALL)
+    for m in param_pattern.finditer(args_block):
+        name = m.group(1).strip()
+        desc = re.sub(r"\s+", " ", m.group(2)).strip()
+        result[name] = desc
+
+    return result
+
+
+# Internal marker for parameters that are framework context (not LLM-visible)
+_CONTEXT_PARAMS = frozenset({"workspace", "kwargs", "ctx", "context"})
+
+
+def infer_parameters_from_func(func: Callable[..., Any]) -> List[ToolParameter]:
+    """Automatically infer ToolParameter list from a function's signature and docstring.
+
+    Skips parameters named in _CONTEXT_PARAMS (framework internals), **kwargs, and *args.
+    Uses Google-style docstring Args section for descriptions.
+
+    Args:
+        func: The function to introspect.
+
+    Returns:
+        List of ToolParameter inferred from the signature.
+    """
+    try:
+        hints = get_type_hints(func)
+    except Exception:
+        hints = {}
+
+    doc = inspect.getdoc(func) or ""
+    doc_args = _parse_docstring_args(doc)
+
+    sig = inspect.signature(func)
+    params: List[ToolParameter] = []
+
+    for param_name, param in sig.parameters.items():
+        # Skip self, *args, **kwargs, and framework context params
+        if param_name in _CONTEXT_PARAMS or param_name.startswith("_"):
+            continue
+        if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+            continue
+
+        annotation = hints.get(param_name, str)
+        json_type = _py_type_to_json_schema_type(annotation)
+
+        # Determine required / default
+        has_default = param.default is not inspect.Parameter.empty
+        required = not has_default
+        default = param.default if has_default else None
+
+        description = doc_args.get(param_name, f"Parameter '{param_name}'")
+
+        params.append(
+            ToolParameter(
+                name=param_name,
+                type=json_type,
+                description=description,
+                required=required,
+                default=default if default is not None else None,
+            )
+        )
+
+    return params
+
+
 def tool(
     name: str,
     description: str,
@@ -672,11 +785,14 @@ def tool(
     """
 
     def decorator(func: F) -> F:
+        # Auto-infer parameters from type hints if not explicitly provided
+        resolved_params = parameters if parameters is not None else infer_parameters_from_func(func)
+
         # Create tool definition
         definition = ToolDefinition(
             name=name,
             description=description,
-            parameters=parameters or [],
+            parameters=resolved_params,
             category=category,
             dangerous=dangerous,
         )

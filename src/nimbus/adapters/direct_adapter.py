@@ -531,7 +531,7 @@ class DirectAdapter:
                     "name": tool["name"],
                     "description": tool.get("description", ""),
                     "input_schema": tool.get(
-                        "parameters", {"type": "object", "properties": {}}
+                        "input_schema", tool.get("parameters", {"type": "object", "properties": {}})
                     ),
                 })
         return result if result else None
@@ -1185,6 +1185,10 @@ class DirectAdapter:
             # Rate limit retry logic
             current_model = model
             try:
+                import json
+                logger.error(f"DEBUG: LiteLLM acompletion called with {len(clean_messages)} messages.")
+                logger.error(f"DEBUG: Last message: {json.dumps(clean_messages[-1])}")
+
                 response = await acompletion(
                     model=current_model,
                     messages=clean_messages,

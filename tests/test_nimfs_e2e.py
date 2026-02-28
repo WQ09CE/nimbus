@@ -586,7 +586,7 @@ class TestToolRegistration:
         """There should be exactly 8 NimFS tool definitions."""
         from nimbus.tools import NIMFS_TOOLS
 
-        assert len(NIMFS_TOOLS) == 8, (
+        assert len(NIMFS_TOOLS) == 9, (
             f"Expected 8 NimFS tools, got {len(NIMFS_TOOLS)}: "
             f"{[t['name'] for t in NIMFS_TOOLS]}"
         )

@@ -16,7 +16,8 @@ import pytest
 from nimbus.core.memory.mmu import MMU, MMUConfig
 from nimbus.core.protocol import ToolResult
 from nimbus.core.runtime.decoder import InstructionDecoder
-from nimbus.core.runtime.vcpu import VCPU, LLMResponse, VCPUConfig
+from nimbus.core.runtime.vcpu import VCPU, VCPUConfig
+from nimbus.core.runtime.pipeline import LLMResponse
 from nimbus.os.gate import KernelGate
 
 # --- Mock Components ---

@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
 from nimbus.agentos import create_agent_os
-from nimbus.core.runtime.vcpu import LLMClient, LLMResponse
+from nimbus.core.runtime.failure_reporter import LLMClient
+from nimbus.core.runtime.pipeline import LLMResponse
 
 @dataclass
 class MockLLMResponse:

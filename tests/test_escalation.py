@@ -5,7 +5,8 @@ from nimbus.core.heart import Heart, HeartMessage
 from nimbus.core.heart_modules.session_monitor import SessionMonitorModule
 from nimbus.core.models.registry import ModelRegistry
 from nimbus.agentos import AgentOS, Process
-from nimbus.core.runtime.vcpu import VCPU, LLMClient
+from nimbus.core.runtime.vcpu import VCPU
+from nimbus.core.runtime.failure_reporter import LLMClient
 
 @pytest.mark.asyncio
 async def test_model_escalation_flow():

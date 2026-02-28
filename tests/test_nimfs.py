@@ -413,7 +413,7 @@ def test_tools_import():
         NIMFS_TOOLS,
         NIMFS_TOOL_FUNCTIONS,
     )
-    assert len(NIMFS_TOOLS) == 8
+    assert len(NIMFS_TOOLS) == 9
     assert "NimFSWriteArtifact" in NIMFS_TOOL_FUNCTIONS
     assert "NimFSListMemory" in NIMFS_TOOL_FUNCTIONS
 

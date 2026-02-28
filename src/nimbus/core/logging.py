@@ -28,7 +28,7 @@ logger = _loguru_logger
 class InterceptHandler(logging.Handler):
     """Handler to intercept standard logging and redirect to loguru.
 
-    This allows kernel layer (vcpu, scheduler) which uses standard logging
+    This allows kernel layer (vcpu) which uses standard logging
     to have their logs unified into the loguru system.
     """
 
@@ -141,13 +141,12 @@ def setup_logging(
         env_console = os.environ.get("NIMBUS_LOG_CONSOLE", "true").lower()
         console = env_console not in ("false", "0", "no", "off")
 
-    # Intercept standard logging module (for kernel layer: vcpu, scheduler)
+    # Intercept standard logging module (for kernel layer: vcpu)
     if intercept_stdlib:
         logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
         # Also intercept specific loggers used by kernel
         for logger_name in [
             "nimbus.kernel.vcpu",
-            "nimbus.kernel.scheduler",
             "nimbus.apps.code_agent",
             "nimbus.llm.gemini",
         ]:

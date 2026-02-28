@@ -46,7 +46,15 @@ class EvolutionManagerModule(HeartModule):
 
     async def handle_message(self, heart: "Heart", msg: HeartMessage):
         if msg.topic == "evolution.propose":
-            await self.generate_candidate(msg.payload)
+            # Handle both dictionary and object (EvolutionProposal) payloads
+            payload = msg.payload
+            if isinstance(payload, EvolutionProposal):
+                self.proposals[payload.id] = payload
+                logger.info(f"Received proposal object: {payload.id}")
+            elif isinstance(payload, dict):
+                await self.generate_candidate(payload)
+            else:
+                logger.error(f"Received unknown evolution.propose payload type: {type(payload)}")
         elif msg.topic == "evolution.replay":
             proposal_id = msg.payload.get("proposal_id")
             if proposal_id in self.proposals:

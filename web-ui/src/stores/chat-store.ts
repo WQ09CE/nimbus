@@ -924,11 +924,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
               if (parentId && slotIdx !== undefined) {
                 const metaIdx = toolCalls.findIndex(tc => tc.id === parentId);
                 if (metaIdx >= 0) {
-                  const meta = toolCalls[metaIdx];
-                  const specialistSlot = meta.subCalls?.[slotIdx];
+                  const meta = { ...toolCalls[metaIdx] };
+                  let specialistSlot = meta.subCalls?.[slotIdx];
                   if (specialistSlot) {
-                    if (!specialistSlot.subCalls) specialistSlot.subCalls = [];
-                    specialistSlot.subCalls.push(subTool);
+                    specialistSlot = { ...specialistSlot };
+                    specialistSlot.subCalls = [...(specialistSlot.subCalls || []), subTool];
+                    if (meta.subCalls) {
+                      meta.subCalls = [...meta.subCalls];
+                      meta.subCalls[slotIdx] = specialistSlot;
+                    }
+                    toolCalls[metaIdx] = meta;
                     const label = META_TOOL_LABELS[specialistSlot.name] || specialistSlot.name;
                     useWorkflowStore.getState().upsertCall({
                       callId: subTool.id || "",
@@ -959,9 +964,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 );
               }
               if (targetMetaIdx >= 0) {
-                const metaTool = toolCalls[targetMetaIdx];
-                if (!metaTool.subCalls) metaTool.subCalls = [];
-                metaTool.subCalls.push(subTool);
+                const metaTool = { ...toolCalls[targetMetaIdx] };
+                metaTool.subCalls = [...(metaTool.subCalls || []), subTool];
+                toolCalls[targetMetaIdx] = metaTool;
               }
               const metaLabel = targetMetaIdx >= 0
                 ? META_TOOL_LABELS[toolCalls[targetMetaIdx].name] || toolCalls[targetMetaIdx].name
@@ -1000,11 +1005,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
               if (parentIdForResult && slotIdxForResult !== undefined) {
                 const metaIdx = toolCalls.findIndex(tc => tc.id === parentIdForResult);
                 if (metaIdx >= 0) {
-                  const meta = toolCalls[metaIdx];
-                  const specialistSlot = meta.subCalls?.[slotIdxForResult];
+                  const meta = { ...toolCalls[metaIdx] };
+                  let specialistSlot = meta.subCalls?.[slotIdxForResult];
                   if (specialistSlot) {
-                    if (!specialistSlot.subResults) specialistSlot.subResults = [];
-                    specialistSlot.subResults.push(subResult);
+                    specialistSlot = { ...specialistSlot };
+                    specialistSlot.subResults = [...(specialistSlot.subResults || []), subResult];
+                    if (meta.subCalls) {
+                      meta.subCalls = [...meta.subCalls];
+                      meta.subCalls[slotIdxForResult] = specialistSlot;
+                    }
+                    toolCalls[metaIdx] = meta;
                     const label = META_TOOL_LABELS[specialistSlot.name] || specialistSlot.name;
                     useWorkflowStore.getState().upsertCall({
                       callId: subResult.id || "",
@@ -1041,9 +1051,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 );
               }
               if (targetMetaIdxForResult >= 0) {
-                const metaTool = toolCalls[targetMetaIdxForResult];
-                if (!metaTool.subResults) metaTool.subResults = [];
-                metaTool.subResults.push(subResult);
+                const metaTool = { ...toolCalls[targetMetaIdxForResult] };
+                metaTool.subResults = [...(metaTool.subResults || []), subResult];
+                toolCalls[targetMetaIdxForResult] = metaTool;
               }
               const metaResultLabel = targetMetaIdxForResult >= 0
                 ? META_TOOL_LABELS[toolCalls[targetMetaIdxForResult].name] || toolCalls[targetMetaIdxForResult].name

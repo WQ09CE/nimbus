@@ -23,7 +23,6 @@ from nimbus.agentos import (
     create_agent_os,
 )
 from nimbus.core.protocol import Fault
-from nimbus.core.scheduler import Task, TaskSpec, create_dag, create_linear_dag
 
 # =============================================================================
 # Mock LLM Client
@@ -513,64 +512,6 @@ class TestWaitProcess:
 
         with pytest.raises(RuntimeError, match="not found"):
             await os.wait("nonexistent")
-
-
-# =============================================================================
-# Test: DAG Execution
-# =============================================================================
-
-
-class TestDAGExecution:
-    """Tests for DAG execution."""
-
-    @pytest.mark.asyncio
-    async def test_run_simple_dag(self, mock_llm, simple_tools):
-        """Test running a simple single-task DAG."""
-        # Return result for the single task
-        mock_llm.add_response(
-            MockLLMResponse(
-                tool_calls=[
-                    MockToolCall(
-                        function=MockToolCall.Function(
-                            name="return_result", arguments='{"result": "Step completed"}'
-                        )
-                    )
-                ]
-            )
-        )
-
-        os = AgentOS(llm_client=mock_llm, tools=simple_tools)
-
-        dag = create_dag([Task(id="t1", spec=TaskSpec(goal="Step 1"))])
-
-        result = await os.run_dag(dag)
-
-        assert result.status == "OK"
-
-    @pytest.mark.asyncio
-    async def test_run_linear_dag(self, mock_llm, simple_tools):
-        """Test running a linear DAG with dependencies."""
-        # Responses for each task in the linear DAG
-        for _ in range(3):
-            mock_llm.add_response(
-                MockLLMResponse(
-                    tool_calls=[
-                        MockToolCall(
-                            function=MockToolCall.Function(
-                                name="return_result", arguments='{"result": "Step completed"}'
-                            )
-                        )
-                    ]
-                )
-            )
-
-        os = AgentOS(llm_client=mock_llm, tools=simple_tools)
-
-        dag = create_linear_dag(["Step 1", "Step 2", "Step 3"])
-
-        result = await os.run_dag(dag)
-
-        assert result.status == "OK"
 
 
 # =============================================================================

@@ -12,7 +12,7 @@ from typing import List
 # from nimbus.orchestration.prompts import PromptManager
 
 # NimFS tool sets by access level
-_NIMFS_READ = ["NimFSReadArtifact", "NimFSListArtifacts", "NimFSSearchMemory", "NimFSLoadContext", "NimFSListMemory"]
+_NIMFS_READ = ["NimFSReadArtifact", "NimFSListArtifacts", "NimFSSearchMemory", "NimFSReadMemory", "NimFSLoadContext", "NimFSListMemory"]
 _NIMFS_ALL = _NIMFS_READ + ["NimFSWriteArtifact", "NimFSWriteMemory"]
 _NIMFS_SPECIALIST = _NIMFS_READ + ["NimFSWriteArtifact"]  # Specialists can write artifacts but NOT memory
 

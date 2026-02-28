@@ -28,14 +28,7 @@ from nimbus.core.models.manifest import get_model_manifest
 from nimbus.core.models.registry import ModelRegistry
 from nimbus.core.protocol import Event, Fault, ToolResult
 from nimbus.core.runtime.decoder import InstructionDecoder
-from nimbus.core.runtime.vcpu import VCPU, LLMClient, VCPUConfig
-from nimbus.core.scheduler import (
-    DAG,
-    EventStream,
-    Scheduler,
-    SchedulerConfig,
-    Task,
-)
+from nimbus.core.runtime.vcpu import VCPU, VCPUConfig
 
 # Session and Compaction
 from nimbus.core.session import SessionManager
@@ -50,6 +43,7 @@ from nimbus.skills.manager import SkillManager
 from nimbus.tools.base import ToolDefinition, ToolParameter, ToolRegistry
 from nimbus.tools.memo import create_memo_tool
 from nimbus.tools.composite import CompositeToolRegistry
+from nimbus.core.ipc.mailbox import Mailbox
 
 # =============================================================================
 # AgentOS Configuration
@@ -71,7 +65,6 @@ class AgentOSConfig:
     max_processes: int = 10
     default_timeout: float = 300.0
     vcpu_config: VCPUConfig = field(default_factory=VCPUConfig)
-    scheduler_config: SchedulerConfig = field(default_factory=SchedulerConfig)
     mmu_config: MMUConfig = field(default_factory=MMUConfig)
     # Kernel tools
     kernel_tools: bool = True
@@ -114,7 +107,8 @@ class Process:
     gate: Optional[KernelGate] = None
     result: Optional[ToolResult] = None
     task: Optional[asyncio.Task] = None
-    inbox: List[str] = field(default_factory=list)
+    inbox: List[Any] = field(default_factory=list)
+    outbox: Optional[Mailbox] = None
     signals: Dict[str, bool] = field(default_factory=dict)
 
 
@@ -128,7 +122,7 @@ class AgentOS:
 
     def __init__(
         self,
-        llm_client: LLMClient,
+        llm_client: Any,
         tools: Optional[Dict[str, Callable]] = None,
         config: Optional[AgentOSConfig] = None,
     ):
@@ -176,28 +170,43 @@ class AgentOS:
         # 1. Register Kernel Tools (Auto)
         kernel_tools_desc = ""
         if self.config.kernel_tools:
-            from nimbus.tools import BASH_TOOL, EDIT_TOOL, READ_TOOL, WRITE_TOOL
+            from nimbus.tools import BASH_TOOL, EDIT_TOOL, READ_TOOL, TOOL_FUNCTIONS, WRITE_TOOL
             from nimbus.tools.base import ToolDefinition, ToolParameter
 
             kernel_tools_list = [READ_TOOL, WRITE_TOOL, EDIT_TOOL, BASH_TOOL]
             kernel_tools_desc = "Available tools:\n"
 
-            # Helper to parse legacy tool dicts
+            # Helper to parse legacy tool dicts.
+            # Supports both new list format (from ToolDefinition.to_dict) and
+            # old JSON-Schema dict format {"type": "object", "properties": {...}}.
             def _parse_legacy_tool(data: Dict[str, Any]) -> ToolDefinition:
+                raw_params = data.get("parameters", [])
                 params = []
-                schema = data.get("parameters", {})
-                props = schema.get("properties", {})
-                required = schema.get("required", [])
 
-                for name, spec in props.items():
-                    params.append(
-                        ToolParameter(
-                            name=name,
-                            type=spec.get("type", "string"),
-                            description=spec.get("description", ""),
-                            required=(name in required),
+                if isinstance(raw_params, list):
+                    # New format: list of {"name", "type", "description", "required"}
+                    for spec in raw_params:
+                        params.append(
+                            ToolParameter(
+                                name=spec["name"],
+                                type=spec.get("type", "string"),
+                                description=spec.get("description", ""),
+                                required=spec.get("required", True),
+                            )
                         )
-                    )
+                elif isinstance(raw_params, dict):
+                    # Old JSON Schema format: {"type": "object", "properties": {...}}
+                    props = raw_params.get("properties", {})
+                    required_list = raw_params.get("required", [])
+                    for name, spec in props.items():
+                        params.append(
+                            ToolParameter(
+                                name=name,
+                                type=spec.get("type", "string"),
+                                description=spec.get("description", ""),
+                                required=(name in required_list),
+                            )
+                        )
 
                 return ToolDefinition(
                     name=data["name"],
@@ -209,7 +218,11 @@ class AgentOS:
             for tool_data in kernel_tools_list:
                 try:
                     def_obj = _parse_legacy_tool(tool_data)
-                    self._tools.register(def_obj, tool_data["function"])
+                    tool_fn = TOOL_FUNCTIONS.get(def_obj.name)
+                    if tool_fn is None:
+                        logger.warning(f"No function found for kernel tool '{def_obj.name}', skipping.")
+                        continue
+                    self._tools.register(def_obj, tool_fn)
 
                     params = []
                     for p in def_obj.parameters:
@@ -249,11 +262,6 @@ class AgentOS:
                 self.config.system_rules = parts[0] + "\n\n" + kernel_tools_desc + "\n" + parts[1]
             else:
                 self.config.system_rules += "\n\n" + kernel_tools_desc
-
-        self._scheduler = Scheduler(
-            config=self.config.scheduler_config,
-            events=EventStream(),
-        )
 
         self._processes: Dict[str, Process] = {}
         self._events = SimpleEventStream()
@@ -761,7 +769,7 @@ class AgentOS:
                 topic="session.iteration",
                 payload={
                     "session_id": pid,
-                    "iteration": vcpu._state.iteration,
+                    "iteration": vcpu.iteration,
                     "has_output": has_output
                 }
             ))
@@ -882,9 +890,6 @@ class AgentOS:
                 manifest=manifest,
             )
 
-            vcpu.set_compaction_callback(
-                lambda sid=session_id, m=mmu: self._compaction_for_process(sid, m)
-            )
 
             process = Process(
                 pid=session_id,
@@ -923,8 +928,8 @@ class AgentOS:
         if process.state == "RUNNING":
             self.inject_message(process.pid, message)
         else:
-            # Process not RUNNING (PENDING/SUCCEEDED) — add directly to inbox
-            process.inbox.append(message)
+            # Process not RUNNING — add message directly to MMU
+            process.mmu.add_user_message(message)
 
         if process.state != "RUNNING":
             process.state = "RUNNING"
@@ -1042,9 +1047,6 @@ class AgentOS:
             manifest=manifest,
         )
 
-        vcpu.set_compaction_callback(
-            lambda sid=session_id, m=mmu: self._compaction_for_process(sid, m)
-        )
 
         # Restore state
         vcpu.restore_from_checkpoint(checkpoint)
@@ -1391,14 +1393,6 @@ class AgentOS:
             logger.error(f"[{pid}] Compaction failed: {e}")
             return False
 
-    async def run_dag(self, dag: DAG) -> ToolResult:
-        await self._scheduler.submit_dag(dag)
-
-        async def executor(task: Task) -> ToolResult:
-            return await self.run(task.spec.goal, role=task.spec.process_role)
-
-        return await self._scheduler.run_dag(dag.id, executor)
-
     def interrupt(self, session_id: Optional[str] = None) -> bool:
         signalled = False
 
@@ -1433,8 +1427,21 @@ class AgentOS:
             logger.warning(f"[{pid}] Process not running (state={process.state}), cannot inject")
             return False
 
-        process.inbox.append(message)
-        preview = str(message)[:50] if isinstance(message, list) else message[:50]
+        if isinstance(message, str):
+            # Backwards compatibility: Wrap simple strings as 'user' interventions
+            from nimbus.core.ipc.message import IPCMessage
+            msg_obj = IPCMessage(
+                sender_pid="user",
+                target_pid=pid,
+                type="event",
+                payload={"content": message}
+            )
+            process.inbox.append(msg_obj)
+        else:
+            # Full IPCMessage injection
+            process.inbox.append(message)
+
+        preview = str(message)[:50]
         logger.info(f"[{pid}] Message injected into inbox: {preview}...")
         return True
 
@@ -1444,9 +1451,9 @@ class AgentOS:
             if process.vcpu is None:
                 raise RuntimeError("Process has no VCPU")
 
-            if not process.vcpu._state.is_running:
+            if not process.vcpu.is_running:
                 process.vcpu._reset()
-                process.vcpu._state.is_running = True
+                process.vcpu._is_active = True
 
                 if process.vcpu.config.pin_goal and process.role != "chat":
                     pinned_goal = await process.vcpu._prepare_goal_for_pinning(process.goal)
@@ -1455,12 +1462,12 @@ class AgentOS:
 
             final_result = None
 
-            while process.vcpu._state.is_running and not process.vcpu._state.is_done:
+            while process.vcpu._is_active:
                 if process.signals.get("interrupt"):
                     logger.info(f"[{process.pid}] Interrupted by signal")
                     process.state = "CANCELLED"
                     process.signals["interrupt"] = False
-                    process.vcpu._state.is_done = True
+                    process.vcpu._is_active = False 
                     return ToolResult(
                         status="CANCELLED",
                         fault=Fault(
@@ -1470,19 +1477,40 @@ class AgentOS:
 
                 while process.inbox:
                     msg = process.inbox.pop(0)
-                    if process.role == "chat":
-                        process.mmu.add_user_message(msg)
-                    else:
-                        process.mmu.add_user_message(f"[User Intervention] {msg}")
 
-                    self._emit_event("USER_INTERVENTION", process.pid, {"content": msg})
-                    logger.info(f"[{process.pid}] Processed inbox message: {msg[:50]}...")
+                    # Handle both IPCMessage objects and plain strings
+                    if hasattr(msg, 'type') and hasattr(msg, 'payload'):
+                        # IPCMessage from inject_message() or IPC system
+                        if msg.type == "request":
+                            task_goal = msg.payload.get("goal", "")
+                            process.mmu.add_user_message(f"[Task Assignment] {task_goal}")
+                        elif msg.type == "response":
+                            result_data = msg.payload.get("result", "")
+                            process.mmu.add_user_message(f"[Sub-Agent Result from {msg.sender_pid}] {result_data}")
+                        else:
+                            content = msg.payload.get("content", str(msg.payload))
+                            if process.role == "chat":
+                                process.mmu.add_user_message(content)
+                            else:
+                                process.mmu.add_user_message(f"[User Intervention] {content}")
+
+                        self._emit_event("USER_INTERVENTION", process.pid, {"content": str(msg.payload)})
+                        logger.info(f"[{process.pid}] Processed inbox message {msg.id} from {msg.sender_pid}")
+                    else:
+                        # Plain string from _handle_interventions() or legacy code
+                        content = str(msg)
+                        if process.role == "chat":
+                            process.mmu.add_user_message(content)
+                        else:
+                            process.mmu.add_user_message(f"[User Intervention] {content}")
+                        self._emit_event("USER_INTERVENTION", process.pid, {"content": content})
+                        logger.info(f"[{process.pid}] Processed inbox string message: {content[:50]}...")
 
                 await self._check_compaction(process)
 
                 # Check iteration limit (iteration-based budget instead of wall-clock timeout)
                 vcpu = process.vcpu
-                if vcpu._state.iteration >= vcpu.config.max_iterations:
+                if vcpu.iteration >= vcpu.config.max_iterations:
                     if (vcpu.config.compact_on_limit
                             and vcpu._state.compaction_count < vcpu.config.max_compactions):
                         # Compact context and continue (within compaction budget)
@@ -1491,9 +1519,9 @@ class AgentOS:
                             vcpu._state.compaction_count += 1
                             logger.info(
                                 f"[{process.pid}] Compaction #{vcpu._state.compaction_count}/{vcpu.config.max_compactions} complete, "
-                                f"resetting iteration counter (was {vcpu._state.iteration})"
+                                f"resetting iteration counter (was {vcpu.iteration})"
                             )
-                            vcpu._state.iteration = 0
+                            vcpu._state.iteration_count = 0
                             continue
                         # Compaction failed — fall through to budget exceeded
                         logger.warning(
@@ -1503,7 +1531,7 @@ class AgentOS:
                     # Give the LLM one final step to summarize what it did
                     logger.info(
                         f"[{process.pid}] Iteration budget reached "
-                        f"({vcpu._state.iteration}/{vcpu.config.max_iterations}), "
+                        f"({vcpu.iteration}/{vcpu.config.max_iterations}), "
                         f"requesting final summary..."
                     )
                     process.mmu.add_user_message(
@@ -1551,7 +1579,7 @@ class AgentOS:
                     topic="session.iteration",
                     payload={
                         "session_id": process.pid,
-                        "iteration": process.vcpu._state.iteration,
+                        "iteration": process.vcpu.iteration,
                         "has_output": has_output
                     }
                 ))
@@ -2111,17 +2139,42 @@ class AgentOS:
     def _create_gate(
         self,
         pid: str,
-        role: str = "",
+        role: str,
         local_tools: Optional[Dict[str, Callable]] = None,
-        write_filter: Optional[List[str]] = None,
+        write_filter: Optional[Callable[[str], bool]] = None
     ) -> KernelGate:
-        """Create a KernelGate for a process."""
+        """Create a KernelGate for a process, injecting OS-level tools context."""
+        from nimbus.core.ipc.tools import create_send_message_tool, create_read_inbox_tool
+        from nimbus.core.ipc.subagent import create_spawn_subagent_tool
+        from nimbus.os.gate import SimpleEventStream
+        
+        # Build base tools list (deep copy to avoid shared references)
+        tools = list(self._composite_tools.get_definitions(format="openai", role=role))
+        
+        # Inject IPC tools dynamically bounded to this AgentOS instance and this specific pid
+        send_msg_def, send_msg_func = create_send_message_tool(self, pid)
+        read_inbox_def, read_inbox_func = create_read_inbox_tool(self, pid)
+        spawn_sub_def, spawn_sub_func = create_spawn_subagent_tool(self, pid)
+        
+        tools.append(send_msg_def.to_openai_format())
+        tools.append(read_inbox_def.to_openai_format())
+        tools.append(spawn_sub_def.to_openai_format())
+
+        # Combine with local tools provided by spawn()
+        all_funcs = self._composite_tools.get_all_funcs()
+        if local_tools:
+            all_funcs.update(local_tools)
+            
+        all_funcs["SendMessage"] = send_msg_func
+        all_funcs["ReadInbox"] = read_inbox_func
+        all_funcs["SpawnSubAgent"] = spawn_sub_func
+
         return KernelGate(
             pid=pid,
             tool_executor=self._composite_tools,
             event_stream=self._events,
             default_timeout=self.config.default_timeout,
-            local_tools=local_tools,
+            local_tools=all_funcs,
             write_filter=write_filter,
         )
 
@@ -2142,7 +2195,7 @@ class AgentOS:
 
 
 def create_agent_os(
-    llm_client: LLMClient,
+    llm_client: Any,
     tools: Optional[Dict[str, Callable]] = None,
     system_rules: str = "",
     max_processes: int = 10,

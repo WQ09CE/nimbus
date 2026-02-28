@@ -138,6 +138,31 @@ class ToolResult:
     artifact_ref: Optional[str] = None  # nimfs://artifact/{artifact_id}
 
 
+@dataclass
+class StepResult:
+    """
+    Standard return value for a single tick (step) of the VCPU.
+
+    This captures the actions requested by the LLM (THINK/DECODE) and their 
+    execution results (ACT) before the VCPU suspends for the OS to handle
+    streaming, memory compaction, or other daemon tasks.
+
+    Attributes:
+        actions: The instructions issued by the LLM in this step.
+        results: The results from executing those actions.
+        is_final: True if the Agent has completed its goal or encountered an unrecoverable error.
+        final_result: The final synthesized ToolResult if is_final is True.
+        fault: Any unrecoverable fault encountered that halted the step.
+        timing_ms: Sub-system timing breakdown.
+    """
+    actions: List[ActionIR] = field(default_factory=list)
+    results: List[ToolResult] = field(default_factory=list)
+    is_final: bool = False
+    final_result: Optional[ToolResult] = None
+    fault: Optional["Fault"] = None
+    timing_ms: Dict[str, int] = field(default_factory=dict)
+
+
 # =============================================================================
 # 3. Fault Taxonomy
 # =============================================================================
@@ -213,9 +238,6 @@ EventType = Literal[
     "PROC_SPAWNED",  # New process created
     "PROC_FINISHED",  # Process completed
     # Task Lifecycle
-    "TASK_CREATED",  # Task added to scheduler
-    "TASK_ASSIGNED",  # Task assigned to process
-    "TASK_FINISHED",  # Task completed
     # Step Lifecycle
     "STEP_STARTED",  # vCPU step began
     "ACTION_EMITTED",  # ActionIR produced

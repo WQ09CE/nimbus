@@ -31,7 +31,7 @@ class PinnedContextModel(BaseModel):
     workspace_info: str = ""
     env_state: str = ""
     capabilities: str = ""
-    custom_anchors: List[str] = Field(default_factory=list)
+    custom_anchors: Dict[str, str] = Field(default_factory=dict)
     version: str = "1.0"
 
 class StackFrameModel(BaseModel):
@@ -53,13 +53,10 @@ class MemorySnapshotModel(BaseModel):
     tool_markers: Dict[str, Any] = Field(default_factory=dict) # Simplified for now
     frame_discardable: Dict[str, List[str]] = Field(default_factory=dict) # Sets are not JSON serializable by default
 
-class ExecutionStateModel(BaseModel):
+class FSMExecutionStateModel(BaseModel):
     """Snapshot of vCPU ExecutionState"""
     iteration: int
     max_iterations: int
-    is_running: bool
-    is_done: bool
-    final_result: Any
     consecutive_thoughts: int
     consecutive_errors: int
     consecutive_empty_responses: int
@@ -68,8 +65,6 @@ class ExecutionStateModel(BaseModel):
     tool_failure_counts: Dict[str, int]
     path_not_found_count: int
     doom_loop_count: int = 0
-    has_productive_work: bool = False
-    has_terminal_work: bool = False
 
 class SessionCheckpointModel(BaseModel):
     """Top-level session checkpoint"""
@@ -79,7 +74,7 @@ class SessionCheckpointModel(BaseModel):
     step_index: int # The vCPU iteration count
 
     # Core States
-    execution_state: ExecutionStateModel
+    execution_state: FSMExecutionStateModel
     memory_snapshot: MemorySnapshotModel
 
     # Metadata

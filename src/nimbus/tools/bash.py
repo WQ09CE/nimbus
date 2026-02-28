@@ -23,10 +23,24 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from .base import tool
 from .sandbox import Sandbox, SandboxError
 from .utils import DEFAULT_MAX_BYTES, auto_offload_result, truncate_tail
 
 
+@tool(
+    name="Bash",
+    description=(
+        "Execute a bash command in the current working directory. Returns stdout and stderr. "
+        "Output is truncated to last 2000 lines or 50KB (whichever is hit first). "
+        "If truncated, full output is saved to a temp file. "
+        "Optionally provide a timeout in seconds (default: 60s). "
+        "Use for: running tests (pytest), searching files (find, rg, grep), "
+        "listing directories (ls), git operations, installing packages, etc."
+    ),
+    category="core",
+    dangerous=True,
+)
 async def bash_command(
     command: str,
     timeout: Optional[float] = 60.0,  # Default 60s timeout

@@ -4,7 +4,7 @@ Tests for ExecutionState
 验证执行状态管理的正确性。
 """
 
-from nimbus.core.runtime.execution_state import ExecutionState
+from nimbus.core.runtime.states import FSMExecutionState as ExecutionState
 
 
 class TestExecutionState:

@@ -12,7 +12,17 @@ Example:
 from pathlib import Path
 from typing import Any, Optional
 
+from .base import tool
 
+
+@tool(
+    name="Write",
+    description=(
+        "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. "
+        "Automatically creates parent directories."
+    ),
+    category="core",
+)
 async def write_file(
     file_path: str,
     content: str,

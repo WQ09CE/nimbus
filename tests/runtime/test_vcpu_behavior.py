@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from nimbus.core.memory.context import PinnedContext
 from nimbus.core.memory.mmu import MMU, MMUConfig
 from nimbus.core.runtime.decoder import InstructionDecoder
-from nimbus.core.runtime.vcpu import VCPU, VCPUConfig, LLMResponse
+from nimbus.core.runtime.vcpu import VCPU, VCPUConfig
 from nimbus.os.gate import KernelGate, SimpleEventStream
 from nimbus.core.protocol import ActionIR, ToolResult, Fault
 from nimbus.core.models.manifest import ModelManifest, GEMINI_FEATURES, ModelFeatures

@@ -26,6 +26,7 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
+from .base import tool
 from .utils import (
     DEFAULT_MAX_BYTES,
     auto_offload_result,
@@ -35,6 +36,17 @@ from .utils import (
 )
 
 
+@tool(
+    name="Read",
+    description=(
+        "Read the contents of a file. Supports text files and images (jpg, png, gif, webp). "
+        "Images are sent as attachments. For text files, output is truncated to 4000 lines or 200KB "
+        "(whichever is hit first). Most files fit in a single read — just pass file_path without "
+        "offset/limit. Only use offset/limit for very large files (>4000 lines). "
+        "When you need the full file, continue with offset until complete."
+    ),
+    category="core",
+)
 async def read_file(
     file_path: str,
     offset: Optional[int] = None,

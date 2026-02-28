@@ -28,6 +28,18 @@ class ToolCall(Protocol):
         ...
 
 
+class BaseDecoder(Protocol):
+    """Protocol for instruction decoders."""
+    def decode(
+        self,
+        content: Optional[str],
+        tool_calls: Optional[List[Any]],
+        role: Optional[str] = None,
+        model_features: Optional[Any] = None,
+    ) -> List[ActionIR]:
+        ...
+
+
 class InstructionDecoder:
     """
     Translates raw LLM output into ActionIR.
@@ -110,6 +122,8 @@ class InstructionDecoder:
         "spawn_subprocess": "SUB_CALL",
         "return_result": "RETURN",
         "task_complete": "RETURN",
+        "SubmitResult": "RETURN",
+        "submit_result": "RETURN",
         "post_ipc": "POST_IPC",
         "publish_result": "POST_IPC",
         "request_replan": "REQUEST_REPLAN",
@@ -153,14 +167,13 @@ class InstructionDecoder:
 
         # 2. Parse Native Tool Calls
         if tool_calls:
-            for tc in tool_calls:
-                action = self._map_tool_call(tc)
-                actions.append(action)
-
-            # 2b. Text alongside tool calls = non-blocking thought (LLM commentary)
+            # 2a. Text alongside tool calls = non-blocking thought (LLM commentary)
             # This mirrors what MixedResponseSplitter does for models with
             # split_mixed_responses=True. The text is just the LLM explaining
             # what it's doing — it must NOT trigger REPLY/RETURN termination.
+            # IMPORTANT: This must be prepended BEFORE tool calls to maintain
+            # correct FSM memory interleaving (Anthropic API requires assistant
+            # thoughts to precede tool results in the conversation history).
             if content and content.strip():
                 stripped = content.strip()
                 clean_text = re.sub(r"^(?:`+)?thought:(?:`+)?\s*", "", stripped, flags=re.IGNORECASE)
@@ -169,6 +182,12 @@ class InstructionDecoder:
                     args={"text": clean_text},
                     meta={"non_blocking": True},
                 ))
+
+            # 2b. Append actual Tool Calls
+            for tc in tool_calls:
+                action = self._map_tool_call(tc)
+                actions.append(action)
+
             return actions
 
         # 3. Handle Orchestrator-specific conversation logic
@@ -200,8 +219,9 @@ class InstructionDecoder:
                 kind = "THOUGHT"
             else:
                 # Heuristic mode (GPT/Gemini/default): use conversational reply detection
-                done_max = getattr(model_features, 'done_pattern_max_length', 300) if model_features else 300
-                kind = "REPLY" if self._is_conversational_reply(clean_text, done_max) else "THOUGHT"
+                # In FSM, any pure text without tools must be treated as a final REPLY to 
+                # avoid FSM doom loops bouncing thoughts back to the LLM.
+                kind = "REPLY"
 
             actions.append(ActionIR(kind=kind, name="thought" if kind == "THOUGHT" else "reply", args={"text": clean_text}))
 
@@ -314,4 +334,7 @@ class InstructionDecoder:
     def add_control_flow_tool(self, tool_name: str, action_kind: str) -> None:
         """Register a custom control flow tool mapping."""
         self.CONTROL_FLOW_TOOLS[tool_name] = action_kind
+
+# Alias for backwards/forwards compatibility
+DefaultDecoder = InstructionDecoder
 
