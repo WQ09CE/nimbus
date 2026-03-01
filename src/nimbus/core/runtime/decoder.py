@@ -210,18 +210,13 @@ class InstructionDecoder:
             # Use regex to find and remove the prefix and leading whitespace.
             clean_text = re.sub(r"^(?:`+)?thought:(?:`+)?\s*", "", stripped, flags=re.IGNORECASE)
 
-            BACKEND_ROLES = {"explorer", "implementer", "architect", "tester", "executor"}
-
-            if (role in BACKEND_ROLES
-                    and model_features is not None
-                    and getattr(model_features, 'backend_reply_strategy', 'heuristic') == "strict"):
-                # Strict mode (Claude): backend specialist pure text is always THOUGHT
-                kind = "THOUGHT"
-            else:
-                # Heuristic mode (GPT/Gemini/default): use conversational reply detection
-                # In FSM, any pure text without tools must be treated as a final REPLY to 
-                # avoid FSM doom loops bouncing thoughts back to the LLM.
-                kind = "REPLY"
+            # In the FSM architecture, pure text without tool calls from a backend
+            # specialist is always a final reply.  The old "strict" mode marked it as
+            # THOUGHT which caused the FSM to loop indefinitely (THOUGHT → Observation
+            # → Init → Reasoning → THOUGHT …) because THOUGHT never triggers
+            # StateCompleted.  Now we uniformly treat it as REPLY so the FSM can
+            # terminate.
+            kind = "REPLY"
 
             actions.append(ActionIR(kind=kind, name="thought" if kind == "THOUGHT" else "reply", args={"text": clean_text}))
 

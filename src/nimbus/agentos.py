@@ -1688,9 +1688,14 @@ class AgentOS:
                     return ToolResult(status="ERROR", fault=step_result.fault)
 
                 if step_result.is_final:
-                    if process.inbox:
+                    # Only extend execution for chat processes where a user
+                    # may have sent a new message while the agent was finishing.
+                    # Sub-agent processes (explorer, implementer, etc.) should
+                    # terminate immediately — they have no interactive user.
+                    if process.role == "chat" and process.inbox:
                         logger.info(
-                            f"[{process.pid}] New messages arrived during final step, extending execution..."
+                            f"[{process.pid}] Chat process got new user message "
+                            f"during final step, extending execution..."
                         )
                         process.vcpu._state.is_done = False
                         continue
