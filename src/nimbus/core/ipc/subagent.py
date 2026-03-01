@@ -25,29 +25,39 @@ def create_spawn_subagent_tool(agentos_ref: Any, parent_pid: str) -> tuple[ToolD
                 type="string",
                 description="The role profile for the sub-agent ('engineer', 'architect', 'researcher', etc.)",
                 enum=["engineer", "architect", "researcher"] # Basic presets, AgentOS can expand this
+            ),
+            ToolParameter(
+                name="expected_schema",
+                type="string",
+                description="Optional. A JSON object representing the expected structure of the final payload to be sent back via SendMessage. If provided, the Middleware Verify Gate will enforce this contract automatically."
             )
         ]
     )
 
-    async def execute(goal: str, role: str) -> str:
+    async def execute(goal: str, role: str, expected_schema: Optional[str] = None) -> str:
         # We prefix the user goal with [DELEGATION from {parent_pid}]
         delegation_goal = f"[DELEGATION from {parent_pid}]\nMission: {goal}\n\nWhen you are finished, use the SendMessage tool to send your final results to target_pid: '{parent_pid}'."
+        if expected_schema:
+            delegation_goal += f"\n\nCRITICAL CONTRACT: Your SendMessage payload MUST strictly conform to the following JSON structure/keys:\n{expected_schema}"
         
         try:
             from nimbus.core.profile import AgentProfile
             child_pid = agentos_ref.spawn(
                 goal=delegation_goal,
-                profile=AgentProfile(role=role)
+                profile=AgentProfile(name=role, role=role)
             )
             # Execute the process asynchronously in the background so it runs parallel to the parent
             import asyncio
             # We don't block here, the AgentOS run loop handles task dispatch
             # Wait, AgentOS API says we must call wait() to start it if we don't use run()
             process = agentos_ref._processes[child_pid]
+            if expected_schema:
+                process.metadata["expected_schema"] = expected_schema
+                
             process.task = asyncio.create_task(agentos_ref._run_process(process))
             
             return f"SubAgent spawned successfully with PID: {child_pid}. Use SendMessage to send it specific data contracts."
         except Exception as e:
-            raise ToolExecutionError(f"Failed to spawn sub-agent: {e}")
+            raise ToolExecutionError("SpawnSubAgent", f"Failed to spawn sub-agent: {e}")
 
     return definition, execute

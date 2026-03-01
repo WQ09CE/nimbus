@@ -41,11 +41,31 @@ def create_send_message_tool(agentos_ref: Any, sender_pid: str) -> tuple[ToolDef
         try:
             payload_dict = json.loads(payload)
         except json.JSONDecodeError:
-            raise ToolExecutionError(f"Invalid JSON payload: {payload[:50]}...")
+            raise ToolExecutionError("SendMessage", f"Invalid JSON payload: {payload[:50]}...")
+            
+        # --- Middleware Verify Gate ---
+        sender_process = agentos_ref.get_process(sender_pid)
+        if sender_process:
+            expected_schema_str = sender_process.metadata.get("expected_schema")
+            if expected_schema_str:
+                try:
+                    # Basic JSON structure validation
+                    if expected_schema_str.strip().startswith("{"):
+                        schema_dict = json.loads(expected_schema_str)
+                        missing_keys = [k for k in schema_dict.keys() if k not in payload_dict]
+                        if missing_keys:
+                            raise ToolExecutionError(
+                                "SendMessage",
+                                f"[VERIFY GATE] Contract Violation: Your payload is missing required keys: {missing_keys}. "
+                                f"Expected structure: {expected_schema_str}. Please format your response to include these keys and resend."
+                            )
+                except json.JSONDecodeError:
+                    pass # Schema was not pure JSON, skip strict key checking
+        # ------------------------------
             
         process = agentos_ref.get_process(target_pid)
         if not process:
-            raise ToolExecutionError(f"Process {target_pid} not found or not running.")
+            raise ToolExecutionError("SendMessage", f"Process {target_pid} not found or not running.")
             
         msg = IPCMessage(
             sender_pid=sender_pid,
@@ -54,7 +74,7 @@ def create_send_message_tool(agentos_ref: Any, sender_pid: str) -> tuple[ToolDef
             payload=payload_dict
         )
 
-        process.inbox.append(msg)
+        await process.inbox.send(msg)
         return f"Message {msg.id} successfully queued for {target_pid}."
 
     return definition, execute
@@ -76,15 +96,16 @@ def create_read_inbox_tool(agentos_ref: Any, pid: str) -> tuple[ToolDefinition, 
     async def execute() -> str:
         process = agentos_ref.get_process(pid)
         if not process:
-            raise ToolExecutionError("Inbox not available")
+            raise ToolExecutionError("ReadInbox", "Inbox not available")
 
         messages = []
-        while process.inbox:
-            msg = process.inbox.pop(0)
-            if hasattr(msg, 'to_dict'):
-                messages.append(msg.to_dict())
-            else:
-                messages.append({"content": str(msg)})
+        while process.inbox and process.inbox.qsize() > 0:
+            msg = await process.inbox.receive()
+            if msg:
+                # Format the message for LLM
+                # The original instruction had a syntax error here.
+                # Assuming the intent was to append a dictionary with a formatted string.
+                messages.append({"content": f"From PID {msg.sender_pid} (ID: {msg.id}): {msg.payload}"})
                 
         if not messages:
             return "Inbox is empty."

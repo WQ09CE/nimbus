@@ -439,14 +439,14 @@ class StateErrorRecovery(VCPUState):
 
         logger.error(f"Recovering from: {error_msg}")
 
-        # Track consecutive errors and bail out if too many
-        MAX_CONSECUTIVE_ERRORS = 5
+        # Limit consecutive error recovery loops to prevent Token/Budget runaway
+        MAX_CONSECUTIVE_ERRORS = 3
         ctx.state.consecutive_errors += 1
 
         if ctx.state.consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
             logger.warning(
                 f"Fatal: {ctx.state.consecutive_errors} consecutive errors. "
-                f"Aborting to prevent infinite error loop."
+                f"Aborting to prevent infinite error loop and token drain."
             )
             ctx.final_result = ToolResult(
                 status="ERROR",
@@ -460,6 +460,12 @@ class StateErrorRecovery(VCPUState):
                 is_final=True,
             )
             return StateCompleted()
+            
+        # Exponential Backoff to throttle API rate limits during tight doom loops (1.5^N seconds)
+        import asyncio
+        backoff_seconds = min(30.0, 1.5 ** ctx.state.consecutive_errors)
+        logger.info(f"[vCPU] Applying {backoff_seconds:.2f}s exponential backoff due to consecutive errors...")
+        await asyncio.sleep(backoff_seconds)
 
         # Inject standard error back to MMU so the LLM sees it
         if error_msg:

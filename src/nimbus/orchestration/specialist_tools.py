@@ -136,32 +136,70 @@ class SpecialistTool:
             proc.signals["resolved_model"] = resolved_model  # type: ignore[assignment]
         logger.info(f"[{self.ROLE}] Spawned {pid} for: {task[:80]}...")
 
-        # Wait for completion -- with actionable timeout hint
-        timed_out = False
-        try:
-            result = await self._agent_os.wait(pid, timeout=timeout)
-            output = result.output or f"({self.ROLE} returned no output)"
-            if result.fault:
-                output += f"\n\nFault: {result.fault.message}"
-        except (asyncio.TimeoutError, Exception) as e:
-            if "timed out" in str(e).lower() or isinstance(e, asyncio.TimeoutError):
-                timed_out = True
-                elapsed = time.time() - start_time
-                output = (
-                    f"[{self.ROLE} TIMEOUT after {elapsed:.0f}s (limit: {timeout:.0f}s)]\n\n"
-                    f"The {self.ROLE} did not finish within the timeout.\n"
-                    f"Possible causes:\n"
-                    f"- Task too complex for single specialist call\n"
-                    f"- LLM thinking time exceeded expectations\n"
-                    f"- Network/API latency\n\n"
-                    f"You can retry with a longer timeout by passing `timeout` parameter, "
-                    f'e.g. {{"task": "...", "timeout": {int(timeout * 2)}}}.\n'
-                    f"Or break the task into smaller sub-tasks."
-                )
-                logger.warning(f"[{self.ROLE}] {pid} timed out after {elapsed:.0f}s")
-            else:
-                output = f"[{self.ROLE} error: {e}]"
-                logger.error(f"[{self.ROLE}] {pid} failed: {e}")
+        # Wait for completion -- with retry on failure
+        MAX_RETRIES = 1  # One retry attempt
+        output = ""
+        for attempt in range(1 + MAX_RETRIES):
+            timed_out = False
+            try:
+                result = await self._agent_os.wait(pid, timeout=timeout)
+                output = result.output or f"({self.ROLE} returned no output)"
+                if result.fault:
+                    output += f"\n\nFault: {result.fault.message}"
+                    # If the fault is retryable and we have retries left, retry
+                    if result.fault.retryable and attempt < MAX_RETRIES:
+                        logger.warning(
+                            f"[{self.ROLE}] {pid} failed (attempt {attempt+1}), retrying: {result.fault.message}"
+                        )
+                        # Re-spawn with same parameters
+                        pid = self._agent_os.spawn(
+                            goal=goal,
+                            profile=profile,
+                            llm_client=executor_llm,
+                        )
+                        proc = self._agent_os._processes.get(pid)
+                        if proc:
+                            if parent_action_id:
+                                proc.signals["parent_action_id"] = parent_action_id
+                            proc.signals["resolved_model"] = resolved_model
+                        continue
+                # Success or non-retryable fault -- break out
+                break
+            except (asyncio.TimeoutError, Exception) as e:
+                if "timed out" in str(e).lower() or isinstance(e, asyncio.TimeoutError):
+                    timed_out = True
+                    elapsed_now = time.time() - start_time
+                    output = (
+                        f"[{self.ROLE} TIMEOUT after {elapsed_now:.0f}s (limit: {timeout:.0f}s)]\n\n"
+                        f"The {self.ROLE} did not finish within the timeout.\n"
+                        f"Possible causes:\n"
+                        f"- Task too complex for single specialist call\n"
+                        f"- LLM thinking time exceeded expectations\n"
+                        f"- Network/API latency\n\n"
+                        f"You can retry with a longer timeout by passing `timeout` parameter, "
+                        f'e.g. {{"task": "...", "timeout": {int(timeout * 2)}}}.\n'
+                        f"Or break the task into smaller sub-tasks."
+                    )
+                    logger.warning(f"[{self.ROLE}] {pid} timed out after {elapsed_now:.0f}s")
+                else:
+                    if attempt < MAX_RETRIES:
+                        logger.warning(
+                            f"[{self.ROLE}] {pid} error (attempt {attempt+1}), retrying: {e}"
+                        )
+                        pid = self._agent_os.spawn(
+                            goal=goal,
+                            profile=profile,
+                            llm_client=executor_llm,
+                        )
+                        proc = self._agent_os._processes.get(pid)
+                        if proc:
+                            if parent_action_id:
+                                proc.signals["parent_action_id"] = parent_action_id
+                            proc.signals["resolved_model"] = resolved_model
+                        continue
+                    output = f"[{self.ROLE} error: {e}]"
+                    logger.error(f"[{self.ROLE}] {pid} failed: {e}")
+                break
 
         # Offload large output to NimFS to save orchestrator context tokens
         if len(output) > NIMFS_OFFLOAD_THRESHOLD and self._workspace:

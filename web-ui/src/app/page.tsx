@@ -27,6 +27,7 @@ export default function Home() {
   const clearError = useChatStore(s => s.clearError);
 
   const [mounted, setMounted] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(true);
   const [showSessionPanel, setShowSessionPanel] = useState(false);
   const [showFilePanel, setShowFilePanel] = useState(false);
 
@@ -39,12 +40,17 @@ export default function Home() {
   // Initialize session on mount
   useEffect(() => {
     setMounted(true);
-    const savedSessionId = localStorage.getItem("nimbus_session_id");
-    if (savedSessionId && !session) {
-      loadSession(savedSessionId);
-    } else if (!session) {
-      createNewSession();
-    }
+    const init = async () => {
+      const savedSessionId = localStorage.getItem("nimbus_session_id");
+      if (savedSessionId && !session) {
+        await loadSession(savedSessionId);
+      } else if (!session) {
+        await createNewSession();
+      }
+      // Give a small delay to ensure states are settled
+      setTimeout(() => setIsInitializing(false), 300);
+    };
+    init();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -179,7 +185,7 @@ export default function Home() {
         <main className="flex-1 flex flex-col min-w-0 relative z-0 bg-transparent">
           {/* Messages */}
           <div
-            className="flex-1 flex flex-col overflow-hidden px-3 md:px-6 py-4"
+            className="flex-1 flex flex-col overflow-hidden px-3 md:px-6 py-4 min-h-[60vh]"
           >
             {/* Error */}
             {error && (
@@ -242,7 +248,7 @@ export default function Home() {
             )}
 
             {/* Welcome Screen */}
-            {messages.length === 0 && !isStreaming && !isLoading && (
+            {messages.length === 0 && !isStreaming && !isLoading && !isInitializing && !session?.name?.includes('Syncing') && (
               <div data-testid="welcome-screen" className="flex flex-col items-center justify-center flex-1 text-center animate-in zoom-in-95 duration-500">
                 <div className="w-16 h-16 bg-nimbus-surface backdrop-blur-lg border border-nimbus-border rounded-2xl flex items-center justify-center shadow-2xl shadow-sky-500/10 mb-6">
                   <span className="text-3xl">☁️</span>

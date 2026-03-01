@@ -366,7 +366,8 @@ class DirectAdapter:
                     collected_tool_calls.append(event.tool_call)
                 elif event.type == "error":
                      logger.error(f"Stream error: {event.error}")
-                     raise RuntimeError(f"LLM Stream Error: {event.error}")
+                     # Classify it properly so VCPU can catch and retry it via StateErrorRecovery
+                     raise _classify_llm_exception(RuntimeError(str(event.error)))
 
         except Exception as e:
             logger.error(f"DirectAdapter chat failed: {e}")
@@ -1185,10 +1186,6 @@ class DirectAdapter:
             # Rate limit retry logic
             current_model = model
             try:
-                import json
-                logger.error(f"DEBUG: LiteLLM acompletion called with {len(clean_messages)} messages.")
-                logger.error(f"DEBUG: Last message: {json.dumps(clean_messages[-1])}")
-
                 response = await acompletion(
                     model=current_model,
                     messages=clean_messages,

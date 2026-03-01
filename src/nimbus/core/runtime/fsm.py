@@ -16,8 +16,19 @@ from nimbus.core.protocol import ActionIR
 import nimbus.core.runtime.states as _states
 from nimbus.core.runtime.pipeline import ResponsePipeline
 from nimbus.core.runtime.config import VCPUConfig
-
 logger = logging.getLogger("kernel.vcpu.fsm")
+
+class SyscallGateProtocol(Protocol):
+    async def syscall_tool(self, action: ActionIR) -> Any:
+        ...
+
+class ALUProtocol(Protocol):
+    async def chat(self, messages: List[Any], tools: List[Dict[str, Any]], on_chunk: Any = None) -> Any:
+        ...
+
+class DecoderProtocol(Protocol):
+    def decode(self, text: str) -> List[ActionIR]:
+        ...
 
 
 class FSMContext:
@@ -29,9 +40,9 @@ class FSMContext:
     def __init__(
         self,
         mmu: MMU,
-        gate: Any,  # KernelGate (using Any to avoid circular import for now)
-        alu: Any,   # LLMClient
-        decoder: Any, # BaseDecoder
+        gate: SyscallGateProtocol,
+        alu: ALUProtocol,
+        decoder: DecoderProtocol,
         pipeline: ResponsePipeline,
         config: VCPUConfig,
         tools: List[Dict[str, Any]],
@@ -71,10 +82,16 @@ class VCPUState(Protocol):
         """
         Execute the logic for this state and return the next state to transition to.
         
-        Args:
-            ctx: The shared FSM context containing all necessary dependencies and state.
-            
-        Returns:
-            The next VCPUState instance to transition to.
         """
         ...
+
+
+# Legal State Transition Matrix
+# Restricts FSM jumps to prevent runaway hallucinations or logical corruption
+VALID_TRANSITIONS: Dict[str, List[str]] = {
+    "INIT": ["REASONING"],
+    "REASONING": ["ACTION_EXECUTION", "OBSERVATION", "ERROR_RECOVERY", "COMPLETED"],
+    "ACTION_EXECUTION": ["OBSERVATION", "ERROR_RECOVERY"],
+    "OBSERVATION": ["INIT", "COMPLETED"],
+    "ERROR_RECOVERY": ["INIT", "COMPLETED"]
+}

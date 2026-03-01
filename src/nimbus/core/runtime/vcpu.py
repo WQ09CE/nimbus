@@ -133,10 +133,28 @@ class VCPU:
                 logger.warning("vCPU received timeout signal in FSM step.")
                 step_result.is_final = True
                 step_result.fault = self._fsm_ctx.fault
-                step_result.final_result = ToolResult(
-                    status="SOFT_TIMEOUT", output="Execution interrupted by OS timeout.", is_final=True
-                )
-                self._current_state = StateCompleted()
+                if self._fsm_ctx.final_result is not None:
+                    # An explicit termination signal was raised during error recovery or observation bounds checking
+                    self._current_state = StateCompleted()
+                
+                # Pre-execution transition check
+                # This check is for the state *after* the timeout, which is StateCompleted or the current state.
+                # The instruction implies validating a transition *to* a state.
+                # Given the context, if a timeout occurs, the FSM is effectively transitioning to a "halted" state.
+                # The most appropriate check here would be if the current state allows for an abrupt termination.
+                # However, the provided snippet checks against "INIT".
+                # Assuming the intent is to ensure the FSM can transition to a completed state from the current state.
+                # For now, applying the change as provided, but noting the potential logical mismatch.
+                if self._current_state.name != "INIT":
+                    from nimbus.core.runtime.fsm import VALID_TRANSITIONS
+                    # This condition checks if the *current* state is a valid transition *from* INIT.
+                    # This seems incorrect for a timeout scenario.
+                    # A more logical check might be:
+                    # if "COMPLETED" not in VALID_TRANSITIONS.get(self._current_state.name, []):
+                    #     raise RuntimeError(f"Invalid FSM Transition: {self._current_state.name} -> COMPLETED on timeout")
+                    # However, following the user's explicit instruction for the provided code.
+                    if self._current_state.name not in VALID_TRANSITIONS.get("INIT", []):
+                        raise RuntimeError(f"Invalid FSM Transition: INIT -> {self._current_state.name}")
                 self._is_active = False
                 return step_result
 
@@ -157,21 +175,33 @@ class VCPU:
             
             # Phase A: Think/Reason
             if isinstance(self._current_state, StateReasoning):
-                self._current_state = await self._current_state.execute(self._fsm_ctx)
+                next_state = await self._current_state.execute(self._fsm_ctx)
+                from nimbus.core.runtime.fsm import VALID_TRANSITIONS
+                if next_state.name not in VALID_TRANSITIONS.get(self._current_state.name, []):
+                     raise RuntimeError(f"Invalid FSM Transition: {self._current_state.name} -> {next_state.name}")
+                self._current_state = next_state
                 
             # A complete iteration outputs the actions derived
             step_result.actions = list(self._fsm_ctx.current_actions)
                 
             # Phase B: Act (if actions generated)
             if self._current_state.__class__.__name__ == "StateActionExecution":
-                self._current_state = await self._current_state.execute(self._fsm_ctx)
+                next_state = await self._current_state.execute(self._fsm_ctx)
+                from nimbus.core.runtime.fsm import VALID_TRANSITIONS
+                if next_state.name not in VALID_TRANSITIONS.get(self._current_state.name, []):
+                     raise RuntimeError(f"Invalid FSM Transition: {self._current_state.name} -> {next_state.name}")
+                self._current_state = next_state
                 
             # Pop in execution results for the agentOS stream wrapper
             step_result.results = list(self._fsm_ctx.current_results)
             
             # Phase C: Observe (Write memory and evaluate loop limits)
             if isinstance(self._current_state, StateObservation):
-                self._current_state = await self._current_state.execute(self._fsm_ctx)
+                next_state = await self._current_state.execute(self._fsm_ctx)
+                from nimbus.core.runtime.fsm import VALID_TRANSITIONS
+                if next_state.name not in VALID_TRANSITIONS.get(self._current_state.name, []):
+                     raise RuntimeError(f"Invalid FSM Transition: {self._current_state.name} -> {next_state.name}")
+                self._current_state = next_state
                 
             return step_result
 

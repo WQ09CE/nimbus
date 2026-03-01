@@ -258,10 +258,20 @@ class KernelGate:
             # Log the cancellation
             duration_ms = (time.time_ns() - start_time) // 1_000_000
             logger.info(f"🛑 Tool '{tool_name}' cancelled after {duration_ms}ms")
+            
+            # Synthesize a cancellation result to unblock the system
+            status = "CANCELLED"
+            fault = Fault(
+                domain="KERNEL",
+                code="CANCELLED",
+                message="Tool execution was cancelled by the operating system."
+            )
+            output = "[Cancelled]"
+            
             # Re-raise to propagate cancellation to the caller
             # This ensures the entire task is cancelled, not just the tool
             raise
-
+            
         except Exception as e:
             status = "ERROR"
             # Standardize error output

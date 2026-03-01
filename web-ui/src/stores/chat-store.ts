@@ -266,18 +266,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
 
     // Switch to an existing session and load its messages
-    // NOTE: Do NOT clear messages here to avoid white-screen flash.
-    // Messages will be replaced atomically after fetch completes.
+    const currentSession = get().session;
+    const currentMessages = get().messages;
+    const isSameSession = currentSession?.id === session.id;
+
     set({
+      isLoading: !isSameSession, // ✨ FIX: Don't show loading spinner for background refetches
       session,
-      isStreaming: false,
-      streamingContent: "",
-      streamingToolCalls: [],
-      streamingToolResults: [],
-      thinkingIteration: null,
-      currentActivity: null,
+      // Only reset messages if we are actually switching to a different session.
+      // If it's the same session (e.g. background sync), preserve current messages to avoid flicker.
+      messages: isSameSession ? currentMessages : [],
+      // Do not force wipe streaming state here if we are just refetching the SAME session
+      // `sendMessage` manages its own stream state teardown gracefully now.
+      ...(isSameSession ? {} : {
+        isStreaming: false,
+        streamingContent: "",
+        streamingToolCalls: [],
+        streamingToolResults: [],
+        thinkingIteration: null,
+        currentActivity: null,
+      }),
       error: null,
-      isLoading: true,
     });
 
     // Persist session ID to localStorage
@@ -603,8 +612,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return m;
       });
 
-      set({ messages: mergedMessages, isLoading: false });
-      console.log(`[Store] Loaded ${mergedMessages.length} messages for session ${session.id} (merged from server, dropped ${existingMessages.length - mergedMessages.length < 0 ? 0 : existingMessages.length - mergedMessages.length} optimistic duplicates)`);
+      if (!isSameSession) {
+        set({
+          messages: mergedMessages,
+          isLoading: false,
+          error: null,
+        });
+      } else {
+        // ✨ FIX: For same-session refetches, avoid setting isLoading: false if it was never true,
+        // and just update the messages array gracefully.
+        set({
+          messages: mergedMessages,
+          error: null,
+        });
+      } console.log(`[Store] Loaded ${mergedMessages.length} messages for session ${session.id} (merged from server, dropped ${existingMessages.length - mergedMessages.length < 0 ? 0 : existingMessages.length - mergedMessages.length} optimistic duplicates)`);
 
       // Check if session has an active task (agent still running)
       try {
@@ -1252,14 +1273,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       set({
         messages: [...get().messages, assistantMessage],
-        isStreaming: false,
+        // ✨ FIX: Do not immediately drop streaming state if we are about to fetch!
+        // We will let the `switchSession` call clear the streaming state later, 
+        // to prevent UI flicker when the "cloud background" shows through the empty ChatList.
         streamingContent: "",
         streamingToolCalls: [],
         streamingToolResults: [],
         thinkingIteration: null,
         currentActivity: null,
         lastHeartbeat: null,
-        streamAbortController: null,
+        // Wait to clear these until after session refresh:
+        // isStreaming: false, 
+        // streamAbortController: null,
         isInterrupting: false,
       });
 
@@ -1273,6 +1298,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // Non-critical: local state is still usable
         }
       }
+
+      // Now it's safe to drop the streaming states because the fresh DOM is ready
+      set({
+        isStreaming: false,
+        streamAbortController: null,
+      });
 
       // Process next message in queue
       const { messageQueue: queue } = get();

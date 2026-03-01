@@ -107,9 +107,11 @@ class Process:
     gate: Optional[KernelGate] = None
     result: Optional[ToolResult] = None
     task: Optional[asyncio.Task] = None
-    inbox: List[Any] = field(default_factory=list)
-    outbox: Optional[Mailbox] = None
-    signals: Dict[str, bool] = field(default_factory=dict)
+    inbox: Mailbox = field(default_factory=list)
+    outbox: Mailbox = field(default_factory=list)
+    signals: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    interrupt_event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 # =============================================================================
@@ -177,7 +179,7 @@ class AgentOS:
             kernel_tools_desc = "Available tools:\n"
 
             # Helper to parse legacy tool dicts.
-            # Supports both new list format (from ToolDefinition.to_dict) and
+            # Supports both new list format (from ToolDefinition.to_openai_format) and
             # old JSON-Schema dict format {"type": "object", "properties": {...}}.
             def _parse_legacy_tool(data: Dict[str, Any]) -> ToolDefinition:
                 raw_params = data.get("parameters", [])
@@ -523,8 +525,18 @@ class AgentOS:
         if profile and profile.write_filter:
             _write_filter = profile.write_filter
 
+        from nimbus.core.ipc.tools import create_send_message_tool, create_read_inbox_tool
+        from nimbus.core.ipc.subagent import create_spawn_subagent_tool
+        
+        send_msg_def, send_msg_func = create_send_message_tool(self, pid)
+        read_inbox_def, read_inbox_func = create_read_inbox_tool(self, pid)
+        spawn_sub_def, spawn_sub_func = create_spawn_subagent_tool(self, pid)
+
         gate = self._create_gate(pid, _role, local_tools={
-            "Memo": memo_func
+            "Memo": memo_func,
+            "SendMessage": send_msg_func,
+            "ReadInbox": read_inbox_func,
+            "SpawnSubAgent": spawn_sub_func
         }, write_filter=_write_filter)
         decoder = InstructionDecoder()
 
@@ -553,6 +565,9 @@ class AgentOS:
                 "type": "function",
                 "function": memo_def
             })
+            tools_list.append(send_msg_def.to_openai_format())
+            tools_list.append(read_inbox_def.to_openai_format())
+            tools_list.append(spawn_sub_def.to_openai_format())
 
         # Determine VCPU config (allow per-process overrides)
         vcpu_config = self.config.vcpu_config
@@ -590,6 +605,7 @@ class AgentOS:
             manifest=manifest,
         )
 
+        from nimbus.core.ipc.mailbox import Mailbox
         # Create process
         process = Process(
             pid=pid,
@@ -599,6 +615,8 @@ class AgentOS:
             vcpu=vcpu,
             mmu=mmu,
             gate=gate,
+            inbox=Mailbox(owner_pid=pid),
+            outbox=Mailbox(owner_pid=pid),
         )
 
         # Register process
@@ -659,7 +677,8 @@ class AgentOS:
                 # Signal the vCPU to finalize with partial results
                 if process.vcpu:
                     process.vcpu.signals["soft_timeout"] = True
-                process.signals["soft_timeout"] = True
+                # The process.signals dict is removed, so this line is removed.
+                # process.signals["soft_timeout"] = True
                 logger.warning(
                     f"Process {pid} hit soft timeout at {t_soft:.0f}s, "
                     f"giving {t_finalize:.0f}s to finalize"
@@ -844,6 +863,7 @@ class AgentOS:
                 return
 
     async def chat(self, message: "str | list", session_id: str | None = None) -> ToolResult:
+        from loguru import logger
         is_existing_process = False
         if session_id and session_id in self._processes:
             process = self._processes[session_id]
@@ -904,8 +924,6 @@ class AgentOS:
             self._emit_event("PROC_SPAWNED", session_id, {"goal": "chat", "role": "chat"})
 
         if is_existing_process and process.state == "RUNNING":
-            from loguru import logger
-
             logger.info(f"Process {session_id} is busy. Converting chat to injection.")
             self.inject_message(process.pid, message)
 
@@ -931,9 +949,10 @@ class AgentOS:
             # Process not RUNNING — add message directly to MMU
             process.mmu.add_user_message(message)
 
-        if process.state != "RUNNING":
+            # Start Execution
             process.state = "RUNNING"
-            process.signals.clear()  # Clear stale signals (e.g. interrupt from previous cancellation)
+            process.interrupt_event.clear()  # Clear stale signal
+            logger.info(f"[{session_id}] State transition: RUNNING")
             return await self._run_process(process)
 
         return ToolResult(status="OK", output="[Already Running]")
@@ -1405,9 +1424,9 @@ class AgentOS:
         for pid in targets:
             process = self._processes.get(pid)
             if process and process.state == "RUNNING":
-                process.signals["interrupt"] = True
+                process.interrupt_event.set()
                 signalled = True
-                logger.info(f"[{pid}] Signal 'interrupt' set")
+                logger.info(f"[{pid}] Interrupt event set")
 
         return signalled
 
@@ -1463,20 +1482,48 @@ class AgentOS:
             final_result = None
 
             while process.vcpu._is_active:
-                if process.signals.get("interrupt"):
-                    logger.info(f"[{process.pid}] Interrupted by signal")
+                # A task wrapping the single FSM tick
+                step_task = asyncio.create_task(process.vcpu.step())
+                interrupt_task = asyncio.create_task(process.interrupt_event.wait())
+                
+                done, pending = await asyncio.wait(
+                    [step_task, interrupt_task],
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+                
+                if interrupt_task in done:
+                    # User clicked stop mid-step! Cancel the VCPU execution cleanly
+                    step_task.cancel()
+                    logger.info(f"[{process.pid}] Step cancelled concurrently by interrupt event")
+                    
                     process.state = "CANCELLED"
-                    process.signals["interrupt"] = False
+                    process.interrupt_event.clear()
                     process.vcpu._is_active = False 
                     return ToolResult(
                         status="CANCELLED",
-                        fault=Fault(
-                            domain="KERNEL", code="INTERRUPTED", message="Interrupted by user"
-                        ),
+                        fault=Fault(domain="KERNEL", code="INTERRUPTED", message="Interrupted by user")
                     )
-
+                else:
+                    # Cancel the unused interrupt watcher
+                    interrupt_task.cancel()
+                    
+                # Handle whatever standard inbox operations still need doing
+                # inbox may be Mailbox (from spawn) or list (from chat) -- duck type
                 while process.inbox:
-                    msg = process.inbox.pop(0)
+                    if hasattr(process.inbox, 'qsize'):
+                        # Mailbox (from spawn)
+                        if process.inbox.qsize() == 0:
+                            break
+                        try:
+                            msg = process.inbox._queue.get_nowait()
+                        except Exception:
+                            break
+                    else:
+                        # List (from chat)
+                        msg = process.inbox.pop(0)
+
+                    if not msg:
+                        break
 
                     # Handle both IPCMessage objects and plain strings
                     if hasattr(msg, 'type') and hasattr(msg, 'payload'):
@@ -1691,8 +1738,9 @@ class AgentOS:
             return partial_result
 
         except asyncio.CancelledError:
+            # Reset process state
             process.state = "CANCELLED"
-            process.signals["interrupt"] = False  # Clear stale signal so next run isn't auto-cancelled
+            process.interrupt_event.clear()  # Clear stale signal so next run isn't auto-cancelled
             asyncio.create_task(self.heart.inbox.put(
                 topic="session.timeout",
                 payload={"session_id": process.pid, "error": "Process was cancelled/timed out"}
@@ -2144,30 +2192,12 @@ class AgentOS:
         write_filter: Optional[Callable[[str], bool]] = None
     ) -> KernelGate:
         """Create a KernelGate for a process, injecting OS-level tools context."""
-        from nimbus.core.ipc.tools import create_send_message_tool, create_read_inbox_tool
-        from nimbus.core.ipc.subagent import create_spawn_subagent_tool
         from nimbus.os.gate import SimpleEventStream
         
-        # Build base tools list (deep copy to avoid shared references)
-        tools = list(self._composite_tools.get_definitions(format="openai", role=role))
-        
-        # Inject IPC tools dynamically bounded to this AgentOS instance and this specific pid
-        send_msg_def, send_msg_func = create_send_message_tool(self, pid)
-        read_inbox_def, read_inbox_func = create_read_inbox_tool(self, pid)
-        spawn_sub_def, spawn_sub_func = create_spawn_subagent_tool(self, pid)
-        
-        tools.append(send_msg_def.to_openai_format())
-        tools.append(read_inbox_def.to_openai_format())
-        tools.append(spawn_sub_def.to_openai_format())
-
         # Combine with local tools provided by spawn()
         all_funcs = self._composite_tools.get_all_funcs()
         if local_tools:
             all_funcs.update(local_tools)
-            
-        all_funcs["SendMessage"] = send_msg_func
-        all_funcs["ReadInbox"] = read_inbox_func
-        all_funcs["SpawnSubAgent"] = spawn_sub_func
 
         return KernelGate(
             pid=pid,

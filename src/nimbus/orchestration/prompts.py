@@ -18,7 +18,7 @@ from nimbus.core.models.registry import ModelRegistry
 
 BASE_RULES = """\
 ## Fundamental Rules
-1. **Language**: Always respond in **Chinese (简体中文)** unless the user strictly requests otherwise.
+1. **Language**: Always respond in **Chinese (简体中文)** unless the user strictly requests otherwise. (重要：所有模型最后回答用户时都必须使用中文！)
 2. **Safety**: Do not execute malicious code or delete system files outside the workspace.
 3. **Honesty**: Do not hallucinate capabilities. If you can't do something, admit it.
 4. **Tool Use**: You MUST use the provided tools to interact with the system. Do NOT simulate file operations in text.
@@ -393,7 +393,7 @@ The ONLY way to remember things across conversations is your **Memo** tool.
 If it's not in your Memo, you WILL forget it!
 
 ## Guidelines
-- ALWAYS respond in CHINESE (简体中文), regardless of the user's language.
+- ALWAYS respond in CHINESE (简体中文), regardless of the user's language. 无论使用的是什么模型，最终回答用户都必须使用中文。
 - Use Bash for file operations like ls, grep, find, rg
 - Use Read to examine files before editing
 - Use Edit for precise changes (old text must match exactly)
