@@ -196,10 +196,18 @@ class StateReasoning(VCPUState):
             ctx.current_actions = actions
         except Exception as e:
             logger.error(f"Failed to parse ALU response: {e}")
+            # Save the assistant's raw response before error recovery
+            if hasattr(response, 'content') and response.content:
+                ctx.mmu.add_assistant_message(response.content)
             ctx.pending_parse_error = f"Failed to decode response: {str(e)}. Please output valid format."
             return StateErrorRecovery()
 
         if not actions:
+            # Save the assistant's response to MMU so it isn't lost.
+            # Without this, error recovery would inject an orphan message
+            # with no preceding assistant turn.
+            if hasattr(response, 'content') and response.content:
+                ctx.mmu.add_assistant_message(response.content)
             # Handle Empty Response (Agent broke protocol and output nothing useful)
             ctx.pending_parse_error = "You returned an empty response or invalid format. You MUST use a tool or return a final answer."
             return StateErrorRecovery()
@@ -229,6 +237,55 @@ class StateReasoning(VCPUState):
         # Typically LLMs should be forced to take an action. 
         # If they just output THOUGHT, we treat it as an empty action cycle.
         return StateObservation()
+
+
+def _persist_tool_turn(ctx: FSMContext) -> None:
+    """
+    Save the current assistant tool_use + tool_results to MMU.
+
+    Ensures tool_use/tool_result pairing integrity so the conversation
+    history is always well-formed.  Called by:
+      - StateObservation (normal flow)
+      - StateActionExecution (before error recovery, to prevent orphan
+        tool_results that crash the Anthropic API)
+    """
+    tool_actions = [a for a in ctx.current_actions if a.kind in ("TOOL_CALL", "SUB_CALL")]
+    if not tool_actions:
+        return
+
+    # Extract non-blocking thought text
+    thought_text = None
+    for a in ctx.current_actions:
+        if a.kind == "THOUGHT" and a.meta and a.meta.get("non_blocking"):
+            thought_text = a.args.get("text", "")
+            break
+
+    tool_calls = []
+    for action in tool_actions:
+        tool_calls.append({
+            "id": action.id,
+            "type": "function",
+            "function": {
+                "name": action.name,
+                "arguments": json.dumps(action.args) if isinstance(action.args, dict) else action.args
+            }
+        })
+    ctx.mmu.add_assistant_with_tool_calls(thought_text, tool_calls)
+
+    # Write tool results — every tool_use MUST have a matching tool_result
+    for action in ctx.current_actions:
+        if action.kind in ("TOOL_CALL", "SUB_CALL"):
+            result = getattr(action, 'result', None)
+            if result:
+                content = result.output if hasattr(result, "output") else str(result)
+            else:
+                content = "[Tool was not executed due to earlier error]"
+            ctx.mmu.add_tool_result(
+                tool_call_id=action.id,
+                name=action.name,
+                content=content,
+                tool_args=action.args if result else None,
+            )
 
 
 class StateActionExecution(VCPUState):
@@ -264,6 +321,9 @@ class StateActionExecution(VCPUState):
                     )
                     action.result = result
                     ctx.current_results.append(result)
+                    # Persist assistant tool_use + tool_results before error
+                    # recovery so the conversation stays well-formed.
+                    _persist_tool_turn(ctx)
                     ctx.pending_error = e
                     return StateErrorRecovery()
             return StateObservation()
@@ -302,6 +362,9 @@ class StateActionExecution(VCPUState):
         
         # 5. If any action failed, record and enter error recovery
         if first_error is not None:
+            # Persist assistant tool_use + tool_results (including errors)
+            # before error recovery so the conversation stays well-formed.
+            _persist_tool_turn(ctx)
             ctx.pending_error = first_error
             return StateErrorRecovery()
         
@@ -318,42 +381,10 @@ class StateObservation(VCPUState):
     async def execute(self, ctx: FSMContext) -> VCPUState:
         logger.debug(f"[vCPU] State: {self.name} - Writing to MMU")
         
-        # 1. First, record the assistant's tool calls batch if any exist
+        # 1. Persist assistant tool_use + tool_results via shared helper
         tool_actions = [a for a in ctx.current_actions if a.kind in ("TOOL_CALL", "SUB_CALL")]
         if tool_actions:
-            # Extract non-blocking thought text to include as content in the
-            # same assistant message (Anthropic API requires tool_result
-            # immediately after tool_use — a separate assistant message in
-            # between would break the contract).
-            thought_text = None
-            for a in ctx.current_actions:
-                if a.kind == "THOUGHT" and a.meta and a.meta.get("non_blocking"):
-                    thought_text = a.args.get("text", "")
-                    break
-
-            tool_calls = []
-            for action in tool_actions:
-                tool_calls.append({
-                    "id": action.id,
-                    "type": "function",
-                    "function": {
-                        "name": action.name,
-                        "arguments": json.dumps(action.args) if isinstance(action.args, dict) else action.args
-                    }
-                })
-            ctx.mmu.add_assistant_with_tool_calls(thought_text, tool_calls)
-
-            # 2a. Write tool results immediately after tool_use (no intervening messages)
-            for action in ctx.current_actions:
-                if action.kind in ("TOOL_CALL", "SUB_CALL"):
-                    result = getattr(action, 'result', None)
-                    content = result.output if hasattr(result, "output") else str(result)
-                    ctx.mmu.add_tool_result(
-                        tool_call_id=action.id,
-                        name=action.name,
-                        content=content,
-                        tool_args=action.args
-                    )
+            _persist_tool_turn(ctx)
         else:
             # 2b. No tool calls — write standalone thoughts
             for action in ctx.current_actions:
@@ -467,19 +498,13 @@ class StateErrorRecovery(VCPUState):
         logger.info(f"[vCPU] Applying {backoff_seconds:.2f}s exponential backoff due to consecutive errors...")
         await asyncio.sleep(backoff_seconds)
 
-        # Inject standard error back to MMU so the LLM sees it
+        # Inject error feedback as a user message so the LLM sees it.
+        # IMPORTANT: We must NOT use add_tool_result() here because there
+        # is no preceding assistant tool_use to pair with — that would
+        # create an orphan tool_result that crashes the Anthropic API
+        # ("unexpected tool_use_id found in tool_result blocks").
         if error_msg:
-             # Create a mock ActionIR to represent the system error interaction
-             mock_sys_action = ActionIR(
-                 kind="SYSTEM_ERROR",
-                 name="error_handler",
-                 args={"message": error_msg}
-             )
-             ctx.mmu.add_tool_result(
-                 tool_call_id=mock_sys_action.id,
-                 name="error_handler",
-                 content=error_msg,
-             )
+            ctx.mmu.add_user_message(f"[System Error] {error_msg}")
 
         # Bounce back to Reasoning to let the LLM fix it
         return StateInit()
