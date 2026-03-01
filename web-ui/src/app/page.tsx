@@ -7,6 +7,7 @@ import { ChatList } from "@/components/chat/ChatList";
 import { ModelSelector } from "@/components/chat/ModelSelector";
 import { FileExplorer } from "@/components/chat/FileExplorer";
 import { WorkingIndicator } from "@/components/chat/WorkingIndicator";
+import { ArtifactViewer } from "@/components/chat/ArtifactViewer";
 
 import { SessionPanel } from "@/components/session/SessionPanel";
 
@@ -18,6 +19,7 @@ export default function Home() {
   const error = useChatStore(s => s.error);
   const errorInfo = useChatStore(s => s.errorInfo);
   const isLoading = useChatStore(s => s.isLoading);
+  const activeArtifact = useChatStore(s => s.activeArtifact);
 
   // Actions — stable references from Zustand
   const createNewSession = useChatStore(s => s.createNewSession);
@@ -191,28 +193,27 @@ export default function Home() {
             {error && (
               <div
                 data-testid="error-banner"
-                className={`mb-4 p-3 rounded text-sm animate-in fade-in slide-in-from-top-2 border ${
-                  errorInfo?.code === "llm_rate_limit" || errorInfo?.code === "resource_timeout"
+                className={`mb-4 p-3 rounded text-sm animate-in fade-in slide-in-from-top-2 border ${errorInfo?.code === "llm_rate_limit" || errorInfo?.code === "resource_timeout"
                     ? "bg-amber-900/20 border-amber-700/50 text-amber-300"
                     : errorInfo?.code === "auth_error"
-                    ? "bg-orange-900/20 border-orange-700/50 text-orange-300"
-                    : "bg-red-900/20 border-red-800/50 text-red-400"
-                }`}
+                      ? "bg-orange-900/20 border-orange-700/50 text-orange-300"
+                      : "bg-red-900/20 border-red-800/50 text-red-400"
+                  }`}
               >
                 <div className="flex items-start gap-2">
                   <span className="shrink-0 mt-0.5">
                     {errorInfo?.code === "llm_rate_limit" ? "\u23F3" :
-                     errorInfo?.code === "resource_timeout" ? "\u23F1\uFE0F" :
-                     errorInfo?.code === "auth_error" ? "\uD83D\uDD11" :
-                     errorInfo?.code === "llm_ctx_overflow" ? "\uD83D\uDCCF" : "\uD83D\uDD34"}
+                      errorInfo?.code === "resource_timeout" ? "\u23F1\uFE0F" :
+                        errorInfo?.code === "auth_error" ? "\uD83D\uDD11" :
+                          errorInfo?.code === "llm_ctx_overflow" ? "\uD83D\uDCCF" : "\uD83D\uDD34"}
                   </span>
                   <div className="flex-1 min-w-0">
                     <span className="font-semibold">
                       {errorInfo?.code === "llm_rate_limit" ? "Request Throttled" :
-                       errorInfo?.code === "resource_timeout" ? "Request Timeout" :
-                       errorInfo?.code === "auth_error" ? "Auth Error" :
-                       errorInfo?.code === "llm_ctx_overflow" ? "Context Overflow" :
-                       "Error"}
+                        errorInfo?.code === "resource_timeout" ? "Request Timeout" :
+                          errorInfo?.code === "auth_error" ? "Auth Error" :
+                            errorInfo?.code === "llm_ctx_overflow" ? "Context Overflow" :
+                              "Error"}
                     </span>
                     <span className="ml-2 opacity-80">{errorInfo?.message ?? error}</span>
                     {errorInfo?.errorId && (
@@ -325,6 +326,13 @@ export default function Home() {
         </div>
 
       </div>
+
+      {/* Global Artifact Viewer (Slide-over / Split View) */}
+      {activeArtifact && (
+        <div className="absolute top-0 right-0 h-full w-full lg:w-1/2 lg:min-w-[400px] z-40 bg-nimbus-bg overflow-hidden shadow-[-10px_0_30px_rgba(0,0,0,0.5)] border-l border-nimbus-border transform transition-transform duration-300">
+          <ArtifactViewer />
+        </div>
+      )}
 
       {/* Session Panel Overlay */}
       <SessionPanel

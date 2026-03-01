@@ -43,6 +43,13 @@ interface HeartbeatData {
   [key: string]: unknown;
 }
 
+export interface ArtifactRef {
+  ref: string;
+  type: string;
+  summary?: string;
+  [key: string]: unknown;
+}
+
 interface ToolCallData {
   action_id?: string;
   id?: string;
@@ -87,8 +94,8 @@ interface ChatState {
   lastEventId: string | null;
 
   // Real-time progress indicators
-  thinkingIteration: number | null;  // Current thinking iteration
-  currentActivity: string | null;     // Current activity description
+  fsmState: 'THINKING' | 'ACTING' | 'STREAMING' | 'IDLE' | null;     // Unified Agent FSM State
+  activeArtifact: ArtifactRef | null; // Currently viewed artifact
   lastHeartbeat: number | null;       // Timestamp of last heartbeat
 
   // Interrupt state
@@ -121,6 +128,7 @@ interface ChatState {
   handleServerEvent: (event: ChatEvent, isForwarded?: boolean) => void;
   retryLastMessage: () => void;
   interruptMessage: () => void;
+  closeArtifact: () => void;
   clearError: () => void;
   reset: () => void;
 }
@@ -134,8 +142,8 @@ const initialState = {
   streamingToolResults: [],
   messageQueue: [],
   lastEventId: null,
-  thinkingIteration: null,
-  currentActivity: null,
+  fsmState: null,
+  activeArtifact: null,
   lastHeartbeat: null,
   isInterrupting: false,
   streamAbortController: null,
@@ -254,8 +262,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         streamingContent: "",
         streamingToolCalls: [],
         streamingToolResults: [],
-        thinkingIteration: null,
-        currentActivity: null,
+        fsmState: null,
+        activeArtifact: null,
         error: null,
         isLoading: false,
       });
@@ -283,8 +291,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         streamingContent: "",
         streamingToolCalls: [],
         streamingToolResults: [],
-        thinkingIteration: null,
-        currentActivity: null,
       }),
       error: null,
     });
@@ -746,8 +752,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streamingContent: "",
       streamingToolCalls: [],
       streamingToolResults: [],
-      thinkingIteration: null,
-      currentActivity: "连接中...",
       lastHeartbeat: Date.now(),
       streamAbortController: abortController,
       error: null,
@@ -777,21 +781,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
         switch (type) {
           case "connected":
             set({
-              currentActivity: "已连接",
               lastHeartbeat: Date.now()
             });
             break;
 
           case "message_start":
             set({
-              currentActivity: "开始生成回复...",
               lastHeartbeat: Date.now()
             });
             break;
 
           case "task_start":
             set({
-              currentActivity: "开始执行任务...",
               lastHeartbeat: Date.now()
             });
             break;
@@ -827,36 +828,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
             if (data && typeof data === "object" && "iteration" in data) {
               const iter = (data as any).iteration;
               set({
-                thinkingIteration: iter,
-                currentActivity: `思考中 (第 ${iter} 轮)...`,
                 lastHeartbeat: Date.now()
               });
             }
             break;
 
           case "heartbeat":
-            // Update thinking iteration if present
             if (data && typeof data === "object") {
-              const hbData = data as HeartbeatData;
-              if ("iteration" in hbData && typeof hbData.iteration === "number") {
-                const iter = hbData.iteration;
-                set({
-                  thinkingIteration: iter,
-                  currentActivity: `正在思考 (第 ${iter + 1} 轮)...`,
-                  lastHeartbeat: Date.now()
-                });
-              } else if ("kind" in hbData && hbData.kind === "THOUGHT") {
-                set({
-                  currentActivity: "正在思考...",
-                  lastHeartbeat: Date.now()
-                });
-              } else if ("reason" in hbData) {
-                // Thought completed
-                set({
-                  currentActivity: "思考完成，生成回复...",
-                  lastHeartbeat: Date.now()
-                });
-              }
+              const hbData = data as HeartbeatData & { fsm_state?: 'THINKING' | 'ACTING' | 'STREAMING' | 'IDLE' };
+              set({
+                fsmState: hbData.fsm_state || "THINKING",
+                lastHeartbeat: Date.now()
+              });
             }
             break;
 
@@ -877,11 +860,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
             if (newContent) {
               assistantContent += newContent;
               const now = Date.now();
+              const d = data as { fsm_state?: 'THINKING' | 'ACTING' | 'STREAMING' | 'IDLE', event_id?: string };
               // Throttle updates to avoid flickering
               if (now - lastUpdate > UPDATE_INTERVAL) {
                 set({
                   streamingContent: assistantContent,
-                  currentActivity: "生成回复中...",
+                  fsmState: d?.fsm_state || "STREAMING",
+                  lastEventId: d?.event_id || null,
                   lastHeartbeat: now
                 });
                 lastUpdate = now;
@@ -891,7 +876,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           case "tool_call":
             if (data && typeof data === "object") {
-              const d = data as ToolCallData;
+              const d = data as ToolCallData & { fsm_state?: 'THINKING' | 'ACTING' | 'STREAMING' | 'IDLE' };
               // Map server format (action_id, tool, args) to frontend format (id, name, arguments)
               const tool: ToolCall = {
                 id: d.action_id || d.id || "",
@@ -904,7 +889,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
               set({
                 streamingContent: assistantContent,
                 streamingToolCalls: [...toolCalls],
-                currentActivity: `执行工具: ${tool.name}`,
+                fsmState: d.fsm_state || "ACTING",
+                lastEventId: d.event_id || null,
                 lastHeartbeat: Date.now()
               });
             }
@@ -912,7 +898,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           case "tool_result":
             if (data && typeof data === "object") {
-              const d = data as ToolResultData;
+              const d = data as ToolResultData & { fsm_state?: 'THINKING' | 'ACTING' | 'STREAMING' | 'IDLE' };
               const result: ToolResult = {
                 id: d.action_id || d.id || "",
                 name: d.tool || d.name || "unknown",
@@ -923,7 +909,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
               toolResults.push(result);
               set({
                 streamingToolResults: [...toolResults],
-                currentActivity: "工具执行完成",
+                fsmState: d.fsm_state || "ACTING",
+                lastEventId: d.event_id || null,
                 lastHeartbeat: Date.now()
               });
             }
@@ -931,7 +918,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           case "sub_tool_call":
             if (data && typeof data === "object") {
-              const d = data as ToolCallData;
+              const d = data as ToolCallData & { fsm_state?: 'THINKING' | 'ACTING' | 'STREAMING' | 'IDLE', event_id?: string };
               const subTool: ToolCall = {
                 id: d.action_id || d.id || "",
                 name: d.tool || d.name || "unknown",
@@ -965,7 +952,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     });
                     set({
                       streamingToolCalls: [...toolCalls],
-                      currentActivity: `${label}: ${subTool.name}`,
+                      fsmState: d.fsm_state || "ACTING",
                       lastHeartbeat: Date.now()
                     });
                     break;
@@ -1003,7 +990,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               }
               set({
                 streamingToolCalls: [...toolCalls],
-                currentActivity: `${metaLabel}: ${subTool.name}`,
+                fsmState: d.fsm_state || "ACTING",
                 lastHeartbeat: Date.now()
               });
             }
@@ -1011,7 +998,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           case "sub_tool_result":
             if (data && typeof data === "object") {
-              const d = data as ToolResultData;
+              const d = data as ToolResultData & { fsm_state?: 'THINKING' | 'ACTING' | 'STREAMING' | 'IDLE', event_id?: string };
               const subResult: ToolResult = {
                 id: d.action_id || d.id || "",
                 name: d.tool || d.name || "unknown",
@@ -1046,7 +1033,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     });
                     set({
                       streamingToolCalls: [...toolCalls],
-                      currentActivity: `${label}: ${subResult.name} done`,
+                      fsmState: d.fsm_state || "ACTING",
                       lastHeartbeat: Date.now()
                     });
                     break;
@@ -1090,7 +1077,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
               }
               set({
                 streamingToolCalls: [...toolCalls],
-                currentActivity: `${metaResultLabel}: ${d.tool || d.name} done`,
+                fsmState: d.fsm_state || "ACTING",
+                lastEventId: d.event_id || null,
                 lastHeartbeat: Date.now()
               });
             }
@@ -1138,7 +1126,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 });
                 set({
                   streamingToolCalls: [...toolCalls],
-                  currentActivity: `⚡ ${esSpecialist} 已启动...`,
+                  fsmState: esd?.fsm_state || "ACTING",
+                  lastEventId: esd?.event_id || null,
                   lastHeartbeat: Date.now()
                 });
                 break;
@@ -1157,7 +1146,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
             set({
               streamingToolCalls: [...toolCalls],
-              currentActivity: "⚡ Executor 已启动...",
+              fsmState: esd?.fsm_state || "ACTING",
+              lastEventId: esd?.event_id || null,
               lastHeartbeat: Date.now()
             });
             break;
@@ -1190,7 +1180,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   });
                   set({
                     streamingToolCalls: [...toolCalls],
-                    currentActivity: `⚡ ${specialistSlot.name} 已完成`,
+                    fsmState: edd?.fsm_state || "ACTING",
+                    lastEventId: edd?.event_id || null,
                     lastHeartbeat: Date.now()
                   });
                   break;
@@ -1198,16 +1189,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
               }
             }
             set({
-              currentActivity: "⚡ Executor 已完成",
+              fsmState: edd?.fsm_state || "ACTING",
+              lastEventId: edd?.event_id || null,
               lastHeartbeat: Date.now()
             });
             break;
           }
 
           case "permission_request": {
-            const permData = data as { action?: string; description?: string } | undefined;
+            const permData = data as { action?: string; description?: string; fsm_state?: 'THINKING' | 'ACTING' | 'STREAMING' | 'IDLE'; event_id?: string } | undefined;
             const desc = permData?.description || permData?.action || "Permission requested";
-            set({ currentActivity: `⚠️ ${desc}` });
+            set({
+              fsmState: permData?.fsm_state || "IDLE",
+              lastEventId: permData?.event_id || null
+            });
             // Add system message to notify user
             set(state => ({
               messages: [...state.messages, {
@@ -1222,7 +1217,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           case "dag_complete":
             set({
-              currentActivity: "完成",
+              fsmState: "IDLE",
               lastHeartbeat: Date.now()
             });
             // Auto-refresh session to pick up auto-generated title (first 3 rounds)
@@ -1279,8 +1274,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         streamingContent: "",
         streamingToolCalls: [],
         streamingToolResults: [],
-        thinkingIteration: null,
-        currentActivity: null,
+        fsmState: null,
+        activeArtifact: null,
         lastHeartbeat: null,
         // Wait to clear these until after session refresh:
         // isStreaming: false, 
@@ -1330,8 +1325,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           streamingContent: "",
           streamingToolCalls: [],
           streamingToolResults: [],
-          thinkingIteration: null,
-          currentActivity: null,
           lastHeartbeat: null,
           streamAbortController: null,
           isInterrupting: false,
@@ -1351,8 +1344,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           streamingContent: "",
           streamingToolCalls: [],
           streamingToolResults: [],
-          thinkingIteration: null,
-          currentActivity: null,
           lastHeartbeat: null,
           streamAbortController: null,
           isInterrupting: false,
@@ -1388,8 +1379,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           streamingContent: "",
           streamingToolCalls: [],
           streamingToolResults: [],
-          thinkingIteration: null,
-          currentActivity: null,
           lastHeartbeat: null,
           streamAbortController: null,
           isInterrupting: false,
@@ -1415,7 +1404,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streamingContent: "",
       streamingToolCalls: [],
       streamingToolResults: [],
-      currentActivity: "重新连接中...",
       lastHeartbeat: Date.now(),
       streamAbortController: abortController,
     });
@@ -1431,7 +1419,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         switch (type) {
           case "connected":
-            set({ currentActivity: "已重新连接", lastHeartbeat: Date.now() });
             break;
 
           case "thinking":
@@ -1451,7 +1438,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
               assistantContent += newContent;
               set({
                 streamingContent: assistantContent,
-                currentActivity: "生成回复中...",
                 lastHeartbeat: Date.now(),
               });
             }
@@ -1470,7 +1456,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
               set({
                 streamingContent: assistantContent,
                 streamingToolCalls: [...toolCalls],
-                currentActivity: `执行工具: ${d.tool || d.name}`,
                 lastHeartbeat: Date.now(),
               });
             }
@@ -1489,7 +1474,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
               });
               set({
                 streamingToolResults: [...toolResults],
-                currentActivity: "工具执行完成",
                 lastHeartbeat: Date.now(),
               });
             }
@@ -1526,7 +1510,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     });
                     set({
                       streamingToolCalls: [...toolCalls],
-                      currentActivity: `${label}: ${subTool.name}`,
                       lastHeartbeat: Date.now(),
                     });
                     break;
@@ -1563,7 +1546,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
               }
               set({
                 streamingToolCalls: [...toolCalls],
-                currentActivity: `${metaLabel}: ${subTool.name}`,
                 lastHeartbeat: Date.now(),
               });
             }
@@ -1602,7 +1584,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     });
                     set({
                       streamingToolCalls: [...toolCalls],
-                      currentActivity: `${label}: ${subResult.name} done`,
                       lastHeartbeat: Date.now(),
                     });
                     break;
@@ -1644,7 +1625,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
               }
               set({
                 streamingToolCalls: [...toolCalls],
-                currentActivity: `${metaResultLabel}: ${d.tool || d.name} done`,
                 lastHeartbeat: Date.now(),
               });
             }
@@ -1692,7 +1672,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 });
                 set({
                   streamingToolCalls: [...toolCalls],
-                  currentActivity: `⚡ ${esSpecialist} 已启动...`,
                   lastHeartbeat: Date.now(),
                 });
                 break;
@@ -1710,7 +1689,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
             set({
               streamingToolCalls: [...toolCalls],
-              currentActivity: "⚡ Executor 已启动...",
               lastHeartbeat: Date.now(),
             });
             break;
@@ -1743,7 +1721,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   });
                   set({
                     streamingToolCalls: [...toolCalls],
-                    currentActivity: `⚡ ${specialistSlot.name} 已完成`,
                     lastHeartbeat: Date.now(),
                   });
                   break;
@@ -1751,7 +1728,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
               }
             }
             set({
-              currentActivity: "⚡ Executor 已完成",
               lastHeartbeat: Date.now(),
             });
             break;
@@ -1780,7 +1756,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
             break;
 
           case "heartbeat":
-            set({ lastHeartbeat: Date.now(), currentActivity: "正在思考..." });
             break;
 
           case "dag_complete":
@@ -1803,7 +1778,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
               streamingContent: "",
               streamingToolCalls: [],
               streamingToolResults: [],
-              currentActivity: null,
               lastHeartbeat: null,
               streamAbortController: null,
             });
@@ -1815,7 +1789,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
               streamingContent: "",
               streamingToolCalls: [],
               streamingToolResults: [],
-              currentActivity: null,
               error: typeof data === "string" ? data : "Stream error",
               streamAbortController: null,
             });
@@ -1834,14 +1807,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         streamingContent: "",
         streamingToolCalls: [],
         streamingToolResults: [],
-        currentActivity: null,
         streamAbortController: null,
       });
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
         set({
           isStreaming: false,
-          currentActivity: null,
           streamAbortController: null,
         });
       } else {
@@ -1849,7 +1820,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         console.warn("[Store] Reconnect failed:", err);
         set({
           isStreaming: false,
-          currentActivity: null,
           streamAbortController: null,
         });
       }
@@ -1874,7 +1844,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     get().sendMessage(lastUserMsg.content, lastUserMsg.attachments);
   },
 
-  clearError: () => set({ error: null, errorInfo: null }),
+  clearError: () => {
+    set({ error: null, errorInfo: null });
+  },
+
+  // UI action for closing artifact viewer
+  closeArtifact: () => {
+    set({ activeArtifact: null });
+  },
 
   interruptMessage: () => {
     const { streamAbortController, isStreaming, session } = get();

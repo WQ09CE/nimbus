@@ -1018,6 +1018,26 @@ class SessionManagerV2:
             if not event.data.get("parent_action_id"):
                 self._sub_tool_buffer[session_id] = []
 
+        # --- V3 Standard Protocol Injection ---
+        import uuid
+        event.data["event_id"] = str(uuid.uuid4())
+
+        # Map to V3 fsm_state
+        if sse_type == "message":
+            event.data["fsm_state"] = "STREAMING"
+        elif sse_type in ("step_start", "thinking"):
+            event.data["fsm_state"] = "THINKING"
+        elif sse_type in ("tool_call", "tool_result", "executor_start", "executor_done"):
+            event.data["fsm_state"] = "ACTING"
+        else:
+            # Fallback or lifecycle events
+            event.data["fsm_state"] = "IDLE"
+
+        # Artifact ref extraction
+        if "artifact" in event.data:
+            event.data["artifact_ref"] = event.data["artifact"]
+        # -------------------------------------
+
         # Emit to SSE hub
         sent_count = await self._sse_hub.publish(
             session_id,

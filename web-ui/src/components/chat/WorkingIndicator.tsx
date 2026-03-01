@@ -4,10 +4,15 @@ import { useChatStore } from "@/stores";
 
 export function WorkingIndicator() {
   const isStreaming = useChatStore(s => s.isStreaming);
-  const currentActivity = useChatStore(s => s.currentActivity);
-  const thinkingIteration = useChatStore(s => s.thinkingIteration);
+  const fsmState = useChatStore(s => s.fsmState);
 
-  if (!isStreaming || !currentActivity) return null;
+  if (!isStreaming || !fsmState || fsmState === "IDLE") return null;
+
+  const statusLabel = {
+    THINKING: "正在思考...",
+    ACTING: "执行工具中...",
+    STREAMING: "生成回复中..."
+  }[fsmState] || "处理中...";
 
   return (
     <div data-testid="working-indicator" className="w-full px-6 pb-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
@@ -16,12 +21,7 @@ export function WorkingIndicator() {
           <span className="relative flex h-2 w-2">
             <span className="relative inline-flex rounded-full h-2 w-2 bg-sky-400 animate-breathe"></span>
           </span>
-          <span className="font-mono text-sky-300 font-medium tracking-wide">{currentActivity.toUpperCase()}</span>
-          {thinkingIteration !== null && thinkingIteration > 0 && (
-            <span className="text-nimbus-text-dim font-mono ml-auto">
-              ITERATION {thinkingIteration + 1}
-            </span>
-          )}
+          <span className="font-mono text-sky-300 font-medium tracking-wide">{statusLabel}</span>
         </div>
       </div>
     </div>
