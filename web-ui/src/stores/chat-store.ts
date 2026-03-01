@@ -444,9 +444,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
                     if (slotMap.size > 0) {
                       const sortedSlots = Array.from(slotMap.entries()).sort((a, b) => a[0] - b[0]);
-                      const specialistCalls: ToolCall[] = sortedSlots.map(([slotIdx, slot]) => {
+                      const maxSlotIdx = sortedSlots.length > 0 ? sortedSlots[sortedSlots.length - 1][0] : -1;
+
+                      // Fix: Preserve the batch_slot_index as the array index even if there are sparse holes
+                      const specialistCalls: ToolCall[] = new Array(maxSlotIdx + 1);
+                      console.log('[DEBUG] ParallelDispatch rebuilding from slotMap:', Array.from(slotMap.entries()), 'maxSlot:', maxSlotIdx);
+                      for (const [slotIdx, slot] of Array.from(slotMap.entries())) {
                         const sName = SPEC_TO_TOOL[slot.specialist] || slot.specialist || 'Dispatch';
-                        return {
+                        specialistCalls[slotIdx] = {
                           id: `${toolCallId}-slot-${slotIdx}`,
                           name: sName,
                           arguments: {},
@@ -454,18 +459,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
                           subCalls: slot.subCalls,
                           subResults: slot.subResults,
                         };
-                      });
+                      }
+                      console.log('[DEBUG] specialistCalls built:', specialistCalls);
                       subEventsMap.set(toolCallId, { subCalls: specialistCalls, subResults: [] });
                     }
 
                   } else {
                     // ── Regular specialist tool (Explore/Implement/etc.): flat list of sub-tool-calls
-                    const subCalls: ToolCall[] = [];
-                    const subResults: ToolResult[] = [];
+                    // The backend frequently merges sub_tool_events from ALL concurrent native tools into the first tool's artifact list.
+                    // We MUST demultiplex them here by `parent_action_id` so that each native tool card gets its own history!
+                    const eventsByParent = new Map<string, { subCalls: ToolCall[], subResults: ToolResult[] }>();
 
                     for (const evt of evts) {
+                      const pid = String(evt.data?.parent_action_id || toolCallId || '');
+                      if (!eventsByParent.has(pid)) {
+                        eventsByParent.set(pid, { subCalls: [], subResults: [] });
+                      }
+                      const group = eventsByParent.get(pid)!;
+
                       if (evt.type === 'sub_tool_call' && evt.data) {
-                        subCalls.push({
+                        group.subCalls.push({
                           id: String(evt.data.action_id || evt.data.id || ''),
                           name: String(evt.data.tool || evt.data.name || 'unknown'),
                           arguments: (evt.data.args || evt.data.arguments || {}) as Record<string, unknown>,
@@ -473,7 +486,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                         });
                       } else if (evt.type === 'sub_tool_result' && evt.data) {
                         const fault = evt.data.fault as { message: string } | undefined;
-                        subResults.push({
+                        group.subResults.push({
                           id: String(evt.data.action_id || evt.data.id || ''),
                           name: String(evt.data.tool || evt.data.name || 'unknown'),
                           result: evt.data.output !== undefined ? evt.data.output : evt.data.result,
@@ -483,9 +496,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
                       }
                     }
 
-                    if (subCalls.length > 0 || subResults.length > 0) {
-                      console.log('[DEBUG] subEventsMap.set (Regular)', toolCallId, 'subCalls:', subCalls.length, 'subResults:', subResults.length);
-                      subEventsMap.set(toolCallId, { subCalls, subResults });
+                    for (const [pid, group] of Array.from(eventsByParent.entries())) {
+                      if (group.subCalls.length > 0 || group.subResults.length > 0) {
+                        console.log('[DEBUG] subEventsMap.set (Regular/Demux)', pid, 'subCalls:', group.subCalls.length, 'subResults:', group.subResults.length);
+                        subEventsMap.set(pid, group);
+                      }
                     }
                   }
                 }
@@ -934,13 +949,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 if (metaIdx >= 0) {
                   const meta = { ...toolCalls[metaIdx] };
                   let specialistSlot = meta.subCalls?.[slotIdx];
+
+                  // Dynamically create slot if executor_start was missed (e.g. page refresh)
+                  if (!specialistSlot) {
+                    const autoSpecialist = String(d.specialist || 'Executor');
+                    const sName = SPECIALIST_TO_TOOL[autoSpecialist] || autoSpecialist;
+                    specialistSlot = {
+                      id: `${parentId}-slot-${slotIdx}`,
+                      name: sName,
+                      arguments: {},
+                      agentType: 'dispatch' as const,
+                      subCalls: [],
+                      subResults: [],
+                    };
+                  }
+
                   if (specialistSlot) {
                     specialistSlot = { ...specialistSlot };
                     specialistSlot.subCalls = [...(specialistSlot.subCalls || []), subTool];
-                    if (meta.subCalls) {
-                      meta.subCalls = [...meta.subCalls];
-                      meta.subCalls[slotIdx] = specialistSlot;
-                    }
+                    if (!meta.subCalls) meta.subCalls = [];
+                    meta.subCalls = [...meta.subCalls];
+                    meta.subCalls[slotIdx] = specialistSlot;
                     toolCalls[metaIdx] = meta;
                     const label = META_TOOL_LABELS[specialistSlot.name] || specialistSlot.name;
                     useWorkflowStore.getState().upsertCall({
@@ -1015,13 +1044,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 if (metaIdx >= 0) {
                   const meta = { ...toolCalls[metaIdx] };
                   let specialistSlot = meta.subCalls?.[slotIdxForResult];
+
+                  // Dynamically create slot if executor_start was missed (e.g. page refresh)
+                  if (!specialistSlot) {
+                    const autoSpecialist = String((d as any).specialist || 'Executor');
+                    const sName = SPECIALIST_TO_TOOL[autoSpecialist] || autoSpecialist;
+                    specialistSlot = {
+                      id: `${parentIdForResult}-slot-${slotIdxForResult}`,
+                      name: sName,
+                      arguments: {},
+                      agentType: 'dispatch' as const,
+                      subCalls: [],
+                      subResults: [],
+                    };
+                  }
+
                   if (specialistSlot) {
                     specialistSlot = { ...specialistSlot };
                     specialistSlot.subResults = [...(specialistSlot.subResults || []), subResult];
-                    if (meta.subCalls) {
-                      meta.subCalls = [...meta.subCalls];
-                      meta.subCalls[slotIdxForResult] = specialistSlot;
-                    }
+                    if (!meta.subCalls) meta.subCalls = [];
+                    meta.subCalls = [...meta.subCalls];
+                    meta.subCalls[slotIdxForResult] = specialistSlot;
                     toolCalls[metaIdx] = meta;
                     const label = META_TOOL_LABELS[specialistSlot.name] || specialistSlot.name;
                     useWorkflowStore.getState().upsertCall({
@@ -1163,7 +1206,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
               const metaIdx = toolCalls.findIndex(tc => tc.id === edParentId);
               if (metaIdx >= 0) {
                 const meta = toolCalls[metaIdx];
-                const specialistSlot = meta.subCalls?.[edSlotIdx];
+                let specialistSlot = meta.subCalls?.[edSlotIdx];
+
+                // Dynamically create slot if executor_start was missed
+                if (!specialistSlot) {
+                  const autoSpecialist = String(edd?.specialist || 'Executor');
+                  const sName = SPECIALIST_TO_TOOL[autoSpecialist] || autoSpecialist;
+                  specialistSlot = {
+                    id: `${edParentId}-slot-${edSlotIdx}`,
+                    name: sName,
+                    arguments: {},
+                    agentType: 'dispatch' as const,
+                    subCalls: [],
+                    subResults: [],
+                  };
+                  if (!meta.subCalls) meta.subCalls = [];
+                  meta.subCalls[edSlotIdx] = specialistSlot;
+                }
+
                 if (specialistSlot) {
                   if (!meta.subResults) meta.subResults = [];
                   meta.subResults.push({
@@ -1570,7 +1630,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 const metaIdx = toolCalls.findIndex(tc => tc.id === parentIdForResult);
                 if (metaIdx >= 0) {
                   const meta = toolCalls[metaIdx];
-                  const specialistSlot = meta.subCalls?.[slotIdxForResult];
+                  let specialistSlot = meta.subCalls?.[slotIdxForResult];
+
+                  if (!specialistSlot) {
+                    const autoSpecialist = String((d as any).specialist || 'Executor');
+                    const sName = SPECIALIST_TO_TOOL[autoSpecialist] || autoSpecialist;
+                    specialistSlot = {
+                      id: `${parentIdForResult}-slot-${slotIdxForResult}`,
+                      name: sName,
+                      arguments: {},
+                      agentType: 'dispatch' as const,
+                      subCalls: [],
+                      subResults: [],
+                    };
+                    if (!meta.subCalls) meta.subCalls = [];
+                    meta.subCalls[slotIdxForResult] = specialistSlot;
+                  }
+
                   if (specialistSlot) {
                     if (!specialistSlot.subResults) specialistSlot.subResults = [];
                     specialistSlot.subResults.push(subResult);
