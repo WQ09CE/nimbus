@@ -330,6 +330,17 @@ class CompactionEngine:
 
         # 分割消息
         split_index = len(messages) - keep_count
+
+        # SAFETY: Avoid cutting in the middle of a tool-use turn.
+        # If the retained window starts with a 'tool' message, its
+        # corresponding assistant tool_use was compacted away — advance
+        # the cut point to skip the orphan tool results.
+        while split_index < len(messages):
+            if messages[split_index].role == "tool":
+                split_index += 1
+            else:
+                break
+
         messages_to_compact = messages[:split_index]
         messages_to_keep = messages[split_index:]
 

@@ -584,14 +584,14 @@ class DirectAdapter:
                             if tid:
                                 tool_result_ids.add(tid)
 
-        orphan_ids = tool_use_ids - tool_result_ids
-        if orphan_ids:
+        # Rule 2a: Remove orphan tool_use (no matching tool_result)
+        orphan_use_ids = tool_use_ids - tool_result_ids
+        if orphan_use_ids:
             logger.warning(
-                "Context validation: Found %d orphan tool_use IDs, removing orphan blocks: %s",
-                len(orphan_ids),
-                orphan_ids,
+                "Context validation: Found %d orphan tool_use IDs, removing: %s",
+                len(orphan_use_ids),
+                orphan_use_ids,
             )
-            # Remove orphan tool_use blocks from assistant messages
             for msg in messages:
                 if msg.get("role") == "assistant":
                     content = msg.get("content", [])
@@ -602,10 +602,37 @@ class DirectAdapter:
                             if not (
                                 isinstance(block, dict)
                                 and block.get("type") == "tool_use"
-                                and block.get("id") in orphan_ids
+                                and block.get("id") in orphan_use_ids
                             )
                         ]
-                        # If no content blocks remain, mark for removal
+                        if not msg["content"]:
+                            msg["_remove"] = True
+
+            messages = [m for m in messages if not m.get("_remove")]
+
+        # Rule 2b: Remove orphan tool_result (no matching tool_use)
+        # This catches cases where error recovery or compaction left behind
+        # a tool_result whose corresponding assistant tool_use was removed.
+        orphan_result_ids = tool_result_ids - tool_use_ids
+        if orphan_result_ids:
+            logger.warning(
+                "Context validation: Found %d orphan tool_result IDs, removing: %s",
+                len(orphan_result_ids),
+                orphan_result_ids,
+            )
+            for msg in messages:
+                if msg.get("role") == "user":
+                    content = msg.get("content", [])
+                    if isinstance(content, list):
+                        msg["content"] = [
+                            block
+                            for block in content
+                            if not (
+                                isinstance(block, dict)
+                                and block.get("type") == "tool_result"
+                                and block.get("tool_use_id") in orphan_result_ids
+                            )
+                        ]
                         if not msg["content"]:
                             msg["_remove"] = True
 
