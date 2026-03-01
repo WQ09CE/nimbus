@@ -20,6 +20,7 @@ export default function Home() {
   const errorInfo = useChatStore(s => s.errorInfo);
   const isLoading = useChatStore(s => s.isLoading);
   const activeArtifact = useChatStore(s => s.activeArtifact);
+  const isReconnecting = useChatStore(s => s.isReconnecting);
 
   // Actions — stable references from Zustand
   const createNewSession = useChatStore(s => s.createNewSession);
@@ -121,6 +122,12 @@ export default function Home() {
               <h1 className="text-lg font-bold bg-gradient-to-r from-sky-100 to-sky-300 bg-clip-text text-transparent hidden md:inline font-display">Nimbus</h1>
               <div className="flex items-center gap-2">
                 <span className="text-[10px] uppercase tracking-wider text-nimbus-accent font-semibold px-1.5 py-0.5 rounded bg-nimbus-surface border border-nimbus-border hidden md:inline">Beta</span>
+                {isReconnecting && (
+                  <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-yellow-500 font-semibold px-1.5 py-0.5 rounded bg-yellow-500/10 border border-yellow-500/20">
+                    <span className="w-1.5 h-1.5 rounded-full bg-yellow-500 animate-pulse"></span>
+                    Reconnecting
+                  </span>
+                )}
                 {session && (
                   <button
                     data-testid="session-panel-trigger"
@@ -194,10 +201,10 @@ export default function Home() {
               <div
                 data-testid="error-banner"
                 className={`mb-4 p-3 rounded text-sm animate-in fade-in slide-in-from-top-2 border ${errorInfo?.code === "llm_rate_limit" || errorInfo?.code === "resource_timeout"
-                    ? "bg-amber-900/20 border-amber-700/50 text-amber-300"
-                    : errorInfo?.code === "auth_error"
-                      ? "bg-orange-900/20 border-orange-700/50 text-orange-300"
-                      : "bg-red-900/20 border-red-800/50 text-red-400"
+                  ? "bg-amber-900/20 border-amber-700/50 text-amber-300"
+                  : errorInfo?.code === "auth_error"
+                    ? "bg-orange-900/20 border-orange-700/50 text-orange-300"
+                    : "bg-red-900/20 border-red-800/50 text-red-400"
                   }`}
               >
                 <div className="flex items-start gap-2">

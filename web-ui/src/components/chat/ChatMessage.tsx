@@ -3,6 +3,7 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import type { Message } from "@/stores/chat-store";
 import type { ToolResult } from "@/lib/api";
+import { useTypewriter } from "@/hooks/useTypewriter";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import { ToolCard } from "./tools/ToolCard";
 import type { ToolCall } from "@/lib/api";
@@ -153,7 +154,7 @@ function flattenTools(
 
     // ── ParallelDispatch: unroll into virtual sub-agent cards ──────────────
     const parentKey = tool.id || `pd-${toolIdx}`;
-    const subCalls   = tool.subCalls  || [];
+    const subCalls = tool.subCalls || [];
     const subResults = tool.subResults || [];
 
     // Build result lookup by ID
@@ -170,14 +171,14 @@ function flattenTools(
           tool: {
             // Preserve the real call id for child components that need it, but
             // our React key comes from stableKey above, not from tool.id
-            id:         call.id || `${parentKey}-sub-${slotIdx}`,
-            name:       call.name,
-            args:       call.arguments,
-            result:     result?.result,
-            error:      result?.error,
-            status:     result ? (result.error ? "failed" : "completed") : "running",
-            duration:   result?.duration,
-            subCalls:   call.subCalls,
+            id: call.id || `${parentKey}-sub-${slotIdx}`,
+            name: call.name,
+            args: call.arguments,
+            result: result?.result,
+            error: result?.error,
+            status: result ? (result.error ? "failed" : "completed") : "running",
+            duration: result?.duration,
+            subCalls: call.subCalls,
             subResults: call.subResults,
           },
         });
@@ -198,10 +199,10 @@ function flattenTools(
         entries.push({
           stableKey: `${parentKey}-slot-${slotIdx}`,
           tool: {
-            id:     `${parentKey}-placeholder-${slotIdx}`,
-            name:   toolName,
+            id: `${parentKey}-placeholder-${slotIdx}`,
+            name: toolName,
             args: {
-              task:    task.task    || task.context || "",
+              task: task.task || task.context || "",
               context: task.context || "",
             },
             status: placeholderStatus,
@@ -315,7 +316,8 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
     );
   }
 
-  const cleanContent = message.content.trim();
+  const typewriterContent = useTypewriter(message.content || "", isStreaming === true);
+  const cleanContent = typewriterContent.trim();
   const hasContent = Boolean(cleanContent);
   const hasTools = tools.length > 0;
   const hasRunningTools = tools.some((t) => t.status === "running");
@@ -365,107 +367,107 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
             `}
           >
             {/* Copy button - appears on hover */}
-          {hasContent && (
-            <div className="absolute top-2 right-2 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity z-10">
-              <CopyButton text={message.content} />
-            </div>
-          )}
+            {hasContent && (
+              <div className="absolute top-2 right-2 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                <CopyButton text={message.content} />
+              </div>
+            )}
 
-          {isUser ? (
-            <div className="text-[15px] leading-relaxed whitespace-pre-wrap font-sans selection:bg-white/20">
-              {message.isInjection && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 mr-2 rounded-full text-[11px] font-medium bg-amber-500/20 text-amber-300 border border-amber-400/30">
-                  <span className="not-italic">&#9889;</span> 插入消息
-                </span>
-              )}
-              {message.content}
-              {/* Attachments */}
-              {message.attachments && message.attachments.length > 0 && (
-                <div className="flex flex-wrap gap-2 mt-2">
-                  {message.attachments.map(att => {
-                    // Build image src: prefer data URL from base64 content, fall back to preview blob URL
-                    const imageSrc = att.type === "image" && att.content
-                      ? `data:${att.mimeType || "image/png"};base64,${att.content}`
-                      : att.preview;
+            {isUser ? (
+              <div className="text-[15px] leading-relaxed whitespace-pre-wrap font-sans selection:bg-white/20">
+                {message.isInjection && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 mr-2 rounded-full text-[11px] font-medium bg-amber-500/20 text-amber-300 border border-amber-400/30">
+                    <span className="not-italic">&#9889;</span> 插入消息
+                  </span>
+                )}
+                {message.content}
+                {/* Attachments */}
+                {message.attachments && message.attachments.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {message.attachments.map(att => {
+                      // Build image src: prefer data URL from base64 content, fall back to preview blob URL
+                      const imageSrc = att.type === "image" && att.content
+                        ? `data:${att.mimeType || "image/png"};base64,${att.content}`
+                        : att.preview;
 
-                    return (
-                      <div key={att.id} className="rounded-lg overflow-hidden border border-white/20">
-                        {att.type === "image" && imageSrc ? (
-                          <img
-                            src={imageSrc}
-                            alt={att.name}
-                            className="max-w-[200px] max-h-[150px] object-cover cursor-pointer hover:opacity-80 transition-opacity"
-                            onClick={() => {
-                              // Open full image in new tab
-                              const w = window.open();
-                              if (w) {
-                                w.document.write(`<img src="${imageSrc}" style="max-width:100%;height:auto;" />`);
-                                w.document.title = att.name;
-                              }
-                            }}
-                          />
-                        ) : (
-                          <div className="flex items-center gap-2 px-3 py-2 bg-white/10">
-                            <span className="text-sm">{att.type === "pdf" ? "📄" : "📝"}</span>
-                            <span className="text-xs text-blue-100">{att.name}</span>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="text-[15px] leading-relaxed min-w-[200px]">
-              {hasContent && (
-                <div className="flex flex-col gap-1">
-                  {(() => {
-                    const lines = cleanContent.split("\n");
-                    const processed: React.ReactNode[] = [];
-                    let currentMarkdown: string[] = [];
+                      return (
+                        <div key={att.id} className="rounded-lg overflow-hidden border border-white/20">
+                          {att.type === "image" && imageSrc ? (
+                            <img
+                              src={imageSrc}
+                              alt={att.name}
+                              className="max-w-[200px] max-h-[150px] object-cover cursor-pointer hover:opacity-80 transition-opacity"
+                              onClick={() => {
+                                // Open full image in new tab
+                                const w = window.open();
+                                if (w) {
+                                  w.document.write(`<img src="${imageSrc}" style="max-width:100%;height:auto;" />`);
+                                  w.document.title = att.name;
+                                }
+                              }}
+                            />
+                          ) : (
+                            <div className="flex items-center gap-2 px-3 py-2 bg-white/10">
+                              <span className="text-sm">{att.type === "pdf" ? "📄" : "📝"}</span>
+                              <span className="text-xs text-blue-100">{att.name}</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="text-[15px] leading-relaxed min-w-[200px]">
+                {hasContent && (
+                  <div className="flex flex-col gap-1">
+                    {(() => {
+                      const lines = cleanContent.split("\n");
+                      const processed: React.ReactNode[] = [];
+                      let currentMarkdown: string[] = [];
 
-                    const flushMarkdown = () => {
-                      if (currentMarkdown.length > 0) {
-                        const content = currentMarkdown.join("\n");
-                        processed.push(
-                          <MarkdownRenderer
-                            key={`md-${processed.length}`}
-                            content={content}
-                            isStreaming={isStreaming && message.id === "streaming"}
-                            className="prose-invert prose-p:leading-relaxed prose-pre:bg-black/30 text-gray-100"
-                          />
-                        );
-                        currentMarkdown = [];
-                      }
-                    };
+                      const flushMarkdown = () => {
+                        if (currentMarkdown.length > 0) {
+                          const content = currentMarkdown.join("\n");
+                          processed.push(
+                            <MarkdownRenderer
+                              key={`md-${processed.length}`}
+                              content={content}
+                              isStreaming={isStreaming && message.id === "streaming"}
+                              className="prose-invert prose-p:leading-relaxed prose-pre:bg-black/30 text-gray-100"
+                            />
+                          );
+                          currentMarkdown = [];
+                        }
+                      };
 
-                    lines.forEach((line, i) => {
-                      // Check if line starts with thought: or `thought:` (case insensitive)
-                      const isThought = /^`?thought:`?/i.test(line.trim());
-                      if (isThought) {
-                        flushMarkdown();
-                        processed.push(<ThoughtBlock key={`thought-${i}`} content={line.trim()} />);
-                      } else {
-                        currentMarkdown.push(line);
-                      }
-                    });
-                    flushMarkdown();
-                    return processed;
-                  })()}
-                </div>
-              )}
-              
-              {!hasContent && isStreaming && (
-                <>
-                  {!hasTools && <span className="animate-pulse text-gray-500">Thinking...</span>}
-                  {hasTools && !hasRunningTools && (
-                    <span className="text-xs text-gray-500">Generating response...</span>
-                  )}
-                </>
-              )}
-            </div>
-          )}
+                      lines.forEach((line, i) => {
+                        // Check if line starts with thought: or `thought:` (case insensitive)
+                        const isThought = /^`?thought:`?/i.test(line.trim());
+                        if (isThought) {
+                          flushMarkdown();
+                          processed.push(<ThoughtBlock key={`thought-${i}`} content={line.trim()} />);
+                        } else {
+                          currentMarkdown.push(line);
+                        }
+                      });
+                      flushMarkdown();
+                      return processed;
+                    })()}
+                  </div>
+                )}
+
+                {!hasContent && isStreaming && (
+                  <>
+                    {!hasTools && <span className="animate-pulse text-gray-500">Thinking...</span>}
+                    {hasTools && !hasRunningTools && (
+                      <span className="text-xs text-gray-500">Generating response...</span>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
           </div>
         )}
 

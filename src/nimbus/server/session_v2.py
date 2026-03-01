@@ -380,6 +380,12 @@ class SessionManagerV2:
                     title = title[:50]
                 await self._storage.update_session(session_id, name=title)
                 logger.info(f"Auto-titled session {session_id}: {title}")
+                
+                # Notify frontend about title change via SSE
+                await self._sse_hub.publish(
+                    session_id,
+                    {"event": "session_updated", "data": {"session_id": session_id, "name": title}},
+                )
         except Exception as e:
             logger.warning(f"Auto-title failed for {session_id}: {e}")
 

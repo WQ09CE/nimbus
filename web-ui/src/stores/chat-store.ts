@@ -18,6 +18,8 @@ import {
   subscribeToEvents,
 } from "@/lib/api";
 import { useWorkflowStore } from "./workflow-store";
+import { demuxSubToolEvents, routeSubToolCall, routeSubToolResult, routeExecutorStart, routeExecutorDone } from "./MessageDemuxer";
+import { reconnectToSession } from "../hooks/useSSEListener";
 
 // Use BroadcastChannel for multi-tab event distribution
 const BC_NAME = "nimbus_chat_events";
@@ -107,6 +109,7 @@ interface ChatState {
   error: string | null;
   errorInfo: { code: string; message: string; retryable: boolean; errorId?: string } | null;
   isCreatingSession: boolean;  // Prevent concurrent session creation
+  isReconnecting: boolean;     // Show reconnect indicator
 
   // Internal
   isLeader: boolean;
@@ -124,7 +127,6 @@ interface ChatState {
   switchSession: (session: Session | null) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   sendMessage: (content: string, attachments?: ChatAttachment[]) => Promise<void>;
-  reconnectToSession: (sessionId: string) => Promise<void>;
   handleServerEvent: (event: ChatEvent, isForwarded?: boolean) => void;
   retryLastMessage: () => void;
   interruptMessage: () => void;
@@ -137,6 +139,7 @@ const initialState = {
   session: null,
   messages: [],
   isStreaming: false,
+  isReconnecting: false,
   streamingContent: "",
   streamingToolCalls: [],
   streamingToolResults: [],
@@ -389,119 +392,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 if (art.type === 'sub_tool_events' && Array.isArray(art.events)) {
                   const evts = art.events as Array<{ type: string; data: Record<string, unknown> }>;
 
-                  if (toolName === 'ParallelDispatch') {
-                    // ── ParallelDispatch: group sub-events by batch_slot_index to reconstruct specialist slots
-                    const SPEC_TO_TOOL: Record<string, string> = {
-                      Explorer: 'Explore', Implementer: 'Implement', Architect: 'Design', Tester: 'Test',
-                    };
-                    const slotMap = new Map<number, { specialist: string; subCalls: ToolCall[]; subResults: ToolResult[] }>();
-                    const actionIdToSlot = new Map<string, number>();
-                    let autoSlot = 0;
-
-                    for (const evt of evts) {
-                      if (evt.type === 'sub_tool_call' && evt.data) {
-                        const slotIdx = typeof evt.data.batch_slot_index === 'number'
-                          ? evt.data.batch_slot_index
-                          : autoSlot++;
-                        const specialist = String(evt.data.specialist || '');
-                        const actionId = String(evt.data.action_id || evt.data.id || '');
-
-                        if (!slotMap.has(slotIdx)) {
-                          slotMap.set(slotIdx, { specialist, subCalls: [], subResults: [] });
-                        }
-                        const slot = slotMap.get(slotIdx)!;
-                        slot.subCalls.push({
-                          id: actionId,
-                          name: String(evt.data.tool || evt.data.name || 'unknown'),
-                          arguments: (evt.data.args || evt.data.arguments || {}) as Record<string, unknown>,
-                          agentType: 'dispatch',
-                        });
-                        if (actionId) actionIdToSlot.set(actionId, slotIdx);
-
-                      } else if (evt.type === 'sub_tool_result' && evt.data) {
-                        const actionId = String(evt.data.action_id || evt.data.id || '');
-                        const fault = evt.data.fault as { message: string } | undefined;
-                        const subRes: ToolResult = {
-                          id: actionId,
-                          name: String(evt.data.tool || evt.data.name || 'unknown'),
-                          result: evt.data.output !== undefined ? evt.data.output : evt.data.result,
-                          error: evt.data.status === 'ERROR' ? (fault ? fault.message : 'Error') : undefined,
-                          duration: evt.data.duration_ms as number | undefined,
-                        };
-
-                        // 1. Add to the slot for rendering hierarchy
-                        const slotIdx = actionIdToSlot.get(actionId);
-                        if (slotIdx !== undefined && slotMap.has(slotIdx)) {
-                          slotMap.get(slotIdx)!.subResults.push(subRes);
-                        }
-
-                        // 2. IMPORTANT: Also flatten to toolResultsMap so the second pass can find it by action_id
-                        if (actionId) {
-                          toolResultsMap.set(actionId, subRes);
-                        }
-                      }
-                    }
-
-                    if (slotMap.size > 0) {
-                      const sortedSlots = Array.from(slotMap.entries()).sort((a, b) => a[0] - b[0]);
-                      const maxSlotIdx = sortedSlots.length > 0 ? sortedSlots[sortedSlots.length - 1][0] : -1;
-
-                      // Fix: Preserve the batch_slot_index as the array index even if there are sparse holes
-                      const specialistCalls: ToolCall[] = new Array(maxSlotIdx + 1);
-                      console.log('[DEBUG] ParallelDispatch rebuilding from slotMap:', Array.from(slotMap.entries()), 'maxSlot:', maxSlotIdx);
-                      for (const [slotIdx, slot] of Array.from(slotMap.entries())) {
-                        const sName = SPEC_TO_TOOL[slot.specialist] || slot.specialist || 'Dispatch';
-                        specialistCalls[slotIdx] = {
-                          id: `${toolCallId}-slot-${slotIdx}`,
-                          name: sName,
-                          arguments: {},
-                          agentType: 'dispatch' as const,
-                          subCalls: slot.subCalls,
-                          subResults: slot.subResults,
-                        };
-                      }
-                      console.log('[DEBUG] specialistCalls built:', specialistCalls);
-                      subEventsMap.set(toolCallId, { subCalls: specialistCalls, subResults: [] });
-                    }
-
-                  } else {
-                    // ── Regular specialist tool (Explore/Implement/etc.): flat list of sub-tool-calls
-                    // The backend frequently merges sub_tool_events from ALL concurrent native tools into the first tool's artifact list.
-                    // We MUST demultiplex them here by `parent_action_id` so that each native tool card gets its own history!
-                    const eventsByParent = new Map<string, { subCalls: ToolCall[], subResults: ToolResult[] }>();
-
-                    for (const evt of evts) {
-                      const pid = String(evt.data?.parent_action_id || toolCallId || '');
-                      if (!eventsByParent.has(pid)) {
-                        eventsByParent.set(pid, { subCalls: [], subResults: [] });
-                      }
-                      const group = eventsByParent.get(pid)!;
-
-                      if (evt.type === 'sub_tool_call' && evt.data) {
-                        group.subCalls.push({
-                          id: String(evt.data.action_id || evt.data.id || ''),
-                          name: String(evt.data.tool || evt.data.name || 'unknown'),
-                          arguments: (evt.data.args || evt.data.arguments || {}) as Record<string, unknown>,
-                          agentType: 'dispatch',
-                        });
-                      } else if (evt.type === 'sub_tool_result' && evt.data) {
-                        const fault = evt.data.fault as { message: string } | undefined;
-                        group.subResults.push({
-                          id: String(evt.data.action_id || evt.data.id || ''),
-                          name: String(evt.data.tool || evt.data.name || 'unknown'),
-                          result: evt.data.output !== undefined ? evt.data.output : evt.data.result,
-                          error: evt.data.status === 'ERROR' ? (fault ? fault.message : 'Error') : undefined,
-                          duration: evt.data.duration_ms as number | undefined,
-                        });
-                      }
-                    }
-
-                    for (const [pid, group] of Array.from(eventsByParent.entries())) {
-                      if (group.subCalls.length > 0 || group.subResults.length > 0) {
-                        console.log('[DEBUG] subEventsMap.set (Regular/Demux)', pid, 'subCalls:', group.subCalls.length, 'subResults:', group.subResults.length);
-                        subEventsMap.set(pid, group);
-                      }
-                    }
+                  if (toolName && evts) {
+                    demuxSubToolEvents(toolCallId, toolName, evts, subEventsMap, toolResultsMap);
                   }
                 }
               }
@@ -659,7 +551,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             const currentState = get();
             // Double-check: avoid reconnect if sendMessage already started streaming
             if (!currentState.isStreaming) {
-              get().reconnectToSession(session.id);
+              reconnectToSession(session.id);
             } else {
               console.log("[Store] Already streaming, skip reconnect");
             }
@@ -770,6 +662,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       lastHeartbeat: Date.now(),
       streamAbortController: abortController,
       error: null,
+      fsmState: "THINKING",
     });
 
     try {
@@ -941,82 +834,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 agentType: "dispatch",
               };
 
-              // Batch routing: parent_action_id + batch_slot_index -> specialist's subCalls
-              const parentId = d.parent_action_id;
-              const slotIdx = (d as any).batch_slot_index;
-              if (parentId && slotIdx !== undefined) {
-                const metaIdx = toolCalls.findIndex(tc => tc.id === parentId);
-                if (metaIdx >= 0) {
-                  const meta = { ...toolCalls[metaIdx] };
-                  let specialistSlot = meta.subCalls?.[slotIdx];
+              routeSubToolCall(subTool, d, toolCalls, (args) => useWorkflowStore.getState().upsertCall(args));
 
-                  // Dynamically create slot if executor_start was missed (e.g. page refresh)
-                  if (!specialistSlot) {
-                    const autoSpecialist = String(d.specialist || 'Executor');
-                    const sName = SPECIALIST_TO_TOOL[autoSpecialist] || autoSpecialist;
-                    specialistSlot = {
-                      id: `${parentId}-slot-${slotIdx}`,
-                      name: sName,
-                      arguments: {},
-                      agentType: 'dispatch' as const,
-                      subCalls: [],
-                      subResults: [],
-                    };
-                  }
-
-                  if (specialistSlot) {
-                    specialistSlot = { ...specialistSlot };
-                    specialistSlot.subCalls = [...(specialistSlot.subCalls || []), subTool];
-                    if (!meta.subCalls) meta.subCalls = [];
-                    meta.subCalls = [...meta.subCalls];
-                    meta.subCalls[slotIdx] = specialistSlot;
-                    toolCalls[metaIdx] = meta;
-                    const label = META_TOOL_LABELS[specialistSlot.name] || specialistSlot.name;
-                    useWorkflowStore.getState().upsertCall({
-                      callId: subTool.id || "",
-                      name: subTool.name,
-                      parentId: specialistSlot.id,
-                      status: "running",
-                      args: subTool.arguments as Record<string, unknown>,
-                    });
-                    set({
-                      streamingToolCalls: [...toolCalls],
-                      fsmState: d.fsm_state || "ACTING",
-                      lastHeartbeat: Date.now()
-                    });
-                    break;
-                  }
-                }
-              }
-
-              // Legacy routing (no batch metadata): use parent_action_id or last meta-tool
-              let targetMetaIdx = -1;
-              if (parentId) {
-                targetMetaIdx = toolCalls.findIndex(tc => tc.id === parentId);
-              }
-              // Fallback: last meta-tool
-              if (targetMetaIdx < 0) {
-                targetMetaIdx = toolCalls.reduce(
-                  (last, tc, i) => META_TOOLS.has(tc.name) ? i : last, -1
-                );
-              }
-              if (targetMetaIdx >= 0) {
-                const metaTool = { ...toolCalls[targetMetaIdx] };
-                metaTool.subCalls = [...(metaTool.subCalls || []), subTool];
-                toolCalls[targetMetaIdx] = metaTool;
-              }
-              const metaLabel = targetMetaIdx >= 0
-                ? META_TOOL_LABELS[toolCalls[targetMetaIdx].name] || toolCalls[targetMetaIdx].name
-                : "Executor";
-              if (targetMetaIdx >= 0) {
-                useWorkflowStore.getState().upsertCall({
-                  callId: subTool.id || "",
-                  name: subTool.name,
-                  parentId: toolCalls[targetMetaIdx].id,
-                  status: "running",
-                  args: subTool.arguments as Record<string, unknown>,
-                });
-              }
               set({
                 streamingToolCalls: [...toolCalls],
                 fsmState: d.fsm_state || "ACTING",
@@ -1036,88 +855,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 duration: d.duration_ms,
               };
 
-              // Batch routing: parent_action_id + batch_slot_index -> specialist's subResults
-              const parentIdForResult = d.parent_action_id;
-              const slotIdxForResult = (d as any).batch_slot_index;
-              if (parentIdForResult && slotIdxForResult !== undefined) {
-                const metaIdx = toolCalls.findIndex(tc => tc.id === parentIdForResult);
-                if (metaIdx >= 0) {
-                  const meta = { ...toolCalls[metaIdx] };
-                  let specialistSlot = meta.subCalls?.[slotIdxForResult];
+              routeSubToolResult(subResult, d, toolCalls, (args) => useWorkflowStore.getState().upsertCall(args));
 
-                  // Dynamically create slot if executor_start was missed (e.g. page refresh)
-                  if (!specialistSlot) {
-                    const autoSpecialist = String((d as any).specialist || 'Executor');
-                    const sName = SPECIALIST_TO_TOOL[autoSpecialist] || autoSpecialist;
-                    specialistSlot = {
-                      id: `${parentIdForResult}-slot-${slotIdxForResult}`,
-                      name: sName,
-                      arguments: {},
-                      agentType: 'dispatch' as const,
-                      subCalls: [],
-                      subResults: [],
-                    };
-                  }
-
-                  if (specialistSlot) {
-                    specialistSlot = { ...specialistSlot };
-                    specialistSlot.subResults = [...(specialistSlot.subResults || []), subResult];
-                    if (!meta.subCalls) meta.subCalls = [];
-                    meta.subCalls = [...meta.subCalls];
-                    meta.subCalls[slotIdxForResult] = specialistSlot;
-                    toolCalls[metaIdx] = meta;
-                    const label = META_TOOL_LABELS[specialistSlot.name] || specialistSlot.name;
-                    useWorkflowStore.getState().upsertCall({
-                      callId: subResult.id || "",
-                      name: subResult.name,
-                      parentId: specialistSlot.id,
-                      status: subResult.error ? "failed" : "completed",
-                      result: subResult.result,
-                    });
-                    set({
-                      streamingToolCalls: [...toolCalls],
-                      fsmState: d.fsm_state || "ACTING",
-                      lastHeartbeat: Date.now()
-                    });
-                    break;
-                  }
-                }
-              }
-
-              // Legacy routing
-              let targetMetaIdxForResult = -1;
-              if (parentIdForResult) {
-                targetMetaIdxForResult = toolCalls.findIndex(tc => tc.id === parentIdForResult);
-              }
-              // Fallback: find meta-tool that owns the sub-call with matching id
-              if (targetMetaIdxForResult < 0 && subResult.id) {
-                targetMetaIdxForResult = toolCalls.findIndex(
-                  tc => META_TOOLS.has(tc.name) && tc.subCalls?.some(sc => sc.id === subResult.id)
-                );
-              }
-              // Last resort: last meta-tool
-              if (targetMetaIdxForResult < 0) {
-                targetMetaIdxForResult = toolCalls.reduce(
-                  (last, tc, i) => META_TOOLS.has(tc.name) ? i : last, -1
-                );
-              }
-              if (targetMetaIdxForResult >= 0) {
-                const metaTool = { ...toolCalls[targetMetaIdxForResult] };
-                metaTool.subResults = [...(metaTool.subResults || []), subResult];
-                toolCalls[targetMetaIdxForResult] = metaTool;
-              }
-              const metaResultLabel = targetMetaIdxForResult >= 0
-                ? META_TOOL_LABELS[toolCalls[targetMetaIdxForResult].name] || toolCalls[targetMetaIdxForResult].name
-                : "Executor";
-              if (targetMetaIdxForResult >= 0) {
-                useWorkflowStore.getState().upsertCall({
-                  callId: subResult.id || "",
-                  name: subResult.name,
-                  parentId: toolCalls[targetMetaIdxForResult].id,
-                  status: subResult.error ? "failed" : "completed",
-                  result: subResult.result,
-                });
-              }
               set({
                 streamingToolCalls: [...toolCalls],
                 fsmState: d.fsm_state || "ACTING",
@@ -1129,64 +868,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           case "executor_start": {
             const esd = data as Record<string, any>;
-            const esParentId = esd?.parent_action_id;
-            const esSlotIdx = esd?.batch_slot_index;
-            const esSpecialist = esd?.specialist;
-            const esPid = esd?._executor_pid;
-
-            if (esParentId && esSlotIdx !== undefined && esSpecialist) {
-              // ParallelDispatch batch: create virtual specialist entry in subCalls
-              const metaIdx = toolCalls.findIndex(tc => tc.id === esParentId);
-              if (metaIdx >= 0) {
-                const meta = toolCalls[metaIdx];
-                if (!meta.subCalls) meta.subCalls = [];
-                const toolName = SPECIALIST_TO_TOOL[esSpecialist] || esSpecialist;
-                // Pull task description from ParallelDispatch args
-                const pdTasks = meta.arguments?.tasks;
-                const taskDesc = Array.isArray(pdTasks) && esSlotIdx < pdTasks.length
-                  ? ((pdTasks[esSlotIdx] as any)?.task || (pdTasks[esSlotIdx] as any)?.context || "")
-                  : "";
-                const contextDesc = Array.isArray(pdTasks) && esSlotIdx < pdTasks.length
-                  ? ((pdTasks[esSlotIdx] as any)?.context || "")
-                  : "";
-                const esGoal = esd?.goal || "";
-                meta.subCalls[esSlotIdx] = {
-                  id: esPid || `slot-${esSlotIdx}`,
-                  name: toolName,
-                  arguments: { task: taskDesc, context: contextDesc, goal: esGoal, model: esd?.resolved_model || esd?.model || "" },
-                  agentType: "dispatch" as const,
-                  subCalls: [],
-                  subResults: [],
-                };
-                useWorkflowStore.getState().upsertCall({
-                  callId: esPid || `slot-${esSlotIdx}`,
-                  name: toolName,
-                  parentId: esParentId,
-                  specialist: esSpecialist,
-                  batchSlotIndex: esSlotIdx,
-                  status: "running",
-                  args: { task: taskDesc, context: contextDesc, goal: esGoal, model: esd?.resolved_model || esd?.model || "" },
-                });
-                set({
-                  streamingToolCalls: [...toolCalls],
-                  fsmState: esd?.fsm_state || "ACTING",
-                  lastEventId: esd?.event_id || null,
-                  lastHeartbeat: Date.now()
-                });
-                break;
-              }
-            }
-            // Fallback: non-batch executor — propagate resolved model to parent tool
-            if (esd?.resolved_model || esd?.model_full || esd?.model) {
-              const resolvedModel = esd.resolved_model || esd.model_full || esd.model || "";
-              // Find the running specialist tool call and inject model into its args
-              const runningSpecialist = [...toolCalls].reverse().find(
-                tc => META_TOOLS.has(tc.name)
-              );
-              if (runningSpecialist && runningSpecialist.arguments) {
-                (runningSpecialist.arguments as Record<string, unknown>).model = resolvedModel;
-              }
-            }
+            routeExecutorStart(esd, toolCalls, (args) => useWorkflowStore.getState().upsertCall(args));
             set({
               streamingToolCalls: [...toolCalls],
               fsmState: esd?.fsm_state || "ACTING",
@@ -1198,57 +880,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
           case "executor_done": {
             const edd = data as Record<string, any>;
-            const edParentId = edd?.parent_action_id;
-            const edSlotIdx = edd?.batch_slot_index;
-
-            if (edParentId && edSlotIdx !== undefined) {
-              // Mark specialist slot as completed by adding a synthetic result
-              const metaIdx = toolCalls.findIndex(tc => tc.id === edParentId);
-              if (metaIdx >= 0) {
-                const meta = toolCalls[metaIdx];
-                let specialistSlot = meta.subCalls?.[edSlotIdx];
-
-                // Dynamically create slot if executor_start was missed
-                if (!specialistSlot) {
-                  const autoSpecialist = String(edd?.specialist || 'Executor');
-                  const sName = SPECIALIST_TO_TOOL[autoSpecialist] || autoSpecialist;
-                  specialistSlot = {
-                    id: `${edParentId}-slot-${edSlotIdx}`,
-                    name: sName,
-                    arguments: {},
-                    agentType: 'dispatch' as const,
-                    subCalls: [],
-                    subResults: [],
-                  };
-                  if (!meta.subCalls) meta.subCalls = [];
-                  meta.subCalls[edSlotIdx] = specialistSlot;
-                }
-
-                if (specialistSlot) {
-                  if (!meta.subResults) meta.subResults = [];
-                  meta.subResults.push({
-                    id: specialistSlot.id || `slot-${edSlotIdx}`,
-                    name: specialistSlot.name,
-                    result: edd?.result || "Completed",
-                  });
-                  useWorkflowStore.getState().upsertCall({
-                    callId: specialistSlot.id || `slot-${edSlotIdx}`,
-                    name: specialistSlot.name,
-                    parentId: edParentId,
-                    status: "completed",
-                    result: edd?.result,
-                  });
-                  set({
-                    streamingToolCalls: [...toolCalls],
-                    fsmState: edd?.fsm_state || "ACTING",
-                    lastEventId: edd?.event_id || null,
-                    lastHeartbeat: Date.now()
-                  });
-                  break;
-                }
-              }
-            }
+            routeExecutorDone(edd, toolCalls, (args) => useWorkflowStore.getState().upsertCall(args));
             set({
+              streamingToolCalls: [...toolCalls],
               fsmState: edd?.fsm_state || "ACTING",
               lastEventId: edd?.event_id || null,
               lastHeartbeat: Date.now()
@@ -1348,7 +982,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const sessionAfterDag = get().session;
       if (sessionAfterDag) {
         try {
-          await get().switchSession(sessionAfterDag);
+          const { getSessionMessages } = await import("@/lib/api/sessions");
+          const serverMsgs = await getSessionMessages(sessionAfterDag.id);
+          if (serverMsgs.length > 0) {
+            await get().switchSession(sessionAfterDag);
+          }
         } catch {
           // Non-critical: local state is still usable
         }
@@ -1442,461 +1080,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           lastHeartbeat: null,
           streamAbortController: null,
           isInterrupting: false,
-        });
-      }
-    }
-  },
-
-  reconnectToSession: async (sessionId: string) => {
-    const { session, isStreaming, streamAbortController } = get();
-    if (!session || session.id !== sessionId) return;
-
-    // 防重入：如果已有 stream 在跑，先 abort 旧的
-    if (isStreaming && streamAbortController) {
-      console.log("[Store] Aborting existing stream before reconnect");
-      streamAbortController.abort();
-    }
-
-    const abortController = new AbortController();
-
-    set({
-      isStreaming: true,
-      streamingContent: "",
-      streamingToolCalls: [],
-      streamingToolResults: [],
-      lastHeartbeat: Date.now(),
-      streamAbortController: abortController,
-    });
-
-    try {
-      const { subscribeToEvents } = await import("@/lib/api/chat");
-      let assistantContent = "";
-      const toolCalls: ToolCall[] = [];
-      const toolResults: ToolResult[] = [];
-
-      for await (const event of subscribeToEvents(sessionId, abortController.signal)) {
-        const { type, data } = event;
-
-        switch (type) {
-          case "connected":
-            break;
-
-          case "thinking":
-          case "message": {
-            let newContent = "";
-            if (typeof data === "string") {
-              newContent = data;
-            } else if (typeof data === "object" && data) {
-              const d = data as { content?: unknown; chunk?: unknown };
-              if ("content" in d && typeof d.content === "string") {
-                newContent = d.content;
-              } else if ("chunk" in d && typeof d.chunk === "string") {
-                newContent = d.chunk;
-              }
-            }
-            if (newContent) {
-              assistantContent += newContent;
-              set({
-                streamingContent: assistantContent,
-                lastHeartbeat: Date.now(),
-              });
-            }
-            break;
-          }
-
-          case "tool_call":
-            if (data && typeof data === "object") {
-              const d = data as Record<string, unknown>;
-              toolCalls.push({
-                id: (d.action_id || d.id || "") as string,
-                name: (d.tool || d.name || "unknown") as string,
-                arguments: (d.args || d.arguments || {}) as Record<string, unknown>,
-                agentType: "core",
-              });
-              set({
-                streamingContent: assistantContent,
-                streamingToolCalls: [...toolCalls],
-                lastHeartbeat: Date.now(),
-              });
-            }
-            break;
-
-          case "tool_result":
-            if (data && typeof data === "object") {
-              const d = data as Record<string, unknown>;
-              const fault = d.fault as { message: string } | undefined;
-              toolResults.push({
-                id: (d.action_id || d.id || "") as string,
-                name: (d.tool || d.name || "unknown") as string,
-                result: d.output !== undefined ? d.output : d.result,
-                error: d.status === "ERROR" ? (fault ? fault.message : "Error") : undefined,
-                duration: d.duration_ms as number | undefined,
-              });
-              set({
-                streamingToolResults: [...toolResults],
-                lastHeartbeat: Date.now(),
-              });
-            }
-            break;
-
-          case "sub_tool_call":
-            if (data && typeof data === "object") {
-              const d = data as Record<string, unknown>;
-              const subTool: ToolCall = {
-                id: (d.action_id || d.id || "") as string,
-                name: (d.tool || d.name || "unknown") as string,
-                arguments: (d.args || d.arguments || {}) as Record<string, unknown>,
-                agentType: "dispatch",
-              };
-
-              // Batch routing: parent_action_id + batch_slot_index -> specialist's subCalls
-              const parentId = d.parent_action_id as string | undefined;
-              const slotIdx = (d as any).batch_slot_index;
-              if (parentId && slotIdx !== undefined) {
-                const metaIdx = toolCalls.findIndex(tc => tc.id === parentId);
-                if (metaIdx >= 0) {
-                  const meta = toolCalls[metaIdx];
-                  const specialistSlot = meta.subCalls?.[slotIdx];
-                  if (specialistSlot) {
-                    if (!specialistSlot.subCalls) specialistSlot.subCalls = [];
-                    specialistSlot.subCalls.push(subTool);
-                    const label = META_TOOL_LABELS[specialistSlot.name] || specialistSlot.name;
-                    useWorkflowStore.getState().upsertCall({
-                      callId: subTool.id || "",
-                      name: subTool.name,
-                      parentId: specialistSlot.id,
-                      status: "running",
-                      args: subTool.arguments as Record<string, unknown>,
-                    });
-                    set({
-                      streamingToolCalls: [...toolCalls],
-                      lastHeartbeat: Date.now(),
-                    });
-                    break;
-                  }
-                }
-              }
-
-              // Legacy routing: parent_action_id or last meta-tool
-              let targetMetaIdx = -1;
-              if (parentId) {
-                targetMetaIdx = toolCalls.findIndex(tc => tc.id === parentId);
-              }
-              if (targetMetaIdx < 0) {
-                targetMetaIdx = toolCalls.reduce(
-                  (last, tc, i) => META_TOOLS.has(tc.name) ? i : last, -1
-                );
-              }
-              if (targetMetaIdx >= 0) {
-                const metaTool = toolCalls[targetMetaIdx];
-                if (!metaTool.subCalls) metaTool.subCalls = [];
-                metaTool.subCalls.push(subTool);
-              }
-              const metaLabel = targetMetaIdx >= 0
-                ? META_TOOL_LABELS[toolCalls[targetMetaIdx].name] || toolCalls[targetMetaIdx].name
-                : "Executor";
-              if (targetMetaIdx >= 0) {
-                useWorkflowStore.getState().upsertCall({
-                  callId: subTool.id || "",
-                  name: subTool.name,
-                  parentId: toolCalls[targetMetaIdx].id,
-                  status: "running",
-                  args: subTool.arguments as Record<string, unknown>,
-                });
-              }
-              set({
-                streamingToolCalls: [...toolCalls],
-                lastHeartbeat: Date.now(),
-              });
-            }
-            break;
-
-          case "sub_tool_result":
-            if (data && typeof data === "object") {
-              const d = data as Record<string, unknown>;
-              const fault = d.fault as { message: string } | undefined;
-              const subResult: ToolResult = {
-                id: (d.action_id || d.id || "") as string,
-                name: (d.tool || d.name || "unknown") as string,
-                result: d.output !== undefined ? d.output : d.result,
-                error: d.status === "ERROR" ? (fault ? fault.message : "Error") : undefined,
-                duration: d.duration_ms as number | undefined,
-              };
-
-              // Batch routing
-              const parentIdForResult = d.parent_action_id as string | undefined;
-              const slotIdxForResult = (d as any).batch_slot_index;
-              if (parentIdForResult && slotIdxForResult !== undefined) {
-                const metaIdx = toolCalls.findIndex(tc => tc.id === parentIdForResult);
-                if (metaIdx >= 0) {
-                  const meta = toolCalls[metaIdx];
-                  let specialistSlot = meta.subCalls?.[slotIdxForResult];
-
-                  if (!specialistSlot) {
-                    const autoSpecialist = String((d as any).specialist || 'Executor');
-                    const sName = SPECIALIST_TO_TOOL[autoSpecialist] || autoSpecialist;
-                    specialistSlot = {
-                      id: `${parentIdForResult}-slot-${slotIdxForResult}`,
-                      name: sName,
-                      arguments: {},
-                      agentType: 'dispatch' as const,
-                      subCalls: [],
-                      subResults: [],
-                    };
-                    if (!meta.subCalls) meta.subCalls = [];
-                    meta.subCalls[slotIdxForResult] = specialistSlot;
-                  }
-
-                  if (specialistSlot) {
-                    if (!specialistSlot.subResults) specialistSlot.subResults = [];
-                    specialistSlot.subResults.push(subResult);
-                    const label = META_TOOL_LABELS[specialistSlot.name] || specialistSlot.name;
-                    useWorkflowStore.getState().upsertCall({
-                      callId: subResult.id || "",
-                      name: subResult.name,
-                      parentId: specialistSlot.id,
-                      status: subResult.error ? "failed" : "completed",
-                      result: subResult.result,
-                    });
-                    set({
-                      streamingToolCalls: [...toolCalls],
-                      lastHeartbeat: Date.now(),
-                    });
-                    break;
-                  }
-                }
-              }
-
-              // Legacy routing
-              let targetMetaIdxForResult = -1;
-              if (parentIdForResult) {
-                targetMetaIdxForResult = toolCalls.findIndex(tc => tc.id === parentIdForResult);
-              }
-              if (targetMetaIdxForResult < 0 && subResult.id) {
-                targetMetaIdxForResult = toolCalls.findIndex(
-                  tc => META_TOOLS.has(tc.name) && tc.subCalls?.some(sc => sc.id === subResult.id)
-                );
-              }
-              if (targetMetaIdxForResult < 0) {
-                targetMetaIdxForResult = toolCalls.reduce(
-                  (last, tc, i) => META_TOOLS.has(tc.name) ? i : last, -1
-                );
-              }
-              if (targetMetaIdxForResult >= 0) {
-                const metaTool = toolCalls[targetMetaIdxForResult];
-                if (!metaTool.subResults) metaTool.subResults = [];
-                metaTool.subResults.push(subResult);
-              }
-              const metaResultLabel = targetMetaIdxForResult >= 0
-                ? META_TOOL_LABELS[toolCalls[targetMetaIdxForResult].name] || toolCalls[targetMetaIdxForResult].name
-                : "Executor";
-              if (targetMetaIdxForResult >= 0) {
-                useWorkflowStore.getState().upsertCall({
-                  callId: subResult.id || "",
-                  name: subResult.name,
-                  parentId: toolCalls[targetMetaIdxForResult].id,
-                  status: subResult.error ? "failed" : "completed",
-                  result: subResult.result,
-                });
-              }
-              set({
-                streamingToolCalls: [...toolCalls],
-                lastHeartbeat: Date.now(),
-              });
-            }
-            break;
-
-          case "executor_start": {
-            const esd = data as Record<string, any>;
-            const esParentId = esd?.parent_action_id;
-            const esSlotIdx = esd?.batch_slot_index;
-            const esSpecialist = esd?.specialist;
-            const esPid = esd?._executor_pid;
-
-            if (esParentId && esSlotIdx !== undefined && esSpecialist) {
-              // ParallelDispatch batch: create virtual specialist entry in subCalls
-              const metaIdx = toolCalls.findIndex(tc => tc.id === esParentId);
-              if (metaIdx >= 0) {
-                const meta = toolCalls[metaIdx];
-                if (!meta.subCalls) meta.subCalls = [];
-                const toolName = SPECIALIST_TO_TOOL[esSpecialist] || esSpecialist;
-                // Pull task description from ParallelDispatch args
-                const pdTasks = meta.arguments?.tasks;
-                const taskDesc = Array.isArray(pdTasks) && esSlotIdx < pdTasks.length
-                  ? ((pdTasks[esSlotIdx] as any)?.task || (pdTasks[esSlotIdx] as any)?.context || "")
-                  : "";
-                const contextDesc = Array.isArray(pdTasks) && esSlotIdx < pdTasks.length
-                  ? ((pdTasks[esSlotIdx] as any)?.context || "")
-                  : "";
-                const esGoal = esd?.goal || "";
-                meta.subCalls[esSlotIdx] = {
-                  id: esPid || `slot-${esSlotIdx}`,
-                  name: toolName,
-                  arguments: { task: taskDesc, context: contextDesc, goal: esGoal, model: esd?.resolved_model || esd?.model || "" },
-                  agentType: "dispatch" as const,
-                  subCalls: [],
-                  subResults: [],
-                };
-                useWorkflowStore.getState().upsertCall({
-                  callId: esPid || `slot-${esSlotIdx}`,
-                  name: toolName,
-                  parentId: esParentId,
-                  specialist: esSpecialist,
-                  batchSlotIndex: esSlotIdx,
-                  status: "running",
-                  args: { task: taskDesc, context: contextDesc, goal: esGoal, model: esd?.resolved_model || esd?.model || "" },
-                });
-                set({
-                  streamingToolCalls: [...toolCalls],
-                  lastHeartbeat: Date.now(),
-                });
-                break;
-              }
-            }
-            // Fallback: non-batch executor — propagate resolved model to parent tool
-            if (esd?.resolved_model || esd?.model_full || esd?.model) {
-              const resolvedModel = esd.resolved_model || esd.model_full || esd.model || "";
-              const runningSpecialist = [...toolCalls].reverse().find(
-                tc => META_TOOLS.has(tc.name)
-              );
-              if (runningSpecialist && runningSpecialist.arguments) {
-                (runningSpecialist.arguments as Record<string, unknown>).model = resolvedModel;
-              }
-            }
-            set({
-              streamingToolCalls: [...toolCalls],
-              lastHeartbeat: Date.now(),
-            });
-            break;
-          }
-
-          case "executor_done": {
-            const edd = data as Record<string, any>;
-            const edParentId = edd?.parent_action_id;
-            const edSlotIdx = edd?.batch_slot_index;
-
-            if (edParentId && edSlotIdx !== undefined) {
-              // Mark specialist slot as completed by adding a synthetic result
-              const metaIdx = toolCalls.findIndex(tc => tc.id === edParentId);
-              if (metaIdx >= 0) {
-                const meta = toolCalls[metaIdx];
-                const specialistSlot = meta.subCalls?.[edSlotIdx];
-                if (specialistSlot) {
-                  if (!meta.subResults) meta.subResults = [];
-                  meta.subResults.push({
-                    id: specialistSlot.id || `slot-${edSlotIdx}`,
-                    name: specialistSlot.name,
-                    result: edd?.result || "Completed",
-                  });
-                  useWorkflowStore.getState().upsertCall({
-                    callId: specialistSlot.id || `slot-${edSlotIdx}`,
-                    name: specialistSlot.name,
-                    parentId: edParentId,
-                    status: "completed",
-                    result: edd?.result,
-                  });
-                  set({
-                    streamingToolCalls: [...toolCalls],
-                    lastHeartbeat: Date.now(),
-                  });
-                  break;
-                }
-              }
-            }
-            set({
-              lastHeartbeat: Date.now(),
-            });
-            break;
-          }
-
-          case "step_start":
-            if (assistantContent || toolCalls.length > 0) {
-              const stepMsg: Message = {
-                id: `assistant-reconnect-${Date.now()}`,
-                role: "assistant",
-                content: assistantContent,
-                toolCalls: toolCalls.length > 0 ? [...toolCalls] : undefined,
-                toolResults: toolResults.length > 0 ? [...toolResults] : undefined,
-                timestamp: Date.now(),
-              };
-              set(state => ({
-                messages: [...state.messages, stepMsg],
-                streamingContent: "",
-                streamingToolCalls: [],
-                streamingToolResults: [],
-              }));
-              assistantContent = "";
-              toolCalls.length = 0;
-              toolResults.length = 0;
-            }
-            break;
-
-          case "heartbeat":
-            break;
-
-          case "dag_complete":
-            // Agent finished - reload messages directly without calling switchSession
-            // (switchSession would abort+reconnect, causing cascading side effects in multi-tab)
-            try {
-              const { getSessionMessages } = await import("@/lib/api/sessions");
-              const serverMessages = await getSessionMessages(sessionId);
-              // Use current session from store (not stale closure reference)
-              const currentSessionForDag = get().session;
-              if (serverMessages.length > 0 && currentSessionForDag && currentSessionForDag.id === sessionId) {
-                // Re-use switchSession to parse messages, but it will guard stale writes via session ID check
-                await get().switchSession(currentSessionForDag);
-              }
-            } catch {
-              // Fallback: just finalize what we have
-            }
-            set({
-              isStreaming: false,
-              streamingContent: "",
-              streamingToolCalls: [],
-              streamingToolResults: [],
-              lastHeartbeat: null,
-              streamAbortController: null,
-            });
-            return;
-
-          case "error":
-            set({
-              isStreaming: false,
-              streamingContent: "",
-              streamingToolCalls: [],
-              streamingToolResults: [],
-              error: typeof data === "string" ? data : "Stream error",
-              streamAbortController: null,
-            });
-            return;
-        }
-      }
-
-      // Stream ended without dag_complete (agent finished while we were connecting)
-      // Reload messages from DB (use current session from store, not stale closure)
-      const endSession = get().session;
-      if (endSession && endSession.id === sessionId) {
-        await get().switchSession(endSession);
-      }
-      set({
-        isStreaming: false,
-        streamingContent: "",
-        streamingToolCalls: [],
-        streamingToolResults: [],
-        streamAbortController: null,
-      });
-    } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") {
-        set({
-          isStreaming: false,
-          streamAbortController: null,
-        });
-      } else {
-        // Reconnect failed - not critical, user can refresh
-        console.warn("[Store] Reconnect failed:", err);
-        set({
-          isStreaming: false,
-          streamAbortController: null,
         });
       }
     }

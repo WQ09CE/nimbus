@@ -1,7 +1,8 @@
 import React from 'react';
+import { StringDisplay } from '../MarkdownRenderer';
 
 interface BashProps {
-  args: { command: string; [key: string]: any };
+  args: { command: string;[key: string]: any };
   result?: string;
   error?: string;
   status: "running" | "completed" | "failed";
@@ -27,10 +28,10 @@ export function Bash({ args, result, error, status }: BashProps) {
           <div className="text-red-400 whitespace-pre-wrap break-words overflow-hidden">{error}</div>
         ) : (
           <div className="text-gray-300 whitespace-pre-wrap break-words leading-relaxed overflow-hidden">
-            {result || <span className="text-gray-600 italic">(no output)</span>}
+            {result ? <StringDisplay content={result} typeClass="text-gray-300" /> : <span className="text-gray-600 italic">(no output)</span>}
           </div>
         )}
-        
+
         {/* Status Line */}
         {status !== "running" && (
           <div className="mt-2 pt-2 border-t border-gray-800/50 text-[10px] text-gray-500 flex justify-end">

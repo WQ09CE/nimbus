@@ -6,6 +6,10 @@ import { MarkdownRenderer } from '../MarkdownRenderer';
 import { useWorkflowStore, selectChildren } from "@/stores/workflow-store";
 import { useShallow } from "zustand/react/shallow";
 import { ToolDisplay } from './ToolDisplay';
+import { ToolCard } from './ToolCard';
+import { LiveTimer } from './LiveTimer';
+
+const META_TOOLS = new Set(["Dispatch", "Explore", "Implement", "Design", "Test", "ParallelDispatch", "Architect", "Reviewer"]);
 
 // ─────────────────────────────────────────────
 // Types
@@ -134,6 +138,10 @@ interface DispatchCardProps {
      * Parallel-task mode: tighter padding, smaller fonts.
      */
     isParallel?: boolean;
+    /**
+     * Hide the main card header (useful for recursive nested agents).
+     */
+    hideHeader?: boolean;
 }
 
 // ─────────────────────────────────────────────
@@ -258,10 +266,13 @@ function SubCallRow({ sub, index, theme }: { sub: SubCallWithStatus; index: numb
                 )}
                 {!summary && <span className="flex-1" />}
                 {isRunning ? (
-                    <span className="flex gap-0.5 shrink-0">
-                        <span className={`w-1 h-1 rounded-full ${theme?.dots ?? "bg-purple-400"} animate-bounce`} style={{ animationDelay: '0ms' }} />
-                        <span className={`w-1 h-1 rounded-full ${theme?.dots ?? "bg-purple-400"} animate-bounce`} style={{ animationDelay: '150ms' }} />
-                        <span className={`w-1 h-1 rounded-full ${theme?.dots ?? "bg-purple-400"} animate-bounce`} style={{ animationDelay: '300ms' }} />
+                    <span className="flex items-center gap-1.5 shrink-0">
+                        <LiveTimer />
+                        <span className="flex gap-0.5 mt-0.5">
+                            <span className={`w-1 h-1 rounded-full ${theme?.dots ?? "bg-purple-400"} animate-bounce`} style={{ animationDelay: '0ms' }} />
+                            <span className={`w-1 h-1 rounded-full ${theme?.dots ?? "bg-purple-400"} animate-bounce`} style={{ animationDelay: '150ms' }} />
+                            <span className={`w-1 h-1 rounded-full ${theme?.dots ?? "bg-purple-400"} animate-bounce`} style={{ animationDelay: '300ms' }} />
+                        </span>
                     </span>
                 ) : sub.duration != null ? (
                     <span className="font-mono text-[10px] text-gray-600 shrink-0">{sub.duration}ms</span>
@@ -278,17 +289,25 @@ function SubCallRow({ sub, index, theme }: { sub: SubCallWithStatus; index: numb
 
             {/* Expanded detail */}
             {isExpanded && hasDetails && (
-                <div className="border-t border-white/[0.05] bg-black/30 overflow-x-auto">
-                    <ToolDisplay
-                        tool={{
-                            name: sub.name,
-                            args: sub.arguments,
-                            result: sub.result,
-                            error: sub.error,
-                            status: sub.status
-                        }}
-                        isExpanded={true}
-                    />
+                <div className={`border-t ${theme?.borderSection ?? 'border-white/[0.05]'} bg-[#0d1117] overflow-x-auto p-0`}>
+                    {META_TOOLS.has(sub.name) ? (
+                        <DispatchCard
+                            tool={sub as any}
+                            hideHeader={true}
+                            defaultState="expanded"
+                        />
+                    ) : (
+                        <ToolDisplay
+                            tool={{
+                                name: sub.name,
+                                args: sub.arguments,
+                                result: sub.result,
+                                error: sub.error,
+                                status: sub.status
+                            }}
+                            isExpanded={true}
+                        />
+                    )}
                 </div>
             )}
         </div>
@@ -308,7 +327,7 @@ function SubCallRow({ sub, index, theme }: { sub: SubCallWithStatus; index: numb
 //  • isParallel → tighter padding/font for stacked parallel-agent grids
 // ─────────────────────────────────────────────
 
-export function DispatchCard({ tool, defaultState = "expanded", isParallel = false }: DispatchCardProps) {
+export function DispatchCard({ tool, defaultState = "expanded", isParallel = false, hideHeader = false }: DispatchCardProps) {
     const theme = SPECIALIST_THEMES[tool.name] || DEFAULT_THEME;
     const isRunning = tool.status === "running";
     const isFailed = tool.status === "failed";
@@ -332,7 +351,7 @@ export function DispatchCard({ tool, defaultState = "expanded", isParallel = fal
     // ── Sub-call data (hybrid: WorkflowStore-first, props-fallback) ──
     // Store-first: during streaming, store has real-time data
     const storeChildren = useWorkflowStore(
-      useShallow(s => selectChildren(s.calls, tool.id || ""))
+        useShallow(s => selectChildren(s.calls, tool.id || ""))
     );
 
     // Props-fallback: session reload when store is empty
@@ -343,31 +362,31 @@ export function DispatchCard({ tool, defaultState = "expanded", isParallel = fal
     const subResults = (tool.subResults && tool.subResults.length > 0) ? tool.subResults : recoveredSubResults;
 
     const subCallsWithStatus: SubCallWithStatus[] = storeChildren.length > 0
-      ? storeChildren.map(c => ({
-          id: c.callId,
-          name: c.name,
-          arguments: c.args ?? {},
-          result: c.result,
-          error: c.error,
-          duration: c.durationMs,
-          status: c.status as "running" | "completed" | "failed",
+        ? storeChildren.map(c => ({
+            id: c.callId,
+            name: c.name,
+            arguments: c.args ?? {},
+            result: c.result,
+            error: c.error,
+            duration: c.durationMs,
+            status: c.status as "running" | "completed" | "failed",
         }))
-      : subCalls.map((sc: any, idx: number) => {
-          const callId = sc.id;
-          const callName = sc.name || sc.tool;
-          const callArgs = sc.arguments || sc.args || {};
-          const matchedResult = subResults.find((sr: any) => sr.id === callId);
-          return {
-            id: callId || `${callName}-${idx}`,
-            name: callName,
-            arguments: callArgs,
-            result: matchedResult?.result,
-            error: matchedResult?.error,
-            duration: matchedResult?.duration,
-            status: (matchedResult
-              ? (matchedResult.error ? "failed" : "completed")
-              : "running") as "running" | "completed" | "failed",
-          };
+        : subCalls.map((sc: any, idx: number) => {
+            const callId = sc.id;
+            const callName = sc.name || sc.tool;
+            const callArgs = sc.arguments || sc.args || {};
+            const matchedResult = subResults.find((sr: any) => sr.id === callId);
+            return {
+                id: callId || `${callName}-${idx}`,
+                name: callName,
+                arguments: callArgs,
+                result: matchedResult?.result,
+                error: matchedResult?.error,
+                duration: matchedResult?.duration,
+                status: (matchedResult
+                    ? (matchedResult.error ? "failed" : "completed")
+                    : "running") as "running" | "completed" | "failed",
+            };
         });
 
     // ── Derived values ────────────────────────────────
@@ -378,13 +397,13 @@ export function DispatchCard({ tool, defaultState = "expanded", isParallel = fal
     // "anthropic/claude-sonnet-4-6" → "claude-sonnet"
     // 如果是简写（不含 "/"）直接用
     const modelShort = model
-      ? model.includes("/")
-        ? model.split("/")[1]
-            .replace(/-preview$/, "")
-            .replace(/-\d{4}-\d{2}-\d{2}.*$/, "")
-            .replace(/^(claude|gpt|gemini)-/, "$1-")
-        : model
-      : "";
+        ? model.includes("/")
+            ? model.split("/")[1]
+                .replace(/-preview$/, "")
+                .replace(/-\d{4}-\d{2}-\d{2}.*$/, "")
+                .replace(/^(claude|gpt|gemini)-/, "$1-")
+            : model
+        : "";
     // Header 只显示第一行，超过 60 字符截断加省略号
     const taskFirstLine = task.split('\n')[0].trim();
     const taskPreview = taskFirstLine.length > 60
@@ -420,86 +439,90 @@ export function DispatchCard({ tool, defaultState = "expanded", isParallel = fal
             {/* Left accent strip */}
             <div className={`absolute left-0.5 top-2 bottom-2 w-[3px] rounded-full z-10 ${stripClass}`} />
 
-            {/* ── Card Header (always visible) ── */}
-            <div
-                className={`${headerPad} flex items-center justify-between cursor-pointer hover:bg-white/[0.02] select-none transition-colors`}
-                onClick={() => setIsExpanded(v => !v)}
-            >
-                <div className="flex items-center gap-2.5 min-w-0">
-                    {/* Status indicator */}
-                    <div className="flex items-center shrink-0">
-                        {isRunning ? (
-                            <div className="flex gap-0.5">
-                                <div className={`w-1.5 h-1.5 rounded-full ${theme.dots} animate-bounce`} style={{ animationDelay: '0ms' }} />
-                                <div className={`w-1.5 h-1.5 rounded-full ${theme.dots} animate-bounce`} style={{ animationDelay: '150ms' }} />
-                                <div className={`w-1.5 h-1.5 rounded-full ${theme.dots} animate-bounce`} style={{ animationDelay: '300ms' }} />
-                            </div>
-                        ) : isFailed ? (
-                            <span className="text-red-400 text-sm">✗</span>
-                        ) : (
-                            <span className="text-emerald-400 text-sm">✓</span>
+            {/* ── Card Header (always visible unless hidden) ── */}
+            {!hideHeader && (
+                <div
+                    className={`${headerPad} flex items-center justify-between cursor-pointer hover:bg-white/[0.02] select-none transition-colors`}
+                    onClick={() => setIsExpanded(v => !v)}
+                >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                        {/* Status indicator */}
+                        <div className="flex items-center shrink-0">
+                            {isRunning ? (
+                                <div className="flex gap-0.5">
+                                    <div className={`w-1.5 h-1.5 rounded-full ${theme.dots} animate-bounce`} style={{ animationDelay: '0ms' }} />
+                                    <div className={`w-1.5 h-1.5 rounded-full ${theme.dots} animate-bounce`} style={{ animationDelay: '150ms' }} />
+                                    <div className={`w-1.5 h-1.5 rounded-full ${theme.dots} animate-bounce`} style={{ animationDelay: '300ms' }} />
+                                </div>
+                            ) : isFailed ? (
+                                <span className="text-red-400 text-sm">✗</span>
+                            ) : (
+                                <span className="text-emerald-400 text-sm">✓</span>
+                            )}
+                        </div>
+
+                        {/* Role badge */}
+                        <span className={`text-[10px] uppercase font-bold ${theme.badge.text} ${theme.badge.bg} px-2 py-0.5 rounded-full border ${theme.badge.border} tracking-wider whitespace-nowrap shrink-0`}>
+                            {theme.icon} {theme.label}
+                        </span>
+
+                        {/* Task preview */}
+                        {taskPreview && (
+                            <span
+                                className={`${isParallel ? "text-[11px]" : "text-[12px]"} text-gray-500 min-w-0 leading-none truncate max-w-[420px]`}
+                                title={task}
+                            >
+                                {taskPreview}
+                            </span>
+                        )}
+
+                        {/* Model badge */}
+                        {modelShort && (
+                            <span className={`shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded border ${theme.badge.border} ${theme.textMuted} bg-black/20 leading-none`}>
+                                {modelShort}
+                            </span>
                         )}
                     </div>
 
-                    {/* Role badge */}
-                    <span className={`text-[10px] uppercase font-bold ${theme.badge.text} ${theme.badge.bg} px-2 py-0.5 rounded-full border ${theme.badge.border} tracking-wider whitespace-nowrap shrink-0`}>
-                        {theme.icon} {theme.label}
-                    </span>
-
-                    {/* Task preview */}
-                    {taskPreview && (
-                        <span
-                            className={`${isParallel ? "text-[11px]" : "text-[12px]"} text-gray-500 min-w-0 leading-none truncate max-w-[420px]`}
-                            title={task}
-                        >
-                            {taskPreview}
-                        </span>
-                    )}
-
-                    {/* Model badge */}
-                    {modelShort && (
-                        <span className={`shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded border ${theme.badge.border} ${theme.textMuted} bg-black/20 leading-none`}>
-                            {modelShort}
-                        </span>
-                    )}
-                </div>
-
-                {/* Right side meta */}
-                <div className="flex items-center gap-2.5 shrink-0 ml-2">
-                    {/* Tool count / progress */}
-                    {isRunning ? (
-                        totalTools > 0 ? (
-                            <span className={`text-[10px] font-mono ${theme.toolCount}`}>
-                                {completedCount}/{totalTools}
-                            </span>
+                    {/* Right side meta */}
+                    <div className="flex items-center gap-2.5 shrink-0 ml-2">
+                        {/* Tool count / progress */}
+                        {isRunning ? (
+                            totalTools > 0 ? (
+                                <span className={`text-[10px] font-mono ${theme.toolCount}`}>
+                                    {completedCount}/{totalTools}
+                                </span>
+                            ) : (
+                                <span className={`text-[10px] ${theme.processingText}`}>processing…</span>
+                            )
                         ) : (
-                            <span className={`text-[10px] ${theme.processingText}`}>processing…</span>
-                        )
-                    ) : (
-                        totalTools > 0 && (
-                            <span className={`text-[10px] font-mono ${theme.toolCount}`}>
-                                {totalTools} call{totalTools !== 1 ? 's' : ''}
-                                {failedCount > 0 && <span className="text-red-400 ml-1">({failedCount}✗)</span>}
+                            totalTools > 0 && (
+                                <span className={`text-[10px] font-mono ${theme.toolCount}`}>
+                                    {totalTools} call{totalTools !== 1 ? 's' : ''}
+                                    {failedCount > 0 && <span className="text-red-400 ml-1">({failedCount}✗)</span>}
+                                </span>
+                            )
+                        )}
+
+                        {/* Duration or Live Timer */}
+                        {isRunning ? (
+                            <LiveTimer />
+                        ) : tool.duration != null ? (
+                            <span className="text-[10px] font-mono text-gray-600">
+                                {(tool.duration / 1000).toFixed(1)}s
                             </span>
-                        )
-                    )}
+                        ) : null}
 
-                    {/* Duration */}
-                    {!isRunning && tool.duration != null && (
-                        <span className="text-[10px] font-mono text-gray-600">
-                            {(tool.duration / 1000).toFixed(1)}s
-                        </span>
-                    )}
-
-                    {/* Chevron */}
-                    <svg
-                        className={`w-3 h-3 text-gray-500 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`}
-                        fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
-                    >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                    </svg>
+                        {/* Chevron */}
+                        <svg
+                            className={`w-3 h-3 text-gray-500 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`}
+                            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                        >
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                        </svg>
+                    </div>
                 </div>
-            </div>
+            )}
 
             {/* ── Expanded body ── */}
             {isExpanded && (
@@ -574,8 +597,8 @@ export function DispatchCard({ tool, defaultState = "expanded", isParallel = fal
                                         <span className="text-[11px] font-mono text-gray-300 truncate flex-1">{change.file}</span>
                                         <span className={`text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded font-medium
                                             ${change.type === 'created' ? 'bg-emerald-500/15 text-emerald-400' :
-                                              change.type === 'deleted' ? 'bg-red-500/15 text-red-400' :
-                                              'bg-yellow-500/15 text-yellow-400'}`}>
+                                                change.type === 'deleted' ? 'bg-red-500/15 text-red-400' :
+                                                    'bg-yellow-500/15 text-yellow-400'}`}>
                                             {change.type}
                                         </span>
                                     </div>

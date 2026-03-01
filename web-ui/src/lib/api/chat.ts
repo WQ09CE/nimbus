@@ -81,6 +81,7 @@ export type ChatEventType =
   | "message"
   | "error"
   | "heartbeat"
+  | "session_updated"
   | "thinking";
 
 export interface ChatEvent {

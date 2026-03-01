@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo, memo } from "react";
+import React, { useState, useMemo, memo, useDeferredValue } from "react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -62,8 +62,11 @@ function CopyButton({ code }: { code: string }) {
 const plugins = [remarkGfm];
 
 export const MarkdownRenderer = memo(function MarkdownRenderer({ content, className = "", isStreaming = false }: MarkdownRendererProps) {
-  // No internal state/effect throttle — store already throttles at 50ms.
-  // This eliminates double-render during streaming.
+  // Use React 18 Concurrent Features to debounce expensive Markdown AST parsing
+  const deferredContent = useDeferredValue(content);
+  // During streaming, we use the deferred content to maintain 15fps max rendering speed.
+  // When streaming finishes, we immediately render the final content.
+  const renderContent = isStreaming ? deferredContent : content;
 
   const components = useMemo(() => ({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -248,16 +251,16 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, classN
 
   // Auto-close code blocks during streaming to ensure syntax highlighting works in real-time
   const processedContent = useMemo(() => {
-    if (!isStreaming) return content;
+    if (!isStreaming) return renderContent;
     // Count occurrences of ```
-    const ticks = (content.match(/```/g) || []).length;
+    const ticks = (renderContent.match(/```/g) || []).length;
     // If odd number of ```, the last code block is unclosed
     if (ticks % 2 !== 0) {
       // Find the last ``` to see if it has a language tag, but we just need to close it
-      return content + '\n```';
+      return renderContent + '\n```';
     }
-    return content;
-  }, [content, isStreaming]);
+    return renderContent;
+  }, [renderContent, isStreaming]);
 
   return (
     <div className={`markdown-content ${className}`}>
@@ -273,7 +276,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, classN
 });
 
 // StringDisplay: handles long text expand/collapse (extracted to fix conditional useState)
-function StringDisplay({ content, typeClass }: { content: string; typeClass: string }) {
+export function StringDisplay({ content, typeClass }: { content: string; typeClass: string }) {
   const MAX_PREVIEW_LENGTH = 500;
   const [expanded, setExpanded] = useState(false);
   const isLong = content.length > MAX_PREVIEW_LENGTH;

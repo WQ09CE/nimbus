@@ -168,6 +168,25 @@ export async function setupSSEMock(page: Page, fixture: SSEFixture): Promise<voi
     }
   });
 
+  // --- GET /api/v1/sessions/:id/events (Background SSE stream) ---
+  await page.route('**/api/v1/sessions/*/events', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue();
+      return;
+    }
+    // Return a hanging response to satisfy useSSEListener without it entering a failure loop
+    await route.fulfill({
+      status: 200,
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
+      // Empty body that never closes, effectively hanging
+      body: Buffer.from(': connected\\n\\n', 'utf-8'),
+    });
+  });
+
   // --- POST /api/v1/sessions/:id/chat (SSE stream) ---
   await page.route('**/api/v1/sessions/*/chat', async (route) => {
     if (route.request().method() !== 'POST') {

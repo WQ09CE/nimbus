@@ -2,12 +2,16 @@
 
 import { useState, useEffect } from "react";
 import { useChatStore } from "@/stores";
+import dynamic from 'next/dynamic';
+
+const ReactDiffViewer = dynamic(() => import('react-diff-viewer-continued'), { ssr: false });
 
 export function ArtifactViewer() {
     const activeArtifact = useChatStore(s => s.activeArtifact);
     const closeArtifact = useChatStore(s => s.closeArtifact);
 
     const [content, setContent] = useState<string | null>(null);
+    const [artifactData, setArtifactData] = useState<any>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
@@ -34,6 +38,7 @@ export function ArtifactViewer() {
                 const data = await res.json();
 
                 if (isMounted) {
+                    setArtifactData(data);
                     // If the backend returns a content string directly or inside a content field
                     setContent(typeof data === "string" ? data : (data.content || JSON.stringify(data, null, 2)));
                 }
@@ -103,7 +108,16 @@ export function ArtifactViewer() {
                         )}
 
                         <div className={`p-1 ${error ? "opacity-60 grayscale" : ""}`}>
-                            {content}
+                            {(activeArtifact.type === 'patch' || activeArtifact.type === 'diff') && artifactData ? (
+                                <ReactDiffViewer
+                                    oldValue={artifactData.old_content || artifactData.oldValue || ''}
+                                    newValue={artifactData.new_content || artifactData.newValue || content || ''}
+                                    splitView={true}
+                                    useDarkTheme={true}
+                                />
+                            ) : (
+                                content
+                            )}
                         </div>
                     </div>
                 )}

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ToolDisplay } from './ToolDisplay';
 import { DispatchCard } from './DispatchCard';
+import { LiveTimer } from './LiveTimer';
 import type { ToolCall, ToolResult } from '@/lib/api';
 
 // Tools that spawn sub-agents and get the dedicated DispatchCard treatment
@@ -161,12 +162,14 @@ export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: To
         </div>
 
         <div className="flex items-center gap-3 shrink-0 ml-2">
-          {/* Duration */}
-          {tool.duration && (
+          {/* Duration or Live Timer */}
+          {tool.status === "running" ? (
+            <LiveTimer />
+          ) : tool.duration ? (
             <span className="text-[10px] font-mono text-gray-600">
               {tool.duration}ms
             </span>
-          )}
+          ) : null}
 
           {/* Chevron */}
           <svg
