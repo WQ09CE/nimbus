@@ -1569,6 +1569,14 @@ class AgentOS:
                                 f"resetting iteration counter (was {vcpu.iteration})"
                             )
                             vcpu._state.iteration_count = 0
+                            # Reset FSM state so the agent can continue after compaction.
+                            # The first vcpu.step() call (line ~1486) may have already
+                            # transitioned to StateCompleted and set _is_active=False.
+                            # Without this reset, the while-loop exits immediately.
+                            from nimbus.core.runtime.states import StateInit
+                            process.vcpu._is_active = True
+                            process.vcpu._current_state = StateInit()
+                            process.vcpu._fsm_ctx.final_result = None
                             continue
                         # Compaction failed — fall through to budget exceeded
                         logger.warning(
@@ -1586,6 +1594,14 @@ class AgentOS:
                         "Do NOT call any more tools. Immediately respond with a summary of: "
                         "1) what you completed, 2) what remains unfinished."
                     )
+                    # Reset FSM so the final step actually processes the summary prompt.
+                    # The prior step() may have left the FSM in StateCompleted with
+                    # _is_active=False, which would cause step() to fast-forward and
+                    # return a stale result without consulting the LLM.
+                    from nimbus.core.runtime.states import StateInit
+                    process.vcpu._is_active = True
+                    process.vcpu._current_state = StateInit()
+                    process.vcpu._fsm_ctx.final_result = None
                     # Run one final step for the summary
                     final_step = await process.vcpu.step()
                     process.state = "SUCCEEDED"
