@@ -1,57 +1,57 @@
-# Nimbus Memory System: Current State & V3 Upgrade Proposals
+# Nimbus Memory System: The Minimalist (V3) Refactor Plan
 
-Based on a deep-dive analysis of the Nimbus `core.memory` (MMU) and `core.nimfs` modules, here is a breakdown of the current architecture and a strategic roadmap for a "Memory V3" upgrade.
+Based on the philosophy of "Keep It Simple" and treating the LLM as a highly capable, self-managing agent, we must strip away the over-engineered heuristics present in the current MMU and NimFS architectures. We will abandon complex "Smart Drops" and black-box Vector DB retrievals in favor of a deterministic **"Top-and-Tail" + "File-System-as-Memory"** approach.
 
-## 1. Current State (V2) Architecture
+## 1. MMU Simplification: The "Top-and-Tail" Context
 
-Nimbus currently employs a pragmatic, text-based "Anchor & Stream" architecture backed by a local filesystem hierarchy.
+The current MMU spends too much CPU and complexity "guessing" what the LLM needs via `archive_and_reset`, `drop_oldest_non_essential`, and token estimation heuristics. We will replace this with a brutal but effective truncation strategy.
 
-### The MMU (Memory Management Unit)
-*   **Anchor & Stream Pipeline:** `mmu.py` separates immutable constraints (System Rules, Goal, Global Summary) from the mutable "Stream" (StackFrames of LLM messages).
-*   **Token Budgeting:** Uses rough heuristics (`chars / 4` in `token_budget.py`) to manage context limits.
-*   **Context Assembly:** `context_assembler.py` handles the construction of the final LLM prompt. It features "Lazy Expansion" (inline substitution of NimFS references if budget allows) and naive image downgrading (dropping duplicate or excess images).
-*   **Smart Drop & Compaction:** When approaching token limits, the MMU drops failed tool calls first, then oldest messages. If that fails, `archive_and_reset` triggers an inline LLM summarization of the history to compress it.
+### The Scratchpad (The "Top")
+*   **Goal**: Offload "remembering progress" from the Python framework directly to the LLM.
+*   **Implementation**: 
+    1.  Introduce a new `UpdateScratchpad(text)` tool.
+    2.  The VCPU `StateInit` perpetually injects the current contents of this Scratchpad directly into the System Rules (the "Anchor").
+    3.  If the LLM solves a sub-problem, it calls `UpdateScratchpad` to write down the solution before proceeding.
 
-### NimFS (Nimbus File System)
-*   **Dual-Partition Storage:** `manager.py` splits data into `artifacts/` (short-lived IPC tool outputs) and `memory/` (long-term knowledge).
-*   **L0/L1/L2 Hierarchy:** Memories are saved on disk with varying levels of detail (`l0.abstract`, `l1.overview.md`, `l2.content.md`), allowing the system to inject lightweight `l0` summaries into the prompt without blowing up the context.
-*   **Search Limitations:** `search_memory` relies entirely on static keyword substring and glob matching against titles, tags, and L0 abstracts.
-
----
-
-## 2. Weaknesses in V2
-
-1.  **Semantic Blindness:** NimFS keyword search is fragile. If the agent saves a memory about "Database Connection Spikes," searching for "Postgres Latency" might yield zero results.
-2.  **Synchronous Compaction:** Compressing the MMU stream (`archive_and_reset`) blocks the active conversation loop, causing latency spikes for the user when the context window fills up.
-3.  **Binary Context:** A message is either fully in the context window, or permanently summarized away. There is no fluid semantic paging.
-4.  **Opaque Image Management:** Images that exceed token budgets are simply replaced with `[Image Omitted]`, permanently losing the information density of that interaction for future turns.
+### Hard Truncation (The "Tail")
+*   **Goal**: Remove unpredictable token budgeting and summarize-on-the-fly logic.
+*   **Implementation**:
+    1.  Delete `token_budget.py` and its wild estimation heuristics. Token budgeting should be a simple `max_history_turns` integer (e.g., keep the last 10 messages).
+    2.  When `len(messages) > max_history_turns`, slice the array: `messages = messages[-max_history_turns:]`.
+    3.  Delete `_global_summary` generation using the LLM inline. Rely *entirely* on the Scratchpad to persist state across the slice boundary.
 
 ---
 
-## 3. "Memory V3" Upgrade Proposals
+## 2. NimFS Simplification: "Unix File System as Memory"
 
-To elevate Nimbus from a competent conversational agent to a system with true, persistent episodic and semantic memory, I propose the following core pillars for V3:
+The current `nimfs/manager.py` attempts to build a pseudo-database (`index.json`, `l0.abstract`, `l1.overview.md`) on top of the file system. It relies on a fragile glob-based `search_memory` tool.
 
-### Pillar 1: Semantic Vector DB & Hybrid Search
-Replace or augment the `search_memory` keyword globbing with a local, embedded Vector Database (e.g., `ChromaDB`, `lancedb`, or `sqlite` with `pgvector-lite`).
-*   **How it works:** When NimFS writes an L1/L2 memory, it automatically generates an embedding vector.
-*   **Impact:** The agent can inject highly relevant historical context purely based on semantic intent, drastically reducing hallucinations across long-running projects. Tool calls like `NimFSSearchMemory` become much more powerful.
+### Strip the Database Abstraction
+*   **Goal**: Let the LLM use the file system natively.
+*   **Implementation**:
+    1.  Remove the `MemoryCategory` and `l0/l1/l2` auto-generation folders.
+    2.  When an Agent wants to "remember" an architecture rule, it shouldn't call a black-box `NimFSWriteMemory` tool that hides the path. It should simply write a file to `.nimbus/memory/architecture_rules.md` using standard file writing tools.
 
-### Pillar 2: Asynchronous Memory Consolidation (The "Sleep" Cycle)
-Remove inline summarization from the critical path of the VCPU.
-*   **How it works:** Implement a low-priority background daemon (or run it immediately after a session completes). This "Dream / Consolidation" VCPU scans recent NimFS entries and chat logs, deduplicates overlapping L0 summaries, extracts recurring patterns into global `Preferences`, and builds a connected Knowledge Graph (GraphRAG).
-*   **Impact:** Zero-latency chat for the user, while the LLM continuously gets smarter and more organized "overnight."
+### Deprecate `search_memory`
+*   **Goal**: Stop guessing relevance. Let the LLM grep what it needs.
+*   **Implementation**:
+    1.  Remove `NimFSSearchMemory`.
+    2.  Ensure tools like `Bash` or `GrepSearch` have full access to the `.nimbus/memory/` directory. If the LLM needs to know about database configs, it runs `grep "postgres" .nimbus/memory/`.
 
-### Pillar 3: Semantic "Paging" and Working Memory
-Evolve the MMU from a linear array to a Tree/Graph structure.
-*   **How it works:** Instead of dropping old messages entirely, the MMU "folds" historical conversation branches into compact XML/JSON stubs in the context window (e.g., `<ArchivedConversation topic="Debugging the Auth Flow" tokens=1200 id="arch-123" />`).
-*   **Impact:** The LLM knows *exactly* what information it has archived. If the user asks a follow-up question about the auth flow days later, the LLM can use a tool like `ExpandMemory(id="arch-123")` to proactively swap that branch back into its hot working memory.
+---
 
-### Pillar 4: Multi-Modal Context Preservation
-Never lose information when dropping images from the hot context.
-*   **How it works:** When `context_assembler.py` detects that the `max_image_tokens` budget is exceeded, it triggers an async task to generate a dense, textual description of the image (e.g., "Screenshot showing a React stack trace indicating a Null Reference Exception in UserAvatar.tsx").
-*   **Impact:** The image is dropped to save tokens, but its *semantic value* is permanently bolted into the conversation history text.
+## 3. Workflow & Architecture-as-a-Document
 
-### Pillar 5: Temporal "Fading"
-*   **How it works:** Give memories "weight" strings based on time decay. A memory from 5 minutes ago carries total weight, while a memory from 3 weeks ago fades unless it is heavily queried by the Vector DB.
-*   **Impact:** Prevents the LLM from fixating on outdated architecture decisions or old user states.
+For long tasks or multi-agent workflows, context maintenance should not be implicit.
+
+### Explicit `PLAN.md` Enforcement
+*   **Implementation**: Before embarking on a complex sub-agent flow or heavy coding task, the Orchestrator agent should be explicitly prompted to generate a `PLAN.md` file in the workspace containing checkboxes.
+*   As the task progresses through the "Tail" truncation boundaries, the LLM reads `PLAN.md` to reorient itself, checks off completed items using file-edit tools, and continues.
+
+---
+
+## Execution Phasing
+
+1.  **Phase 1: MMU Truncation**: Replace `archive_and_reset` and `token_budget.py` with the rigid integer-based History Slice strategy. Add the `UpdateScratchpad` tool.
+2.  **Phase 2: NimFS Diet**: Deprecate `search_memory` and L0/L1 layer generation. Transition memory writing strictly to raw file writes in `.nimbus/memory/`.
+3.  **Phase 3: Prompting Update**: Adjust the Orchestrator prompt (`prompts.py`) to heavily emphasize using `UpdateScratchpad` and `PLAN.md` over relying on infinite context memory.
