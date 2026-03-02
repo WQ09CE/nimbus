@@ -30,11 +30,16 @@ def create_spawn_subagent_tool(agentos_ref: Any, parent_pid: str) -> tuple[ToolD
                 name="expected_schema",
                 type="string",
                 description="Optional. A JSON object representing the expected structure of the final payload to be sent back via SendMessage. If provided, the Middleware Verify Gate will enforce this contract automatically."
+            ),
+            ToolParameter(
+                name="timeout",
+                type="number",
+                description="Optional. The maximum time in seconds the sub-agent is allowed to run before being terminated."
             )
         ]
     )
 
-    async def execute(goal: str, role: str, expected_schema: Optional[str] = None) -> str:
+    async def execute(goal: str, role: str, expected_schema: Optional[str] = None, timeout: Optional[float] = None) -> str:
         # We prefix the user goal with [DELEGATION from {parent_pid}]
         delegation_goal = f"[DELEGATION from {parent_pid}]\nMission: {goal}\n\nWhen you are finished, use the SendMessage tool to send your final results to target_pid: '{parent_pid}'."
         if expected_schema:
@@ -54,7 +59,7 @@ def create_spawn_subagent_tool(agentos_ref: Any, parent_pid: str) -> tuple[ToolD
             if expected_schema:
                 process.metadata["expected_schema"] = expected_schema
                 
-            process.task = asyncio.create_task(agentos_ref._run_process(process))
+            process.task = asyncio.create_task(agentos_ref.wait(child_pid, timeout=timeout))
             
             return f"SubAgent spawned successfully with PID: {child_pid}. Use SendMessage to send it specific data contracts."
         except Exception as e:

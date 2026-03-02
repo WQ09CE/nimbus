@@ -15,3 +15,4 @@ class VCPUConfig:
     pin_goal: bool = True
     compact_on_limit: bool = True
     max_compactions: int = 10
+    dry_run: bool = False

@@ -89,7 +89,7 @@ class VCPUState(Protocol):
 # Legal State Transition Matrix
 # Restricts FSM jumps to prevent runaway hallucinations or logical corruption
 VALID_TRANSITIONS: Dict[str, List[str]] = {
-    "INIT": ["REASONING"],
+    "INIT": ["REASONING", "ERROR_RECOVERY"],
     "REASONING": ["ACTION_EXECUTION", "OBSERVATION", "ERROR_RECOVERY", "COMPLETED"],
     "ACTION_EXECUTION": ["OBSERVATION", "ERROR_RECOVERY"],
     "OBSERVATION": ["INIT", "COMPLETED"],

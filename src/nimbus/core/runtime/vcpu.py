@@ -14,7 +14,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from nimbus.core.memory.mmu import MMU
-from nimbus.core.models.manifest import ModelManifest
+from nimbus.core.models.manifest import ModelManifest, GPT_FEATURES
 from nimbus.core.persistence import SessionCheckpointModel
 from nimbus.core.protocol import ToolResult
 from nimbus.core.runtime.checkpoint_manager import CheckpointManager
@@ -56,7 +56,7 @@ class VCPU:
         self.config = config or VCPUConfig()
         self.tools = tools or []
         self.session_id = session_id
-        self.manifest = manifest or ModelManifest(name="default_model", provider="unknown")
+        self.manifest = manifest or ModelManifest(model_id="default_model", features=GPT_FEATURES)
         
         # OS Controls
         self.signals = {"soft_timeout": False, "hard_timeout": False}
@@ -81,6 +81,7 @@ class VCPU:
         # FSM Iteration State
         self._fsm_ctx: Optional[FSMContext] = None
         self._current_state: Optional[VCPUState] = None
+        self._last_mmu_snapshot: List[Dict[str, Any]] = []
 
     def request_pause(self) -> None:
         """Request the vCPU to pause execution (placeholder for AgentOS signal)."""
@@ -132,30 +133,30 @@ class VCPU:
             if self.signals.get("soft_timeout") or self.signals.get("hard_timeout"):
                 logger.warning("vCPU received timeout signal in FSM step.")
                 step_result.is_final = True
-                step_result.fault = self._fsm_ctx.fault
-                if self._fsm_ctx.final_result is not None:
-                    # An explicit termination signal was raised during error recovery or observation bounds checking
-                    self._current_state = StateCompleted()
                 
-                # Pre-execution transition check
-                # This check is for the state *after* the timeout, which is StateCompleted or the current state.
-                # The instruction implies validating a transition *to* a state.
-                # Given the context, if a timeout occurs, the FSM is effectively transitioning to a "halted" state.
-                # The most appropriate check here would be if the current state allows for an abrupt termination.
-                # However, the provided snippet checks against "INIT".
-                # Assuming the intent is to ensure the FSM can transition to a completed state from the current state.
-                # For now, applying the change as provided, but noting the potential logical mismatch.
-                if self._current_state.name != "INIT":
-                    from nimbus.core.runtime.fsm import VALID_TRANSITIONS
-                    # This condition checks if the *current* state is a valid transition *from* INIT.
-                    # This seems incorrect for a timeout scenario.
-                    # A more logical check might be:
-                    # if "COMPLETED" not in VALID_TRANSITIONS.get(self._current_state.name, []):
-                    #     raise RuntimeError(f"Invalid FSM Transition: {self._current_state.name} -> COMPLETED on timeout")
-                    # However, following the user's explicit instruction for the provided code.
-                    if self._current_state.name not in VALID_TRANSITIONS.get("INIT", []):
-                        raise RuntimeError(f"Invalid FSM Transition: INIT -> {self._current_state.name}")
+                # Check if we have a pending fault or final result in context
+                if self._fsm_ctx.fault:
+                    step_result.fault = self._fsm_ctx.fault
+                else:
+                    from nimbus.core.protocol import Fault
+                    step_result.fault = Fault(domain="RESOURCE", code="TIMEOUT", message="Process hit timeout signal")
+
+                if self._fsm_ctx.final_result is not None:
+                    step_result.final_result = self._fsm_ctx.final_result
+                else:
+                    from nimbus.core.protocol import ToolResult
+                    step_result.final_result = ToolResult(
+                        status="TIMEOUT", 
+                        is_final=True, 
+                        fault=step_result.fault,
+                        output={"post_mortem": self._last_mmu_snapshot or self.mmu.get_last_messages(3)}
+                    )
+                
+                self._current_state = StateCompleted()
                 self._is_active = False
+                # Ensure the step_result has the same status
+                step_result.status = "TIMEOUT"
+                # Ensure the process status is updated if we are in the loop
                 return step_result
 
             # 3. Fast-forward simple setup states (Init, Completed, ErrorRecovery)
@@ -175,10 +176,22 @@ class VCPU:
             
             # Phase A: Think/Reason
             if isinstance(self._current_state, StateReasoning):
-                next_state = await self._current_state.execute(self._fsm_ctx)
+                try:
+                    # Capture messages before reasoning for post-mortem
+                    # This ensures we get the state BEFORE it's possibly 
+                    # overwritten by a partial/corrupted reasoning turn
+                    self._last_mmu_snapshot = self.mmu.get_last_messages(3)
+                    next_state = await self._current_state.execute(self._fsm_ctx)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning(f"Error in Reasoning state: {e}")
+                    self._fsm_ctx.pending_error = e
+                    next_state = StateErrorRecovery()
+
                 from nimbus.core.runtime.fsm import VALID_TRANSITIONS
-                if next_state.name not in VALID_TRANSITIONS.get(self._current_state.name, []):
-                     raise RuntimeError(f"Invalid FSM Transition: {self._current_state.name} -> {next_state.name}")
+                if next_state.name not in VALID_TRANSITIONS.get("REASONING", []):
+                     raise RuntimeError(f"Invalid FSM Transition: REASONING -> {next_state.name}")
                 self._current_state = next_state
                 
             # A complete iteration outputs the actions derived
@@ -188,8 +201,8 @@ class VCPU:
             if self._current_state.__class__.__name__ == "StateActionExecution":
                 next_state = await self._current_state.execute(self._fsm_ctx)
                 from nimbus.core.runtime.fsm import VALID_TRANSITIONS
-                if next_state.name not in VALID_TRANSITIONS.get(self._current_state.name, []):
-                     raise RuntimeError(f"Invalid FSM Transition: {self._current_state.name} -> {next_state.name}")
+                if next_state.name not in VALID_TRANSITIONS.get("ACTION_EXECUTION", []):
+                     raise RuntimeError(f"Invalid FSM Transition: ACTION_EXECUTION -> {next_state.name}")
                 self._current_state = next_state
                 
             # Pop in execution results for the agentOS stream wrapper
@@ -199,8 +212,8 @@ class VCPU:
             if isinstance(self._current_state, StateObservation):
                 next_state = await self._current_state.execute(self._fsm_ctx)
                 from nimbus.core.runtime.fsm import VALID_TRANSITIONS
-                if next_state.name not in VALID_TRANSITIONS.get(self._current_state.name, []):
-                     raise RuntimeError(f"Invalid FSM Transition: {self._current_state.name} -> {next_state.name}")
+                if next_state.name not in VALID_TRANSITIONS.get("OBSERVATION", []):
+                     raise RuntimeError(f"Invalid FSM Transition: OBSERVATION -> {next_state.name}")
                 self._current_state = next_state
                 
             return step_result
@@ -208,7 +221,12 @@ class VCPU:
         except asyncio.CancelledError:
             logger.warning("vCPU Execution Cancelled.")
             step_result.is_final = True
-            step_result.final_result = ToolResult(status="CANCELLED", is_final=True)
+            step_result.status = "TIMEOUT"
+            step_result.final_result = ToolResult(
+                status="TIMEOUT", 
+                is_final=True,
+                output={"post_mortem": self._last_mmu_snapshot or self.mmu.get_last_messages(3)}
+            )
             self._is_active = False
             return step_result
         except Exception as e:

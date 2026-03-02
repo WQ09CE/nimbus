@@ -131,14 +131,19 @@ class StateInit(VCPUState):
     async def execute(self, ctx: FSMContext) -> VCPUState:
         logger.debug(f"[vCPU] State: {self.name} - Init step {ctx.state.iteration_count + 1}")
         
-        # Reset per-step active variables
-        ctx.pipeline.reset()
-        ctx.current_actions = []
-        ctx.pending_error = None
-        ctx.pending_parse_error = None
-        ctx.final_result = None
-        
-        return StateReasoning()
+        try:
+            # Reset per-step active variables
+            ctx.pipeline.reset()
+            ctx.current_actions = []
+            ctx.pending_error = None
+            ctx.pending_parse_error = None
+            ctx.final_result = None
+            
+            return StateReasoning()
+        except Exception as e:
+            logger.exception("FSM Initialization failed")
+            ctx.pending_error = e
+            return StateErrorRecovery()
 
 
 class StateReasoning(VCPUState):
@@ -309,7 +314,15 @@ class StateActionExecution(VCPUState):
             for action in executable_actions:
                 logger.info(f"⚙️  [vCPU] Executing Tool: {action.name}")
                 try:
-                    result = await ctx.gate.syscall_tool(action)
+                    if ctx.config.dry_run:
+                        logger.info(f"🌵 [Dry-Run] Simulating tool: {action.name}")
+                        result = ToolResult(
+                            status="OK",
+                            output=f"[Dry-Run] Successfully simulated execution of {action.name} with args {action.args}"
+                        )
+                    else:
+                        result = await ctx.gate.syscall_tool(action)
+                    
                     if not hasattr(action, 'result'):
                         action.result = result
                     ctx.current_results.append(result)
@@ -335,7 +348,15 @@ class StateActionExecution(VCPUState):
         async def _execute_one(action):
             """Execute a single action with independent error handling."""
             try:
-                result = await ctx.gate.syscall_tool(action)
+                if ctx.config.dry_run:
+                    logger.info(f"🌵 [Dry-Run] Simulating tool concurrently: {action.name}")
+                    result = ToolResult(
+                        status="OK",
+                        output=f"[Dry-Run] Successfully simulated execution of {action.name} with args {action.args}"
+                    )
+                else:
+                    result = await ctx.gate.syscall_tool(action)
+                
                 if not hasattr(action, 'result'):
                     action.result = result
                 return result, None
@@ -447,6 +468,18 @@ class StateObservation(VCPUState):
                  is_final=True
              )
              return StateCompleted()
+
+        # Check for Compaction
+        if ctx.config.compact_on_limit and ctx.mmu.needs_compression():
+            if ctx.state.compaction_count < ctx.config.max_compactions:
+                logger.info(f"Triggering proactive compaction in VCPU (Iter {ctx.state.iteration_count})")
+                try:
+                    # In VCPU context, we do a basic truncation.
+                    # archive_and_reset without summarizer is valid.
+                    await ctx.mmu.archive_and_reset(session_id="vcpu_runtime")
+                    ctx.state.compaction_count += 1
+                except Exception as e:
+                    logger.error(f"VCPU proactive compaction failed: {e}")
 
         return StateInit()
 

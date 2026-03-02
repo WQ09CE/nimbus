@@ -574,8 +574,18 @@ class AgentOS:
 
         def _timeout_result() -> ToolResult:
             process.state = "CANCELLED"
+            # Get last messages for post-mortem
+            post_mortem = []
+            if process.mmu:
+                try:
+                    post_mortem = process.mmu.get_last_messages(3)
+                except Exception:
+                    pass
+                    
             return ToolResult(
                 status="TIMEOUT",
+                output={"post_mortem": post_mortem},
+                is_final=True,
                 fault=Fault(
                     domain="KERNEL",
                     code="TIMEOUT",
@@ -754,6 +764,27 @@ class AgentOS:
             return await self._run_process(process)
 
         return ToolResult(status="OK", output="[Already Running]")
+
+    def terminate(self, pid: str, reason: str = "manual_terminate") -> bool:
+        """
+        Safely stop a running process.
+        """
+        process = self._processes.get(pid)
+        if not process:
+            return False
+
+        if process.state == "RUNNING":
+            process.state = "CANCELLED"
+            if process.vcpu:
+                process.vcpu.signals["hard_timeout"] = True
+            
+            if process.task and not process.task.done():
+                process.task.cancel()
+            
+            logger.info(f"[AgentOS] Process {pid} terminated. Reason: {reason}")
+            self._emit_event("PROC_TERMINATED", pid, {"reason": reason})
+            return True
+        return False
 
     # =========================================================================
     # Process Management
@@ -968,6 +999,8 @@ class AgentOS:
         them into a ToolResult with ``is_partial=True`` so callers can distinguish
         salvaged data from a normal completion.
 
+        Also implements 'Post-Mortem' analysis: captures last 3 messages as diagnosis context.
+
         Args:
             process: The timed-out Process whose frame will be inspected.
 
@@ -979,8 +1012,18 @@ class AgentOS:
             frame = process.mmu.current_frame if process.mmu else None
             internal_monologue: List[str] = []
             artifacts = []
+            post_mortem_context = []
 
             if frame is not None:
+                # Post-Mortem: capture last 3 messages
+                all_msgs = frame.messages
+                last_msgs = all_msgs[-3:] if len(all_msgs) >= 3 else all_msgs
+                for m in last_msgs:
+                    post_mortem_context.append({
+                        "role": m.role,
+                        "content": str(m.content)[:500] + "..." if m.content and len(str(m.content)) > 500 else m.content
+                    })
+
                 for msg in frame.messages:
                     if msg.role == "assistant" and msg.content:
                         internal_monologue.append(msg.content)
@@ -996,6 +1039,7 @@ class AgentOS:
                 "internal_monologue": internal_monologue,
                 "salvaged_artifacts": artifacts,
                 "frame_id": frame.frame_id if frame else None,
+                "post_mortem": post_mortem_context
             }
 
             logger.info(
@@ -1011,7 +1055,7 @@ class AgentOS:
                 fault=Fault(
                     domain="KERNEL",
                     code="TIMEOUT",
-                    message=f"Process {process.pid} timed out; partial results salvaged.",
+                    message=f"Process {process.pid} timed out; post-mortem diagnostics attached.",
                     retryable=True,
                 ),
             )

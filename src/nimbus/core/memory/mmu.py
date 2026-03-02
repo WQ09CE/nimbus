@@ -483,6 +483,15 @@ class MMU:
             "PLEASE LOOK ABOVE this tool result to see the historical messages you requested."
         )
 
+    def get_last_messages(self, count: int) -> List[Dict[str, Any]]:
+        """
+        Get the last N messages from the current frame as raw dictionaries.
+        Used for post-mortem analysis and debugging.
+        """
+        messages = self.current_frame.messages
+        last_n = messages[-count:] if count > 0 else []
+        return [msg.to_dict() for msg in last_n]
+
     # =========================================================================
     # Context Assembly (The "Smart Drop" Strategy)
     # =========================================================================

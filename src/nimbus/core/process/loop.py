@@ -80,14 +80,20 @@ class RuntimeLoop:
                     final_result = event.get("result")
                 elif etype == "interrupted":
                     return ToolResult(
-                        status="CANCELLED",
+                        status="TIMEOUT",
+                        is_final=True,
                         fault=Fault(
                             domain="KERNEL",
-                            code="INTERRUPTED",
-                            message="Interrupted by user",
+                            code="TIMEOUT",
+                            message="Interrupted or Timed out",
                         ),
+                        output={"post_mortem": process.mmu.get_last_messages(3)}
                     )
                 elif etype == "error":
+                    # Check if the error is actually a TIMEOUT reported as error
+                    res = event.get("result")
+                    if res and res.status == "TIMEOUT":
+                        return res
                     return event.get("result", ToolResult(status="ERROR"))
 
             # Epilog
@@ -315,12 +321,20 @@ class RuntimeLoop:
             # 6. Non-retryable fault
             # ----------------------------------------------------------
             if step_result.fault and not step_result.fault.retryable:
-                process.state = "FAILED"
-                yield {
-                    "type": "error",
-                    "result": ToolResult(status="ERROR", fault=step_result.fault),
-                    "fault": step_result.fault,
-                }
+                if step_result.status == "TIMEOUT":
+                    process.state = "CANCELLED"
+                    yield {
+                        "type": "error",
+                        "result": step_result.final_result or ToolResult(status="TIMEOUT", fault=step_result.fault),
+                        "fault": step_result.fault,
+                    }
+                else:
+                    process.state = "FAILED"
+                    yield {
+                        "type": "error",
+                        "result": ToolResult(status="ERROR", fault=step_result.fault),
+                        "fault": step_result.fault,
+                    }
                 return
 
             # ----------------------------------------------------------
