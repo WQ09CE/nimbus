@@ -21,6 +21,7 @@ from nimbus.core.compaction import (
     CompactionEngine,
     DefaultCompactionLLM,
 )
+from nimbus.core.compaction_service import CompactionService
 from nimbus.core.memory.context import PinnedContext
 from nimbus.core.memory.mmu import MMU, MMUConfig
 from nimbus.core.profile import AgentProfile  # NEW
@@ -281,6 +282,24 @@ class AgentOS:
             llm=DefaultCompactionLLM(llm_client),
         )
 
+        self._compaction_service = CompactionService(
+            llm=self._llm,
+            config=self.config,
+            compaction_engine=self._compaction_engine,
+            emit_event_fn=self._emit_event,
+            session_mgr=self._session_mgr,
+        )
+
+        # Process Factory (unified component assembly)
+        from nimbus.core.process.factory import ProcessFactory
+        self._factory = ProcessFactory(
+            llm=self._llm,
+            config=self.config,
+            composite_tools=self._composite_tools,
+            events=self._events,
+            create_gate_fn=self._create_gate,
+        )
+
         # Initialize Heart daemon
         self.heart = Heart(
             HeartConfig(
@@ -504,126 +523,31 @@ class AgentOS:
         if not _role:
             _role = "standard"
 
-        # Create process components
-        mmu = self._create_mmu(pid, system_rules=_system_rules)
-
-        # NimFS: inject workspace so MMU can auto-offload large tool results
-        mmu.nimfs_workspace = str(Path.cwd())
-
-        # NimFS-backed Memo (v2): inject NimFSManager for context loading
-        workspace = Path.cwd()
-        from nimbus.core.nimfs.manager import NimFSManager
-        mmu._nimfs_manager = NimFSManager(workspace_path=workspace)
-
-        # Create Memo tool (backward-compat bridge to NimFS)
-        memo_def, memo_func, session_manager, global_manager = create_memo_tool(workspace, pid)
-        mmu._memo_manager = session_manager
-        mmu._global_memo_manager = global_manager
-
         # Extract write_filter from profile
         _write_filter = None
         if profile and profile.write_filter:
             _write_filter = profile.write_filter
 
-        from nimbus.core.ipc.tools import create_send_message_tool, create_read_inbox_tool
-        from nimbus.core.ipc.subagent import create_spawn_subagent_tool
-        
-        send_msg_def, send_msg_func = create_send_message_tool(self, pid)
-        read_inbox_def, read_inbox_func = create_read_inbox_tool(self, pid)
-        spawn_sub_def, spawn_sub_func = create_spawn_subagent_tool(self, pid)
-
-        gate = self._create_gate(pid, _role, local_tools={
-            "Memo": memo_func,
-            "SendMessage": send_msg_func,
-            "ReadInbox": read_inbox_func,
-            "SpawnSubAgent": spawn_sub_func
-        }, write_filter=_write_filter)
-        decoder = InstructionDecoder()
-
-        # Prepare tools list
-        if _tools_filter is not None:
-            # Explicit tools list (empty = pure reasoning, no tools)
-            # If using names (strings), fetch definitions from registry
-            if _tools_filter and isinstance(_tools_filter[0], str):
-                tools_list = []
-                for name in _tools_filter:
-                    defn = self._composite_tools.get_definition(name)
-                    if defn:
-                        tools_list.append(defn.to_openai_format())
-            else:
-                # Normalize: convert any ToolDefinition objects to openai format dicts
-                tools_list = []
-                for t in _tools_filter:
-                    if hasattr(t, "to_openai_format"):
-                        tools_list.append(t.to_openai_format())
-                    else:
-                        tools_list.append(t)
-        else:
-            # Inherit from kernel (filtered by role) + Memo
-            tools_list = self._composite_tools.get_definitions(format="openai", role=_role)
-            tools_list.append({
-                "type": "function",
-                "function": memo_def
-            })
-            tools_list.append(send_msg_def.to_openai_format())
-            tools_list.append(read_inbox_def.to_openai_format())
-            tools_list.append(spawn_sub_def.to_openai_format())
-
-        # Determine VCPU config (allow per-process overrides)
-        vcpu_config = self.config.vcpu_config
-        if _max_iterations is not None:
-            from dataclasses import replace as dc_replace
-            # Sub-processes: set iteration limit with compact-and-continue.
-            # When hitting the limit, compact context and keep going (up to max_compactions).
-            # This prevents subagents from stopping mid-task.
-            vcpu_config = dc_replace(
-                vcpu_config,
-                max_iterations=_max_iterations,
-                compact_on_limit=True,
-                max_compactions=2,
-            )
-
-        # Forward profile's max_consecutive_thoughts to VCPU config
-        if profile and profile.max_consecutive_thoughts:
-            from dataclasses import replace as dc_replace
-            vcpu_config = dc_replace(
-                vcpu_config,
-                max_consecutive_thoughts=profile.max_consecutive_thoughts,
-            )
-
-        # Create VCPU
-        from dataclasses import replace as _dc_replace
-        manifest = _dc_replace(get_model_manifest(llm_client or self._llm), role=_role)
-        vcpu = VCPU(
-            alu=llm_client or self._llm,
-            config=vcpu_config,
-            decoder=decoder,
-            mmu=mmu,
-            gate=gate,
-            tools=tools_list,
-            session_id=pid,
-            manifest=manifest,
-        )
-
-        from nimbus.core.ipc.mailbox import Mailbox
-        # Create process
-        process = Process(
+        # Create process via factory (unified component assembly)
+        process = self._factory.build(
             pid=pid,
             goal=goal,
             role=_role,
-            state="PENDING",
-            vcpu=vcpu,
-            mmu=mmu,
-            gate=gate,
-            inbox=Mailbox(owner_pid=pid),
-            outbox=Mailbox(owner_pid=pid),
+            system_rules=_system_rules,
+            llm_client=llm_client,
+            profile=profile,
+            tools_override=_tools_filter,
+            max_iterations=_max_iterations,
+            write_filter=_write_filter,
+            enable_ipc=True,
+            agent_os=self,
         )
 
         # Register process
         self._processes[pid] = process
 
         # Emit spawn event
-        # 提取 model 短名（去掉 provider 前缀）
+        manifest = process.vcpu.manifest
         _manifest_model = getattr(manifest, "model_id", "") or ""
         _model_short = _manifest_model.split("/")[-1] if "/" in _manifest_model else _manifest_model
 
@@ -758,109 +682,25 @@ class AgentOS:
         return await self.wait(pid)
 
     async def run_stream(self, goal: str, role: str = ""):
+        from nimbus.core.process.loop import RuntimeLoop
+
         pid = self.spawn(goal, role=role)
         process = self._processes.get(pid)
         if not process:
             yield {"type": "error", "message": f"Process {pid} not found"}
             return
 
-        vcpu = process.vcpu
-        mmu = process.mmu
-
-        if vcpu.config.pin_goal:
-            pinned_goal = await vcpu._prepare_goal_for_pinning(goal)
-            mmu.pin_user_goal(pinned_goal)
-        mmu.add_user_message(goal)
-
-        yield {"type": "planning", "content": "Starting execution..."}
-
-        while True:
-            result = await vcpu.step()
-            
-            # Report iteration to Heart for stall detection
-            has_output = False
-            if result.final_result:
-                has_output = True
-            elif result.results:
-                has_output = any(getattr(r, "output", None) for r in result.results)
-            
-            asyncio.create_task(self.heart.inbox.put(
-                topic="session.iteration",
-                payload={
-                    "session_id": pid,
-                    "iteration": vcpu.iteration,
-                    "has_output": has_output
-                }
-            ))
-
-            # Handle CONTEXT_OVERFLOW fault - trigger compaction and retry
-            if result.fault and result.fault.code == "CONTEXT_OVERFLOW":
-                ctx = result.fault.context or {}
-                yield {
-                    "type": "compaction",
-                    "message": f"Context overflow ({ctx.get('current_tokens')} tokens), compacting...",
-                }
-                success = await self._compaction_for_process(pid, mmu)
-                if success:
-                    yield {"type": "compaction_done", "message": "Compaction complete"}
-                    continue  # Retry the step after compaction
-                else:
-                    yield {"type": "error", "message": "Compaction failed"}
-                    return
-
-            for i, action in enumerate(result.actions):
-                action_kind = getattr(action, "kind", None)
-
-                if action_kind == "TOOL_CALL":
-                    tool_name = getattr(action, "name", "unknown")
-                    tool_args = getattr(action, "args", {})
-                    tool_id = getattr(action, "id", None)
-
-                    yield {
-                        "type": "tool_call",
-                        "name": tool_name,
-                        "args": tool_args,
-                        "action_id": tool_id,
-                    }
-                    if i < len(result.results):
-                        tool_result = result.results[i]
-                        yield {
-                            "type": "tool_result",
-                            "name": tool_name,
-                            "args": tool_args,
-                            "action_id": tool_id,
-                            "output": getattr(tool_result, "output", str(tool_result)),
-                            "status": getattr(tool_result, "status", "OK"),
-                            "duration_ms": getattr(tool_result, "meta", {}).get("duration_ms") if hasattr(tool_result, "meta") else None,
-                        }
-                elif action_kind == "THOUGHT":
-                    content = action.args.get("content", action.args.get("text", "")) if action.args else ""
-                    if content:
-                        # Check if this thought was blocked by hallucination firewall
-                        if i < len(result.results) and getattr(result.results[i], "meta", {}).get("hallucination_blocked"):
-                            continue  # Skip — firewall blocked this
-                        yield {"type": "text", "content": content}
-                elif action_kind == "RETURN":
-                    result_value = action.args.get("result", "") if action.args else ""
-                    yield {
-                        "type": "done",
-                        "result": {
-                            "status": "OK",
-                            "output": result_value,
-                        },
-                    }
-                    return
-
-            if result.is_final:
-                yield {
-                    "type": "done",
-                    "result": {
-                        "status": "FAULT" if result.fault else "OK",
-                        "output": result.final_result,
-                        "error": str(result.fault) if result.fault else None,
-                    },
-                }
-                return
+        loop = RuntimeLoop(
+            process=process,
+            compaction_fn=self._compaction_for_process,
+            check_compaction_fn=self._check_compaction,
+            heart=self.heart,
+            emit_event_fn=self._emit_event,
+            nimfs_gc_fn=self._nimfs_gc_task,
+            scavenge_fn=self._scavenge_partial_result,
+        )
+        async for event in loop.stream():
+            yield event
 
     async def chat(self, message: "str | list", session_id: str | None = None) -> ToolResult:
         from loguru import logger
@@ -871,54 +711,12 @@ class AgentOS:
         else:
             if not session_id:
                 session_id = f"chat-{uuid.uuid4().hex[:8]}"
-            mmu = self._create_mmu(session_id)
-            mmu.nimfs_workspace = str(Path.cwd())
 
-            # NimFS-backed Memo (v2): inject NimFSManager for context loading
-            workspace = Path.cwd()
-            from nimbus.core.nimfs.manager import NimFSManager
-            mmu._nimfs_manager = NimFSManager(workspace_path=workspace)
-
-            # Create Memo tool (backward-compat bridge to NimFS)
-            memo_def, memo_func, session_manager, global_manager = create_memo_tool(workspace, session_id)
-            mmu._memo_manager = session_manager
-            mmu._global_memo_manager = global_manager
-
-            gate = self._create_gate(session_id, "chat", local_tools={
-                "Memo": memo_func
-            })
-            decoder = InstructionDecoder()
-
-            # Prepare tools list with Memo
-            tools_list = self._composite_tools.get_definitions(format="openai", role="chat")
-            tools_list.append({
-                "type": "function",
-                "function": memo_def
-            })
-
-            from dataclasses import replace as _dc_replace
-            manifest = _dc_replace(get_model_manifest(self._llm), role="chat")
-
-            vcpu = VCPU(
-                alu=self._llm,
-                decoder=decoder,
-                gate=gate,
-                mmu=mmu,
-                config=self.config.vcpu_config,
-                tools=tools_list,
-                session_id=session_id,
-                manifest=manifest,
-            )
-
-
-            process = Process(
+            # Create process via factory (unified component assembly)
+            process = self._factory.build(
                 pid=session_id,
                 goal="Interactive chat session",
                 role="chat",
-                state="PENDING",
-                vcpu=vcpu,
-                mmu=mmu,
-                gate=gate,
             )
             self._processes[session_id] = process
             self._emit_event("PROC_SPAWNED", session_id, {"goal": "chat", "role": "chat"})
@@ -964,6 +762,10 @@ class AgentOS:
     def list_processes(self) -> List[str]:
         """List all active process IDs."""
         return list(self._processes.keys())
+
+    def get_active_processes(self) -> List[str]:
+        """Get list of currently running process IDs."""
+        return [pid for pid, p in self._processes.items() if p.state == "RUNNING"]
 
     def get_process(self, pid: str) -> "Process | None":
         """Get a process by ID."""
@@ -1027,58 +829,13 @@ class AgentOS:
             session_id: The session ID (used as PID)
             checkpoint: The SessionCheckpointModel object
         """
-        # Re-create components similar to chat() initialization
-        mmu = self._create_mmu(session_id)
-        mmu.nimfs_workspace = str(Path.cwd())
-
-        # NimFS-backed Memo (v2): inject NimFSManager for context loading
-        workspace = Path.cwd()
-        from nimbus.core.nimfs.manager import NimFSManager
-        mmu._nimfs_manager = NimFSManager(workspace_path=workspace)
-
-        # Create Memo tool (backward-compat bridge to NimFS)
-        memo_def, memo_func, session_manager, global_manager = create_memo_tool(workspace, session_id)
-        mmu._memo_manager = session_manager
-        mmu._global_memo_manager = global_manager
-
-        gate = self._create_gate(session_id, "chat", local_tools={
-            "Memo": memo_func
-        })
-        decoder = InstructionDecoder()
-
-        tools_list = self._composite_tools.get_definitions(format="openai")
-        tools_list.append({
-            "type": "function",
-            "function": memo_def
-        })
-
-        from dataclasses import replace as _dc_replace
-        manifest = _dc_replace(get_model_manifest(self._llm), role="chat")
-
-        vcpu = VCPU(
-            alu=self._llm,
-            decoder=decoder,
-            gate=gate,
-            mmu=mmu,
-            config=self.config.vcpu_config,
-            tools=tools_list,
-            session_id=session_id,
-            manifest=manifest,
-        )
-
-
-        # Restore state
-        vcpu.restore_from_checkpoint(checkpoint)
-
-        # Register process
-        process = Process(
+        # Create process via factory (unified component assembly)
+        process = self._factory.build(
             pid=session_id,
             goal="Restored session",
             role="chat",
-            state="PENDING",
-            vcpu=vcpu,
-            mmu=mmu,
-            gate=gate,
+            checkpoint=checkpoint,
+            filter_tools_by_role=False,
         )
         self._processes[session_id] = process
 
@@ -1118,299 +875,18 @@ class AgentOS:
         target_session = session_id or self._current_session_id
         if not target_session:
             return None
-
         process = self._processes.get(target_session)
         if not process or not process.mmu:
             return None
-
-        all_messages = []
-        for frame in process.mmu._stack:
-            for msg in frame.messages:
-                all_messages.append(msg)
-
-        new_messages, result = await self._compaction_engine.compact(
-            all_messages, custom_instructions
-        )
-
-        if result.messages_removed > 0:
-            process.mmu.clear()
-            for msg in new_messages:
-                process.mmu.add_message(msg)
-
-            if self._session_mgr:
-                self._session_mgr.append_compaction(
-                    summary=result.summary,
-                    first_kept_entry_id=result.first_kept_entry_id or "",
-                    tokens_before=result.tokens_before,
-                    details=result.details,
-                )
-
-            self._emit_event(
-                "COMPACTION",
-                target_session,
-                {
-                    "tokens_before": result.tokens_before,
-                    "tokens_after": result.tokens_after,
-                    "messages_removed": result.messages_removed,
-                },
-            )
-
-        return {
-            "summary": result.summary,
-            "tokens_before": result.tokens_before,
-            "tokens_after": result.tokens_after,
-            "messages_removed": result.messages_removed,
-            "compression_ratio": result.compression_ratio,
-        }
+        return await self._compaction_service.compact(process, custom_instructions)
 
     async def _check_compaction(self, process: Process) -> None:
-        """Proactive auto-compaction: compact before step() when tokens exceed threshold."""
-        if not process.mmu:
-            return
-
-        mmu = process.mmu
-        current_tokens = mmu.estimate_tokens()
-        max_tokens = self.config.mmu_config.max_context_tokens
-        threshold = int(max_tokens * self.config.mmu_config.compress_threshold)  # 90%
-
-        if current_tokens < threshold:
-            return
-
-        # Guard: too few messages → sliding window handles it
-        total_messages = sum(len(f.messages) for f in mmu._stack)
-        if total_messages < 10:
-            return
-
-        # Guard: max compactions reached
-        vcpu = process.vcpu
-        if vcpu and vcpu._state.compaction_count >= vcpu.config.max_compactions:
-            return
-
-        # Execute
-        logger.info(f"[{process.pid}] Auto-compaction: {current_tokens} tokens "
-                    f"({current_tokens*100//max_tokens}% of {max_tokens}), {total_messages} msgs")
-        self._emit_event("AUTO_COMPACTION_TRIGGERED", process.pid,
-                         {"current_tokens": current_tokens, "threshold": threshold})
-
-        tokens_before = current_tokens
-        success = await self._compaction_for_process(process.pid, mmu)
-        tokens_after = mmu.estimate_tokens()
-
-        if success:
-            if vcpu:
-                vcpu._state.compaction_count += 1
-            pct = 100 - (tokens_after * 100 // tokens_before) if tokens_before else 0
-            logger.info(f"[{process.pid}] Auto-compaction done: "
-                        f"{tokens_before}→{tokens_after} tokens (-{pct}%)")
-        else:
-            logger.warning(f"[{process.pid}] Auto-compaction failed, sliding window fallback")
-        # Never crash — sliding window is the ultimate safety net
+        """Proactive auto-compaction (delegated to CompactionService)."""
+        await self._compaction_service.check_compaction(process)
 
     async def _compaction_for_process(self, pid: str, mmu: MMU) -> bool:
-        try:
-            session_id = "unknown"
-            if hasattr(self._llm, "_client") and hasattr(self._llm._client, "session_id"):
-                session_id = self._llm._client.session_id
-
-            # Calculate dynamic summary budget based on pinned context budget
-            # Summary should take at most 30% of pinned budget to leave room for system rules
-            pinned_budget = mmu.config.pinned_budget  # e.g., 2000 tokens
-            summary_token_budget = int(pinned_budget * 0.3)  # e.g., 600 tokens
-            # Rough estimate: 1 token ≈ 2-3 Chinese chars, 4 English chars
-            summary_char_budget = summary_token_budget * 2  # Conservative for Chinese
-
-            async def compress_summary(text: str, max_chars: int) -> str:
-                """Use LLM to intelligently compress a summary that's too long."""
-                compress_prompt = (
-                    f"以下摘要过长，请精简到{max_chars}字符以内，保留最关键的信息：\n\n"
-                    f"{text}\n\n"
-                    f"要求：\n"
-                    f"1. 优先保留：用户提供的密码/密钥、关键代码、配置信息\n"
-                    f"2. 其次保留：当前任务状态、重要决策\n"
-                    f"3. 可省略：过程细节、已解决的问题\n"
-                    f"请直接输出精简后的摘要（不超过{max_chars}字符）："
-                )
-                try:
-                    response = await self._llm.chat(
-                        messages=[{"role": "user", "content": compress_prompt}],
-                        tools=None,
-                    )
-                    if response and response.content:
-                        return response.content[:max_chars]  # Final hard limit
-                except Exception as e:
-                    logger.warning(f"Summary compression failed: {e}")
-                # Fallback: simple truncation at sentence boundary
-                truncated = text[:max_chars]
-                for sep in ["。", ".", "\n"]:
-                    pos = truncated.rfind(sep)
-                    if pos > max_chars * 0.7:
-                        return truncated[: pos + 1] + "...[已压缩]"
-                return truncated + "...[已压缩]"
-
-            # Create a summarizer that uses the LLM to generate a summary
-            # Read Memo/NimFS content to include in summary (so key info survives compaction)
-            memo_context = ""
-            if hasattr(mmu, '_memo_manager') and mmu._memo_manager:
-                try:
-                    memo_content = mmu._memo_manager.read()
-                    if memo_content and memo_content.strip():
-                        memo_context = memo_content.strip()
-                except Exception:
-                    pass
-
-            # Read Global knowledge from NimFS (preferred) or legacy Global Memo
-            global_memo_context = ""
-            if hasattr(mmu, '_nimfs_manager') and mmu._nimfs_manager:
-                try:
-                    gc = mmu._nimfs_manager.load_context(
-                        current_goal="Summarize project knowledge for compaction",
-                        max_chars=500
-                    )
-                    if gc and gc.strip():
-                        global_memo_context = gc.strip()[:300]
-                except Exception:
-                    pass
-            if not global_memo_context and hasattr(mmu, '_global_memo_manager') and mmu._global_memo_manager:
-                try:
-                    gc = mmu._global_memo_manager.read()
-                    if gc and gc.strip():
-                        global_memo_context = gc.strip()[:300]
-                except Exception:
-                    pass
-
-            async def generate_summary(messages: list) -> str:
-                """Generate a summary of the conversation using LLM."""
-                try:
-                    # Extract any previous summary from messages (to preserve cascade info)
-                    previous_summary = ""
-                    for m in messages:
-                        content = str(m.content) if m.content else ""
-                        if any(marker in content for marker in [
-                            "[Memory Recall]", "关键信息摘要",
-                            "\U0001f3af PRIMARY GOAL", "\U0001f4dd EXECUTION STATUS",
-                            "[Mission Control]",
-                        ]):
-                            previous_summary = content
-                            break
-
-                    # Build a prompt for summarization - 均匀采样覆盖全部历史
-                    sample_size = min(len(messages), 50)
-                    step = max(1, len(messages) // sample_size)
-                    sampled = messages[::step][-sample_size:]
-
-                    # Ensure the first user message is always included (original instruction)
-                    first_user_msg = None
-                    for m in messages:
-                        if m.role == "user":
-                            first_user_msg = m
-                            break
-                    if first_user_msg is not None and first_user_msg not in sampled:
-                        sampled.insert(0, first_user_msg)
-
-                    context = "\n".join(
-                        f"[{m.role.upper()}]: {str(m.content)[:300]}"
-                        for m in sampled
-                    )
-
-                    # Append Memo content so summarizer preserves key info from notes
-                    if memo_context:
-                        context += f"\n\n【用户备忘录 Memo】\n{memo_context[:500]}"
-
-                    if global_memo_context:
-                        context += f"\n\n【全局知识 Global Memo】\n{global_memo_context}"
-
-                    # Calculate target length based on whether we're merging
-                    target_chars = summary_char_budget
-                    if previous_summary:
-                        # When merging, be more aggressive about compression
-                        target_chars = int(summary_char_budget * 0.8)
-
-                    # Include previous summary to prevent cascade loss
-                    if previous_summary:
-                        summary_prompt = (
-                            "请作为任务管理者，合并并更新以下执行摘要。\n\n"
-                            f"【之前的摘要】\n{previous_summary[:1000]}\n\n"
-                            f"【新进展】\n{context}\n\n"
-                            "**核心要求**：\n"
-                            "1. 必须保留所有关键技术细节（代码路径、配置值、密码）。\n"
-                            "2. 必须评估当前进度与最终目标的距离（防止任务漂移）。\n"
-                            "3. 必须保留用户的原始任务指令和目标。\n"
-                            f"请用中文回复（{target_chars}字以内）。\n\n"
-                            "**OUTPUT FORMAT**:\n"
-                            "NEW_MILESTONES: [Milestone 1], [Milestone 2]\n"
-                            "SUMMARY: [Your summary content here]"
-                        )
-                    else:
-                        summary_prompt = (
-                            "请作为任务管理者，总结当前执行状态。\n\n"
-                            f"【对话内容】\n{context}\n\n"
-                            "**核心要求**：\n"
-                            "1. 提取所有关键技术细节（代码路径、配置值、密码）。\n"
-                            "2. 明确下一步行动计划。\n"
-                            "3. 必须保留用户的原始任务指令和目标。\n"
-                            f"请用中文回复（{target_chars}字以内）。\n\n"
-                            "**OUTPUT FORMAT**:\n"
-                            "NEW_MILESTONES: [Milestone 1]\n"
-                            "SUMMARY: [Your summary content here]"
-                        )
-
-                    # Use LLM.chat() to generate summary (not complete())
-                    response = await self._llm.chat(
-                        messages=[{"role": "user", "content": summary_prompt}],
-                        tools=None,  # No tools needed for summary
-                    )
-
-                    if response and response.content:
-                        # Parse response for milestones
-                        content = response.content
-                        milestones = []
-                        summary = content
-
-                        if "NEW_MILESTONES:" in content and "SUMMARY:" in content:
-                            try:
-                                parts = content.split("SUMMARY:", 1)
-                                milestone_part = parts[0].replace("NEW_MILESTONES:", "").strip()
-                                summary = parts[1].strip()
-
-                                if milestone_part and milestone_part.lower() != "none":
-                                    milestones = [m.strip() for m in milestone_part.split(",") if m.strip()]
-                            except Exception:
-                                pass # Fallback to raw content if parsing fails
-
-                        # Register milestones with MMU
-                        if milestones:
-                            mmu.add_milestones(milestones)
-                            logger.info(f"🚩 Registered milestones: {milestones}")
-
-                        # Smart budget check: if over budget, use LLM to re-compress
-                        if len(summary) > summary_char_budget:
-                            logger.warning(
-                                f"Summary ({len(summary)} chars) exceeds budget ({summary_char_budget} chars), "
-                                f"using LLM to compress..."
-                            )
-                            summary = await compress_summary(summary, summary_char_budget)
-                            logger.info(f"Summary compressed to {len(summary)} chars")
-
-                        return summary
-                    return "Summary generation failed"
-                except Exception as e:
-                    logger.warning(f"Summary generation failed: {e}")
-                    return f"[Summary unavailable: {e}]"
-
-            archive_path = await mmu.archive_and_reset(session_id, summarizer=generate_summary)
-
-            if archive_path:
-                logger.info(
-                    f"[{pid}] Memory compaction successful: Context archived to {archive_path}"
-                )
-                return True
-
-            logger.warning(f"[{pid}] Memory archiving skipped (no messages?), but allowing reset")
-            return True
-
-        except Exception as e:
-            logger.error(f"[{pid}] Compaction failed: {e}")
-            return False
+        """Process-level compaction (delegated to CompactionService)."""
+        return await self._compaction_service.compact_process(pid, mmu)
 
     def interrupt(self, session_id: Optional[str] = None) -> bool:
         signalled = False
@@ -1465,334 +941,19 @@ class AgentOS:
         return True
 
     async def _run_process(self, process: Process) -> ToolResult:
+        from nimbus.core.process.loop import RuntimeLoop
+
         self._ensure_heart_running()
-        try:
-            if process.vcpu is None:
-                raise RuntimeError("Process has no VCPU")
-
-            if not process.vcpu.is_running:
-                process.vcpu._reset()
-                process.vcpu._is_active = True
-
-                if process.vcpu.config.pin_goal and process.role != "chat":
-                    pinned_goal = await process.vcpu._prepare_goal_for_pinning(process.goal)
-                    process.mmu.pin_user_goal(pinned_goal)
-                    process.mmu.add_user_message(process.goal)
-
-            final_result = None
-
-            while process.vcpu._is_active:
-                # A task wrapping the single FSM tick
-                step_task = asyncio.create_task(process.vcpu.step())
-                interrupt_task = asyncio.create_task(process.interrupt_event.wait())
-                
-                done, pending = await asyncio.wait(
-                    [step_task, interrupt_task],
-                    return_when=asyncio.FIRST_COMPLETED
-                )
-                
-                if interrupt_task in done:
-                    # User clicked stop mid-step! Cancel the VCPU execution cleanly
-                    step_task.cancel()
-                    logger.info(f"[{process.pid}] Step cancelled concurrently by interrupt event")
-                    
-                    process.state = "CANCELLED"
-                    process.interrupt_event.clear()
-                    process.vcpu._is_active = False 
-                    return ToolResult(
-                        status="CANCELLED",
-                        fault=Fault(domain="KERNEL", code="INTERRUPTED", message="Interrupted by user")
-                    )
-                else:
-                    # Cancel the unused interrupt watcher
-                    interrupt_task.cancel()
-                    
-                # Handle whatever standard inbox operations still need doing
-                # inbox may be Mailbox (from spawn) or list (from chat) -- duck type
-                while process.inbox:
-                    if hasattr(process.inbox, 'qsize'):
-                        # Mailbox (from spawn)
-                        if process.inbox.qsize() == 0:
-                            break
-                        try:
-                            msg = process.inbox._queue.get_nowait()
-                        except Exception:
-                            break
-                    else:
-                        # List (from chat)
-                        msg = process.inbox.pop(0)
-
-                    if not msg:
-                        break
-
-                    # Handle both IPCMessage objects and plain strings
-                    if hasattr(msg, 'type') and hasattr(msg, 'payload'):
-                        # IPCMessage from inject_message() or IPC system
-                        if msg.type == "request":
-                            task_goal = msg.payload.get("goal", "")
-                            process.mmu.add_user_message(f"[Task Assignment] {task_goal}")
-                        elif msg.type == "response":
-                            result_data = msg.payload.get("result", "")
-                            process.mmu.add_user_message(f"[Sub-Agent Result from {msg.sender_pid}] {result_data}")
-                        else:
-                            content = msg.payload.get("content", str(msg.payload))
-                            if process.role == "chat":
-                                process.mmu.add_user_message(content)
-                            else:
-                                process.mmu.add_user_message(f"[User Intervention] {content}")
-
-                        self._emit_event("USER_INTERVENTION", process.pid, {"content": str(msg.payload)})
-                        logger.info(f"[{process.pid}] Processed inbox message {msg.id} from {msg.sender_pid}")
-                    else:
-                        # Plain string from _handle_interventions() or legacy code
-                        content = str(msg)
-                        if process.role == "chat":
-                            process.mmu.add_user_message(content)
-                        else:
-                            process.mmu.add_user_message(f"[User Intervention] {content}")
-                        self._emit_event("USER_INTERVENTION", process.pid, {"content": content})
-                        logger.info(f"[{process.pid}] Processed inbox string message: {content[:50]}...")
-
-                await self._check_compaction(process)
-
-                # Check iteration limit (iteration-based budget instead of wall-clock timeout)
-                vcpu = process.vcpu
-                if vcpu.iteration >= vcpu.config.max_iterations:
-                    if (vcpu.config.compact_on_limit
-                            and vcpu._state.compaction_count < vcpu.config.max_compactions):
-                        # Compact context and continue (within compaction budget)
-                        compacted = await self._compaction_for_process(process.pid, process.mmu)
-                        if compacted:
-                            vcpu._state.compaction_count += 1
-                            logger.info(
-                                f"[{process.pid}] Compaction #{vcpu._state.compaction_count}/{vcpu.config.max_compactions} complete, "
-                                f"resetting iteration counter (was {vcpu.iteration})"
-                            )
-                            vcpu._state.iteration_count = 0
-                            # Reset FSM state so the agent can continue after compaction.
-                            # The first vcpu.step() call (line ~1486) may have already
-                            # transitioned to StateCompleted and set _is_active=False.
-                            # Without this reset, the while-loop exits immediately.
-                            from nimbus.core.runtime.states import StateInit
-                            process.vcpu._is_active = True
-                            process.vcpu._current_state = StateInit()
-                            process.vcpu._fsm_ctx.final_result = None
-                            continue
-                        # Compaction failed — fall through to budget exceeded
-                        logger.warning(
-                            f"[{process.pid}] Compaction failed, stopping process"
-                        )
-                    # Budget exceeded (or compaction disabled/failed)
-                    # Give the LLM one final step to summarize what it did
-                    logger.info(
-                        f"[{process.pid}] Iteration budget reached "
-                        f"({vcpu.iteration}/{vcpu.config.max_iterations}), "
-                        f"requesting final summary..."
-                    )
-                    process.mmu.add_user_message(
-                        "[SYSTEM] You have reached your iteration limit. "
-                        "Do NOT call any more tools. Immediately respond with a summary of: "
-                        "1) what you completed, 2) what remains unfinished."
-                    )
-                    # Reset FSM so the final step actually processes the summary prompt.
-                    # The prior step() may have left the FSM in StateCompleted with
-                    # _is_active=False, which would cause step() to fast-forward and
-                    # return a stale result without consulting the LLM.
-                    from nimbus.core.runtime.states import StateInit
-                    process.vcpu._is_active = True
-                    process.vcpu._current_state = StateInit()
-                    process.vcpu._fsm_ctx.final_result = None
-                    # Run one final step for the summary
-                    final_step = await process.vcpu.step()
-                    process.state = "SUCCEEDED"
-                    asyncio.create_task(self.heart.inbox.put(
-                        topic="session.failure",
-                        payload={"session_id": process.pid, "error": "Iteration budget reached, forced summary"}
-                    ))
-                    # Extract LLM's text response as the output
-                    summary = ""
-                    if final_step.is_final and final_step.final_result:
-                        summary = final_step.final_result.output or ""
-                    elif final_step.actions:
-                        # LLM might have responded with text (RETURN action)
-                        for action in final_step.actions:
-                            if action.kind == "RETURN":
-                                summary = action.args.get("result", "")
-                                break
-                            elif action.kind == "THOUGHT":
-                                summary = action.args.get("content", "")
-                    if not summary:
-                        summary = (
-                            f"Iteration budget reached ({vcpu.config.max_iterations} iterations). "
-                            f"Task may be partially complete."
-                        )
-                    return ToolResult(status="OK", output=summary)
-
-                step_result = await process.vcpu.step()
-                
-                # Report iteration to Heart for stall detection
-                has_output = False
-                if step_result.final_result and step_result.final_result.output:
-                    has_output = True
-                elif step_result.results:
-                    # Check if any tool result has output
-                    has_output = any(getattr(r, "output", None) for r in step_result.results)
-                
-                asyncio.create_task(self.heart.inbox.put(
-                    topic="session.iteration",
-                    payload={
-                        "session_id": process.pid,
-                        "iteration": process.vcpu.iteration,
-                        "has_output": has_output
-                    }
-                ))
-
-                # Handle CONTEXT_OVERFLOW fault - trigger compaction and retry
-                if step_result.fault and step_result.fault.code == "CONTEXT_OVERFLOW":
-                    ctx = step_result.fault.context or {}
-                    overflow_tokens = ctx.get("current_tokens") or 0
-                    logger.info(
-                        f"[{process.pid}] Context overflow ({overflow_tokens} tokens), "
-                        f"triggering compaction..."
-                    )
-                    self._emit_event(
-                        "COMPACTION_TRIGGERED",
-                        process.pid,
-                        {"current_tokens": overflow_tokens, "threshold": ctx.get("threshold")},
-                    )
-
-                    # Measure tokens before compaction to verify effectiveness
-                    tokens_before = process.mmu.estimate_tokens()
-                    success = await self._compaction_for_process(process.pid, process.mmu)
-                    tokens_after = process.mmu.estimate_tokens()
-
-                    if success and tokens_after < tokens_before * 0.8:
-                        pct = (
-                            f"-{100 - tokens_after * 100 // tokens_before}%"
-                            if tokens_before > 0
-                            else f"freed {tokens_before - tokens_after}"
-                        )
-                        logger.info(
-                            f"[{process.pid}] Compaction effective: "
-                            f"{tokens_before} → {tokens_after} tokens "
-                            f"({pct}), retrying step..."
-                        )
-                        continue  # Retry the step after compaction
-                    else:
-                        reason = (
-                            f"tokens {tokens_before} → {tokens_after} (insufficient reduction)"
-                            if success
-                            else "compaction returned failure"
-                        )
-                        logger.error(f"[{process.pid}] Compaction ineffective: {reason}")
-                        process.state = "FAILED"
-                        asyncio.create_task(self.heart.inbox.put(
-                            topic="session.failure",
-                            payload={"session_id": process.pid, "error": f"Compaction ineffective: {reason}"}
-                        ))
-                        return ToolResult(
-                            status="ERROR",
-                            fault=Fault(
-                                domain="MEMORY",
-                                code="COMPACTION_FAILED",
-                                message=f"Context overflow and compaction ineffective: {reason}",
-                            ),
-                        )
-
-                if step_result.fault and not step_result.fault.retryable:
-                    process.state = "FAILED"
-                    return ToolResult(status="ERROR", fault=step_result.fault)
-
-                if step_result.is_final:
-                    # Only extend execution for chat processes where a user
-                    # may have sent a new message while the agent was finishing.
-                    # Sub-agent processes (explorer, implementer, etc.) should
-                    # terminate immediately — they have no interactive user.
-                    if process.role == "chat" and process.inbox:
-                        logger.info(
-                            f"[{process.pid}] Chat process got new user message "
-                            f"during final step, extending execution..."
-                        )
-                        process.vcpu._state.is_done = False
-                        continue
-
-                    process.state = "SUCCEEDED"
-                    final_result = step_result.final_result or ToolResult(
-                        status="OK", output="Completed"
-                    )
-                    break
-
-                await asyncio.sleep(0)
-
-            self._emit_event(
-                "PROC_FINISHED",
-                process.pid,
-                {
-                    "state": process.state,
-                    "status": final_result.status if final_result else "UNKNOWN",
-                },
-            )
-
-            # NimFS GC: clean up TASK-level artifacts when a sub-process finishes
-            self._nimfs_gc_task(process)
-
-            return final_result or ToolResult(status="OK")
-
-        except asyncio.TimeoutError:
-            # Timeout: attempt to scavenge partial results before destroying the process
-            process.state = "TIMEOUT"
-            partial_result = self._scavenge_partial_result(process)
-            asyncio.create_task(self.heart.inbox.put(
-                topic="session.timeout",
-                payload={
-                    "session_id": process.pid,
-                    "error": "Process timed out",
-                    "partial_salvaged": partial_result.output is not None,
-                },
-            ))
-            self._emit_event(
-                "PROC_TIMEOUT",
-                process.pid,
-                {"partial_salvaged": partial_result.output is not None},
-            )
-            process.result = partial_result
-            return partial_result
-
-        except asyncio.CancelledError:
-            # Reset process state
-            process.state = "CANCELLED"
-            process.interrupt_event.clear()  # Clear stale signal so next run isn't auto-cancelled
-            asyncio.create_task(self.heart.inbox.put(
-                topic="session.timeout",
-                payload={"session_id": process.pid, "error": "Process was cancelled/timed out"}
-            ))
-            process.result = ToolResult(
-                status="CANCELLED",
-                fault=Fault(
-                    domain="KERNEL",
-                    code="SYSTEM_ERROR",
-                    message="Process was cancelled",
-                    retryable=True,
-                ),
-            )
-            raise
-
-        except Exception as e:
-            process.state = "FAILED"
-            asyncio.create_task(self.heart.inbox.put(
-                topic="session.error",
-                payload={"session_id": process.pid, "error": str(e)}
-            ))
-            process.result = ToolResult(
-                status="ERROR",
-                fault=Fault(
-                    domain="KERNEL",
-                    code="SYSTEM_ERROR",
-                    message=str(e),
-                    retryable=False,
-                ),
-            )
-            return process.result
+        loop = RuntimeLoop(
+            process=process,
+            compaction_fn=self._compaction_for_process,
+            check_compaction_fn=self._check_compaction,
+            heart=self.heart,
+            emit_event_fn=self._emit_event,
+            nimfs_gc_fn=self._nimfs_gc_task,
+            scavenge_fn=self._scavenge_partial_result,
+        )
+        return await loop.run()
 
     # =========================================================================
     # Parallel Dispatch & Scavenging
@@ -2189,22 +1350,6 @@ class AgentOS:
     # Internal Methods
     # =========================================================================
 
-    def _create_mmu(self, pid: str, system_rules: Optional[str] = None) -> MMU:
-        """Create an MMU for a process."""
-        mmu = MMU(config=self.config.mmu_config, process_id=pid)
-
-        sys_rules = system_rules if system_rules is not None else self.config.system_rules
-
-        # Set pinned context
-        pinned = PinnedContext(
-            system_rules=sys_rules,
-            workspace_info=self.config.workspace_info,
-            capabilities=self.config.capabilities,
-        )
-        mmu.set_pinned(pinned)
-
-        return mmu
-
     def _create_gate(
         self,
         pid: str,
@@ -2241,217 +1386,8 @@ class AgentOS:
 
 
 # =============================================================================
-# Factory Functions
+# Factory Functions (re-exported from nimbus.orchestration.bootstrap)
 # =============================================================================
 
-
-def create_agent_os(
-    llm_client: Any,
-    tools: Optional[Dict[str, Callable]] = None,
-    system_rules: str = "",
-    max_processes: int = 10,
-    default_timeout: float = 300.0,
-    workspace: Optional["Path"] = None,
-    register_defaults: bool = True,
-    kernel_tools: bool = True,
-    skill_paths: Optional[List[Path]] = None,
-    # New arguments
-    config: Optional[AgentOSConfig] = None,
-    profile: Optional[str | AgentProfile] = None,
-    model_id: str = "default",
-) -> AgentOS:
-    """
-    Factory function to create an AgentOS with common defaults.
-
-    Args:
-        llm_client: LLM client for vCPUs
-        tools: Initial tool registry (additional to defaults)
-        system_rules: System rules for all processes
-        max_processes: Maximum concurrent processes
-        default_timeout: Default execution timeout
-        workspace: Workspace path for tool sandboxing
-        register_defaults: Whether to register default v2 tools (Read, Write, etc.)
-        kernel_tools: Whether to auto-register kernel tools (Read, Write, Edit, Bash)
-        profile: AgentProfile configuration (overrides manual config)
-        model_id: Model ID for dynamic prompt generation
-
-    Returns:
-        Configured AgentOS instance with default tools registered
-    """
-    from pathlib import Path
-
-    if workspace is None:
-        workspace = Path.cwd()
-
-    if config is None:
-        config = AgentOSConfig(
-            max_processes=max_processes,
-            default_timeout=default_timeout,
-            system_rules=system_rules or AgentOSConfig.system_rules,
-            workspace_info=f"Workspace: {workspace}",
-            kernel_tools=kernel_tools,
-            skill_paths=skill_paths or [],
-        )
-
-    # Allow overriding limits via environment variables (for testing compaction)
-    import os as _os
-    _max_ctx = _os.environ.get("NIMBUS_MAX_CONTEXT_TOKENS")
-    if _max_ctx:
-        config.mmu_config.max_context_tokens = int(_max_ctx)
-        config.mmu_config.frame_budget = max(int(_max_ctx) - config.mmu_config.pinned_budget, 1000)
-        logger.info(f"MMU override: max_context_tokens={config.mmu_config.max_context_tokens}, frame_budget={config.mmu_config.frame_budget}")
-    _max_iter = _os.environ.get("NIMBUS_MAX_ITERATIONS")
-    if _max_iter:
-        config.vcpu_config.max_iterations = int(_max_iter)
-        logger.info(f"VCPU override: max_iterations={config.vcpu_config.max_iterations}")
-
-    # Handle profile overrides
-    target_profile = None
-    if isinstance(profile, str):
-        if profile == "executor":
-            target_profile = AgentProfile.create_executor(model_id)
-        elif profile == "orchestrator":
-            target_profile = AgentProfile.create_orchestrator(model_id)
-        else:
-            target_profile = AgentProfile.create_standard(model_id)
-    elif isinstance(profile, AgentProfile):
-        target_profile = profile
-
-    if target_profile:
-        config.system_rules = target_profile.system_prompt
-        # Apply runtime config from profile to VCPU config
-        # (env var overrides take precedence over profile defaults)
-        if not _max_iter:
-            config.vcpu_config.max_iterations = target_profile.max_iterations
-        config.vcpu_config.max_consecutive_thoughts = target_profile.max_consecutive_thoughts
-
-    os = AgentOS(llm_client=llm_client, tools=tools, config=config)
-
-    if register_defaults:
-        from nimbus.tools import register_default_tools
-        ws = workspace
-
-        # If profile is None, workspace is already set above
-        # If profile is present, use it to determine tool registration
-
-        if isinstance(profile, str) and profile == "orchestrator":
-            # Orchestrator Profile: Specialist tools + basic tools
-            register_default_tools(os, workspace=ws, tools=["Read", "Bash"])
-            # Executor tools (for specialists)
-            register_default_tools(os, workspace=ws, tools=["Write", "Edit"], roles=["executor", "implementer", "architect", "explorer", "tester"])
-
-            # --- Register NimFS Tools (shared virtual disk + Agent IPC) ---
-            # Read tools: available to all roles (no role restriction)
-            register_default_tools(os, workspace=ws, tools=[
-                "NimFSReadArtifact", "NimFSListArtifacts", "NimFSSearchMemory", "NimFSLoadContext",
-            ])
-            # WriteArtifact: specialists that produce artifacts (not orchestrator, not explorer)
-            register_default_tools(os, workspace=ws, tools=["NimFSWriteArtifact"],
-                roles=["executor", "implementer", "architect", "tester"])
-            # WriteMemory: orchestrator + implementation roles (not explorer, not tester)
-            register_default_tools(os, workspace=ws, tools=["NimFSWriteMemory"],
-                roles=["orchestrator", "chat", "executor", "implementer", "architect"])
-
-            # --- Register SubmitResult pseudo-tool (for specialist agents only) ---
-            # This is a "fake tool" — VCPU intercepts it in _handle_tool_call before
-            # reaching the Gate.  It gives backend specialists an explicit, deterministic
-            # way to signal task completion instead of relying on plain-text heuristics.
-            async def _submit_result_noop(**kwargs):
-                # Should never be called; VCPU intercepts SubmitResult before Gate.
-                return kwargs.get("result", "")
-
-            SPECIALIST_ROLES = ["executor", "explorer", "implementer", "architect", "tester"]
-            os.register_tool(
-                name="SubmitResult",
-                func=_submit_result_noop,
-                description=(
-                    "Submit your final result and end the task. You MUST call this tool "
-                    "when your work is complete. Pass your findings/summary as the "
-                    "'result' parameter. Plain text output is NOT delivered — only "
-                    "SubmitResult output is returned to the orchestrator."
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "result": {
-                            "type": "string",
-                            "description": "Your final result summary to return to the orchestrator.",
-                        },
-                    },
-                    "required": ["result"],
-                },
-                roles=SPECIALIST_ROLES,
-                category="system",
-            )
-
-            # --- Register Specialist Tools ---
-            from nimbus.orchestration.specialist_tools import (
-                ExploreTool, ImplementTool, DesignTool, TestTool,
-            )
-            from nimbus.orchestration.tools import (
-                EXPLORE_TOOL_DEF, IMPLEMENT_TOOL_DEF, DESIGN_TOOL_DEF, TEST_TOOL_DEF,
-                VERIFY_TOOL_DEF,
-            )
-
-            explore_tool = ExploreTool(agent_os=os, workspace=ws)
-            implement_tool = ImplementTool(agent_os=os, workspace=ws)
-            design_tool = DesignTool(agent_os=os, workspace=ws)
-            test_tool = TestTool(agent_os=os, workspace=ws)
-
-            for tool_inst, tool_def in [
-                (explore_tool, EXPLORE_TOOL_DEF),
-                (implement_tool, IMPLEMENT_TOOL_DEF),
-                (design_tool, DESIGN_TOOL_DEF),
-                (test_tool, TEST_TOOL_DEF),
-            ]:
-                os.register_tool(
-                    name=tool_def["name"],
-                    func=tool_inst.execute,
-                    description=tool_def["description"],
-                    parameters=tool_def["parameters"],
-                    roles=["orchestrator", "chat"],
-                    category="extension",
-                )
-
-
-            # Register Verify (standalone, no DispatchTool dependency)
-            async def _verify_handler(checks=None, **kwargs):
-                import json as _json
-                if checks is None:
-                    checks = kwargs.get("checks", [])
-                if isinstance(checks, str):
-                    try:
-                        checks = _json.loads(checks)
-                    except _json.JSONDecodeError:
-                        return "[Error] Invalid checks format. Expected a JSON array."
-                if not isinstance(checks, list) or not checks:
-                    return "[Error] Verify requires a non-empty 'checks' array."
-                return await run_verify_checks(checks, ws)
-
-            from nimbus.orchestration.tools import run_verify_checks
-            os.register_tool(
-                name="Verify",
-                func=_verify_handler,
-                description=VERIFY_TOOL_DEF["description"],
-                parameters=VERIFY_TOOL_DEF["parameters"],
-                roles=["orchestrator", "chat"],
-                category="extension",
-            )
-
-            # Register ReviewCommittee
-            from nimbus.orchestration.review_tool import REVIEW_TOOL_DEF, ReviewTool
-            review_tool = ReviewTool(agent_os=os, workspace=ws)
-            os.register_tool(
-                name="ReviewCommittee",
-                func=review_tool.review,
-                description=REVIEW_TOOL_DEF["description"],
-                parameters=REVIEW_TOOL_DEF["parameters"],
-                roles=["orchestrator", "chat"],
-                category="extension",
-            )
-
-        else:
-            # Standard Profile: All tools for everyone
-            register_default_tools(os, workspace=ws)
-
-    return os
+# Re-export for backward compatibility
+from nimbus.orchestration.bootstrap import create_agent_os  # noqa: F401

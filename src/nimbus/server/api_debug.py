@@ -55,11 +55,12 @@ async def get_context(
     """Get the full assembled context for a session."""
     agent_os = await session_manager.get_or_create_agent(session_id)
 
-    if not agent_os or not hasattr(agent_os, "_vcpu") or not agent_os._vcpu:
+    process = agent_os.get_process(session_id) if agent_os else None
+    if not process or not process.vcpu:
         raise HTTPException(status_code=404, detail="Session or VCPU not found")
 
-    vcpu = agent_os._vcpu
-    mmu = vcpu.mmu
+    vcpu = process.vcpu
+    mmu = process.mmu
 
     # Assemble full context
     messages = mmu.assemble_context(filter_discardable=False)
@@ -87,10 +88,11 @@ async def get_state(
     """Get the VCPU state for a session."""
     agent_os = await session_manager.get_or_create_agent(session_id)
 
-    if not agent_os or not hasattr(agent_os, "_vcpu") or not agent_os._vcpu:
+    process = agent_os.get_process(session_id) if agent_os else None
+    if not process or not process.vcpu:
         raise HTTPException(status_code=404, detail="Session or VCPU not found")
 
-    vcpu = agent_os._vcpu
+    vcpu = process.vcpu
     state = vcpu.get_state()
 
     return DebugState(
@@ -111,10 +113,11 @@ async def get_messages_raw(
     """Get raw messages from all frames."""
     agent_os = await session_manager.get_or_create_agent(session_id)
 
-    if not agent_os or not hasattr(agent_os, "_vcpu") or not agent_os._vcpu:
+    process = agent_os.get_process(session_id) if agent_os else None
+    if not process or not process.vcpu:
         raise HTTPException(status_code=404, detail="Session or VCPU not found")
 
-    mmu = agent_os._vcpu.mmu
+    mmu = process.mmu
 
     frames = []
     for i, frame in enumerate(mmu._stack):
