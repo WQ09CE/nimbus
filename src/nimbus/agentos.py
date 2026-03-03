@@ -309,7 +309,7 @@ class AgentOS:
             )
         )
         self.heart.add_module(SessionMonitorModule(error_threshold=3))
-        self.heart.add_module(MemoryManagerModule())
+        self.heart.add_module(MemoryManagerModule(llm_client=self._llm))
         self._heart_task: Optional[asyncio.Task] = None
         self._intervention_task: Optional[asyncio.Task] = None
 

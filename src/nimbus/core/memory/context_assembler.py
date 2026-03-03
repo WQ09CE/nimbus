@@ -182,9 +182,22 @@ class ContextAssembler:
         # 2. State & Memo
         global_summary = getattr(self.mmu, "_global_summary", "")
         clipboard = getattr(self.mmu, "_clipboard", "")
+        
+        # Profile Store (Semantic Memory)
+        profile_store = getattr(self.mmu, "_profile_store", None)
+        profile_summary = profile_store.get_all_summary() if profile_store else ""
+        
+        # Procedural Store (Strategies)
+        procedural_store = getattr(self.mmu, "_procedural_store", None)
+        strategy_summary = procedural_store.get_top_strategies_summary() if procedural_store else ""
+
         memo_text = ""
         if global_summary:
             memo_text += f"GLOBAL SUMMARY (Previous Sessions):\n{global_summary}\n\n"
+        if profile_summary:
+            memo_text += f"SEMANTIC PROFILE (Long-term Agent Context):\n{profile_summary}\n\n"
+        if strategy_summary:
+            memo_text += f"AGENT STRATEGIES (Procedural Memory):\n{strategy_summary}\n\n"
         if clipboard:
             memo_text += f"CLIPBOARD / NOTES:\n{clipboard}\n\n"
 

@@ -121,7 +121,8 @@ class MemoryManagerModule(HeartModule):
     - Background GC
     - Concurrency control via AsyncRWLock with Watchdog
     """
-    def __init__(self, gc_interval_ticks: int = 60, lock_timeout: float = 30.0):
+    def __init__(self, llm_client: Optional[Any] = None, gc_interval_ticks: int = 60, lock_timeout: float = 30.0):
+        self.llm_client = llm_client
         self.gc_interval_ticks = gc_interval_ticks
         self.lock_timeout = lock_timeout
         self.ticks_count = 0
@@ -178,10 +179,83 @@ class MemoryManagerModule(HeartModule):
         if self.brain_state != "idle":
             return
 
+        if not self.llm_client:
+            logger.debug("MemoryManager: No LLM client attached, skipping reflection GC.")
+            return
+
         try:
             async with self.rwlock.write_lock(timeout=10.0):
-                logger.info("Running NimFS Artifact GC...")
-                pass
+                logger.info("Running Agent Episodic Reflection & Profile Compression (GC)...")
+                
+                from nimbus.core.memory.episodic_store import EpisodicStore
+                from nimbus.core.memory.profile_store import ProfileStore
+                from nimbus.core.memory.procedural_store import ProceduralStore
+                from nimbus.core.memory.profile_schema import ProfileEntityModel
+                from nimbus.core.memory.strategy_schema import StrategyModel
+                from pathlib import Path
+                import json
+                
+                workspace = Path(heart.config.workspace)
+                episodic = EpisodicStore(workspace)
+                profile = ProfileStore(workspace)
+                procedural = ProceduralStore(workspace)
+                
+                # Fetch recent unreflected episodes (dummy logic for MVP: just get latest session snippets)
+                recent_logs = episodic.search("", limit=30)
+                if not recent_logs:
+                    return
+                
+                prompt = (
+                    "You are a background memory processor. Review the following recent interaction logs "
+                    "between an AI Agent and a User. Extract two types of information:\n"
+                    "1. Important LONG-TERM facts about the user's preferences, project architecture, or technical decisions.\n"
+                    "2. Reusable PROCEDURAL STRATEGIES if the agent successfully completed a complex sequence of actions, solved an error, or formed a reliable routine.\n\n"
+                    "Respond EXACTLY with a JSON object containing two lists: 'entities' and 'strategies'.\n"
+                    "For 'entities', each MUST have:\n"
+                    "- 'key': A short slugname for the fact (e.g. 'frontend_framework')\n"
+                    "- 'value': The value of the fact\n"
+                    "- 'entity_type': One of ['preference', 'tech_stack', 'project_context', 'decision', 'other']\n\n"
+                    "For 'strategies', each MUST have:\n"
+                    "- 'condition': The trigger situation, goal, or error (e.g., 'When hitting 502 Bad Gateway')\n"
+                    "- 'action': The successful sequence of steps or resolution taken.\n\n"
+                    "If nothing important is found, return {\"entities\": [], \"strategies\": []}.\n\nLogs:\n"
+                )
+                for log in recent_logs:
+                    prompt += f"[{log.get('role', 'unknown')}]: {log.get('snippet', '')}\n"
+
+                def _call_llm():
+                    return self.llm_client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[{"role": "user", "content": prompt}],
+                        response_format={"type": "json_object"}
+                    )
+                
+                response = await asyncio.to_thread(_call_llm)
+                
+                try:
+                    content = response.choices[0].message.content
+                    data = json.loads(content)
+                    entities = data.get("entities", [])
+                    for e in data.get("entities", []):
+                        model = ProfileEntityModel(
+                            key=e["key"],
+                            value=e["value"],
+                            entity_type=e.get("entity_type", "other"),
+                            confidence="inferred"
+                        )
+                        profile.upsert(model)
+                        logger.info(f"Background GC extracted new Semantic Fact: {e['key']} -> {e['value']}")
+                        
+                    for s in data.get("strategies", []):
+                        strat = StrategyModel(
+                            condition=s["condition"],
+                            action=s["action"]
+                        )
+                        procedural.upsert(strat)
+                        logger.info(f"Background GC extracted new Procedural Strategy: {strat.id}")
+                except Exception as ex:
+                    logger.error(f"Failed to parse LLM reflection output: {ex}")
+                
         except asyncio.TimeoutError:
             logger.warning("MemoryManager: Could not acquire write lock for GC, skipping.")
 

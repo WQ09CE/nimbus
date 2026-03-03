@@ -96,8 +96,37 @@ class ProcessFactory:
         mmu._memo_manager = session_manager
         mmu._global_memo_manager = global_manager
 
+        # -- 2.5 Semantic, Episodic & Procedural Memory Tools --
+        from nimbus.tools.memory_ops import create_memory_ops_tools
+        from nimbus.core.memory.profile_store import ProfileStore
+        from nimbus.core.memory.episodic_store import EpisodicStore
+        from nimbus.core.memory.procedural_store import ProceduralStore
+
+        profile_store = ProfileStore(workspace)
+        episodic_store = EpisodicStore(workspace)
+        procedural_store = ProceduralStore(workspace)
+
+        # Attach to MMU for contextual anchoring
+        mmu._profile_store = profile_store
+        mmu._procedural_store = procedural_store
+
+        (
+            read_profile_def, read_profile_func,
+            write_profile_def, write_profile_func,
+            search_episodic_def, search_episodic_func,
+            read_strategy_def, read_strategy_func,
+            write_strategy_def, write_strategy_func
+        ) = create_memory_ops_tools(profile_store, episodic_store, procedural_store)
+
         # -- 3. IPC tools (spawn-only) --
-        local_tools: Dict[str, Callable] = {"Memo": memo_func}
+        local_tools: Dict[str, Callable] = {
+            "Memo": memo_func,
+            "ReadProfile": read_profile_func,
+            "WriteProfile": write_profile_func,
+            "SearchEpisodicLog": search_episodic_func,
+            "ReadStrategy": read_strategy_func,
+            "WriteStrategy": write_strategy_func
+        }
         ipc_tool_defs = []
 
         if enable_ipc:
@@ -149,6 +178,11 @@ class ProcessFactory:
                 "type": "function",
                 "function": memo_def,
             })
+            tools_list.append({"type": "function", "function": read_profile_def})
+            tools_list.append({"type": "function", "function": write_profile_def})
+            tools_list.append({"type": "function", "function": search_episodic_def})
+            tools_list.append({"type": "function", "function": read_strategy_def})
+            tools_list.append({"type": "function", "function": write_strategy_def})
             # Append IPC tool definitions if enabled
             for ipc_def in ipc_tool_defs:
                 tools_list.append(ipc_def.to_openai_format())
