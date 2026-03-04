@@ -70,12 +70,13 @@ class MockLLMClient:
 
     async def chat(
         self,
-        messages: List[Dict[str, Any]],
+        mmu: Optional[Any] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs,
     ) -> MockLLMResponse:
         """Return next scripted response."""
-        self.messages_received.append(messages)
+        self.messages_received.append(messages or [])
 
         if self.call_count < len(self.responses):
             response = self.responses[self.call_count]
@@ -87,7 +88,7 @@ class MockLLMClient:
             tool_calls=[
                 MockToolCall(
                     function=MockToolCall.Function(
-                        name="return_result", arguments='{"result": "Task completed"}'
+                        name="SubmitResult", arguments='{"result": "Task completed"}'
                     )
                 )
             ]
@@ -150,10 +151,10 @@ class TestAgentOSInit:
 
         assert os.config.max_processes == 10
         assert os.config.default_timeout == 300.0
-        # Default AgentOS registers kernel tools (Read, Write, Edit, Bash) + ReloadSkills
+        # Default AgentOS registers extension tools like ReloadSkills
         default_tools = os.list_tools()
         assert "ReloadSkills" in default_tools
-        assert "Read" in default_tools
+        # Kernel tools are injected directly into KernelGate during process creation, not in os.list_tools() anymore
 
     def test_create_with_config(self, mock_llm):
         """Test creating AgentOS with custom configuration."""
@@ -402,7 +403,7 @@ class TestSimpleExecution:
                 tool_calls=[
                     MockToolCall(
                         function=MockToolCall.Function(
-                            name="return_result", arguments='{"result": "Done!"}'
+                            name="SubmitResult", arguments='{"result": "Done!"}'
                         )
                     )
                 ]
@@ -455,7 +456,7 @@ class TestSimpleExecution:
                 tool_calls=[
                     MockToolCall(
                         function=MockToolCall.Function(
-                            name="return_result", arguments='{"result": "Explored"}'
+                            name="SubmitResult", arguments='{"result": "Explored"}'
                         )
                     )
                 ]
@@ -484,7 +485,7 @@ class TestWaitProcess:
                 tool_calls=[
                     MockToolCall(
                         function=MockToolCall.Function(
-                            name="return_result", arguments='{"result": "Done"}'
+                            name="SubmitResult", arguments='{"result": "Done"}'
                         )
                     )
                 ]
@@ -530,7 +531,7 @@ class TestEventCollection:
                 tool_calls=[
                     MockToolCall(
                         function=MockToolCall.Function(
-                            name="return_result", arguments='{"result": "Done"}'
+                            name="SubmitResult", arguments='{"result": "Done"}'
                         )
                     )
                 ]
@@ -641,7 +642,7 @@ class TestErrorHandling:
                 tool_calls=[
                     MockToolCall(
                         function=MockToolCall.Function(
-                            name="return_result", arguments='{"result": "Recovered"}'
+                            name="SubmitResult", arguments='{"result": "Recovered"}'
                         )
                     )
                 ]
@@ -673,7 +674,7 @@ class TestIntegration:
                     tool_calls=[
                         MockToolCall(
                             function=MockToolCall.Function(
-                                name="return_result", arguments='{"result": "Done"}'
+                                name="SubmitResult", arguments='{"result": "Done"}'
                             )
                         )
                     ]
@@ -695,7 +696,7 @@ class TestIntegration:
         """Test that tools can access process context."""
         results_captured = []
 
-        def capture_tool(data: str) -> str:
+        def capture_tool(data: str, **kwargs) -> str:
             results_captured.append(data)
             return f"Captured: {data}"
 

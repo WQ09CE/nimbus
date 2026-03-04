@@ -55,7 +55,7 @@ class MemorySnapshotModel(BaseModel):
 
 class FSMExecutionStateModel(BaseModel):
     """Snapshot of vCPU ExecutionState"""
-    iteration: int
+    iteration_count: int
     max_iterations: int
     consecutive_thoughts: int
     consecutive_errors: int

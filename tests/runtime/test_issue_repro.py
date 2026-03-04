@@ -47,7 +47,7 @@ class MockLLMClient:
         self.responses = responses
         self.call_count = 0
 
-    async def chat(self, messages, tools=None, on_chunk=None):
+    async def chat(self, messages=None, tools=None, mmu=None, on_chunk=None):
         if self.call_count < len(self.responses):
             res = self.responses[self.call_count]
             self.call_count += 1

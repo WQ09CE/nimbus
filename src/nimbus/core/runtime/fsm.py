@@ -14,7 +14,6 @@ from nimbus.core.memory.mmu import MMU
 from nimbus.core.protocol import ActionIR
 # Avoid circular import by referencing FSMExecutionState
 import nimbus.core.runtime.states as _states
-from nimbus.core.runtime.pipeline import ResponsePipeline
 from nimbus.core.runtime.config import VCPUConfig
 logger = logging.getLogger("kernel.vcpu.fsm")
 
@@ -23,7 +22,7 @@ class SyscallGateProtocol(Protocol):
         ...
 
 class ALUProtocol(Protocol):
-    async def chat(self, messages: List[Any], tools: List[Dict[str, Any]], on_chunk: Any = None) -> Any:
+    async def chat(self, mmu: MMU, tools: List[Dict[str, Any]], on_chunk: Any = None) -> Any:
         ...
 
 class DecoderProtocol(Protocol):
@@ -43,19 +42,19 @@ class FSMContext:
         gate: SyscallGateProtocol,
         alu: ALUProtocol,
         decoder: DecoderProtocol,
-        pipeline: ResponsePipeline,
         config: VCPUConfig,
         tools: List[Dict[str, Any]],
         state: '_states.FSMExecutionState',
+        manifest: Any = None,
     ):
         self.mmu = mmu
         self.gate = gate
         self.alu = alu
         self.decoder = decoder
-        self.pipeline = pipeline
         self.config = config
         self.tools = tools
         self.state = state
+        self.manifest = manifest
 
         # Temporary registers for FSM transitions
         self.current_actions: List[ActionIR] = []

@@ -143,11 +143,28 @@ class SpecialistTool:
             timed_out = False
             try:
                 result = await self._agent_os.wait(pid, timeout=timeout)
-                output = result.output or f"({self.ROLE} returned no output)"
-                if result.fault:
-                    output += f"\n\nFault: {result.fault.message}"
+                
+                # result may be a string (e.g., if wait() catches an unexpected error inside AgentOS) 
+                # or a structured ToolResult object from VCPU
+                if isinstance(result, str):
+                    output = result
+                    has_fault = False
+                else:
+                    raw_output = getattr(result, "output", None)
+                    if raw_output is None:
+                        output = f"({self.ROLE} returned no output)"
+                    elif isinstance(raw_output, str):
+                        output = raw_output
+                    else:
+                        output = str(raw_output)
+                    
+                    has_fault = getattr(result, "fault", None) is not None
+                    if has_fault:
+                        output += f"\n\nFault: {result.fault.message}"
+                
+                if has_fault:
                     # If the fault is retryable and we have retries left, retry
-                    if result.fault.retryable and attempt < MAX_RETRIES:
+                    if getattr(result.fault, "retryable", False) and attempt < MAX_RETRIES:
                         logger.warning(
                             f"[{self.ROLE}] {pid} failed (attempt {attempt+1}), retrying: {result.fault.message}"
                         )

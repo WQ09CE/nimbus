@@ -88,6 +88,10 @@ class KernelGate:
         self.local_tools = local_tools or {}
         self.write_filter = write_filter
         self.tool_context: Dict[str, Any] = {}
+        
+        from nimbus.core.runtime.doom_loop import DoomLoopDetector
+        self._doom_loop_detector = DoomLoopDetector(threshold=3)
+        self._doom_loop_count = 0
 
     async def syscall_tool(
         self,
@@ -168,6 +172,46 @@ class KernelGate:
                     message=validation_error,
                     retryable=True,
                 ),
+            )
+
+        # Check for Doom Loops before execution
+        doom_result = self._doom_loop_detector.check(tool_name, action.args)
+        if doom_result.is_loop:
+            logger.warning(
+                f"Doom loop detected for tool '{tool_name}': {doom_result.guidance}"
+            )
+            self._doom_loop_count += 1
+            
+            if self._doom_loop_count >= 2:
+                # Fatal loop
+                error_output = f"Agent terminated due to repeated doom loop on tool '{tool_name}'"
+                self._emit_event(
+                    "TOOL_FINISHED",
+                    {
+                        "action_id": action.id, "tool": tool_name,
+                        "status": "ERROR", "output": error_output, "duration_ms": 0,
+                        "fault": {"domain": "AGENT", "code": "DOOM_LOOP", "message": doom_result.guidance, "retryable": False},
+                    }
+                )
+                return ToolResult(
+                    status="ERROR",
+                    output=error_output,
+                    fault=Fault(domain="AGENT", code="DOOM_LOOP", message=doom_result.guidance, retryable=False),
+                )
+                
+            # First Warning: Return early with guidance instead of executing
+            warning_output = f"[Doom Loop Warning] {doom_result.guidance}"
+            self._emit_event(
+                "TOOL_FINISHED",
+                {
+                    "action_id": action.id, "tool": tool_name,
+                    "status": "ERROR", "output": warning_output, "duration_ms": 0,
+                    "fault": None, # Non-fatal, just guidance
+                }
+            )
+            return ToolResult(
+                status="ERROR",
+                output=warning_output,
             )
 
         logger.info(f"Executing tool '{tool_name}'...")

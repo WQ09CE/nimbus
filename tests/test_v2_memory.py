@@ -93,8 +93,8 @@ class TestPinnedContext:
 
     def test_add_anchor(self):
         pinned = PinnedContext()
-        pinned.add_anchor("Custom anchor content")
-        assert "Custom anchor content" in pinned.custom_anchors
+        pinned.add_anchor("Custom", "Custom anchor content")
+        assert "Custom anchor content" in pinned.custom_anchors.values()
 
     def test_update_workspace(self):
         pinned = PinnedContext()

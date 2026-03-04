@@ -121,10 +121,11 @@ class MemoryManagerModule(HeartModule):
     - Background GC
     - Concurrency control via AsyncRWLock with Watchdog
     """
-    def __init__(self, llm_client: Optional[Any] = None, gc_interval_ticks: int = 60, lock_timeout: float = 30.0):
+    def __init__(self, llm_client: Optional[Any] = None, gc_interval_ticks: int = 60, lock_timeout: float = 30.0, gc_model: str = "gpt-4o-mini"):
         self.llm_client = llm_client
         self.gc_interval_ticks = gc_interval_ticks
         self.lock_timeout = lock_timeout
+        self.gc_model = gc_model
         self.ticks_count = 0
         self.dirty_memories: Set[str] = set()
         self.rwlock = AsyncRWLock()
@@ -183,79 +184,63 @@ class MemoryManagerModule(HeartModule):
             logger.debug("MemoryManager: No LLM client attached, skipping reflection GC.")
             return
 
+        # Validate LLM client has OpenAI-compatible interface
+        if not hasattr(self.llm_client, 'chat') or not hasattr(self.llm_client.chat, 'completions'):
+            logger.debug("MemoryManager: LLM client is not OpenAI-compatible, skipping GC.")
+            return
+
         try:
             async with self.rwlock.write_lock(timeout=10.0):
-                logger.info("Running Agent Episodic Reflection & Profile Compression (GC)...")
-                
-                from nimbus.core.memory.episodic_store import EpisodicStore
-                from nimbus.core.memory.profile_store import ProfileStore
-                from nimbus.core.memory.procedural_store import ProceduralStore
-                from nimbus.core.memory.profile_schema import ProfileEntityModel
-                from nimbus.core.memory.strategy_schema import StrategyModel
+                if self.brain_state != "idle":
+                    return
+                logger.info("Running Memory Reflection GC (NimFS-backed)...")
+
+                from nimbus.core.nimfs.manager import NimFSManager
+                from nimbus.core.nimfs.models import MemoryCategory, MemoryScope
                 from pathlib import Path
                 import json
-                
+
                 workspace = Path(heart.config.workspace)
-                episodic = EpisodicStore(workspace)
-                profile = ProfileStore(workspace)
-                procedural = ProceduralStore(workspace)
-                
-                # Fetch recent unreflected episodes (dummy logic for MVP: just get latest session snippets)
-                recent_logs = episodic.search("", limit=30)
-                if not recent_logs:
+                nimfs = NimFSManager(workspace_path=workspace)
+
+                # Load recent memory context for reflection
+                context = nimfs.load_context(current_goal="Review recent interactions", max_chars=5000)
+                if not context:
                     return
-                
+
                 prompt = (
-                    "You are a background memory processor. Review the following recent interaction logs "
-                    "between an AI Agent and a User. Extract two types of information:\n"
-                    "1. Important LONG-TERM facts about the user's preferences, project architecture, or technical decisions.\n"
-                    "2. Reusable PROCEDURAL STRATEGIES if the agent successfully completed a complex sequence of actions, solved an error, or formed a reliable routine.\n\n"
-                    "Respond EXACTLY with a JSON object containing two lists: 'entities' and 'strategies'.\n"
-                    "For 'entities', each MUST have:\n"
-                    "- 'key': A short slugname for the fact (e.g. 'frontend_framework')\n"
-                    "- 'value': The value of the fact\n"
-                    "- 'entity_type': One of ['preference', 'tech_stack', 'project_context', 'decision', 'other']\n\n"
-                    "For 'strategies', each MUST have:\n"
-                    "- 'condition': The trigger situation, goal, or error (e.g., 'When hitting 502 Bad Gateway')\n"
-                    "- 'action': The successful sequence of steps or resolution taken.\n\n"
-                    "If nothing important is found, return {\"entities\": [], \"strategies\": []}.\n\nLogs:\n"
+                    "You are a background memory processor. Review the following context "
+                    "and extract important long-term facts or patterns.\n"
+                    "Respond EXACTLY with a JSON object: {\"entries\": [{\"title\": ..., \"content\": ..., \"tags\": ...}]}\n"
+                    "If nothing important is found, return {\"entries\": []}.\n\n"
+                    f"Context:\n{context}"
                 )
-                for log in recent_logs:
-                    prompt += f"[{log.get('role', 'unknown')}]: {log.get('snippet', '')}\n"
 
                 def _call_llm():
                     return self.llm_client.chat.completions.create(
-                        model="gpt-4o-mini",
+                        model=self.gc_model,
                         messages=[{"role": "user", "content": prompt}],
                         response_format={"type": "json_object"}
                     )
-                
+
                 response = await asyncio.to_thread(_call_llm)
-                
+
                 try:
                     content = response.choices[0].message.content
                     data = json.loads(content)
-                    entities = data.get("entities", [])
-                    for e in data.get("entities", []):
-                        model = ProfileEntityModel(
-                            key=e["key"],
-                            value=e["value"],
-                            entity_type=e.get("entity_type", "other"),
-                            confidence="inferred"
+                    for e in data.get("entries", []):
+                        nimfs.write_memory(
+                            category=MemoryCategory.ENTITIES,
+                            title=e.get("title", "Untitled"),
+                            content=e.get("content", ""),
+                            summary=e.get("content", "")[:180],
+                            tags=e.get("tags", "").split(",") if isinstance(e.get("tags"), str) else [],
+                            scope=MemoryScope.PROJECT,
                         )
-                        profile.upsert(model)
-                        logger.info(f"Background GC extracted new Semantic Fact: {e['key']} -> {e['value']}")
-                        
-                    for s in data.get("strategies", []):
-                        strat = StrategyModel(
-                            condition=s["condition"],
-                            action=s["action"]
-                        )
-                        procedural.upsert(strat)
-                        logger.info(f"Background GC extracted new Procedural Strategy: {strat.id}")
+                        logger.info(f"GC extracted: {e.get('title', 'Untitled')}")
                 except Exception as ex:
                     logger.error(f"Failed to parse LLM reflection output: {ex}")
-                
+
         except asyncio.TimeoutError:
             logger.warning("MemoryManager: Could not acquire write lock for GC, skipping.")
 

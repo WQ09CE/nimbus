@@ -215,20 +215,12 @@ class CompactionService:
 
     @staticmethod
     def _read_memo_context(mmu: MMU) -> str:
-        """Read Memo content from MMU's memo manager."""
-        memo_context = ""
-        if hasattr(mmu, '_memo_manager') and mmu._memo_manager:
-            try:
-                memo_content = mmu._memo_manager.read()
-                if memo_content and memo_content.strip():
-                    memo_context = memo_content.strip()
-            except Exception:
-                pass
-        return memo_context
+        """Read NimFS memory context from MMU (auto-loaded at process creation)."""
+        return getattr(mmu, '_memory_context', "") or ""
 
     @staticmethod
     def _read_global_memo_context(mmu: MMU) -> str:
-        """Read global knowledge from NimFS (preferred) or legacy Global Memo."""
+        """Read global knowledge from NimFS."""
         global_memo_context = ""
         if hasattr(mmu, '_nimfs_manager') and mmu._nimfs_manager:
             try:
@@ -236,13 +228,6 @@ class CompactionService:
                     current_goal="Summarize project knowledge for compaction",
                     max_chars=500
                 )
-                if gc and gc.strip():
-                    global_memo_context = gc.strip()[:300]
-            except Exception:
-                pass
-        if not global_memo_context and hasattr(mmu, '_global_memo_manager') and mmu._global_memo_manager:
-            try:
-                gc = mmu._global_memo_manager.read()
                 if gc and gc.strip():
                     global_memo_context = gc.strip()[:300]
             except Exception:

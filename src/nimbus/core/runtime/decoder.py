@@ -39,6 +39,15 @@ class BaseDecoder(Protocol):
         model_features: Optional[Any] = None,
     ) -> List[ActionIR]:
         ...
+        
+    def decode_response(
+        self, 
+        response: Any,
+        text_is_final: bool = True,
+        role: Optional[str] = None,
+        model_features: Optional[Any] = None,
+    ) -> List[ActionIR]:
+        ...
 
 
 class InstructionDecoder:
@@ -134,6 +143,26 @@ class InstructionDecoder:
 
     # Regex to capture content inside <reply>...</reply> tags
     REPLY_TAG_PATTERN = re.compile(r"<reply>(.*?)</reply>", re.DOTALL | re.IGNORECASE)
+
+    def decode_response(
+        self, 
+        response: Any,
+        text_is_final: bool = True,
+        role: Optional[str] = None,
+        model_features: Optional[Any] = None,
+    ) -> List[ActionIR]:
+        """
+        Convenience wrapper to decode a VcpuLLMResponse directly.
+        """
+        content = getattr(response, "content", None)
+        tool_calls = getattr(response, "tool_calls", None)
+        return self.decode(
+            content=content, 
+            tool_calls=tool_calls,
+            text_is_final=text_is_final,
+            role=role,
+            model_features=model_features
+        )
 
     def decode(
         self,

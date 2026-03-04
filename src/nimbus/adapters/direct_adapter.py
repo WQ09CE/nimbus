@@ -345,7 +345,7 @@ class DirectAdapter:
 
     async def chat(
         self,
-        messages: List[Dict[str, Any]],
+        mmu: Any,
         tools: Optional[List[Dict[str, Any]]] = None,
         on_chunk: Optional[Callable[[str], None]] = None,
     ) -> VcpuLLMResponse:
@@ -356,7 +356,7 @@ class DirectAdapter:
         collected_tool_calls = []
 
         try:
-            async for event in self.stream(messages, tools):
+            async for event in self.stream(mmu, tools):
                 if event.type == "text":
                     text = event.text
                     full_content.append(text)
@@ -404,20 +404,58 @@ class DirectAdapter:
 
     async def stream(
         self,
-        messages: List[Dict[str, Any]],
+        mmu: Any,
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncIterator[LLMStreamEvent]:
         """
         Stream response — routes to Anthropic native or LiteLLM.
+        Assembles context Just-In-Time from the MMU.
         """
+        # Just-In-Time Context Assembly & Compaction
+        # We compact during assembly if the MMU config dictates it.
+        # This acts as the transform_context pipeline step.
+        compact_on_limit = getattr(mmu.config, "compact_on_limit", False) if hasattr(mmu, "config") else False
+        messages = mmu.assemble_context(compact_on_limit=compact_on_limit)
+        
+        # Stream Routing
         if self._is_anthropic_model() and self._anthropic_auth is not None:
-            async for event in self._stream_anthropic_native(messages, tools):
-                yield event
+            streamer = self._stream_anthropic_native(messages, tools)
         elif self._is_openai_codex_model() and self._codex_auth is not None:
-            async for event in self._stream_openai_native(messages, tools):
-                yield event
+            streamer = self._stream_openai_native(messages, tools)
         else:
-            async for event in self._stream_litellm(messages, tools):
+            streamer = self._stream_litellm(messages, tools)
+
+        # Intercept and sanitize stream
+        buffer = ""
+        suppressed = False
+        
+        # We need the hallucination patterns. We can get them from decoder or hardcode for now.
+        # Often models hallucinate `[Calling` or `[Tool:` etc.
+        patterns = [
+            "[Called", "[Calling", "[Tool:", "[Execute:", 
+            "```tool", "<tool_call>", "<function_call>"
+        ]
+
+        async for event in streamer:
+            if event.type == "text" and event.text:
+                if not suppressed:
+                    buffer += event.text
+                    # Check if buffer contains any hallucination pattern
+                    for pattern in patterns:
+                        if pattern in buffer:
+                            suppressed = True
+                            logger.warning(
+                                f"🛡️ Adapter hallucination firewall: Suppressing output containing '{pattern}'"
+                            )
+                            break
+                    
+                    if not suppressed:
+                        yield event
+                else:
+                    # Output is suppressed, filter this text chunk
+                    continue
+            else:
+                # Yield non-text events directly
                 yield event
 
     # ------------------------------------------------------------------
@@ -1159,6 +1197,41 @@ class DirectAdapter:
         """
         Stream response from LiteLLM (original stream logic).
         """
+        import re
+
+        def _extract_tool_calls_from_json(json_str: str) -> list[dict] | None:
+            try:
+                parsed = json.loads(json_str)
+            except (json.JSONDecodeError, ValueError):
+                return None
+            
+            def _try_parse(d: dict) -> dict | None:
+                if "name" in d and isinstance(d["name"], str):
+                    args = d.get("arguments") or d.get("parameters") or {}
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except (json.JSONDecodeError, ValueError):
+                            return None
+                    if isinstance(args, dict):
+                        return {"name": d["name"], "arguments": args}
+                if "function" in d and isinstance(d["function"], dict):
+                    return _try_parse(d["function"])
+                if "name" not in d and "result" in d:
+                    return {"name": "SubmitResult", "arguments": {"result": d["result"]}}
+                return None
+
+            results = []
+            if isinstance(parsed, dict):
+                tc = _try_parse(parsed)
+                if tc: results.append(tc)
+            elif isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, dict):
+                        tc = _try_parse(item)
+                        if tc: results.append(tc)
+            return results if results else None
+
         openai_tools = self._convert_tools(tools)
 
         # Adjust model name for LiteLLM using ModelRegistry
@@ -1286,7 +1359,7 @@ class DirectAdapter:
 
             tool_call_chunks = {}
             reasoning_chunks = []
-            has_real_content = False
+            text_buffer = []
 
             async for chunk in response:
                 chunk_count += 1
@@ -1298,8 +1371,8 @@ class DirectAdapter:
                 delta = chunk.choices[0].delta
 
                 if delta.content:
-                    has_real_content = True
-                    yield LLMStreamEvent(type="text", text=delta.content)
+                    # Buffer text chunks to check for JSON tool calls at the end
+                    text_buffer.append(delta.content)
 
                 # Capture reasoning_content as fallback (qwen3.5/deepseek thinking mode)
                 reasoning = getattr(delta, 'reasoning_content', None)
@@ -1326,9 +1399,37 @@ class DirectAdapter:
                 current_model, ttfb if ttfb_logged else total, total, chunk_count,
             )
 
-            # Fallback: if no real content or tool_calls, but we got reasoning_content,
-            # use reasoning as content (happens when thinking mode wasn't disabled)
-            if not has_real_content and not tool_call_chunks and reasoning_chunks:
+            # 1. Yield extracted JSON tool calls or the raw text
+            full_text = "".join(text_buffer)
+            # Only try json parsing if it looks like json or if it's an ollama model emitting codeblocks
+            if full_text.strip():
+                content_to_check = full_text.strip()
+                m = re.search(r'```(?:json)?\s*\n(.*?)\n\s*```', content_to_check, re.DOTALL)
+                json_str = m.group(1).strip() if m else content_to_check
+                
+                is_json_like = json_str.startswith('{') or json_str.startswith('[')
+                extracted_tcs = None
+                if is_json_like:
+                    extracted_tcs = _extract_tool_calls_from_json(json_str)
+
+                if extracted_tcs:
+                    logger.info("[LiteLLM] Intercepted %d JSON tool call(s) from text stream.", len(extracted_tcs))
+                    for i, tc in enumerate(extracted_tcs):
+                        yield LLMStreamEvent(
+                            type="tool_call",
+                            tool_call={
+                                "id": f"json_extract_txt_{i}",
+                                "name": tc["name"],
+                                "arguments": tc["arguments"]
+                            }
+                        )
+                else:
+                    # Not a tool call, yield as normal text chunk
+                    # (We could stream this progressively, but for catching JSON we buffered it)
+                    yield LLMStreamEvent(type="text", text=full_text)
+
+            # 2. Fallback: if no text or tool_calls, but we got reasoning_content
+            if not full_text and not tool_call_chunks and reasoning_chunks:
                 full_reasoning = "".join(reasoning_chunks)
                 logger.warning(
                     "[LiteLLM] model=%s produced only reasoning_content (%d chars), "
@@ -1336,8 +1437,32 @@ class DirectAdapter:
                     "Consider disabling thinking mode.",
                     current_model, len(full_reasoning)
                 )
+                
+                # Check if the fallback reasoning content is actually a JSON tool call (Ollama specific leak fix)
+                content_to_check = full_reasoning.strip()
+                m = re.search(r'```(?:json)?\s*\n(.*?)\n\s*```', content_to_check, re.DOTALL)
+                json_str = m.group(1).strip() if m else content_to_check
+                
+                if json_str.startswith('{') or json_str.startswith('['):
+                    extracted_tcs = _extract_tool_calls_from_json(json_str)
+                    if extracted_tcs:
+                        logger.info("[LiteLLM] Extracted %d JSON tool call(s) from Ollama reasoning fallback text.", len(extracted_tcs))
+                        # Yield proper tool call events instead of text
+                        for i, tc in enumerate(extracted_tcs):
+                            yield LLMStreamEvent(
+                                type="tool_call",
+                                tool_call={
+                                    "id": f"json_extract_reas_{i}",
+                                    "name": tc["name"],
+                                    "arguments": tc["arguments"]
+                                }
+                            )
+                        yield LLMStreamEvent(type="stop", reason="stop")
+                        return
+
                 yield LLMStreamEvent(type="text", text=full_reasoning)
 
+            # 3. Yield any natively captured tool calls
             for idx, tc_data in tool_call_chunks.items():
                 try:
                     args = json.loads(tc_data["arguments"])

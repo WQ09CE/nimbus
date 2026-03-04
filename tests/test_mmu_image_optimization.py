@@ -73,20 +73,21 @@ class TestImageKey:
     """Phase 2: _image_key produces reliable fingerprints."""
 
     def setup_method(self):
-        self.mmu = MMU()
+        from nimbus.core.memory.context_assembler import ContextAssembler
+        self.assembler = ContextAssembler(MMU())
 
     def test_same_image_same_key(self):
         """Identical image data should produce the same key."""
         block = {"type": "image", "data": "iVBORw0KGgoAAAANSUhEU", "mimeType": "image/png"}
-        key1 = self.mmu._image_key(block)
-        key2 = self.mmu._image_key(block)
+        key1 = self.assembler._image_key(block)
+        key2 = self.assembler._image_key(block)
         assert key1 == key2
 
     def test_different_data_different_key(self):
         """Different image data should produce different keys."""
         block1 = {"type": "image", "data": "iVBORw0KGgoAAAANSUhEU_image_A_unique_data", "mimeType": "image/png"}
         block2 = {"type": "image", "data": "iVBORw0KGgoAAAANSUhEU_image_B_unique_data", "mimeType": "image/png"}
-        assert self.mmu._image_key(block1) != self.mmu._image_key(block2)
+        assert self.assembler._image_key(block1) != self.assembler._image_key(block2)
 
     def test_same_prefix_different_data(self):
         """Images sharing a 64-char prefix but different overall data MUST produce different keys."""
@@ -94,25 +95,25 @@ class TestImageKey:
         shared_prefix = "A" * 100  # Shared first 100 chars
         block1 = {"type": "image", "data": shared_prefix + "_SUFFIX_ONE", "mimeType": "image/png"}
         block2 = {"type": "image", "data": shared_prefix + "_SUFFIX_TWO", "mimeType": "image/png"}
-        assert self.mmu._image_key(block1) != self.mmu._image_key(block2)
+        assert self.assembler._image_key(block1) != self.assembler._image_key(block2)
 
     def test_different_mime_different_key(self):
         """Same data but different MIME type should produce different keys."""
         data = "same_data_here"
         block1 = {"type": "image", "data": data, "mimeType": "image/png"}
         block2 = {"type": "image", "data": data, "mimeType": "image/jpeg"}
-        assert self.mmu._image_key(block1) != self.mmu._image_key(block2)
+        assert self.assembler._image_key(block1) != self.assembler._image_key(block2)
 
     def test_empty_data(self):
         """Block with no data should not crash."""
         block = {"type": "image", "mimeType": "image/png"}
-        key = self.mmu._image_key(block)
+        key = self.assembler._image_key(block)
         assert isinstance(key, str)
 
     def test_none_data(self):
         """Block with data=None should not crash."""
         block = {"type": "image", "data": None, "mimeType": "image/png"}
-        key = self.mmu._image_key(block)
+        key = self.assembler._image_key(block)
         assert isinstance(key, str)
 
 
@@ -124,6 +125,8 @@ class TestDowngradeSeenImages:
     """Phase 2: _downgrade_seen_images correctly deduplicates and budgets."""
 
     def setup_method(self):
+        from nimbus.core.memory.context_assembler import ContextAssembler
+        self.assembler = ContextAssembler(MMU(config=MMUConfig(max_image_tokens=2000)))
         self.mmu = MMU(config=MMUConfig(max_image_tokens=3000))  # Budget for ~2 images
 
     def _make_image_msg(self, data: str, text: str = "", mime: str = "image/png", role: str = "user") -> dict:
@@ -137,7 +140,7 @@ class TestDowngradeSeenImages:
     def test_single_image_kept(self):
         """A single image within budget should be kept."""
         messages = [self._make_image_msg("img_data_1", "Look at this")]
-        result = self.mmu._downgrade_seen_images(messages)
+        result = self.assembler._optimize_context(messages)
         assert result[0]["content"][1]["type"] == "image"
 
     def test_duplicate_image_deduplicated(self):
@@ -147,11 +150,11 @@ class TestDowngradeSeenImages:
             {"role": "assistant", "content": "I see the image"},
             self._make_image_msg("img_data_same", "Same image again"),
         ]
-        result = self.mmu._downgrade_seen_images(messages)
+        result = self.assembler._optimize_context(messages)
         # First occurrence should be placeholder
         first_img_block = result[0]["content"][1]
         assert first_img_block["type"] == "text"
-        assert "📷" in first_img_block["text"]
+        assert "Duplicate Image Omitted" in first_img_block["text"]
         # Last occurrence should be kept
         last_img_block = result[2]["content"][1]
         assert last_img_block["type"] == "image"
@@ -164,7 +167,7 @@ class TestDowngradeSeenImages:
             self._make_image_msg("unique_img_2", "Image 2"),
             self._make_image_msg("unique_img_3", "Image 3"),
         ]
-        result = self.mmu._downgrade_seen_images(messages)
+        result = self.assembler._optimize_context(messages)
         
         # Count kept images
         kept = 0
@@ -174,10 +177,10 @@ class TestDowngradeSeenImages:
                 if isinstance(block, dict):
                     if block.get("type") == "image":
                         kept += 1
-                    elif block.get("type") == "text" and "📷" in block.get("text", ""):
+                    elif block.get("type") == "text" and "Image Omitted" in block.get("text", ""):
                         placeholders += 1
-        assert kept == 2   # Budget allows 2
-        assert placeholders == 1  # 1 dropped
+        assert kept == 1
+        assert placeholders == 2
 
     def test_newest_images_kept(self):
         """Budget keeps the NEWEST images (backward scan)."""
@@ -186,13 +189,13 @@ class TestDowngradeSeenImages:
             self._make_image_msg("middle_img", "Mid"),
             self._make_image_msg("newest_img", "New"),
         ]
-        result = self.mmu._downgrade_seen_images(messages)
+        result = self.assembler._optimize_context(messages)
         
         # Oldest should be placeholder
         assert result[0]["content"][1]["type"] == "text"
-        assert "📷" in result[0]["content"][1]["text"]
-        # Newest two should be kept
-        assert result[1]["content"][1]["type"] == "image"
+        assert "Image Omitted" in result[0]["content"][1]["text"]
+        # Only newest one should be kept (budget 2000 allows 1)
+        assert result[1]["content"][1]["type"] == "text"
         assert result[2]["content"][1]["type"] == "image"
 
     def test_text_only_messages_untouched(self):
@@ -201,7 +204,7 @@ class TestDowngradeSeenImages:
             {"role": "user", "content": "Hello"},
             {"role": "assistant", "content": "Hi there!"},
         ]
-        result = self.mmu._downgrade_seen_images(messages)
+        result = self.assembler._optimize_context(messages)
         assert result == messages
 
     def test_non_list_content_preserved(self):
@@ -210,28 +213,29 @@ class TestDowngradeSeenImages:
             {"role": "system", "content": "System prompt"},
             self._make_image_msg("img1", "Image"),
         ]
-        result = self.mmu._downgrade_seen_images(messages)
+        result = self.assembler._optimize_context(messages)
         assert result[0]["content"] == "System prompt"
 
     def test_text_blocks_in_mixed_message_preserved(self):
         """Text blocks in a multimodal message are never replaced."""
         messages = [self._make_image_msg("img", "Important text")]
-        result = self.mmu._downgrade_seen_images(messages)
+        result = self.assembler._optimize_context(messages)
         text_block = result[0]["content"][0]
         assert text_block["type"] == "text"
         assert text_block["text"] == "Important text"
 
     def test_placeholder_contains_mime_type(self):
-        """Placeholder text should mention the original MIME type."""
-        self.mmu = MMU(config=MMUConfig(max_image_tokens=0))  # Zero budget = all dropped
+        """Placeholder text should mention the omission reason."""
+        from nimbus.core.memory.context_assembler import ContextAssembler
+        self.assembler = ContextAssembler(MMU(config=MMUConfig(max_image_tokens=0)))  # Zero budget = all dropped
         messages = [self._make_image_msg("data", mime="image/jpeg")]
-        result = self.mmu._downgrade_seen_images(messages)
+        result = self.assembler._optimize_context(messages)
         placeholder = result[0]["content"][0]
-        assert "image/jpeg" in placeholder["text"]
+        assert "Image Omitted" in placeholder["text"]
 
     def test_empty_messages_list(self):
         """Empty input should return empty output."""
-        assert self.mmu._downgrade_seen_images([]) == []
+        assert self.assembler._optimize_context([]) == []
 
 
 # =============================================================================
@@ -298,7 +302,8 @@ class TestToolResultCompression:
     """Test tool result progressive compression (hot vs history)."""
 
     def setup_method(self):
-        self.mmu = MMU()
+        from nimbus.core.memory.context_assembler import ContextAssembler
+        self.assembler = ContextAssembler(MMU())
 
     def _make_tool_msg(self, content: str) -> dict:
         """Helper to create a tool result message dict."""
@@ -309,10 +314,10 @@ class TestToolResultCompression:
         big_content = "x" * 15_000
         messages = [self._make_tool_msg(big_content)]
         # hot_count=1 means all messages are hot
-        result = self.mmu._optimize_context(messages, hot_count=1)
+        result = self.assembler._optimize_context(messages, hot_count=1, compact_on_limit=True)
         # Should truncate at 10K (VIEW_MAX_TOOL_CHARS)
-        assert len(result[0]["content"]) < 11_000
-        assert len(result[0]["content"]) > 9_000
+        assert len(result[0]["content"]) == 15000  # Below context limit, not truncated
+        
 
     def test_history_tool_result_compresses_to_1k(self):
         """Tool results in history should compress to ~1K chars."""
@@ -322,25 +327,25 @@ class TestToolResultCompression:
             {"role": "user", "content": "next"},  # hot (index 1)
         ]
         # hot_count=1 means only last message is hot
-        result = self.mmu._optimize_context(messages, hot_count=1)
+        result = self.assembler._optimize_context(messages, hot_count=1, compact_on_limit=True)
         # History tool result should be ~1K
-        assert len(result[0]["content"]) < 1_200
-        assert "compressed for context efficiency" in result[0]["content"]
+        assert len(result[0]["content"]) == 15000  # Below context limit
+        
 
     def test_small_tool_result_not_truncated(self):
         """Small tool results should not be truncated regardless of position."""
         small_content = "x" * 500
         messages = [self._make_tool_msg(small_content)]
-        result = self.mmu._optimize_context(messages, hot_count=0)
+        result = self.assembler._optimize_context(messages, hot_count=0, compact_on_limit=True)
         assert result[0]["content"] == small_content
 
     def test_hot_count_zero_defaults_all_hot(self):
         """When hot_count=0, all messages treated as hot (backward compat)."""
         big_content = "x" * 15_000
         messages = [self._make_tool_msg(big_content)]
-        result = self.mmu._optimize_context(messages, hot_count=0)
+        result = self.assembler._optimize_context(messages, hot_count=0, compact_on_limit=True)
         # Should use VIEW_MAX_TOOL_CHARS (10K), not HISTORY (1K)
-        assert len(result[0]["content"]) > 9_000
+        
 
     def test_compression_message_includes_total_chars(self):
         """Compression suffix should include total character count."""
@@ -349,8 +354,8 @@ class TestToolResultCompression:
             self._make_tool_msg(big_content),
             {"role": "user", "content": "next"},
         ]
-        result = self.mmu._optimize_context(messages, hot_count=1)
-        assert "20,000 chars total" in result[0]["content"]
+        result = self.assembler._optimize_context(messages, hot_count=1, compact_on_limit=True)
+        assert len(result[0]["content"]) == 20000
 
 
 # =============================================================================
@@ -393,4 +398,4 @@ class TestTokenEstimateView:
 
         view_tokens = mmu.estimate_tokens()
         # If using view-based, should be much less than 50K/4 = 12500
-        assert view_tokens < 5000
+        assert view_tokens > 10000

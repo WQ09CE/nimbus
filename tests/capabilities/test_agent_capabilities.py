@@ -105,7 +105,7 @@ async def run_agent(workspace: Path, instruction: str, timeout_sec: float = 120.
 
     try:
         # Create LLM client via DirectAdapter (LiteLLM)
-        model = os_module.environ.get("NIMBUS_MODEL", "google/gemini-3-pro-preview")
+        model = os_module.environ.get("NIMBUS_MODEL", "gemini/gemini-2.5-flash")
         adapter = await create_llm_client(model=model)
 
         # Create config with workspace
@@ -119,22 +119,33 @@ async def run_agent(workspace: Path, instruction: str, timeout_sec: float = 120.
         os_module.chdir(workspace)
 
         try:
+            from nimbus.tools import iterate_tools
+            # Gather workspace-sandboxed tools
+            tools_dict = {}
+            for name, func, _, _ in iterate_tools(workspace=workspace):
+                tools_dict[name] = func
+
             # Create agent
             agent = AgentOS(
                 llm_client=adapter,
+                tools=tools_dict,
                 config=config,
             )
-
-            # Register default tools with workspace
-            register_default_tools(agent, workspace=workspace)
 
             # Prepend workspace info to instruction
             full_instruction = f"Working directory: {workspace}\n\n{instruction}"
 
-            result = await asyncio.wait_for(
-                agent.run(full_instruction),
-                timeout=timeout_sec
+            
+            # Spawn process
+            pid = agent.spawn(
+                goal=full_instruction,
+                role="coding",
             )
+            # Wait for completion using AgentOS.wait
+            result = await agent.wait(pid, timeout=timeout_sec)
+            process = agent._processes[pid]
+            print(f"\nPROCESS STATE: {process.state}\nRESULT: {result}\nMETADATA: {process.metadata}\n")
+    
 
             return {
                 "success": result.status == "OK",

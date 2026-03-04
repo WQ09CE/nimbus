@@ -6,7 +6,7 @@ from nimbus.core.protocol import ToolResult, Fault
 from nimbus.core.runtime.config import VCPUConfig
 
 class MockALU:
-    async def chat(self, messages, tools=None, on_chunk=None, **kwargs):
+    async def chat(self, messages=None, tools=None, mmu=None, on_chunk=None, **kwargs):
         # Simulate a slow process or infinite loop by sleeping
         await asyncio.sleep(10)
         return MagicMock(content="Done")

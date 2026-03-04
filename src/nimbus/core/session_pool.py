@@ -249,8 +249,6 @@ class SessionPool:
                 process = instance.agent_os.get_process(pid)
                 if process and process.vcpu:
                     process.vcpu.restore_from_checkpoint(checkpoint)
-                    # Clear interruption flag from previous session
-                    process.vcpu._state.interruption_requested = False
                     logger.info(f"Session {session_id} restored to step {checkpoint.step_index}")
 
             self._sessions[session_id] = instance

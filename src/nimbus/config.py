@@ -43,6 +43,8 @@ class NimbusConfig:
     # OpenAI Codex OAuth
     codex_use_oauth: bool = True  # 默认启用
 
+    ollama_base_url: str = "http://localhost:11434"
+
     # Nimbus Server
     server_port: int = 4096
 
@@ -98,6 +100,9 @@ def _apply_json(config: NimbusConfig, data: dict) -> None:
         if codex := providers.get("openai-codex"):
             if "use_oauth" in codex:
                 config.codex_use_oauth = bool(codex["use_oauth"])
+        if ollama := providers.get("ollama"):
+            if base_url := ollama.get("base_url"):
+                config.ollama_base_url = base_url
 
     server = data.get("server", {})
     if v := server.get("port"):
@@ -147,6 +152,9 @@ def _apply_env(config: NimbusConfig) -> None:
 
     if v := os.environ.get("NIMBUS_CODEX_USE_OAUTH"):
         config.codex_use_oauth = v.lower() not in ("0", "false", "no")
+
+    if v := os.environ.get("OLLAMA_BASE_URL"):
+        config.ollama_base_url = v
 
     if v := os.environ.get("NIMBUS_AGENT_PROFILE"):
         _VALID_PROFILES = {"orchestrator", "standard", "executor"}

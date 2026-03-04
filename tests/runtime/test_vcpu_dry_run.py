@@ -48,7 +48,7 @@ class MockToolCall:
         self.id = id
 
 class MockLLMClient:
-    async def chat(self, messages, tools, on_chunk=None):
+    async def chat(self, messages=None, tools=None, mmu=None, on_chunk=None, **kwargs):
         return MockLLMResponse(
             tool_calls=[MockToolCall(MockFunction("Read", '{"path": "test.txt"}'))]
         )

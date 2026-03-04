@@ -68,9 +68,10 @@ class CheckpointManager:
         Args:
             checkpoint: SessionCheckpointModel to restore from
         """
-        # Restore is not implemented for FSMState yet as no snapshot models are wired for the dataclass yet.
-        # This will be wired up in a later PR if checkpoints are needed for FSM execution.
-        pass
+        if hasattr(self._state, "restore_from_snapshot"):
+            self._state.restore_from_snapshot(checkpoint.execution_state)
+        if hasattr(self._mmu, "restore_from_snapshot"):
+            self._mmu.restore_from_snapshot(checkpoint.memory_snapshot)
 
     def get_state_dict(self) -> Dict[str, Any]:
         """

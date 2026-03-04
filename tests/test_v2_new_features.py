@@ -148,27 +148,25 @@ class TestContextStackExtraction:
                        if msg.role == "tool" and msg.meta.get("discard"))
         assert discarded == 1
 
-    def test_filter_discardable_messages(self):
-        """测试过滤无价值消息"""
+    def test_cleanup_ephemeral_messages(self):
+        """测试清理短期消息 (ephemeral)"""
         mmu = MMU(config=MMUConfig(auto_detect_failures=False))
 
         # 添加一些消息
         mmu.add_user_message("Find the auth module")
-        mmu.add_assistant_with_tool_calls(None, [{"id": "tc-1", "function": {"name": "Read"}}])
-        mmu.add_tool_result("tc-1", "Read", "Not found here")
-        mmu.add_assistant_with_tool_calls(None, [{"id": "tc-2", "function": {"name": "Read"}}])
-        mmu.add_tool_result("tc-2", "Read", "Found it!")
+        mmu.add_assistant_with_tool_calls(None, [{"id": "tc-1", "function": {"name": "Retry"}}])
+        mmu.add_tool_result("tc-1", "Retry", "Hint given")
+        
+        # 标记 tool result 需要清理 (ephemeral)
+        mmu.current_frame.messages[-1].meta["ephemeral"] = True
 
-        # 标记 tc-1 为 discard
-        mmu.mark_tool_call("tc-1", discard=True, reason="wrong_direction")
-
-        # 组装上下文（应该过滤 tc-1）
-        context = mmu.assemble_context(filter_discardable=True)
-
-        # 检查结果：tc-1 的 tool result 应该被过滤
-        tool_results = [m for m in context if m.get("role") == "tool"]
-        assert len(tool_results) == 1
-        assert "Found it!" in tool_results[0]["content"]
+        # 调用清理
+        removed = mmu.cleanup_ephemeral_messages()
+        
+        # 检查结果：tc-1 的 tool result 应该被移除
+        assert removed == 1
+        tool_results = [m for m in mmu.current_frame.messages if m.role == "tool"]
+        assert len(tool_results) == 0
 
     def test_pop_frame_extraction(self):
         """测试 pop_frame 时返回 StackFrame"""

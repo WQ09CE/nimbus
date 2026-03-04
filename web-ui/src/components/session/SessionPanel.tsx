@@ -193,7 +193,7 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
 
   const getShortModelName = (modelId: string) => {
     const parts = modelId.split("-");
-    if (modelId.includes("gemini")) return `gemini-${parts.find(p => ["flash","pro"].includes(p)) || parts[1]}`;
+    if (modelId.includes("gemini")) return `gemini-${parts.find(p => ["flash", "pro"].includes(p)) || parts[1]}`;
     if (modelId.includes("claude")) return `${parts[1]}-${parts[2]}`;
     return modelId.length > 12 ? modelId.slice(0, 12) : modelId;
   };
@@ -345,7 +345,7 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
                             {displayName}
                           </h3>
                         )}
-                        <span className="text-[10px] text-gray-600 font-mono whitespace-nowrap shrink-0">
+                        <span suppressHydrationWarning className="text-[10px] text-gray-600 font-mono whitespace-nowrap shrink-0">
                           {formatRelativeTime(session.last_message_at || session.created_at)}
                         </span>
                       </div>

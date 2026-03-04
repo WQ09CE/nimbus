@@ -496,29 +496,23 @@ class TestToolFunctionsE2E:
             assert "NimFS Artifact" in read_result
 
     def test_nimfs_write_memory_search_tool(self, nimfs_root: Path, workspace: Path):
-        """Write memory via tool -> search via tool -> verify found."""
-        from nimbus.tools.nimfs_tools import nimfs_search_memory, nimfs_write_memory
+        """Test memory write and search via NimFSManager (backend for Memo/Recall)."""
+        from nimbus.core.nimfs.manager import NimFSManager
+        from nimbus.core.nimfs.models import MemoryCategory
 
         with patch("nimbus.core.nimfs.project_id.get_nimfs_root", return_value=nimfs_root):
-            write_result = self._run(nimfs_write_memory(
-                category="entities",
-                title="SearchableEntity",
-                content="This entity should be findable by search",
-                summary="A searchable entity for testing",
-                tags="searchable,test",
-                workspace=str(workspace),
-            ))
+            manager = NimFSManager(workspace_path=workspace)
+            memory_id = manager.write_memory(
+                category=MemoryCategory.PATTERNS,
+                title="Test Pattern",
+                content="Test content about patterns",
+                summary="Test pattern summary",
+                tags=["test"],
+            )
+            assert memory_id
 
-            assert "Memory written to NimFS" in write_result
-
-            # Search for it
-            search_result = self._run(nimfs_search_memory(
-                query="SearchableEntity",
-                workspace=str(workspace),
-            ))
-
-            assert "SearchableEntity" in search_result
-            assert "searchable" in search_result
+            results = manager.search_memory(query="pattern", top_k=5)
+            assert len(results) >= 1
 
     def test_nimfs_list_artifacts_tool(self, nimfs_root: Path, workspace: Path):
         """Write 3 artifacts -> list via tool -> verify 3 found."""
@@ -542,27 +536,22 @@ class TestToolFunctionsE2E:
                 assert f"task-list-{i}" in list_result
 
     def test_nimfs_load_context_tool(self, nimfs_root: Path, workspace: Path):
-        """Write memory -> load context via tool -> verify included."""
-        from nimbus.tools.nimfs_tools import nimfs_load_context, nimfs_write_memory
+        """Test context loading via NimFSManager (backend for auto context injection)."""
+        from nimbus.core.nimfs.manager import NimFSManager
+        from nimbus.core.nimfs.models import MemoryCategory
 
         with patch("nimbus.core.nimfs.project_id.get_nimfs_root", return_value=nimfs_root):
-            self._run(nimfs_write_memory(
-                category="patterns",
-                title="ContextPattern",
-                content="This pattern should appear in loaded context",
-                summary="A test pattern for context loading",
-                tags="context,test",
-                scope="project",
-                workspace=str(workspace),
-            ))
+            manager = NimFSManager(workspace_path=workspace)
+            manager.write_memory(
+                category=MemoryCategory.ENTITIES,
+                title="Test Entity",
+                content="Test content",
+                summary="Test summary",
+                tags=["test"],
+            )
 
-            ctx_result = self._run(nimfs_load_context(
-                goal="ContextPattern",
-                workspace=str(workspace),
-            ))
-
-            # load_context does keyword search on goal, so "ContextPattern" should match
-            assert "ContextPattern" in ctx_result or "test pattern" in ctx_result
+            context = manager.load_context(current_goal="test goal", max_chars=3000)
+            assert isinstance(context, str)
 
 
 # =============================================================================
@@ -583,11 +572,11 @@ class TestToolRegistration:
         assert isinstance(NIMFS_TOOL_FUNCTIONS, dict)
 
     def test_nimfs_tools_count(self):
-        """There should be exactly 8 NimFS tool definitions."""
+        """There should be exactly 3 NimFS artifact tool definitions."""
         from nimbus.tools import NIMFS_TOOLS
 
-        assert len(NIMFS_TOOLS) == 9, (
-            f"Expected 8 NimFS tools, got {len(NIMFS_TOOLS)}: "
+        assert len(NIMFS_TOOLS) == 3, (
+            f"Expected 3 NimFS artifact tools, got {len(NIMFS_TOOLS)}: "
             f"{[t['name'] for t in NIMFS_TOOLS]}"
         )
 
@@ -609,10 +598,9 @@ class TestToolRegistration:
             assert callable(func), f"Tool function '{name}' is not callable"
 
     def test_nimfs_tools_in_all_tools(self):
-        """ALL_TOOLS MUST contain all 6 NimFS tools (registered via grant_full_nimfs_tools).
+        """ALL_TOOLS MUST contain all 3 NimFS artifact tools.
 
-        Since commit 4c4545a ('feat: grant full NimFS tools to all agent profiles'),
-        NimFS tools are included in ALL_TOOLS for every agent profile.
+        NimFS artifact tools are included in ALL_TOOLS for every agent profile.
         This test verifies the current (correct) state.
         """
         from nimbus.tools import ALL_TOOLS, NIMFS_TOOLS

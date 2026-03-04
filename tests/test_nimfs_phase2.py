@@ -32,7 +32,7 @@ def workspace(tmp_path: Path) -> Path:
 @pytest.fixture
 def mmu_with_nimfs(workspace: Path) -> MMU:
     """MMU configured with NimFS offload enabled."""
-    config = MMUConfig(nimfs_offload_threshold=500)  # low threshold for testing
+    config = MMUConfig(max_inline_tool_chars=500)  # low threshold for testing
     mmu = MMU(config=config, process_id="test-proc")
     mmu.nimfs_workspace = str(workspace)
     return mmu
@@ -41,7 +41,7 @@ def mmu_with_nimfs(workspace: Path) -> MMU:
 @pytest.fixture
 def mmu_no_nimfs() -> MMU:
     """MMU without NimFS workspace (offload disabled)."""
-    config = MMUConfig(nimfs_offload_threshold=500)
+    config = MMUConfig(max_inline_tool_chars=500)
     mmu = MMU(config=config, process_id="test-proc-no-nimfs")
     mmu.nimfs_workspace = None
     return mmu
@@ -53,15 +53,15 @@ def mmu_no_nimfs() -> MMU:
 
 
 def test_mmu_config_default_threshold():
-    """Default offload threshold should be 8000."""
+    """Default offload threshold should be 50000."""
     config = MMUConfig()
-    assert config.nimfs_offload_threshold == 8_000
+    assert config.max_inline_tool_chars == 50_000
 
 
 def test_mmu_config_disable_threshold():
     """Setting threshold to 0 should disable offload."""
-    config = MMUConfig(nimfs_offload_threshold=0)
-    assert config.nimfs_offload_threshold == 0
+    config = MMUConfig(max_inline_tool_chars=0)
+    assert config.max_inline_tool_chars == 0
 
 
 # =============================================================================
@@ -103,28 +103,30 @@ def test_add_tool_result_small_not_offloaded(mmu_with_nimfs, workspace):
     assert len(artifacts) == 0
 
 
-def test_add_tool_result_large_offloaded(mmu_with_nimfs, workspace):
-    """Large tool results should be offloaded to NimFS."""
-    large = "A" * 3000  # above 500 threshold
+def test_add_tool_result_large_retrieval(mmu_with_nimfs, workspace):
+    """Large tool output should be offloaded only during assembly, leaving raw in memory."""
+    from nimbus.core.nimfs.manager import NimFSManager
 
-    mmu_with_nimfs.add_tool_result("call-2", "BashCommand", large)
+    large_content = "B" * 3000
+    mmu_with_nimfs.add_tool_result("call-2", "SearchDatabase", large_content)
 
-    messages = mmu_with_nimfs.current_frame.messages
-    tool_msg = next((m for m in messages if m.role == "tool"), None)
-    assert tool_msg is not None
+    # In V3, raw content stays in MMU memory until assembly
+    msg = mmu_with_nimfs.current_frame.messages[-1]
+    assert msg.content == large_content
+    assert "NimFS Auto-Offload" not in msg.content
 
-    content = tool_msg.content
-    # Should contain NimFS offload notice
-    assert "NimFS Auto-Offload" in content
-    assert "nimfs://artifact/" in content
-    # Should NOT contain the original large content inline
-    assert "A" * 3000 not in content
+    # The offload happens just-in-time during assemble_context
+    context = mmu_with_nimfs.assemble_context()
+    
+    # The assembled context should contain the stub
+    assembled_msg = context[-1]
+    assert "NimFS Auto-Offload" in assembled_msg.get("content", "")
+    assert "Tool 'SearchDatabase' returned 3,000 chars" in assembled_msg.get("content", "")
 
-    # NimFS should have the artifact
+    # Artifact should exist
     manager = NimFSManager(str(workspace))
     artifacts = manager.list_artifacts()
     assert len(artifacts) == 1
-    assert artifacts[0].size_bytes >= 3000
 
 
 def test_add_tool_result_large_retrieval(mmu_with_nimfs, workspace):
@@ -132,15 +134,15 @@ def test_add_tool_result_large_retrieval(mmu_with_nimfs, workspace):
     large = "FULL_CONTENT_" * 100  # 1300 chars, above threshold
 
     mmu_with_nimfs.add_tool_result("call-3", "Explore", large)
+    context = mmu_with_nimfs.assemble_context()
 
     # Extract ref from MMU message
-    messages = mmu_with_nimfs.current_frame.messages
-    tool_msg = next((m for m in messages if m.role == "tool"), None)
+    tool_msg = next((m for m in context if m.get("role") == "tool"), None)
     assert tool_msg is not None
 
     # Find the nimfs:// ref in the message
     import re
-    refs = re.findall(r"nimfs://artifact/[\w\-]+", tool_msg.content)
+    refs = re.findall(r"nimfs://artifact/[\w\-]+", tool_msg.get("content", ""))
     assert len(refs) >= 1
     ref = refs[0]  # same ref may appear multiple times in the message
 
@@ -150,32 +152,35 @@ def test_add_tool_result_large_retrieval(mmu_with_nimfs, workspace):
     assert retrieved == large
 
 
-def test_add_tool_result_no_workspace_not_offloaded(mmu_no_nimfs):
-    """Without workspace, large results should NOT be offloaded (graceful degradation)."""
-    large = "B" * 1000  # above threshold
+def test_add_tool_result_threshold_zero_not_offloaded(workspace):
+    """If max_inline_tool_chars is very high, it shouldn't be offloaded."""
+    from nimbus.core.memory.mmu import MMU, MMUConfig
 
-    mmu_no_nimfs.add_tool_result("call-4", "BigTool", large)
+    config = MMUConfig(max_inline_tool_chars=5000)
+    mmu = MMU(config=config)
+    mmu.nimfs_workspace = str(workspace)
 
-    messages = mmu_no_nimfs.current_frame.messages
-    tool_msg = next((m for m in messages if m.role == "tool"), None)
+    large = "C" * 1000  # below 5000
+    mmu.add_tool_result("call-4", "BigTool", large)
+    context = mmu.assemble_context()
+
+    tool_msg = next((m for m in context if m.get("role") == "tool"), None)
     assert tool_msg is not None
-    # Content should be unchanged
-    assert tool_msg.content == large
-    assert "NimFS" not in tool_msg.content
+    assert tool_msg.get("content", "") == large
 
 
 def test_add_tool_result_threshold_zero_not_offloaded(workspace):
     """threshold=0 should disable offload entirely."""
-    config = MMUConfig(nimfs_offload_threshold=0)
+    config = MMUConfig(max_inline_tool_chars=0)
     mmu = MMU(config=config)
     mmu.nimfs_workspace = str(workspace)
 
     large = "C" * 2000
     mmu.add_tool_result("call-5", "SomeTool", large)
+    context = mmu.assemble_context()
 
-    messages = mmu.current_frame.messages
-    tool_msg = next((m for m in messages if m.role == "tool"), None)
-    assert tool_msg.content == large  # not offloaded
+    tool_msg = next((m for m in context if m.get("role") == "tool"), None)
+    assert tool_msg.get("content", "") == large  # not offloaded
 
 
 def test_add_tool_result_offload_counter_increments(mmu_with_nimfs, workspace):
@@ -184,6 +189,7 @@ def test_add_tool_result_offload_counter_increments(mmu_with_nimfs, workspace):
 
     mmu_with_nimfs.add_tool_result("c1", "ToolA", large)
     mmu_with_nimfs.add_tool_result("c2", "ToolB", large)
+    context = mmu_with_nimfs.assemble_context()
 
     assert mmu_with_nimfs._nimfs_offload_counter == 2
 
@@ -205,13 +211,14 @@ def test_nimfs_read_artifact_not_re_offloaded(mmu_with_nimfs, workspace):
     large = "RETRIEVED_CONTENT_" * 200  # well above 500 threshold
 
     mmu_with_nimfs.add_tool_result("call-nimfs-1", "NimFSReadArtifact", large)
+    context = mmu_with_nimfs.assemble_context()
 
-    messages = mmu_with_nimfs.current_frame.messages
-    tool_msg = next((m for m in messages if m.role == "tool"), None)
+    tool_msg = next((m for m in context if m.get("role") == "tool"), None)
     assert tool_msg is not None
     # Content should be stored verbatim, NOT offloaded
-    assert tool_msg.content == large
-    assert "NimFS Auto-Offload" not in tool_msg.content
+    content = tool_msg.get("content", "")
+    assert content == large
+    assert "NimFS Auto-Offload" not in content
 
     # No artifacts should have been created by this call
     manager = NimFSManager(str(workspace))
@@ -221,19 +228,20 @@ def test_nimfs_read_artifact_not_re_offloaded(mmu_with_nimfs, workspace):
 
 def test_all_nimfs_tools_not_offloaded(mmu_with_nimfs, workspace):
     """All NimFS tools should be exempt from auto-offload."""
-    from nimbus.core.memory.mmu import _NIMFS_NO_OFFLOAD
+    from nimbus.core.memory.context_assembler import _NIMFS_NO_OFFLOAD
 
     large = "X" * 1000  # above threshold
     for i, tool_name in enumerate(_NIMFS_NO_OFFLOAD):
         mmu_with_nimfs.add_tool_result(f"call-skip-{i}", tool_name, large)
 
-    messages = mmu_with_nimfs.current_frame.messages
-    tool_msgs = [m for m in messages if m.role == "tool"]
+    context = mmu_with_nimfs.assemble_context()
+    tool_msgs = [m for m in context if m.get("role") == "tool"]
     assert len(tool_msgs) == len(_NIMFS_NO_OFFLOAD)
 
     for msg in tool_msgs:
-        assert msg.content == large, f"Tool result for NimFS tool was unexpectedly offloaded"
-        assert "NimFS Auto-Offload" not in msg.content
+        content = msg.get("content", "")
+        assert content == large, f"Tool result for NimFS tool was unexpectedly offloaded"
+        assert "NimFS Auto-Offload" not in content
 
     # No artifacts should have been created
     manager = NimFSManager(str(workspace))
@@ -246,13 +254,14 @@ def test_non_nimfs_tool_still_offloaded(mmu_with_nimfs, workspace):
     large = "Y" * 1000  # above threshold
 
     mmu_with_nimfs.add_tool_result("call-regular", "BashCommand", large)
+    context = mmu_with_nimfs.assemble_context()
 
-    messages = mmu_with_nimfs.current_frame.messages
-    tool_msg = next((m for m in messages if m.role == "tool"), None)
+    tool_msg = next((m for m in context if m.get("role") == "tool" and m.get("name") == "BashCommand"), None)
     assert tool_msg is not None
-    assert "NimFS Auto-Offload" in tool_msg.content
+    assert "NimFS Auto-Offload" in tool_msg.get("content", "")
 
     # Artifact should exist
+    from nimbus.core.nimfs.manager import NimFSManager
     manager = NimFSManager(str(workspace))
     artifacts = manager.list_artifacts()
     assert len(artifacts) == 1

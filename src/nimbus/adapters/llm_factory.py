@@ -64,6 +64,13 @@ async def create_llm_client(
         thinking=thinking,
     )
 
+    # Set Ollama base_url from global config
+    info = ModelRegistry.get(model)
+    if info and info.provider == "ollama":
+        from nimbus.config import get_config
+        nimbus_config = get_config()
+        config.base_url = nimbus_config.ollama_base_url
+
     adapter = DirectAdapter(config)
     await adapter.__aenter__()
 

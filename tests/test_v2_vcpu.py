@@ -56,12 +56,13 @@ class MockLLMClient:
 
     async def chat(
         self,
-        messages: List[Dict[str, Any]],
+        mmu: Optional[Any] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         on_chunk: Optional[Callable[[str], None]] = None,
     ) -> MockLLMResponse:
         print(f"DEBUG: chat called with on_chunk={on_chunk}")
-        self.messages_received.append(messages)
+        self.messages_received.append(messages or [])
         if self.call_count < len(self.responses):
             response = self.responses[self.call_count]
             self.call_count += 1
@@ -71,7 +72,7 @@ class MockLLMClient:
             tool_calls=[
                 MockToolCall(
                     function=MockFunction(
-                        name="return_result",
+                        name="SubmitResult",
                         arguments='{"result": "default completion"}'
                     )
                 )
@@ -164,7 +165,7 @@ MOCK_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "return_result",
+            "name": "SubmitResult",
             "description": "Return final result",
             "parameters": {
                 "type": "object",
@@ -235,7 +236,6 @@ def vcpu_config():
         max_iterations=10,
         default_timeout=30.0,
         max_consecutive_thoughts=3,
-        max_sub_call_depth=5,
         emit_step_events=True
     )
 

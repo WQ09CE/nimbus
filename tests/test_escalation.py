@@ -37,7 +37,7 @@ async def test_model_escalation_flow():
     from nimbus.core.models.manifest import get_model_manifest
     mock_vcpu.manifest = get_model_manifest("google/gemini-3-flash-preview")
     
-    process = MagicMock(spec=Process)
+    process = Process(pid=sid, goal="Test", state="RUNNING")
     process.vcpu = mock_vcpu
     os._processes[sid] = process
     

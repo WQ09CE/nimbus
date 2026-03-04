@@ -38,7 +38,7 @@ class MockVCPU:
     def create_checkpoint(self, session_id: str, reason: str) -> SessionCheckpointModel:
         # Create minimal valid models
         exec_state = ExecutionStateModel(
-            iteration=self.iteration,
+            iteration_count=self.iteration,
             max_iterations=10,
             is_running=True,
             is_done=False,
@@ -68,7 +68,7 @@ class MockVCPU:
         )
 
     def restore_from_checkpoint(self, checkpoint: SessionCheckpointModel):
-        self.iteration = checkpoint.execution_state.iteration
+        self.iteration = checkpoint.execution_state.iteration_count
         self.memory_content = checkpoint.memory_snapshot.tool_markers.get("content", "")
 
 class MockProcess:
@@ -114,7 +114,7 @@ async def test_storage_checkpoint_operations(test_db_path):
 
     # 1. Create dummy checkpoint
     exec_state = ExecutionStateModel(
-        iteration=5,
+        iteration_count=5,
         max_iterations=10,
         is_running=True,
         is_done=False,
@@ -147,7 +147,7 @@ async def test_storage_checkpoint_operations(test_db_path):
     assert loaded is not None
     assert loaded.session_id == "sess_1"
     assert loaded.step_index == 5
-    assert loaded.execution_state.iteration == 5
+    assert loaded.execution_state.iteration_count == 5
 
     # 4. Load non-existent
     empty = await storage.load_latest_session_checkpoint("sess_none")
@@ -173,11 +173,10 @@ async def test_session_pool_lifecycle(test_db_path):
     assert session is not None
     assert session.is_active
 
-    # Mock the AgentOS inside session to simulate work
-    # We replace the REAL AgentOS (initialized by get_session) with our Mock
-    session.agent_os = MockAgentOS(llm_client=llm)
-    session.agent_os._processes["proc_1"].vcpu.iteration = 10
-    session.agent_os._processes["proc_1"].vcpu.memory_content = "processed data"
+    # Use the REAL AgentOS and manipulate its REAL process VCPU before hibernation
+    pid = session.agent_os.spawn(goal="Test Session", role="test")
+    process = session.agent_os.get_process(pid)
+    process.vcpu._state.iteration_count = 10
 
     # 2. Hibernate
     success = await session.hibernate()
@@ -188,6 +187,7 @@ async def test_session_pool_lifecycle(test_db_path):
     # Verify DB has checkpoint
     loaded_ckpt = await storage.load_latest_session_checkpoint("sess_A")
     assert loaded_ckpt.step_index == 10
+    assert loaded_ckpt.execution_state.iteration_count == 10
 
     # 3. Wake (Restore)
     # This will create a REAL AgentOS and spawn a REAL process
@@ -208,7 +208,7 @@ async def test_session_pool_lifecycle(test_db_path):
 
     # Verify execution state was restored
     # The restored iteration should be 10
-    assert proc.vcpu._state.iteration == 10
+    assert proc.vcpu._state.iteration_count == 10
 
     await storage.close()
 

@@ -48,9 +48,17 @@ class VcpuLLMResponse:
     def content(self) -> str | None:
         return self._content
 
+    @content.setter
+    def content(self, value: str | None) -> None:
+        self._content = value
+
     @property
     def tool_calls(self) -> list | None:
         return self._tool_calls
+
+    @tool_calls.setter
+    def tool_calls(self, value: list | None) -> None:
+        self._tool_calls = value
 
 
 @dataclass

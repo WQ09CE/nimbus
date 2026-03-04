@@ -12,10 +12,10 @@ logger = logging.getLogger(__name__)
 _NIMFS_NO_OFFLOAD = frozenset({
     "NimFSReadArtifact",
     "NimFSListArtifacts",
-    "NimFSSearchMemory",
-    "NimFSLoadContext",
     "NimFSWriteArtifact",
-    "NimFSWriteMemory",
+    "Memo",
+    "Recall",
+    "ReadMemo",
 })
 
 # Lazy Expansion: auto-expand NimFS refs in _optimize_context
@@ -49,7 +49,7 @@ class ContextAssembler:
         mime = block.get("mimeType", "")
         return f"{mime}:{digest}"
 
-    def _optimize_context(self, messages: List[Dict[str, Any]], hot_count: int = 0) -> List[Dict[str, Any]]:
+    def _optimize_context(self, messages: List[Dict[str, Any]], hot_count: int = 0, compact_on_limit: bool = False) -> List[Dict[str, Any]]:
         """
         Optimize context by:
         0. Lazy-expand NimFS offloaded refs if token budget allows.
@@ -61,8 +61,9 @@ class ContextAssembler:
         total = len(messages)
         hot_boundary = 0 if hot_count == 0 else total - hot_count
 
-        # --- Phase 0: NimFS Lazy Expansion ---
+        # --- Phase 0: Dynamic Tool Result Truncation (Lazy Offload) ---
         if getattr(self.mmu, 'nimfs_workspace', None):
+            # Calculate current total characters
             total_chars = 0
             for m in messages:
                 c = m.get("content", "")
@@ -73,38 +74,85 @@ class ContextAssembler:
                         if isinstance(block, dict) and block.get("type") == "text":
                             total_chars += len(block.get("text", ""))
 
-            budget_chars = (self.config.max_context_tokens * 4) - total_chars
+            budget_chars = (self.config.max_context_tokens * 4)
+            safe_budget_chars = int(budget_chars * 0.9)  # Leave 10% breathing room
+            max_inline_chars = getattr(self.config, 'max_inline_tool_chars', 50_000)
+            if max_inline_chars == 0:
+                # 0 means disabled offloading
+                max_inline_chars = float('inf')
 
-            for i in range(total - 1, max(hot_boundary - 1, -1), -1):
+            # Lazy Truncation: Walk through the history, offloading large tool results 
+            # if we are exceeding the global budget OR if they exceed the absolute hard cap.
+            for i in range(total):
                 msg = messages[i]
                 if msg.get("role") != "tool":
                     continue
+                
                 content = msg.get("content", "")
-                if not isinstance(content, str) or _NIMFS_OFFLOAD_MARKER not in content:
+                if not isinstance(content, str):
                     continue
-
-                ref_match = _NIMFS_REF_PATTERN.search(content)
-                if not ref_match:
+                
+                content_len = len(content)
+                # Skip if it is small enough to not even be considered for NimFS
+                if content_len < min(2000, max_inline_chars):
                     continue
-
-                ref = f"nimfs://artifact/{ref_match.group(1)}"
-
-                try:
-                    from nimbus.core.nimfs.manager import NimFSManager
-                    manager = NimFSManager(self.mmu.nimfs_workspace)
-                    manifest = manager.get_artifact_manifest(ref)
-                    artifact_size = manifest.size_bytes
-
-                    if (artifact_size <= _INLINE_EXPAND_MAX_CHARS
-                            and artifact_size <= budget_chars * 0.5):
-                        full_content = manager.read_artifact(ref)
+                
+                # Should we offload this message?
+                needs_offload = False
+                if content_len > max_inline_chars:
+                    needs_offload = True
+                    logger.debug(f"Triggering hard-cap offload for tool result ({content_len} > {max_inline_chars} chars)")
+                elif total_chars > safe_budget_chars:
+                    needs_offload = True
+                    logger.debug(f"Triggering budget offload for tool result ({total_chars} > {safe_budget_chars} chars)")
+                
+                if needs_offload:
+                    tool_name = msg.get("name", "unknown")
+                    if tool_name in _NIMFS_NO_OFFLOAD:
+                        continue
+                        
+                    try:
+                        from nimbus.core.nimfs.manager import NimFSManager
+                        from nimbus.core.nimfs.models import ArtifactTTL
+                        
+                        manager = NimFSManager(self.mmu.nimfs_workspace)
+                        counter = getattr(self.mmu, '_nimfs_offload_counter', 0)
+                        task_id = f"mmu-lazy-offload-{self.mmu.process_id or 'proc'}-{counter + i}"
+                        
+                        ref = manager.write_artifact(
+                            content=content,
+                            task_id=task_id,
+                            producer=f"mmu/{tool_name}",
+                            artifact_type="text",
+                            ttl=ArtifactTTL.SESSION,
+                            summary=content[:150].replace("\n", " "),
+                        )
+                        
+                        preview_len = min(2000, content_len)
+                        stub = (
+                            f"[NimFS Auto-Offload] Tool '{tool_name}' returned {content_len:,} chars.\n"
+                            f"Content was offloaded to prevent context overflow.\n"
+                            f"Full output stored at: {ref}\n"
+                            f"Use NimFSReadArtifact(ref='{ref}') to retrieve the complete content if needed.\n\n"
+                            f"Preview:\n{content[:preview_len]}{'...' if content_len > preview_len else ''}"
+                        )
+                        
+                        # Update the payload and the running tally
                         new_msg = dict(msg)
-                        new_msg["content"] = full_content
+                        new_msg["content"] = stub
                         messages[i] = new_msg
-                        budget_chars -= artifact_size
-                        total_chars += artifact_size - len(content)
-                except Exception:
-                    pass
+                        
+                        chars_saved = content_len - len(stub)
+                        total_chars -= chars_saved
+                        
+                        if hasattr(self.mmu, '_nimfs_offload_counter'):
+                            self.mmu._nimfs_offload_counter += 1
+                        else:
+                            self.mmu._nimfs_offload_counter = 1
+                        
+                    except Exception as e:
+                        logger.warning(f"Lazy NimFS offload failed for tool {tool_name}: {e}")
+                        pass
 
         # --- Phase 1: Image Downgrade Logic ---
         keep_indices = set()
@@ -152,6 +200,7 @@ class ContextAssembler:
         self,
         system_prefix: Optional[str] = None,
         model_features: Optional[Any] = None,
+        compact_on_limit: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Assemble the full context with "Recent-Anchored Sliding Window".
@@ -183,25 +232,27 @@ class ContextAssembler:
         global_summary = getattr(self.mmu, "_global_summary", "")
         clipboard = getattr(self.mmu, "_clipboard", "")
         
-        # Profile Store (Semantic Memory)
-        profile_store = getattr(self.mmu, "_profile_store", None)
-        profile_summary = profile_store.get_all_summary() if profile_store else ""
-        
-        # Procedural Store (Strategies)
-        procedural_store = getattr(self.mmu, "_procedural_store", None)
-        strategy_summary = procedural_store.get_top_strategies_summary() if procedural_store else ""
+        # NimFS Memory Context (auto-loaded)
+        memory_context = getattr(self.mmu, "_memory_context", "")
+
+        # Cap memo section to ~20% of total budget to prevent Anchor overflow
+        memo_token_budget = self.config.max_context_tokens // 5
 
         memo_text = ""
         if global_summary:
             memo_text += f"GLOBAL SUMMARY (Previous Sessions):\n{global_summary}\n\n"
-        if profile_summary:
-            memo_text += f"SEMANTIC PROFILE (Long-term Agent Context):\n{profile_summary}\n\n"
-        if strategy_summary:
-            memo_text += f"AGENT STRATEGIES (Procedural Memory):\n{strategy_summary}\n\n"
+        if memory_context:
+            memo_text += f"LONG-TERM MEMORY:\n{memory_context}\n\n"
         if clipboard:
             memo_text += f"CLIPBOARD / NOTES:\n{clipboard}\n\n"
 
+        # Truncate memo if exceeding budget
         memo_tokens = self._approx_tokens(memo_text)
+        if memo_tokens > memo_token_budget:
+            max_chars = memo_token_budget * 4  # Approx 4 chars per token
+            memo_text = memo_text[:max_chars] + "\n[... memo truncated due to token budget ...]\n"
+            memo_tokens = self._approx_tokens(memo_text)
+            logger.warning(f"⚠️ Memo section truncated: {memo_tokens} tokens (budget: {memo_token_budget})")
         
         core_tokens = pinned_tokens + memo_tokens
         remaining_budget = self.config.max_context_tokens - core_tokens
@@ -249,7 +300,7 @@ class ContextAssembler:
                 stream_messages = stream_messages[-hot_count:]
                 stream_tokens = sum(approximate_message_tokens(m) for m in stream_messages)
 
-        optimized_stream = self._optimize_context(stream_messages, hot_count=hot_count)
+        optimized_stream = self._optimize_context(stream_messages, hot_count=hot_count, compact_on_limit=compact_on_limit)
         
         logger.debug(
             f"📊 hot: {hot_count}/{len(stream_messages)} msgs, "

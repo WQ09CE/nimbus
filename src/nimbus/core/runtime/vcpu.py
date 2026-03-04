@@ -20,7 +20,6 @@ from nimbus.core.protocol import ToolResult
 from nimbus.core.runtime.checkpoint_manager import CheckpointManager
 from nimbus.core.runtime.decoder import BaseDecoder, DefaultDecoder
 from nimbus.core.runtime.fsm import FSMContext, VCPUState
-from nimbus.core.runtime.pipeline import ResponsePipeline
 from nimbus.core.runtime.states import StateInit, StateCompleted, StateReasoning, StateObservation, FSMExecutionState, StateErrorRecovery
 from nimbus.core.runtime.config import VCPUConfig
 from nimbus.core.runtime.tracer import TraceManager
@@ -68,9 +67,6 @@ class VCPU:
             max_iterations=self.config.max_iterations
         )
         self._is_active: bool = False  # Legacy flag for AgentOS compatibility
-        
-        # Pipeline 
-        self.pipeline = ResponsePipeline(features=self.manifest.features, text_is_final=self.manifest.text_is_final, role=self.manifest.role)
 
         # Checkpoint Manager
         self._checkpoint_manager = CheckpointManager(
@@ -117,10 +113,10 @@ class VCPU:
                 gate=self.gate,
                 alu=self.alu,
                 decoder=self.decoder,
-                pipeline=self.pipeline,
                 config=self.config,
                 tools=self.tools,
-                state=self._state
+                state=self._state,
+                manifest=self.manifest
             )
             self._current_state = StateInit()
             self._is_active = True
@@ -273,10 +269,13 @@ class VCPU:
             self.mmu.add_user_message(goal)
 
         final_res = None
-        while self.is_running and not self.is_done:
+        while True:
             step_res = await self.step()
             if step_res.is_final:
                 final_res = step_res.final_result
+                break
+            # Also break if the state machine halted for any other reason
+            if not self.is_running or self.is_done:
                 break
                 
         return final_res or ToolResult(status="OK", output="Task abruptly concluded without final result.")

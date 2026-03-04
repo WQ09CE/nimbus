@@ -23,6 +23,7 @@ class EpisodicStore:
             return []
 
         query = query.lower()
+        limit = min(limit, 50)  # Cap to prevent excessive IO
         results = []
         
         # Search backwards through sessions to get most recent matches first
@@ -52,6 +53,13 @@ class EpisodicStore:
                                         content = entry.get("data", {}).get("content", "")
                                     elif entry.get("type") == "tool":
                                         content = entry.get("data", {}).get("content", "")
+                                    
+                                    # Normalize list content (Claude API returns list of blocks)
+                                    if isinstance(content, list):
+                                        content = " ".join(
+                                            b.get("text", "") for b in content
+                                            if isinstance(b, dict) and b.get("type") == "text"
+                                        )
                                         
                                     if content and isinstance(content, str) and query in content.lower():
                                         # Extract snippet

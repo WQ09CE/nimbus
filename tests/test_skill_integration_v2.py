@@ -28,7 +28,7 @@ class MockLLM(LLMClient):
         self.tool_args = tool_args
         self.called = False
 
-    async def chat(self, messages, tools=None, on_chunk=None) -> LLMResponse:
+    async def chat(self, messages=None, tools=None, mmu=None, on_chunk=None, **kwargs) -> LLMResponse:
         if self.called:
             return MockLLMResponse(content="Done")
         
@@ -74,7 +74,8 @@ async def test_skill_tool_execution():
     assert "ProjectOverview" in agent_os.list_tools() # Check composite view
     
     # Execute
-    result = await agent_os.run("Analyze this project", role="standard")
+    pid = agent_os.spawn("Analyze this project", role="standard")
+    result = await agent_os.wait(pid)
     
     if result.status != "OK":
         print(f"Result Error: {result.fault}")

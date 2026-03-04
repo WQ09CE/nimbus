@@ -61,7 +61,9 @@ async def test_direct_adapter_fallback_on_429():
         adapter = DirectAdapter(config=LLMConfig(model="gemini-3.1-pro-preview"))
         
         # 4. Call chat
-        response = await adapter.chat(messages=[{"role": "user", "content": "Hello"}])
+        mock_mmu = MagicMock()
+        mock_mmu.assemble_context.return_value = [{"role": "user", "content": "Hello"}]
+        response = await adapter.chat(mmu=mock_mmu)
 
         # 5. Assertions
         assert response.content == "Fallback success"

@@ -405,17 +405,16 @@ def test_tools_import():
         nimfs_write_artifact,
         nimfs_read_artifact,
         nimfs_list_artifacts,
-        nimfs_write_memory,
-        nimfs_search_memory,
-        nimfs_list_memory,
-        nimfs_update_profile,
-        nimfs_load_context,
+        memo,
+        recall,
+        read_memo,
         NIMFS_TOOLS,
         NIMFS_TOOL_FUNCTIONS,
     )
-    assert len(NIMFS_TOOLS) == 9
+    assert len(NIMFS_TOOLS) == 3
     assert "NimFSWriteArtifact" in NIMFS_TOOL_FUNCTIONS
-    assert "NimFSListMemory" in NIMFS_TOOL_FUNCTIONS
+    assert "NimFSReadArtifact" in NIMFS_TOOL_FUNCTIONS
+    assert "NimFSListArtifacts" in NIMFS_TOOL_FUNCTIONS
 
 
 # =============================================================================
@@ -479,12 +478,11 @@ def test_c003_concurrent_write_no_data_loss(workspace):
 
 
 def test_h002_nimfs_tools_in_all_tools():
-    """H002: all 6 NimFS tools must be registered in ALL_TOOLS."""
+    """H002: all 3 NimFS artifact tools must be registered in ALL_TOOLS."""
     from nimbus.tools import ALL_TOOLS, TOOL_FUNCTIONS
     names = {t["name"] for t in ALL_TOOLS}
     nimfs_names = {
         "NimFSWriteArtifact", "NimFSReadArtifact", "NimFSListArtifacts",
-        "NimFSWriteMemory", "NimFSSearchMemory", "NimFSLoadContext",
     }
     assert nimfs_names.issubset(names), f"Missing from ALL_TOOLS: {nimfs_names - names}"
     # Also verify in TOOL_FUNCTIONS

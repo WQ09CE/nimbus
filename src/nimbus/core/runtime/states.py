@@ -109,7 +109,7 @@ class FSMExecutionState:
     def create_snapshot(self) -> Any:
         from nimbus.core.persistence import FSMExecutionStateModel
         return FSMExecutionStateModel(
-            iteration=self.iteration_count,
+            iteration_count=self.iteration_count,
             max_iterations=self.max_iterations,
             consecutive_thoughts=self.consecutive_thoughts,
             consecutive_errors=self.consecutive_errors,
@@ -120,6 +120,18 @@ class FSMExecutionState:
             path_not_found_count=self.path_not_found_count,
             doom_loop_count=self.doom_loop_count,
         )
+
+    def restore_from_snapshot(self, model: Any) -> None:
+        self.iteration_count = model.iteration_count
+        self.max_iterations = model.max_iterations
+        self.consecutive_thoughts = model.consecutive_thoughts
+        self.consecutive_errors = model.consecutive_errors
+        self.consecutive_empty_responses = model.consecutive_empty_responses
+        self.compaction_count = model.compaction_count
+        self.max_compactions = model.max_compactions
+        self.tool_failure_counts = dict(model.tool_failure_counts)
+        self.path_not_found_count = model.path_not_found_count
+        self.doom_loop_count = model.doom_loop_count
 
 class StateInit(VCPUState):
     """Initializes the VCPU step and loads necessary context."""
@@ -133,7 +145,6 @@ class StateInit(VCPUState):
         
         try:
             # Reset per-step active variables
-            ctx.pipeline.reset()
             ctx.current_actions = []
             ctx.pending_error = None
             ctx.pending_parse_error = None
@@ -158,10 +169,8 @@ class StateReasoning(VCPUState):
         
         ctx.state.increment_iteration()
         
-        # 1. Fetch context from MMU
-        context = ctx.mmu.assemble_context()
-        messages = context
-        # TODO: adapter logic if needed
+        # 1. JIT Context Assembly happens in ALU/Adapter Layer now
+        # VCPU simply passes the MMU reference.
         
         # 3. Call LLM
         try:
@@ -186,7 +195,7 @@ class StateReasoning(VCPUState):
                     ))
             
             response = await ctx.alu.chat(
-                messages=messages,
+                mmu=ctx.mmu,
                 tools=ctx.tools,
                 on_chunk=_on_chunk
             )
@@ -195,9 +204,14 @@ class StateReasoning(VCPUState):
             ctx.pending_error = e
             return StateErrorRecovery()
             
-        # 4. Decode Response (Middleware Pipeline)
+        # 4. Decode Response directly (No Middleware Pipeline)
         try:
-            actions: List[ActionIR] = ctx.pipeline.process_response(response, ctx.decoder)
+            actions: List[ActionIR] = ctx.decoder.decode_response(
+                response=response,
+                text_is_final=ctx.manifest.text_is_final if ctx.manifest else True,
+                role=ctx.manifest.role if ctx.manifest else None,
+                model_features=ctx.manifest.features if ctx.manifest else None
+            )
             ctx.current_actions = actions
         except Exception as e:
             logger.error(f"Failed to parse ALU response: {e}")
@@ -442,44 +456,8 @@ class StateObservation(VCPUState):
                 ctx.current_results = []
                 return StateCompleted()
 
-        # Doom Loop Detection
-        from nimbus.core.runtime.doom_loop import DoomLoopDetector
-
-        if not hasattr(ctx, '_doom_loop_detector'):
-            ctx._doom_loop_detector = DoomLoopDetector(threshold=3)
-
-        for action in tool_actions:
-            doom_result = ctx._doom_loop_detector.check(action.name, action.args)
-            if doom_result.is_loop:
-                logger.warning(
-                    f"Doom loop detected for tool '{action.name}': {doom_result.guidance}"
-                )
-                ctx.state.doom_loop_count += 1
-
-                if ctx.state.doom_loop_count >= 2:
-                    # Two doom loop warnings -> force terminate
-                    ctx.final_result = ToolResult(
-                        status="ERROR",
-                        output=f"Agent terminated due to repeated doom loop on tool '{action.name}'",
-                        fault=Fault(
-                            domain="AGENT",
-                            code="DOOM_LOOP",
-                            message=doom_result.guidance,
-                        ),
-                        is_final=True,
-                    )
-                    # Clear observed actions before returning
-                    ctx.current_actions = []
-                    ctx.current_results = []
-                    return StateCompleted()
-
-                # First warning: inject guidance and continue
-                ctx.mmu.add_tool_result(
-                    tool_call_id=None,
-                    name="doom_loop_warning",
-                    content=f"[Doom Loop Warning] {doom_result.guidance}",
-                )
-
+        # Checked by KernelGate before execution.
+        
         # Clear observed actions
         ctx.current_actions = []
         ctx.current_results = []
@@ -495,17 +473,8 @@ class StateObservation(VCPUState):
              )
              return StateCompleted()
 
-        # Check for Compaction
-        if ctx.config.compact_on_limit and ctx.mmu.needs_compression():
-            if ctx.state.compaction_count < ctx.config.max_compactions:
-                logger.info(f"Triggering proactive compaction in VCPU (Iter {ctx.state.iteration_count})")
-                try:
-                    # In VCPU context, we do a basic truncation.
-                    # archive_and_reset without summarizer is valid.
-                    await ctx.mmu.archive_and_reset(session_id="vcpu_runtime")
-                    ctx.state.compaction_count += 1
-                except Exception as e:
-                    logger.error(f"VCPU proactive compaction failed: {e}")
+        # Compaction is no longer handled by the FSM state machine.
+        # It will be handled "Just-In-Time" by a Context Pipeline before the ALU call.
 
         return StateInit()
 
