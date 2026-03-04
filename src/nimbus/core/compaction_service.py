@@ -272,6 +272,31 @@ class CompactionService:
     ) -> str:
         """Generate a summary of the conversation using LLM."""
         try:
+            # 1. Deterministic File Tracking (Pi-AI Feature)
+            # Extract files that were read or modified in the history being compacted
+            read_files = set()
+            modified_files = set()
+            for m in messages:
+                if m.role == "tool" and m.name:
+                    content = str(m.content) if m.content else ""
+                    # Look at tool arguments (if stored in meta) or try to infer from content/name
+                    try:
+                        import ast
+                        # We often store arguments in tool calls inside the assistant message 
+                        # just before the tool result. Rather than hunting backwards, we can check 
+                        # if the MMU stored the tool_args in the tool result's meta.
+                        tool_args = m.meta.get("tool_args", {})
+                        if not tool_args and "{" in content: 
+                             pass # Too complex to parse unstructured content reliably here
+                             
+                        if m.name in ["ReadFile", "browser_subagent"]: # Or tools that only read
+                            if "target_file" in tool_args: read_files.add(tool_args["target_file"])
+                            elif "url" in tool_args: read_files.add(tool_args["url"])
+                        elif m.name in ["EditFile", "WriteFile", "ExecuteCommand"]: # Or tools that write
+                            if "target_file" in tool_args: modified_files.add(tool_args["target_file"])
+                    except Exception:
+                        pass # Ignore parsing errors for deterministic tracker
+
             # Extract any previous summary from messages (to preserve cascade info)
             previous_summary = ""
             for m in messages:
@@ -319,30 +344,40 @@ class CompactionService:
             # Include previous summary to prevent cascade loss
             if previous_summary:
                 summary_prompt = (
-                    "\u8bf7\u4f5c\u4e3a\u4efb\u52a1\u7ba1\u7406\u8005\uff0c\u5408\u5e76\u5e76\u66f4\u65b0\u4ee5\u4e0b\u6267\u884c\u6458\u8981\u3002\n\n"
-                    f"\u3010\u4e4b\u524d\u7684\u6458\u8981\u3011\n{previous_summary[:1000]}\n\n"
-                    f"\u3010\u65b0\u8fdb\u5c55\u3011\n{context}\n\n"
-                    "**\u6838\u5fc3\u8981\u6c42**\uff1a\n"
-                    "1. \u5fc5\u987b\u4fdd\u7559\u6240\u6709\u5173\u952e\u6280\u672f\u7ec6\u8282\uff08\u4ee3\u7801\u8def\u5f84\u3001\u914d\u7f6e\u503c\u3001\u5bc6\u7801\uff09\u3002\n"
-                    "2. \u5fc5\u987b\u8bc4\u4f30\u5f53\u524d\u8fdb\u5ea6\u4e0e\u6700\u7ec8\u76ee\u6807\u7684\u8ddd\u79bb\uff08\u9632\u6b62\u4efb\u52a1\u6f02\u79fb\uff09\u3002\n"
-                    "3. \u5fc5\u987b\u4fdd\u7559\u7528\u6237\u7684\u539f\u59cb\u4efb\u52a1\u6307\u4ee4\u548c\u76ee\u6807\u3002\n"
-                    f"\u8bf7\u7528\u4e2d\u6587\u56de\u590d\uff08{target_chars}\u5b57\u4ee5\u5185\uff09\u3002\n\n"
+                    "Please merge and update the execution summary based on the new progress.\n\n"
+                    f"【PREVIOUS SUMMARY】\n{previous_summary[:1000]}\n\n"
+                    f"【NEW PROGRESS】\n{context}\n\n"
+                    "**CORE REQUIREMENTS**:\n"
+                    "1. You MUST preserve all critical technical details (code paths, config values, errors).\n"
+                    "2. You MUST evaluate current progress against the ultimate goal.\n"
+                    f"Please respond in Chinese (under {target_chars} chars).\n\n"
                     "**OUTPUT FORMAT**:\n"
                     "NEW_MILESTONES: [Milestone 1], [Milestone 2]\n"
-                    "SUMMARY: [Your summary content here]"
+                    "SUMMARY:\n"
+                    "## Goal\n[What is the user trying to accomplish?]\n"
+                    "## Constraints & Preferences\n- [Any constraints/preferences]\n"
+                    "## Progress\n### Done\n- [x] [Completed tasks]\n### In Progress\n- [ ] [Current work]\n### Blocked\n- [Issues preventing progress]\n"
+                    "## Key Decisions\n- **[Decision]**: [Brief rationale]\n"
+                    "## Next Steps\n1. [Ordered list of next steps]\n"
+                    "## Critical Context\n- [Data/examples needed to continue]"
                 )
             else:
                 summary_prompt = (
-                    "\u8bf7\u4f5c\u4e3a\u4efb\u52a1\u7ba1\u7406\u8005\uff0c\u603b\u7ed3\u5f53\u524d\u6267\u884c\u72b6\u6001\u3002\n\n"
-                    f"\u3010\u5bf9\u8bdd\u5185\u5bb9\u3011\n{context}\n\n"
-                    "**\u6838\u5fc3\u8981\u6c42**\uff1a\n"
-                    "1. \u63d0\u53d6\u6240\u6709\u5173\u952e\u6280\u672f\u7ec6\u8282\uff08\u4ee3\u7801\u8def\u5f84\u3001\u914d\u7f6e\u503c\u3001\u5bc6\u7801\uff09\u3002\n"
-                    "2. \u660e\u786e\u4e0b\u4e00\u6b65\u884c\u52a8\u8ba1\u5212\u3002\n"
-                    "3. \u5fc5\u987b\u4fdd\u7559\u7528\u6237\u7684\u539f\u59cb\u4efb\u52a1\u6307\u4ee4\u548c\u76ee\u6807\u3002\n"
-                    f"\u8bf7\u7528\u4e2d\u6587\u56de\u590d\uff08{target_chars}\u5b57\u4ee5\u5185\uff09\u3002\n\n"
+                    "Please summarize the current execution state based on the conversation.\n\n"
+                    f"【CONVERSATION】\n{context}\n\n"
+                    "**CORE REQUIREMENTS**:\n"
+                    "1. Extract all critical technical details (code paths, config values, errors).\n"
+                    "2. Clarify the next steps in the action plan.\n"
+                    f"Please respond in Chinese (under {target_chars} chars).\n\n"
                     "**OUTPUT FORMAT**:\n"
                     "NEW_MILESTONES: [Milestone 1]\n"
-                    "SUMMARY: [Your summary content here]"
+                    "SUMMARY:\n"
+                    "## Goal\n[What is the user trying to accomplish?]\n"
+                    "## Constraints & Preferences\n- [Any constraints/preferences]\n"
+                    "## Progress\n### Done\n- [x] [Completed tasks]\n### In Progress\n- [ ] [Current work]\n### Blocked\n- [Issues preventing progress]\n"
+                    "## Key Decisions\n- **[Decision]**: [Brief rationale]\n"
+                    "## Next Steps\n1. [Ordered list of next steps]\n"
+                    "## Critical Context\n- [Data/examples needed to continue]"
                 )
 
             # Use LLM.chat() to generate summary (not complete())
@@ -373,6 +408,15 @@ class CompactionService:
                     mmu.add_milestones(milestones)
                     logger.info(f"\U0001f6a9 Registered milestones: {milestones}")
 
+                # Append Static File Tracking
+                if read_files or modified_files:
+                    file_tracking_section = "\n\n## File Operations Tracker\n"
+                    if modified_files:
+                        file_tracking_section += f"- **Modified Files**: {', '.join(sorted(modified_files))}\n"
+                    if read_files:
+                        file_tracking_section += f"- **Read Files**: {', '.join(sorted(read_files))}\n"
+                    summary += file_tracking_section
+                    
                 # Smart budget check: if over budget, use LLM to re-compress
                 if len(summary) > summary_char_budget:
                     logger.warning(

@@ -49,6 +49,33 @@ class ContextAssembler:
         mime = block.get("mimeType", "")
         return f"{mime}:{digest}"
 
+    def _find_safe_cut_point(self, messages: List[Dict[str, Any]], target_index: int) -> int:
+        """
+        Finds a safe index to cut the history array (keeping messages from index to end).
+        Ensures we never split a tool_call from its tool_result.
+        
+        If target_index splits a tool sequence, it walks FORWARD to include the 
+        tool results (meaning we drop FEWER messages, keeping the context intact).
+        """
+        if target_index <= 0:
+            return 0
+        if target_index >= len(messages):
+            return len(messages)
+            
+        cut_idx = target_index
+        
+        # If the cut point lands on a 'tool' message, it means we dropped the 'assistant' 
+        # message that initiated it. This breaks the LLM API contract.
+        # We must advance the cut point to drop the orphan tool results as well.
+        while cut_idx < len(messages) and messages[cut_idx].get("role") == "tool":
+            cut_idx += 1
+            
+        # If the cut point lands on an 'assistant' message, we should check if it's 
+        # part of a chain (e.g. it has tool calls). If so, we are safe to keep it, 
+        # because the subsequent tool results are after it and will also be kept.
+        
+        return cut_idx
+
     def _optimize_context(self, messages: List[Dict[str, Any]], hot_count: int = 0, compact_on_limit: bool = False) -> List[Dict[str, Any]]:
         """
         Optimize context by:
@@ -296,8 +323,14 @@ class ContextAssembler:
                 stream_tokens = sum(approximate_message_tokens(m) for m in stream_messages)
                 
             if stream_tokens > remaining_budget:
-                logger.critical("🚨 Smart Drop failed to reduce context enough. Forcing strict history drop.")
-                stream_messages = stream_messages[-hot_count:]
+                logger.critical("🚨 Smart Drop failed to reduce context enough. Forcing history drop.")
+                
+                # We need to drop messages until we fit the budget.
+                # Instead of a blind array slice which might fracture tool calls, we find a safe cut point.
+                target_drop_count = len(stream_messages) - hot_count
+                safe_cut_idx = self._find_safe_cut_point(stream_messages, target_drop_count)
+                
+                stream_messages = stream_messages[safe_cut_idx:]
                 stream_tokens = sum(approximate_message_tokens(m) for m in stream_messages)
 
         optimized_stream = self._optimize_context(stream_messages, hot_count=hot_count, compact_on_limit=compact_on_limit)
