@@ -210,15 +210,30 @@ class InstructionDecoder:
             # Use regex to find and remove the prefix and leading whitespace.
             clean_text = re.sub(r"^(?:`+)?thought:(?:`+)?\s*", "", stripped, flags=re.IGNORECASE)
 
-            # In the FSM architecture, pure text without tool calls from a backend
-            # specialist is always a final reply.  The old "strict" mode marked it as
-            # THOUGHT which caused the FSM to loop indefinitely (THOUGHT → Observation
-            # → Init → Reasoning → THOUGHT …) because THOUGHT never triggers
-            # StateCompleted.  Now we uniformly treat it as REPLY so the FSM can
-            # terminate.
-            kind = "REPLY"
+            # Distinguish between a final conversational reply and an intermediate
+            # thought that precedes a tool call the LLM hasn't made yet.
+            #
+            # - _is_conversational_reply() detects short, self-contained answers
+            #   (e.g. greetings, direct answers <= 120 chars without planning
+            #   language, or short text with "done"/"completed" markers).
+            #   These map to REPLY -> FSM terminates.
+            #
+            # - Longer text or text containing planning language ("let me",
+            #   "next", "first", etc.) is treated as THOUGHT -> FSM gives the
+            #   LLM one more chance to call a tool. The consecutive_thoughts
+            #   counter in StateObservation prevents infinite THOUGHT loops
+            #   by terminating after max_consecutive_thoughts iterations
+            #   without tool calls.
+            if self._is_conversational_reply(clean_text):
+                kind = "REPLY"
+            else:
+                kind = "THOUGHT"
 
-            actions.append(ActionIR(kind=kind, name="thought" if kind == "THOUGHT" else "reply", args={"text": clean_text}))
+            actions.append(ActionIR(
+                kind=kind,
+                name="reply" if kind == "REPLY" else "thought",
+                args={"text": clean_text},
+            ))
 
         return actions
 

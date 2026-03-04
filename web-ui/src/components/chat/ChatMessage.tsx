@@ -305,6 +305,9 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
     }
   }, [isStreaming, tools.length]);
 
+  // Hook must be called unconditionally (React Rules of Hooks)
+  const typewriterContent = useTypewriter(message.content || "", isStreaming === true && !isSystem);
+
   if (isSystem) {
     return (
       <div className="flex justify-center my-6">
@@ -315,8 +318,6 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
       </div>
     );
   }
-
-  const typewriterContent = useTypewriter(message.content || "", isStreaming === true);
   const cleanContent = typewriterContent.trim();
   const hasContent = Boolean(cleanContent);
   const hasTools = tools.length > 0;
@@ -350,7 +351,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
           <span className="font-medium opacity-0 group-hover:opacity-100 transition-opacity">
             {isUser ? "You" : "Nimbus"}
           </span>
-          <span className="opacity-0 group-hover:opacity-60 transition-opacity">
+          <span suppressHydrationWarning className="opacity-0 group-hover:opacity-60 transition-opacity">
             {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </span>
         </div>

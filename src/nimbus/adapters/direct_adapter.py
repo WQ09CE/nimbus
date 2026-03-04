@@ -391,6 +391,8 @@ class DirectAdapter:
                  }
              })
 
+        logger.debug("chat() returning: content_len=%d tool_calls=%d", len(content), len(tool_calls))
+
         return VcpuLLMResponse(
             content=content if content else None,
             tool_calls=tool_calls if tool_calls else None,

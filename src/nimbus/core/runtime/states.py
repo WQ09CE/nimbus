@@ -221,12 +221,18 @@ class StateReasoning(VCPUState):
         has_tool_call = False
         for action in actions:
             if action.kind in ("RETURN", "REPLY"):
-                ctx.final_result = action.args.get("result", action.args.get("value", action.args.get("text", action.args)))
+                raw = action.args.get("result", action.args.get("value", action.args.get("text")))
+                ctx.final_result = raw if raw is not None else str(action.args)
                 
-                # Persist the final response to MMU since we are bypassing StateObservation
-                if hasattr(response, "tool_calls") and response.tool_calls:
-                    ctx.mmu.add_assistant_with_tool_calls(getattr(response, "content", ""), response.tool_calls)
-                elif hasattr(response, "content") and response.content:
+                # Persist the final response to MMU since we are bypassing StateObservation.
+                # IMPORTANT: Do NOT persist tool_calls here! Control-flow tools like
+                # SubmitResult/return_result are routed as RETURN by the decoder and
+                # never executed via Gate, so there will be no matching tool_result
+                # message. Saving tool_calls without tool_results breaks the web-ui
+                # (it shows the tool call as forever "running") and violates the
+                # OpenAI message ordering contract (assistant+tool_calls must be
+                # followed by tool result messages).
+                if hasattr(response, "content") and response.content:
                     ctx.mmu.add_assistant_message(response.content)
                 else:
                     ctx.mmu.add_assistant_message(str(ctx.final_result))
@@ -412,9 +418,29 @@ class StateObservation(VCPUState):
                 if action.kind == "THOUGHT":
                     ctx.mmu.add_assistant_message(action.args.get('text', ''))
 
-        # Reset consecutive errors on successful observation (tools executed without exception)
+        # Track consecutive thoughts vs productive actions.
+        # This prevents infinite THOUGHT loops where the LLM keeps emitting
+        # text without ever calling a tool or returning a final answer.
         if tool_actions:
+            ctx.state.on_action()  # resets consecutive_thoughts to 0
             ctx.state.consecutive_errors = 0
+        else:
+            ctx.state.on_thought()  # increments consecutive_thoughts
+            max_thoughts = getattr(ctx.config, "max_consecutive_thoughts", 8)
+            if ctx.state.consecutive_thoughts >= max_thoughts:
+                logger.warning(
+                    f"Agent exceeded max consecutive thoughts ({max_thoughts}). "
+                    f"Forcing termination to prevent infinite loop."
+                )
+                # Gather the last thought as the final result
+                last_text = ""
+                for action in ctx.current_actions:
+                    if action.kind == "THOUGHT":
+                        last_text = action.args.get("text", "")
+                ctx.final_result = last_text or "Agent terminated after too many consecutive thoughts without action."
+                ctx.current_actions = []
+                ctx.current_results = []
+                return StateCompleted()
 
         # Doom Loop Detection
         from nimbus.core.runtime.doom_loop import DoomLoopDetector

@@ -125,7 +125,7 @@ class VCPU:
             self._current_state = StateInit()
             self._is_active = True
             
-        from nimbus.core.protocol import StepResult
+        from nimbus.core.protocol import StepResult, ToolResult
         step_result = StepResult()
 
         try:
@@ -144,7 +144,6 @@ class VCPU:
                 if self._fsm_ctx.final_result is not None:
                     step_result.final_result = self._fsm_ctx.final_result
                 else:
-                    from nimbus.core.protocol import ToolResult
                     step_result.final_result = ToolResult(
                         status="TIMEOUT", 
                         is_final=True, 
@@ -196,7 +195,16 @@ class VCPU:
                 
             # A complete iteration outputs the actions derived
             step_result.actions = list(self._fsm_ctx.current_actions)
-                
+
+            # Early exit: Reasoning returned REPLY/RETURN -> StateCompleted
+            if isinstance(self._current_state, StateCompleted):
+                step_result.is_final = True
+                step_result.fault = self._fsm_ctx.fault
+                f_res = self._fsm_ctx.final_result
+                step_result.final_result = f_res if isinstance(f_res, ToolResult) else ToolResult(status="OK", output=f_res, is_final=True)
+                self._is_active = False
+                return step_result
+
             # Phase B: Act (if actions generated)
             if self._current_state.__class__.__name__ == "StateActionExecution":
                 next_state = await self._current_state.execute(self._fsm_ctx)
@@ -215,7 +223,16 @@ class VCPU:
                 if next_state.name not in VALID_TRANSITIONS.get("OBSERVATION", []):
                      raise RuntimeError(f"Invalid FSM Transition: OBSERVATION -> {next_state.name}")
                 self._current_state = next_state
-                
+
+            # Check if Observation terminated (max_iterations, doom_loop,
+            # or max_consecutive_thoughts).
+            if isinstance(self._current_state, StateCompleted):
+                step_result.is_final = True
+                step_result.fault = self._fsm_ctx.fault
+                f_res = self._fsm_ctx.final_result
+                step_result.final_result = f_res if isinstance(f_res, ToolResult) else ToolResult(status="OK", output=f_res, is_final=True)
+                self._is_active = False
+
             return step_result
 
         except asyncio.CancelledError:

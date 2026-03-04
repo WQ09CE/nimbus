@@ -38,12 +38,13 @@ interface ToolCardProps {
 }
 
 export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: ToolCardProps) {
+  // Hook must be called unconditionally (React Rules of Hooks)
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? false);
+
   // Meta-tools (Dispatch/Explore/Implement/Design/Test) get the dedicated sub-agent card
   if (META_TOOLS.has(tool.name)) {
     return <DispatchCard tool={tool} defaultState={defaultState} isParallel={isParallel} />;
   }
-
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? false);
 
   // Status Colors & Icons
   const getStatusStyle = () => {
