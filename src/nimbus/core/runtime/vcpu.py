@@ -11,7 +11,7 @@ Key Responsibilities:
 
 import asyncio
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from nimbus.core.memory.mmu import MMU
 from nimbus.core.models.manifest import ModelManifest, GPT_FEATURES
@@ -43,6 +43,7 @@ class VCPU:
         config: Optional[VCPUConfig] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         session_id: str = "default_session",
+        transform_context_hook: Optional[Callable[[Any], Any]] = None,
         manifest: Optional[ModelManifest] = None,
     ):
         # Hardware Components
@@ -60,6 +61,7 @@ class VCPU:
         # OS Controls
         self.signals = {"soft_timeout": False, "hard_timeout": False}
         self.tracer = TraceManager(session_id=session_id)
+        self.transform_context_hook = transform_context_hook
 
         # FSM State "Register"
         # Represents objective execution counts rather than controlling flow
@@ -98,7 +100,7 @@ class VCPU:
         self._fsm_ctx = None
         self._current_state = None
 
-    async def step(self) -> "StepResult":
+    async def step(self, interrupt_event: Optional[asyncio.Event] = None) -> "StepResult":
         """
         Drive the FSM forward by exactly one logical step (Think -> Act -> Observe).
         Yields control back to the OS between full iterations.
@@ -116,6 +118,8 @@ class VCPU:
                 config=self.config,
                 tools=self.tools,
                 state=self._state,
+                transform_context_hook=self.transform_context_hook,
+                interrupt_event=interrupt_event,
                 manifest=self.manifest
             )
             self._current_state = StateInit()

@@ -36,6 +36,7 @@ from nimbus.core.session import SessionManager
 from nimbus.core.heart import Heart, HeartConfig, HeartMessage
 from nimbus.core.heart_modules.session_monitor import SessionMonitorModule
 from nimbus.core.heart_modules.memory import MemoryManagerModule
+from nimbus.core.heart_modules.memory_consolidator import MemoryConsolidatorModule
 from nimbus.os.gate import (
     KernelGate,
     SimpleEventStream,
@@ -234,6 +235,7 @@ class AgentOS:
         )
         self.heart.add_module(SessionMonitorModule(error_threshold=3))
         self.heart.add_module(MemoryManagerModule(llm_client=self._llm))
+        self.heart.add_module(MemoryConsolidatorModule(llm_client=self._llm))
         self._heart_task: Optional[asyncio.Task] = None
         self._intervention_task: Optional[asyncio.Task] = None
 
@@ -633,6 +635,13 @@ class AgentOS:
             yield {"type": "error", "message": f"Process {pid} not found"}
             return
 
+        async def transform_context_hook(ctx) -> None:
+            self._drain_process_inbox(process)
+            await self._check_compaction(process)
+
+        if process.vcpu:
+            process.vcpu.transform_context_hook = transform_context_hook
+
         loop = RuntimeLoop(
             process=process,
             compaction_fn=self._compaction_for_process,
@@ -678,6 +687,30 @@ class AgentOS:
             return ToolResult(
                 status="OK", output="[Instruction appended to running task]", is_final=True
             )
+
+        # --- AUTO RECALL INJECTION ---
+        try:
+            search_query = message if isinstance(message, str) else "\n".join([p.get("text", "") for p in message if isinstance(p, dict) and p.get("type", "") == "text"])
+            if search_query and len(search_query.strip()) > 5 and hasattr(self.heart, "nimfs"):
+                results = self.heart.nimfs.search_memory(query=search_query, top_k=3, scope="project")
+                if results:
+                    recall_text = "# 🧠 RELEVANT PAST MEMORY\n"
+                    added = 0
+                    for entry in results:
+                        try:
+                            abstract = self.heart.nimfs.read_memory(entry.memory_id, layer=1)
+                            if abstract:
+                                recall_text += f"## {entry.title}\n{abstract}\n\n"
+                                added += 1
+                        except Exception:
+                            pass
+                    
+                    if added > 0:
+                        process.mmu.add_user_message(recall_text.strip())
+                        logger.info(f"[{session_id}] Auto-Recalled {added} past memories into context.")
+        except Exception as e:
+            logger.warning(f"[{session_id}] Auto-Recall failed non-fatally: {e}")
+        # -----------------------------
 
         process.vcpu._reset()
 
@@ -907,10 +940,80 @@ class AgentOS:
         logger.info(f"[{pid}] Message injected into inbox: {preview}...")
         return True
 
+    def _drain_process_inbox(self, process: Process) -> None:
+        """Drain inbox messages (IPC messages + plain strings).
+
+        Inbox may be a Mailbox (from spawn) or list (from chat) -- duck typed.
+        """
+        import logging
+        logger = logging.getLogger("kernel.os")
+
+        while process.inbox:
+            if hasattr(process.inbox, "qsize"):
+                # Mailbox (from spawn)
+                if process.inbox.qsize() == 0:
+                    break
+                try:
+                    msg = process.inbox._queue.get_nowait()
+                except Exception:
+                    break
+            else:
+                # List (from chat)
+                msg = process.inbox.pop(0)
+
+            if not msg:
+                break
+
+            # Handle both IPCMessage objects and plain strings
+            if hasattr(msg, "type") and hasattr(msg, "payload"):
+                # IPCMessage from inject_message() or IPC system
+                if msg.type == "request":
+                    task_goal = msg.payload.get("goal", "")
+                    process.mmu.add_user_message(f"[Task Assignment] {task_goal}")
+                elif msg.type == "response":
+                    result_data = msg.payload.get("result", "")
+                    process.mmu.add_user_message(
+                        f"[Sub-Agent Result from {msg.sender_pid}] {result_data}"
+                    )
+                else:
+                    content = msg.payload.get("content", str(msg.payload))
+                    if process.is_interactive:
+                        process.mmu.add_user_message(content)
+                    else:
+                        process.mmu.add_user_message(f"[User Intervention] {content}")
+
+                self._emit_event(
+                    "USER_INTERVENTION", process.pid, {"content": str(msg.payload)}
+                )
+                logger.info(
+                    f"[{process.pid}] Processed inbox message {msg.id} from {msg.sender_pid}"
+                )
+            else:
+                # Plain string from _handle_interventions() or legacy code
+                content = str(msg)
+                if process.is_interactive:
+                    process.mmu.add_user_message(content)
+                else:
+                    process.mmu.add_user_message(f"[User Intervention] {content}")
+                self._emit_event(
+                    "USER_INTERVENTION", process.pid, {"content": content}
+                )
+                logger.info(
+                    f"[{process.pid}] Processed inbox string message: {content[:50]}..."
+                )
+
     async def _run_process(self, process: Process) -> ToolResult:
         from nimbus.core.process.loop import RuntimeLoop
 
         self._ensure_heart_running()
+
+        async def transform_context_hook(ctx) -> None:
+            self._drain_process_inbox(process)
+            await self._check_compaction(process)
+
+        if process.vcpu:
+            process.vcpu.transform_context_hook = transform_context_hook
+
         loop = RuntimeLoop(
             process=process,
             compaction_fn=self._compaction_for_process,

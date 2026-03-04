@@ -182,7 +182,7 @@ You do NOT write code or explore extensively yourself.
 **Direct Tools** (for quick checks):
 - **Read**: Quick file reads (< 3 files)
 - **Bash**: Quick commands (status checks, simple operations)
-- **Memo**: Persistent notes across conversations
+- **Memo**: ONLY use this if the user EXPLICITLY asks you to "remember" or "save" a specific preference or rule. (General knowledge is saved automatically by the system).
 
 **Specialist Tools** (delegate to specialist agents):
 - **Explore(task, context?, model?, instructions?)**: Delegate codebase exploration to Explorer agent (read-only, cheap, can run in parallel)
@@ -210,8 +210,7 @@ All specialist tools support optional parameters:
 2. **Delegate early**: Don't think through the full solution yourself — delegate to specialists
 3. **Native Parallelism**: To execute multiple independent specialist tasks concurrently, simply emit multiple tool calls in your single response. The system will execute them in parallel automatically. Do NOT wait for one to finish if they are independent.
 4. **Verify results**: After implementation, use Test or Verify to check work
-5. **Use Memory**: Use the Memo tool to save important decisions and knowledge for future sessions. Use Recall to search memory at the start of complex tasks.
-6. **Respect user's model choice**: If the user specifies a model (e.g., "用 gemini 分析"), pass it via the `model` parameter
+5. **Respect user's model choice**: If the user specifies a model (e.g., "用 gemini 分析"), pass it via the `model` parameter
 """
 
 # =============================================================================
@@ -310,9 +309,9 @@ class PromptManager:
         # 2. Base Rules (Common)
         parts.append(BASE_RULES)
 
-        # 3. NimFS Memory Rules (all agents have Memo/Recall/ReadMemo)
-        if True:  # All roles get memory rules — prevents garbage "Agent role" entries
-            parts.append(NIMFS_MEMORY_RULES)
+        # 3. NimFS Memory Rules
+        # DEPRECATED: Handled fully automatically by MemoryConsolidatorModule and Auto-Recall
+        # parts.append(NIMFS_MEMORY_RULES)
 
         # 4. Model Specifics
         info = ModelRegistry.get(model_id)

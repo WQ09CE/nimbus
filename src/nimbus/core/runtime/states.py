@@ -172,6 +172,21 @@ class StateReasoning(VCPUState):
         # 1. JIT Context Assembly happens in ALU/Adapter Layer now
         # VCPU simply passes the MMU reference.
         
+        # 2. Invoke Transform Context Hook (Phase 8 JIT Hook)
+        if ctx.transform_context_hook is not None:
+            logger.debug(f"[vCPU] Invoking transform_context_hook before ALU...")
+            try:
+                hook_result = ctx.transform_context_hook(ctx)
+                # If the hook is async, await it
+                if asyncio.iscoroutine(hook_result):
+                    await hook_result
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"[vCPU] Error in transform_context_hook: {e}")
+                ctx.pending_error = e
+                return StateErrorRecovery()
+
         # 3. Call LLM
         try:
             logger.info(f"🧠 [vCPU] ALU Thinking (Iter {ctx.state.iteration_count})...")
@@ -194,11 +209,39 @@ class StateReasoning(VCPUState):
                         data={"chunk": chunk}
                     ))
             
-            response = await ctx.alu.chat(
+            chat_task = asyncio.create_task(ctx.alu.chat(
                 mmu=ctx.mmu,
                 tools=ctx.tools,
                 on_chunk=_on_chunk
-            )
+            ))
+            
+            interrupt_task = None
+            tasks = [chat_task]
+            if ctx.interrupt_event:
+                interrupt_task = asyncio.create_task(ctx.interrupt_event.wait())
+                tasks.append(interrupt_task)
+                
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            
+            if interrupt_task and interrupt_task in done:
+                logger.info(f"[vCPU] Thinking interrupted by user.")
+                chat_task.cancel()
+                try:
+                    await chat_task
+                except asyncio.CancelledError:
+                    pass
+                ctx.interrupt_event.clear()
+                ctx.mmu.add_user_message("[Execution interrupted by user. Please pause and ask the user how to proceed, or evaluate their recent instructions.]")
+                ctx.pending_parse_error = "Execution interrupted by user."
+                return StateErrorRecovery()
+
+            if interrupt_task:
+                interrupt_task.cancel()
+
+            response = chat_task.result()
+            
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.exception("ALU execution failed")
             ctx.pending_error = e
@@ -341,7 +384,28 @@ class StateActionExecution(VCPUState):
                             output=f"[Dry-Run] Successfully simulated execution of {action.name} with args {action.args}"
                         )
                     else:
-                        result = await ctx.gate.syscall_tool(action)
+                        tool_task = asyncio.create_task(ctx.gate.syscall_tool(action))
+                        interrupt_task = None
+                        tasks = [tool_task]
+                        if ctx.interrupt_event:
+                            interrupt_task = asyncio.create_task(ctx.interrupt_event.wait())
+                            tasks.append(interrupt_task)
+                            
+                        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                        
+                        if interrupt_task and interrupt_task in done:
+                            tool_task.cancel()
+                            try:
+                                await tool_task
+                            except asyncio.CancelledError:
+                                pass
+                            ctx.interrupt_event.clear()
+                            raise Exception("Tool execution interrupted by user.")
+                            
+                        if interrupt_task:
+                            interrupt_task.cancel()
+                            
+                        result = tool_task.result()
                     
                     if not hasattr(action, 'result'):
                         action.result = result
@@ -375,7 +439,30 @@ class StateActionExecution(VCPUState):
                         output=f"[Dry-Run] Successfully simulated execution of {action.name} with args {action.args}"
                     )
                 else:
-                    result = await ctx.gate.syscall_tool(action)
+                    tool_task = asyncio.create_task(ctx.gate.syscall_tool(action))
+                    interrupt_task = None
+                    tasks = [tool_task]
+                    if ctx.interrupt_event:
+                        interrupt_task = asyncio.create_task(ctx.interrupt_event.wait())
+                        tasks.append(interrupt_task)
+                        
+                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                    
+                    if interrupt_task and interrupt_task in done:
+                        tool_task.cancel()
+                        try:
+                            await tool_task
+                        except asyncio.CancelledError:
+                            pass
+                        # Only clear once if multiple tasks race to clear
+                        if ctx.interrupt_event.is_set():
+                            ctx.interrupt_event.clear()
+                        raise Exception("Tool execution interrupted by user.")
+                        
+                    if interrupt_task:
+                        interrupt_task.cancel()
+                        
+                    result = tool_task.result()
                 
                 if not hasattr(action, 'result'):
                     action.result = result

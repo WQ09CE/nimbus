@@ -8,7 +8,7 @@ to orchestrate the Think-Act-Observe loop reliably.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Callable, Dict, List, Optional, Protocol
 
 from nimbus.core.memory.mmu import MMU
 from nimbus.core.protocol import ActionIR
@@ -45,6 +45,8 @@ class FSMContext:
         config: VCPUConfig,
         tools: List[Dict[str, Any]],
         state: '_states.FSMExecutionState',
+        transform_context_hook: Optional[Callable[[FSMContext], Any]] = None,
+        interrupt_event: Optional[Any] = None,
         manifest: Any = None,
     ):
         self.mmu = mmu
@@ -54,6 +56,8 @@ class FSMContext:
         self.config = config
         self.tools = tools
         self.state = state
+        self.transform_context_hook = transform_context_hook
+        self.interrupt_event = interrupt_event
         self.manifest = manifest
 
         # Temporary registers for FSM transitions

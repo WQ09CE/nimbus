@@ -65,12 +65,10 @@ for _fn in [
     edit_file,
     read_file,
     write_file,
-    nimfs_list_artifacts,
     nimfs_read_artifact,
     nimfs_write_artifact,
     memo,
-    recall,
-    read_memo,
+    # deprecated: recall, read_memo are handled autonomously
 ]:
     if hasattr(_fn, "_tool_definition"):
         try:

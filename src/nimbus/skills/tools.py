@@ -32,9 +32,14 @@ class ScriptTool:
 
     async def __call__(self, **kwargs) -> str:
         """Execute the script with arguments."""
-        # Convert kwargs to CLI args
+        # Convert kwargs to CLI args, ignoring system-injected kwargs like 'mmu'
         cli_args = []
+        valid_args = self.config.args.keys() if self.config.args else set()
+        
         for k, v in kwargs.items():
+            if k not in valid_args:
+                continue
+                
             # Normalize boolean values (LLM may send string "true"/"false")
             if isinstance(v, bool):
                 if v:

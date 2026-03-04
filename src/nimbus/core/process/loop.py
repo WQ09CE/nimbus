@@ -295,15 +295,8 @@ class RuntimeLoop:
             # ----------------------------------------------------------
             self._report_to_heart(step_result)
 
-            # ----------------------------------------------------------
-            # 3. Drain inbox (IPC messages + plain strings)
-            # ----------------------------------------------------------
-            self._drain_inbox()
-
-            # ----------------------------------------------------------
-            # 4. Proactive compaction check
-            # ----------------------------------------------------------
-            await self._check_compaction_fn(process)
+            # Inbox and Compaction checks are now handled Just-In-Time
+            # by the transform_context_hook before the LLM runs.
 
             # ----------------------------------------------------------
             # 5. Handle CONTEXT_OVERFLOW fault -- compact and retry
@@ -365,6 +358,32 @@ class RuntimeLoop:
                 final_result = step_result.final_result or ToolResult(
                     status="OK", output="Completed"
                 )
+
+                # Report completion and summary for potential LTM consolidation
+                try:
+                    summary = ""
+                    if process.mmu and hasattr(process.mmu, "context"):
+                        summary = getattr(process.mmu.context, "global_summary", "")
+                    
+                    if not summary and process.mmu:
+                        import json
+                        msgs = process.mmu.get_last_messages(10)
+                        summary = json.dumps([{"role": m.get("role", ""), "content": m.get("content", "")} for m in msgs if isinstance(m, dict)], ensure_ascii=False)
+
+                    if self._heart:
+                        asyncio.create_task(
+                            self._heart.inbox.put(
+                                topic="session.completed",
+                                payload={
+                                    "session_id": process.pid,
+                                    "status": "SUCCEEDED",
+                                    "summary": summary,
+                                }
+                            )
+                        )
+                except Exception as e:
+                    logger.warning(f"[{process.pid}] Failed to report completion to heart: {e}")
+
                 yield {"type": "done", "result": final_result}
                 return
 
@@ -439,66 +458,7 @@ class RuntimeLoop:
             )
         )
 
-    def _drain_inbox(self) -> None:
-        """Drain inbox messages (IPC messages + plain strings).
 
-        Inbox may be a Mailbox (from spawn) or list (from chat) -- duck typed.
-        """
-        process = self._process
-
-        while process.inbox:
-            if hasattr(process.inbox, "qsize"):
-                # Mailbox (from spawn)
-                if process.inbox.qsize() == 0:
-                    break
-                try:
-                    msg = process.inbox._queue.get_nowait()
-                except Exception:
-                    break
-            else:
-                # List (from chat)
-                msg = process.inbox.pop(0)
-
-            if not msg:
-                break
-
-            # Handle both IPCMessage objects and plain strings
-            if hasattr(msg, "type") and hasattr(msg, "payload"):
-                # IPCMessage from inject_message() or IPC system
-                if msg.type == "request":
-                    task_goal = msg.payload.get("goal", "")
-                    process.mmu.add_user_message(f"[Task Assignment] {task_goal}")
-                elif msg.type == "response":
-                    result_data = msg.payload.get("result", "")
-                    process.mmu.add_user_message(
-                        f"[Sub-Agent Result from {msg.sender_pid}] {result_data}"
-                    )
-                else:
-                    content = msg.payload.get("content", str(msg.payload))
-                    if process.is_interactive:
-                        process.mmu.add_user_message(content)
-                    else:
-                        process.mmu.add_user_message(f"[User Intervention] {content}")
-
-                self._emit_event(
-                    "USER_INTERVENTION", process.pid, {"content": str(msg.payload)}
-                )
-                logger.info(
-                    f"[{process.pid}] Processed inbox message {msg.id} from {msg.sender_pid}"
-                )
-            else:
-                # Plain string from _handle_interventions() or legacy code
-                content = str(msg)
-                if process.is_interactive:
-                    process.mmu.add_user_message(content)
-                else:
-                    process.mmu.add_user_message(f"[User Intervention] {content}")
-                self._emit_event(
-                    "USER_INTERVENTION", process.pid, {"content": content}
-                )
-                logger.info(
-                    f"[{process.pid}] Processed inbox string message: {content[:50]}..."
-                )
 
     async def _handle_context_overflow(self, step_result: StepResult):
         """Handle CONTEXT_OVERFLOW fault by compacting and retrying.
