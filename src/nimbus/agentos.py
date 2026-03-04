@@ -706,8 +706,8 @@ class AgentOS:
                             pass
                     
                     if added > 0:
-                        process.mmu.add_user_message(recall_text.strip())
-                        logger.info(f"[{session_id}] Auto-Recalled {added} past memories into context.")
+                        process.mmu.add_user_message(recall_text.strip(), metadata={"ephemeral": True})
+                        logger.info(f"[{session_id}] Auto-Recalled {added} past memories into context (ephemeral).")
         except Exception as e:
             logger.warning(f"[{session_id}] Auto-Recall failed non-fatally: {e}")
         # -----------------------------

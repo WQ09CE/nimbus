@@ -281,14 +281,15 @@ class StackFrame:
         """Add a message to this frame's history."""
         self.messages.append(message)
 
-    def add_user_message(self, content: "str | list") -> None:
+    def add_user_message(self, content: "str | list", metadata: Optional[Dict[str, Any]] = None) -> None:
         """Add a user message.
         
         Args:
             content: Text string or list of content blocks 
                      (e.g. [{"type": "text", "text": "..."}, {"type": "image", "data": "base64...", "mimeType": "image/png"}])
+            metadata: Optional metadata dictionary to attach to the message (e.g., ephemeral flag).
         """
-        self.messages.append(Message(role="user", content=content))
+        self.messages.append(Message(role="user", content=content, meta=metadata or {}))
 
     def add_assistant_message(self, content: str) -> None:
         """Add an assistant message."""

@@ -252,10 +252,10 @@ class MMU:
     def add_message(self, message: Message) -> None:
         self.current_frame.add_message(message)
 
-    def add_user_message(self, content: "str | list") -> None:
+    def add_user_message(self, content: "str | list", metadata: Optional[Dict[str, Any]] = None) -> None:
         # Check for pending tool calls and fix order if needed
         self._ensure_tool_call_integrity()
-        self.current_frame.add_user_message(content)
+        self.current_frame.add_user_message(content, metadata=metadata)
 
     def _ensure_tool_call_integrity(self):
         """Ensure OpenAI API message order integrity (Assistant+Tools -> Tool Results)."""
