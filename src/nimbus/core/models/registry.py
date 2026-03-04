@@ -8,7 +8,7 @@ It handles ID normalization, provider mapping, and capability tiers.
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
-from nimbus.core.models.manifest import ModelManifest, GPT_FEATURES, GEMINI_FEATURES, CLAUDE_FEATURES
+from nimbus.core.models.manifest import ModelManifest, GPT_FEATURES, GEMINI_FEATURES, CLAUDE_FEATURES, OLLAMA_FEATURES
 
 
 @dataclass
@@ -330,6 +330,21 @@ ModelRegistry.register(ModelInfo(
     context_window=1_000_000,
 ))
 
+# Gemini 3.1 Flash Lite — ultra-cheap flash tier (2026)
+ModelRegistry.register(ModelInfo(
+    model_id="gemini-3.1-flash-lite-preview",
+    provider="google",
+    tier="flash",
+    aliases=[
+        "flash-lite",
+        "gemini-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-3.1-flash-lite-preview",
+    ],
+    manifest=ModelManifest("gemini-flash-lite", GEMINI_FEATURES),
+    context_window=1_000_000,
+))
+
 # ---------------------------------------------------------------------------
 # Codex (Special — coding tier)
 # ---------------------------------------------------------------------------
@@ -340,4 +355,18 @@ ModelRegistry.register(ModelInfo(
     aliases=["codex"],
     manifest=ModelManifest("codex", GPT_FEATURES),
     context_window=128_000,
+))
+
+# ── Ollama / Local Models ──────────────────────────────────────
+ModelRegistry.register(ModelInfo(
+    model_id="qwen3.5:9b",
+    provider="ollama",
+    tier="flash",
+    aliases=[
+        "qwen3.5",
+        "qwen",
+        "ollama",
+    ],
+    manifest=ModelManifest("qwen3.5", OLLAMA_FEATURES),
+    context_window=32_000,
 ))

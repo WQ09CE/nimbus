@@ -1379,6 +1379,7 @@ class DirectAdapter:
             {"id": "google/gemini-3-pro-preview", "object": "model", "owned_by": "google"},
             {"id": "google/gemini-3.1-pro-preview", "object": "model", "owned_by": "google"},
             {"id": "google/gemini-3.1-pro-preview-customtools", "object": "model", "owned_by": "google"},
+            {"id": "google/gemini-3.1-flash-lite-preview", "object": "model", "owned_by": "google"},
         ])
 
         # Anthropic Claude models
