@@ -11,9 +11,9 @@ from typing import List
 # Delayed import to avoid circular dependency with AgentOS -> orchestration
 # from nimbus.orchestration.prompts import PromptManager
 
-# NimFS tool sets by access level
-_NIMFS_READ = ["NimFSReadArtifact", "NimFSListArtifacts", "NimFSSearchMemory", "NimFSReadMemory", "NimFSLoadContext", "NimFSListMemory"]
-_NIMFS_ALL = _NIMFS_READ + ["NimFSWriteArtifact", "NimFSWriteMemory"]
+# NimFS artifact tools + unified memory tools
+_NIMFS_READ = ["NimFSReadArtifact", "NimFSListArtifacts", "Recall", "ReadMemo"]
+_NIMFS_ALL = _NIMFS_READ + ["NimFSWriteArtifact", "Memo"]
 _NIMFS_SPECIALIST = _NIMFS_READ + ["NimFSWriteArtifact"]  # Specialists can write artifacts but NOT memory
 
 @dataclass
@@ -35,6 +35,8 @@ class AgentProfile:
     # Runtime Config
     max_iterations: int = 20
     max_consecutive_thoughts: int = 1  # Text-only response = final answer, stop immediately
+    is_interactive: bool = False    # Interactive session flag
+    text_is_final: bool = True      # Pure text = final reply
 
     @classmethod
     def create_standard(cls, model_id: str = "default") -> "AgentProfile":
@@ -60,7 +62,8 @@ class AgentProfile:
             allowed_tools=["Read", "Write", "Edit", "Bash", "SubmitResult"] + _NIMFS_ALL,
             system_prompt=PromptManager.get_system_prompt("executor", model_id),
             max_iterations=40,
-            max_consecutive_thoughts=2
+            max_consecutive_thoughts=2,
+            text_is_final=False,
         )
 
     # =========================================================================
@@ -79,6 +82,7 @@ class AgentProfile:
             max_iterations=50,
             max_consecutive_thoughts=2,
             write_filter=[],
+            text_is_final=False,
         )
 
     @classmethod
@@ -93,6 +97,7 @@ class AgentProfile:
             max_iterations=50,
             max_consecutive_thoughts=2,
             write_filter=[],
+            text_is_final=False,
         )
 
     @classmethod
@@ -107,6 +112,7 @@ class AgentProfile:
             max_iterations=50,
             max_consecutive_thoughts=2,
             write_filter=[".md"],
+            text_is_final=False,
         )
 
     @classmethod
@@ -121,6 +127,7 @@ class AgentProfile:
             max_iterations=50,
             max_consecutive_thoughts=2,
             write_filter=[],
+            text_is_final=False,
         )
 
     @classmethod
@@ -130,7 +137,7 @@ class AgentProfile:
         return cls(
             name="orchestrator",
             role="orchestrator",
-            allowed_tools=["Read", "Bash", "Explore", "Implement", "Design", "Test", "Verify", "ReviewCommittee", "Memo"] + _NIMFS_ALL,
+            allowed_tools=["Read", "Bash", "Explore", "Implement", "Design", "Test", "Verify", "ReviewCommittee"] + _NIMFS_ALL,
             system_prompt=PromptManager.get_system_prompt("orchestrator", model_id),
             max_iterations=50,
             max_consecutive_thoughts=2,

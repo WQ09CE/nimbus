@@ -111,7 +111,8 @@ class TestInstructionDecoder:
     def test_decode_thought(self):
         decoder = InstructionDecoder()
         # Use long text with planning language to ensure it's classified as THOUGHT
-        actions = decoder.decode(content="Let me think about this problem carefully. First I need to analyze the code structure and then identify the root cause of the issue.", tool_calls=None)
+        # text_is_final=False simulates a backend specialist (where heuristic applies)
+        actions = decoder.decode(content="Let me think about this problem carefully. First I need to analyze the code structure and then identify the root cause of the issue.", tool_calls=None, text_is_final=False)
 
         assert len(actions) == 1
         assert actions[0].kind == "THOUGHT"

@@ -70,7 +70,7 @@ class VCPU:
         self._is_active: bool = False  # Legacy flag for AgentOS compatibility
         
         # Pipeline 
-        self.pipeline = ResponsePipeline(features=self.manifest.features, role=self.manifest.role)
+        self.pipeline = ResponsePipeline(features=self.manifest.features, text_is_final=self.manifest.text_is_final, role=self.manifest.role)
 
         # Checkpoint Manager
         self._checkpoint_manager = CheckpointManager(

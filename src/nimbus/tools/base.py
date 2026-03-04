@@ -532,15 +532,11 @@ class ToolRegistry:
     def get_definitions(
         self,
         format: str = "claude",
-        role: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Get all permissible tool definitions in specified format.
+        """Get all tool definitions in specified format.
 
         Args:
             format: Target format ("claude" or "openai").
-            role: Optional role name to filter tools by. 
-                  If provided, only returns tools where role is in tool.roles
-                  or tool.roles is None (all).
 
         Returns:
             List of tool definitions in the specified format.
@@ -550,10 +546,6 @@ class ToolRegistry:
         """
         definitions = []
         for defn, _ in self._tools.values():
-            # Role check
-            if role and defn.roles and role not in defn.roles:
-                continue
-
             definitions.append(defn)
 
         if format == "claude":
@@ -758,6 +750,7 @@ def tool(
     parameters: Optional[List[ToolParameter]] = None,
     category: Optional[ToolCategory] = None,
     dangerous: bool = False,
+    roles: Optional[List[str]] = None,  # Deprecated: kept for backward compat
 ) -> Callable[[F], F]:
     """Decorator to define a tool function.
 
@@ -770,6 +763,7 @@ def tool(
         parameters: List of ToolParameter definitions.
         category: Tool category ("core", "extension", "skill").
         dangerous: If True, requires permission before execution.
+        roles: Deprecated, ignored. Kept for backward compatibility.
 
     Returns:
         Decorator function.

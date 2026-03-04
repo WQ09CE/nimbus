@@ -268,7 +268,7 @@ class TestAgentOSIntegration:
             def __init__(self):
                 self.registered_tools = {}
 
-            def register_tool(self, name, func, description="", parameters=None, roles=None):
+            def register_tool(self, name, func, description="", parameters=None, **kwargs):
                 self.registered_tools[name] = {
                     "func": func,
                     "description": description,
@@ -294,7 +294,7 @@ class TestAgentOSIntegration:
             def __init__(self):
                 self.registered_tools = {}
 
-            def register_tool(self, name, func, description="", parameters=None, roles=None):
+            def register_tool(self, name, func, description="", parameters=None, **kwargs):
                 self.registered_tools[name] = func
 
         mock_os = MockAgentOS()

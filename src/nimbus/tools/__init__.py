@@ -43,18 +43,15 @@ from nimbus.tools.edit import edit_file
 from nimbus.tools.read import read_file
 from nimbus.tools.write import write_file
 
-# NimFS tools
+# NimFS artifact tools (IPC -- keep registered)
 from nimbus.tools.nimfs_tools import (              # noqa: F401
-    nimfs_load_context,
     nimfs_list_artifacts,
-    nimfs_list_memory,
     nimfs_read_artifact,
-    nimfs_read_memory,
-    nimfs_search_memory,
-    nimfs_update_profile,
     nimfs_write_artifact,
-    nimfs_write_memory,
 )
+
+# Unified memory tools
+from nimbus.tools.memo_tools import memo, recall, read_memo
 
 # ---------------------------------------------------------------------------
 # Explicitly register all @tool-decorated functions into the default registry.
@@ -68,15 +65,12 @@ for _fn in [
     edit_file,
     read_file,
     write_file,
-    nimfs_load_context,
     nimfs_list_artifacts,
-    nimfs_list_memory,
     nimfs_read_artifact,
-    nimfs_read_memory,
-    nimfs_search_memory,
-    nimfs_update_profile,
     nimfs_write_artifact,
-    nimfs_write_memory,
+    memo,
+    recall,
+    read_memo,
 ]:
     if hasattr(_fn, "_tool_definition"):
         try:
@@ -192,7 +186,6 @@ def register_default_tools(
     os: "AgentOS",
     workspace: Path | None = None,
     tools: List[str] | None = None,
-    roles: List[str] | Dict[str, List[str]] | None = None,
 ) -> List[str]:
     """Register default tools with AgentOS.
 
@@ -200,7 +193,6 @@ def register_default_tools(
         os: AgentOS instance to register tools with.
         workspace: Workspace path for tool sandboxing.
         tools: Optional list of specific tool names to register.
-        roles: Optional roles configuration. Can be a list (applied to all) or dict (tool_name -> roles).
 
     Returns:
         List of registered tool names.
@@ -221,20 +213,13 @@ def register_default_tools(
         nimbus_home = Path.home() / ".nimbus"
         wrapped_func = create_workspace_wrapper(func, workspace, allowed_paths=[nimbus_home])
 
-        # Determine roles for this tool
-        tool_roles = None
-        if isinstance(roles, list):
-            tool_roles = roles
-        elif isinstance(roles, dict):
-            tool_roles = roles.get(name)
-
         tool_dict = td.to_dict()
         os.register_tool(
             name=name,
             func=wrapped_func,
             description=tool_dict.get("description", ""),
             parameters=tool_dict.get("parameters"),
-            roles=tool_roles,
+            category=td.category,
         )
         registered.append(name)
 
@@ -291,16 +276,14 @@ __all__ = [
     "write_file",
     "edit_file",
     "bash_command",
-    # Tool functions — NimFS
+    # Tool functions — NimFS Artifacts
     "nimfs_write_artifact",
     "nimfs_read_artifact",
     "nimfs_list_artifacts",
-    "nimfs_write_memory",
-    "nimfs_read_memory",
-    "nimfs_search_memory",
-    "nimfs_list_memory",
-    "nimfs_load_context",
-    "nimfs_update_profile",
+    # Tool functions — Memory (unified)
+    "memo",
+    "recall",
+    "read_memo",
     # Backward-compat collections
     "READ_TOOL",
     "WRITE_TOOL",

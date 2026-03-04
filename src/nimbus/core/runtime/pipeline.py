@@ -56,8 +56,9 @@ class ResponsePipeline:
     """
     Orchestrates a sequence of middleware.
     """
-    def __init__(self, features: ModelFeatures, role: str = ""):
+    def __init__(self, features: ModelFeatures, text_is_final: bool = True, role: str = ""):
         self.features = features
+        self.text_is_final = text_is_final
         self.role = role
         self.middleware: List[ResponseMiddleware] = []
 
@@ -109,6 +110,7 @@ class ResponsePipeline:
             actions = decoder.decode(
                 content=response.content,
                 tool_calls=response.tool_calls,
+                text_is_final=self.text_is_final,
                 role=self.role,
                 model_features=self.features,
             )

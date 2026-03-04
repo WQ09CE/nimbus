@@ -423,7 +423,7 @@ async def list_sessions(request: Request) -> Dict[str, Any]:
     sessions = []
     for pid in agent_os.list_processes():
         process = agent_os.get_process(pid)
-        if process and process.role == "chat":
+        if process and process.is_interactive:
             sessions.append(
                 {
                     "id": pid,

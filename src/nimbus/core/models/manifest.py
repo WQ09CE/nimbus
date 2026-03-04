@@ -60,7 +60,8 @@ class ModelManifest:
     """
     model_id: str
     features: ModelFeatures
-    role: str = "agent"  # Role of the agent (e.g., 'orchestrator', 'implementer', 'agent')
+    text_is_final: bool = True   # Replaces role-based decoder judgment
+    role: str = "agent"  # Kept as label (backward compat)
 
 
 # =============================================================================

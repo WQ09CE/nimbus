@@ -34,6 +34,7 @@ class BaseDecoder(Protocol):
         self,
         content: Optional[str],
         tool_calls: Optional[List[Any]],
+        text_is_final: bool = True,
         role: Optional[str] = None,
         model_features: Optional[Any] = None,
     ) -> List[ActionIR]:
@@ -138,6 +139,7 @@ class InstructionDecoder:
         self,
         content: Optional[str],
         tool_calls: Optional[List[Any]],
+        text_is_final: bool = True,
         role: Optional[str] = None,
         model_features: Optional[Any] = None,
     ) -> List[ActionIR]:
@@ -147,6 +149,7 @@ class InstructionDecoder:
         Args:
             content: Text content from LLM response
             tool_calls: List of tool call objects from LLM response
+            text_is_final: If True, pure text is treated as REPLY (final answer)
             role: The role of the agent being decoded (e.g., 'orchestrator')
 
         Returns:
@@ -190,14 +193,12 @@ class InstructionDecoder:
 
             return actions
 
-        # 3. Handle Orchestrator-specific conversation logic
-        # If an Orchestrator role provides text but NO valid tool calls,
-        # we treat it as a REPLY (conversational response) rather than a THOUGHT.
-        # This prevents the system from re-prompting (System Poke) when the
-        # Orchestrator is simply talking to the user.
-        if role == "orchestrator" and content and content.strip():
-            # Double check for simulated calls in content (hallucinations)
-            self._check_hallucination(content)
+        # 3. Handle text_is_final conversation logic
+        # If text_is_final is True (e.g. orchestrator, chat), pure text without
+        # tool calls is treated as a REPLY (conversational response) rather than
+        # a THOUGHT. This prevents the system from re-prompting (System Poke)
+        # when the agent is simply talking to the user.
+        if text_is_final and content and content.strip():
             actions.append(ActionIR(kind="REPLY", name="reply", args={"text": content.strip()}))
             return actions
 

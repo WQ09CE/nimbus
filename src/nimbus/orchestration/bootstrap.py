@@ -107,21 +107,8 @@ def create_agent_os(
 
         if isinstance(profile, str) and profile == "orchestrator":
             # Orchestrator Profile: Specialist tools + basic tools
-            register_default_tools(os, workspace=ws, tools=["Read", "Bash"])
-            # Executor tools (for specialists)
-            register_default_tools(os, workspace=ws, tools=["Write", "Edit"], roles=["executor", "implementer", "architect", "explorer", "tester"])
-
-            # --- Register NimFS Tools (shared virtual disk + Agent IPC) ---
-            # Read tools: available to all roles (no role restriction)
-            register_default_tools(os, workspace=ws, tools=[
-                "NimFSReadArtifact", "NimFSListArtifacts", "NimFSSearchMemory", "NimFSLoadContext",
-            ])
-            # WriteArtifact: specialists that produce artifacts (not orchestrator, not explorer)
-            register_default_tools(os, workspace=ws, tools=["NimFSWriteArtifact"],
-                roles=["executor", "implementer", "architect", "tester"])
-            # WriteMemory: orchestrator + implementation roles (not explorer, not tester)
-            register_default_tools(os, workspace=ws, tools=["NimFSWriteMemory"],
-                roles=["orchestrator", "chat", "executor", "implementer", "architect"])
+            # All @tool-decorated tools (visibility controlled by AgentProfile.allowed_tools)
+            register_default_tools(os, workspace=ws)
 
             # --- Register SubmitResult pseudo-tool (for specialist agents only) ---
             # This is a "fake tool" -- VCPU intercepts it in _handle_tool_call before
@@ -131,7 +118,6 @@ def create_agent_os(
                 # Should never be called; VCPU intercepts SubmitResult before Gate.
                 return kwargs.get("result", "")
 
-            SPECIALIST_ROLES = ["executor", "explorer", "implementer", "architect", "tester"]
             os.register_tool(
                 name="SubmitResult",
                 func=_submit_result_noop,
@@ -151,7 +137,6 @@ def create_agent_os(
                     },
                     "required": ["result"],
                 },
-                roles=SPECIALIST_ROLES,
                 category="system",
             )
 
@@ -180,7 +165,6 @@ def create_agent_os(
                     func=tool_inst.execute,
                     description=tool_def["description"],
                     parameters=tool_def["parameters"],
-                    roles=["orchestrator", "chat"],
                     category="extension",
                 )
 
@@ -205,7 +189,6 @@ def create_agent_os(
                 func=_verify_handler,
                 description=VERIFY_TOOL_DEF["description"],
                 parameters=VERIFY_TOOL_DEF["parameters"],
-                roles=["orchestrator", "chat"],
                 category="extension",
             )
 
@@ -217,7 +200,6 @@ def create_agent_os(
                 func=review_tool.review,
                 description=REVIEW_TOOL_DEF["description"],
                 parameters=REVIEW_TOOL_DEF["parameters"],
-                roles=["orchestrator", "chat"],
                 category="extension",
             )
 

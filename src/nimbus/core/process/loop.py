@@ -67,7 +67,7 @@ class RuntimeLoop:
                 process.vcpu._reset()
                 process.vcpu._is_active = True
 
-                if process.vcpu.config.pin_goal and process.role != "chat":
+                if process.vcpu.config.pin_goal and not process.is_interactive:
                     pinned_goal = await process.vcpu._prepare_goal_for_pinning(process.goal)
                     process.mmu.pin_user_goal(pinned_goal)
                     process.mmu.add_user_message(process.goal)
@@ -345,7 +345,7 @@ class RuntimeLoop:
                 # may have sent a new message while the agent was finishing.
                 # Sub-agent processes (explorer, implementer, etc.) should
                 # terminate immediately -- they have no interactive user.
-                if process.role == "chat" and process.inbox:
+                if process.is_interactive and process.inbox:
                     logger.info(
                         f"[{process.pid}] Chat process got new user message "
                         f"during final step, extending execution..."
@@ -475,7 +475,7 @@ class RuntimeLoop:
                     )
                 else:
                     content = msg.payload.get("content", str(msg.payload))
-                    if process.role == "chat":
+                    if process.is_interactive:
                         process.mmu.add_user_message(content)
                     else:
                         process.mmu.add_user_message(f"[User Intervention] {content}")
@@ -489,7 +489,7 @@ class RuntimeLoop:
             else:
                 # Plain string from _handle_interventions() or legacy code
                 content = str(msg)
-                if process.role == "chat":
+                if process.is_interactive:
                     process.mmu.add_user_message(content)
                 else:
                     process.mmu.add_user_message(f"[User Intervention] {content}")
@@ -635,7 +635,8 @@ class RuntimeLoop:
         # Extract LLM's text response as the output
         summary = ""
         if final_step.is_final and final_step.final_result:
-            summary = final_step.final_result.output or ""
+            raw = final_step.final_result.output or ""
+            summary = raw if isinstance(raw, str) else str(raw)
         elif final_step.actions:
             # LLM might have responded with text (RETURN action)
             for action in final_step.actions:

@@ -56,7 +56,8 @@ class ProcessFactory:
         enable_ipc: bool = False,
         agent_os: Any = None,
         checkpoint: Any = None,
-        filter_tools_by_role: bool = True,
+        is_interactive: bool = False,
+        text_is_final: bool = True,
     ) -> "Process":
         """Build a fully-assembled Process with all components.
 
@@ -73,8 +74,8 @@ class ProcessFactory:
             enable_ipc: Whether to create IPC tools (SendMessage, ReadInbox, SpawnSubAgent)
             agent_os: AgentOS reference needed for IPC tools
             checkpoint: Session checkpoint to restore from
-            filter_tools_by_role: Whether to filter tool definitions by role (default True).
-                Set to False to include all tools regardless of role (used by restore_session).
+            is_interactive: Whether this is an interactive session
+            text_is_final: Whether pure text = final reply
 
         Returns:
             Fully assembled Process instance
@@ -82,51 +83,24 @@ class ProcessFactory:
         # -- 1. MMU --
         mmu = self._create_mmu(pid, system_rules=system_rules)
 
-        # NimFS: inject workspace so MMU can auto-offload large tool results
-        mmu.nimfs_workspace = str(Path.cwd())
+        # Resolve workspace from config, fallback to cwd
+        workspace = Path(self._config.workspace_root) if hasattr(self._config, 'workspace_root') and self._config.workspace_root else Path.cwd()
 
-        # NimFS-backed Memo (v2): inject NimFSManager for context loading
-        workspace = Path.cwd()
+        # NimFS: inject workspace so MMU can auto-offload large tool results
+        mmu.nimfs_workspace = str(workspace)
         from nimbus.core.nimfs.manager import NimFSManager
         mmu._nimfs_manager = NimFSManager(workspace_path=workspace)
 
-        # -- 2. Memo --
-        from nimbus.tools.memo import create_memo_tool
-        memo_def, memo_func, session_manager, global_manager = create_memo_tool(workspace, pid)
-        mmu._memo_manager = session_manager
-        mmu._global_memo_manager = global_manager
-
-        # -- 2.5 Semantic, Episodic & Procedural Memory Tools --
-        from nimbus.tools.memory_ops import create_memory_ops_tools
-        from nimbus.core.memory.profile_store import ProfileStore
-        from nimbus.core.memory.episodic_store import EpisodicStore
-        from nimbus.core.memory.procedural_store import ProceduralStore
-
-        profile_store = ProfileStore(workspace)
-        episodic_store = EpisodicStore(workspace)
-        procedural_store = ProceduralStore(workspace)
-
-        # Attach to MMU for contextual anchoring
-        mmu._profile_store = profile_store
-        mmu._procedural_store = procedural_store
-
-        (
-            read_profile_def, read_profile_func,
-            write_profile_def, write_profile_func,
-            search_episodic_def, search_episodic_func,
-            read_strategy_def, read_strategy_func,
-            write_strategy_def, write_strategy_func
-        ) = create_memory_ops_tools(profile_store, episodic_store, procedural_store)
+        # -- 2. Auto memory context loading --
+        try:
+            memory_context = mmu._nimfs_manager.load_context(current_goal=goal, max_chars=2000)
+            if memory_context:
+                mmu.inject_memory_context(memory_context)
+        except Exception:
+            pass  # Memory loading failure must not block process creation
 
         # -- 3. IPC tools (spawn-only) --
-        local_tools: Dict[str, Callable] = {
-            "Memo": memo_func,
-            "ReadProfile": read_profile_func,
-            "WriteProfile": write_profile_func,
-            "SearchEpisodicLog": search_episodic_func,
-            "ReadStrategy": read_strategy_func,
-            "WriteStrategy": write_strategy_func
-        }
+        local_tools: Dict[str, Callable] = {}
         ipc_tool_defs = []
 
         if enable_ipc:
@@ -143,14 +117,14 @@ class ProcessFactory:
 
             ipc_tool_defs = [send_msg_def, read_inbox_def, spawn_sub_def]
 
-        # -- 4. Gate --
+        # -- 5. Gate --
         gate = self._create_gate(pid, role, local_tools=local_tools, write_filter=write_filter)
 
-        # -- 5. Decoder --
+        # -- 6. Decoder --
         from nimbus.core.runtime.decoder import InstructionDecoder
         decoder = InstructionDecoder()
 
-        # -- 6. Tools list --
+        # -- 7. Tools list --
         if tools_override is not None:
             # Explicit tools list (empty = pure reasoning, no tools)
             if tools_override and isinstance(tools_override[0], str):
@@ -169,25 +143,13 @@ class ProcessFactory:
                     else:
                         tools_list.append(t)
         else:
-            # Inherit from kernel + Memo + IPC
-            if filter_tools_by_role:
-                tools_list = self._composite_tools.get_definitions(format="openai", role=role)
-            else:
-                tools_list = self._composite_tools.get_definitions(format="openai")
-            tools_list.append({
-                "type": "function",
-                "function": memo_def,
-            })
-            tools_list.append({"type": "function", "function": read_profile_def})
-            tools_list.append({"type": "function", "function": write_profile_def})
-            tools_list.append({"type": "function", "function": search_episodic_def})
-            tools_list.append({"type": "function", "function": read_strategy_def})
-            tools_list.append({"type": "function", "function": write_strategy_def})
+            # Inherit from kernel
+            tools_list = self._composite_tools.get_definitions(format="openai")
             # Append IPC tool definitions if enabled
             for ipc_def in ipc_tool_defs:
                 tools_list.append(ipc_def.to_openai_format())
 
-        # -- 7. VCPU config overrides --
+        # -- 8. VCPU config overrides --
         vcpu_config = self._config.vcpu_config
         if max_iterations is not None:
             # Sub-processes: set iteration limit with compact-and-continue.
@@ -207,12 +169,12 @@ class ProcessFactory:
                 max_consecutive_thoughts=profile.max_consecutive_thoughts,
             )
 
-        # -- 8. VCPU --
+        # -- 9. VCPU --
         from nimbus.core.models.manifest import get_model_manifest
         from nimbus.core.runtime.vcpu import VCPU
 
         alu = llm_client or self._llm
-        manifest = _dc_replace(get_model_manifest(alu), role=role)
+        manifest = _dc_replace(get_model_manifest(alu), text_is_final=text_is_final, role=role)
 
         vcpu = VCPU(
             alu=alu,
@@ -229,7 +191,7 @@ class ProcessFactory:
         if checkpoint is not None:
             vcpu.restore_from_checkpoint(checkpoint)
 
-        # -- 9. Process --
+        # -- 10. Process --
         from nimbus.agentos import Process
         from nimbus.core.ipc.mailbox import Mailbox
 
@@ -238,6 +200,8 @@ class ProcessFactory:
                 pid=pid,
                 goal=goal,
                 role=role,
+                is_interactive=is_interactive,
+                text_is_final=text_is_final,
                 state="PENDING",
                 vcpu=vcpu,
                 mmu=mmu,
@@ -250,6 +214,8 @@ class ProcessFactory:
                 pid=pid,
                 goal=goal,
                 role=role,
+                is_interactive=is_interactive,
+                text_is_final=text_is_final,
                 state="PENDING",
                 vcpu=vcpu,
                 mmu=mmu,

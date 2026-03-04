@@ -42,7 +42,7 @@ from nimbus.os.gate import (
 )
 from nimbus.skills.manager import SkillManager
 from nimbus.tools.base import ToolDefinition, ToolParameter, ToolRegistry
-from nimbus.tools.memo import create_memo_tool
+# memo_tools (Memo/Recall/ReadMemo) are now registered via the global ToolRegistry
 from nimbus.tools.composite import CompositeToolRegistry
 from nimbus.core.ipc.mailbox import Mailbox
 
@@ -101,7 +101,9 @@ class Process:
 
     pid: str
     goal: str
-    role: str = ""
+    role: str = ""              # Kept as pure label (logging/UI)
+    is_interactive: bool = False  # Interactive session (replaces role=="chat")
+    text_is_final: bool = True    # Pure text = final reply (replaces decoder role check)
     state: ProcessState = "PENDING"
     vcpu: Optional[VCPU] = None
     mmu: Optional[MMU] = None
@@ -170,76 +172,6 @@ class AgentOS:
         )
         self._tools.register(reload_def, reload_skills_wrapper)
 
-        # 1. Register Kernel Tools (Auto)
-        kernel_tools_desc = ""
-        if self.config.kernel_tools:
-            from nimbus.tools import BASH_TOOL, EDIT_TOOL, READ_TOOL, TOOL_FUNCTIONS, WRITE_TOOL
-            from nimbus.tools.base import ToolDefinition, ToolParameter
-
-            kernel_tools_list = [READ_TOOL, WRITE_TOOL, EDIT_TOOL, BASH_TOOL]
-            kernel_tools_desc = "Available tools:\n"
-
-            # Helper to parse legacy tool dicts.
-            # Supports both new list format (from ToolDefinition.to_openai_format) and
-            # old JSON-Schema dict format {"type": "object", "properties": {...}}.
-            def _parse_legacy_tool(data: Dict[str, Any]) -> ToolDefinition:
-                raw_params = data.get("parameters", [])
-                params = []
-
-                if isinstance(raw_params, list):
-                    # New format: list of {"name", "type", "description", "required"}
-                    for spec in raw_params:
-                        params.append(
-                            ToolParameter(
-                                name=spec["name"],
-                                type=spec.get("type", "string"),
-                                description=spec.get("description", ""),
-                                required=spec.get("required", True),
-                            )
-                        )
-                elif isinstance(raw_params, dict):
-                    # Old JSON Schema format: {"type": "object", "properties": {...}}
-                    props = raw_params.get("properties", {})
-                    required_list = raw_params.get("required", [])
-                    for name, spec in props.items():
-                        params.append(
-                            ToolParameter(
-                                name=name,
-                                type=spec.get("type", "string"),
-                                description=spec.get("description", ""),
-                                required=(name in required_list),
-                            )
-                        )
-
-                return ToolDefinition(
-                    name=data["name"],
-                    description=data.get("description", ""),
-                    parameters=params,
-                    category="core",
-                )
-
-            for tool_data in kernel_tools_list:
-                try:
-                    def_obj = _parse_legacy_tool(tool_data)
-                    tool_fn = TOOL_FUNCTIONS.get(def_obj.name)
-                    if tool_fn is None:
-                        logger.warning(f"No function found for kernel tool '{def_obj.name}', skipping.")
-                        continue
-                    self._tools.register(def_obj, tool_fn)
-
-                    params = []
-                    for p in def_obj.parameters:
-                        p_str = p.name
-                        if not p.required:
-                            p_str += "?"
-                        params.append(p_str)
-
-                    sig = f"{def_obj.name}({', '.join(params)})"
-                    desc = def_obj.description.split(".")[0] + "."
-                    kernel_tools_desc += f"- {sig}: {desc}\n"
-                except ValueError:
-                    pass
-
         # 2. Register User Tools
         if tools:
             from nimbus.tools.base import ToolDefinition
@@ -257,14 +189,6 @@ class AgentOS:
                         self._tools.register(definition, func)
                 except ValueError:
                     pass
-
-        # 3. Inject Kernel Tools into System Prompt
-        if kernel_tools_desc and "Available tools:" not in self.config.system_rules:
-            parts = self.config.system_rules.split("\n\n", 1)
-            if len(parts) > 1:
-                self.config.system_rules = parts[0] + "\n\n" + kernel_tools_desc + "\n" + parts[1]
-            else:
-                self.config.system_rules += "\n\n" + kernel_tools_desc
 
         self._processes: Dict[str, Process] = {}
         self._events = SimpleEventStream()
@@ -528,6 +452,13 @@ class AgentOS:
         if profile and profile.write_filter:
             _write_filter = profile.write_filter
 
+        # Extract is_interactive / text_is_final from profile
+        _is_interactive = False
+        _text_is_final = True
+        if profile:
+            _is_interactive = profile.is_interactive
+            _text_is_final = profile.text_is_final
+
         # Create process via factory (unified component assembly)
         process = self._factory.build(
             pid=pid,
@@ -541,6 +472,8 @@ class AgentOS:
             write_filter=_write_filter,
             enable_ipc=True,
             agent_os=self,
+            is_interactive=_is_interactive,
+            text_is_final=_text_is_final,
         )
 
         # Register process
@@ -727,6 +660,8 @@ class AgentOS:
                 pid=session_id,
                 goal="Interactive chat session",
                 role="chat",
+                is_interactive=True,
+                text_is_final=True,
             )
             self._processes[session_id] = process
             self._emit_event("PROC_SPAWNED", session_id, {"goal": "chat", "role": "chat"})
@@ -866,7 +801,8 @@ class AgentOS:
             goal="Restored session",
             role="chat",
             checkpoint=checkpoint,
-            filter_tools_by_role=False,
+            is_interactive=True,
+            text_is_final=True,
         )
         self._processes[session_id] = process
 
@@ -1282,7 +1218,7 @@ class AgentOS:
         func: Callable,
         description: str = "",
         parameters: Optional[Dict[str, Any]] = None,
-        roles: Optional[List[str]] = None,
+        roles: Optional[List[str]] = None,  # Deprecated: kept for backward compat
         category: Optional[str] = None,
     ) -> None:
         """
@@ -1293,15 +1229,14 @@ class AgentOS:
             func: Tool function
             description: Tool description
             parameters: Tool parameters schema
-            roles: List of allowed roles
+            roles: Deprecated, ignored. Kept for backward compatibility.
+            category: Tool category
         """
         if name in self._tools:
             self._tools.unregister(name)
 
         if hasattr(func, "_tool_definition"):
             defn = func._tool_definition
-            if roles is not None:
-                defn.roles = roles
             self._tools.register_decorated(func)
         else:
             # Parse parameters from JSON Schema dict if provided
@@ -1326,7 +1261,6 @@ class AgentOS:
                 name=name,
                 description=description or func.__doc__ or "",
                 parameters=param_list,
-                roles=roles,
                 category=category,
             )
             self._tools.register(definition, func)

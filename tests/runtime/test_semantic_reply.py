@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from nimbus.core.memory.mmu import MMU, MMUConfig
 from nimbus.core.runtime.decoder import InstructionDecoder
 from nimbus.core.runtime.vcpu import VCPU, VCPUConfig
+from nimbus.core.models.manifest import ModelManifest, GPT_FEATURES
 
 
 @dataclass
@@ -91,11 +92,22 @@ async def test_scenario_b_heuristic_reply(setup_vcpu):
 
 @pytest.mark.asyncio
 async def test_scenario_c_thought_with_plan(setup_vcpu):
-    """场景 C：LLM 返回包含后续计划的文本（如 'Next I will read file'），验证是否仍被识别为 THOUGHT 并触发后续逻辑。"""
-    vcpu, mmu = setup_vcpu([
+    """场景 C：LLM 返回包含后续计划的文本（如 'Next I will read file'），验证是否仍被识别为 THOUGHT 并触发后续逻辑。
+
+    Note: This test simulates a backend specialist (text_is_final=False),
+    where the decoder uses heuristics to distinguish THOUGHT vs REPLY.
+    """
+    # Create VCPU with text_is_final=False (specialist behavior)
+    mmu = MMU(config=MMUConfig(), process_id="test_semantic")
+    decoder = InstructionDecoder()
+    llm = MockLLMClient([
         LLMResponse(content="I need to check the project structure. Next I will list the files."),
         LLMResponse(content="<reply>Done</reply>")
-    ], max_consecutive_thoughts=2)
+    ])
+    config = VCPUConfig(max_consecutive_thoughts=2)
+    gate = MockGate()
+    manifest = ModelManifest(model_id="default_model", features=GPT_FEATURES, text_is_final=False)
+    vcpu = VCPU(llm, decoder, gate, mmu, config=config, manifest=manifest)
 
     # 执行第一步
     result = await vcpu.step()

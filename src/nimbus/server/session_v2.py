@@ -548,7 +548,7 @@ class SessionManagerV2:
                             while proc.inbox:
                                 msg = proc.inbox.pop(0)
                                 logger.info(f"Draining pending injection: {msg}")
-                                if proc.role == "chat":
+                                if proc.is_interactive:
                                     proc.mmu.add_user_message(msg)
                                 else:
                                     proc.mmu.add_user_message(
