@@ -1168,6 +1168,8 @@ class DirectAdapter:
                 model = f"gemini/{info.model_id}"
             elif info.provider == "anthropic":
                 model = f"anthropic/{info.model_id}"
+            elif info.provider == "ollama":
+                model = f"ollama/{info.model_id}"
             else:
                 model = info.model_id
         else:
@@ -1213,7 +1215,8 @@ class DirectAdapter:
             # Rate limit retry logic
             current_model = model
             try:
-                response = await acompletion(
+                # Pass api_base for Ollama/local providers
+                acompletion_kwargs = dict(
                     model=current_model,
                     messages=clean_messages,
                     tools=openai_tools,
@@ -1221,6 +1224,16 @@ class DirectAdapter:
                     max_tokens=self.config.max_tokens,
                     stream=True,
                 )
+                if self.config.base_url:
+                    acompletion_kwargs["api_base"] = self.config.base_url
+                # Disable thinking mode for ollama models (e.g. qwen3.5)
+                # to avoid empty responses where all content goes to reasoning_content
+                # Use reasoning_effort="none" instead of think=False because litellm's
+                # supported params list includes "reasoning_effort" but not "think".
+                # litellm maps reasoning_effort="none" to think=False for ollama models.
+                if current_model.startswith("ollama/"):
+                    acompletion_kwargs["reasoning_effort"] = "none"
+                response = await acompletion(**acompletion_kwargs)
             except Exception as e:
                 # Check for rate limit (429) or resource exhausted
                 err_str = str(e).lower()
@@ -1248,7 +1261,7 @@ class DirectAdapter:
                         
                         # Retry with fallback
                         current_model = fallback_model
-                        response = await acompletion(
+                        acompletion_kwargs = dict(
                             model=current_model,
                             messages=clean_messages,
                             tools=openai_tools,
@@ -1256,12 +1269,22 @@ class DirectAdapter:
                             max_tokens=self.config.max_tokens,
                             stream=True,
                         )
+                        if self.config.base_url:
+                            acompletion_kwargs["api_base"] = self.config.base_url
+                        # Disable thinking mode for ollama models (e.g. qwen3.5)
+                        # Use reasoning_effort="none" instead of think=False because litellm's
+                        # supported params list includes "reasoning_effort" but not "think".
+                        if current_model.startswith("ollama/"):
+                            acompletion_kwargs["reasoning_effort"] = "none"
+                        response = await acompletion(**acompletion_kwargs)
                     else:
                         raise e
                 else:
                     raise e
 
             tool_call_chunks = {}
+            reasoning_chunks = []
+            has_real_content = False
 
             async for chunk in response:
                 chunk_count += 1
@@ -1273,7 +1296,13 @@ class DirectAdapter:
                 delta = chunk.choices[0].delta
 
                 if delta.content:
+                    has_real_content = True
                     yield LLMStreamEvent(type="text", text=delta.content)
+
+                # Capture reasoning_content as fallback (qwen3.5/deepseek thinking mode)
+                reasoning = getattr(delta, 'reasoning_content', None)
+                if reasoning:
+                    reasoning_chunks.append(reasoning)
 
                 if delta.tool_calls:
                     for tc in delta.tool_calls:
@@ -1295,6 +1324,18 @@ class DirectAdapter:
                 current_model, ttfb if ttfb_logged else total, total, chunk_count,
             )
 
+            # Fallback: if no real content or tool_calls, but we got reasoning_content,
+            # use reasoning as content (happens when thinking mode wasn't disabled)
+            if not has_real_content and not tool_call_chunks and reasoning_chunks:
+                full_reasoning = "".join(reasoning_chunks)
+                logger.warning(
+                    "[LiteLLM] model=%s produced only reasoning_content (%d chars), "
+                    "no content/tool_calls. Using reasoning as fallback content. "
+                    "Consider disabling thinking mode.",
+                    current_model, len(full_reasoning)
+                )
+                yield LLMStreamEvent(type="text", text=full_reasoning)
+
             for idx, tc_data in tool_call_chunks.items():
                 try:
                     args = json.loads(tc_data["arguments"])
@@ -1312,6 +1353,18 @@ class DirectAdapter:
 
             yield LLMStreamEvent(type="stop", reason="stop")
 
+        except asyncio.CancelledError:
+            logger.info("LiteLLM streaming task cancelled by user")
+            # Force close the underlying aiohttp/httpx response to stop downloading
+            if response is not None:
+                if hasattr(response, "close"):
+                    if asyncio.iscoroutinefunction(response.close):
+                        await response.close()
+                    else:
+                        response.close()
+                elif hasattr(response, "response") and hasattr(response.response, "aclose"):
+                    await response.response.aclose()
+            raise
         except Exception as e:
             logger.error(f"LiteLLM error: {e}")
             yield LLMStreamEvent(type="error", error=str(e))
@@ -1338,6 +1391,11 @@ class DirectAdapter:
         models.extend([
             {"id": "openai-codex/gpt-5.2-codex", "object": "model", "owned_by": "openai-codex"},
             {"id": "openai-codex/gpt-5.3-codex", "object": "model", "owned_by": "openai-codex"},
+        ])
+
+        # Ollama / Local models
+        models.extend([
+            {"id": "ollama/qwen3.5:9b", "object": "model", "owned_by": "ollama"},
         ])
 
         return models

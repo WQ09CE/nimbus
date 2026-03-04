@@ -48,6 +48,10 @@ class ModelFeatures:
     # Max text length for _DONE_PATTERNS scanning (0 = disable scanning)
     done_pattern_max_length: int = 300
 
+    # Does the model output tool calls as JSON in content field?
+    # If True, enable JsonToolCallExtractor middleware.
+    json_tool_call_extraction: bool = False
+
 
 @dataclass
 class ModelManifest:
@@ -120,6 +124,26 @@ CLAUDE_FEATURES = ModelFeatures(
     ),
 )
 
+# Ollama / Local Models (Qwen, Llama, etc.)
+# Local models vary in quality. Use conservative settings:
+# split_mixed_responses + hallucination firewall for safety.
+OLLAMA_FEATURES = ModelFeatures(
+    native_tool_calling=True,
+    split_mixed_responses=True,
+    firewall_hallucinations=True,
+    hallucination_patterns=DEFAULT_HALLUCINATION_PATTERNS,
+    force_tool_name_repair=True,
+    backend_reply_strategy="heuristic",
+    done_pattern_max_length=300,
+    json_tool_call_extraction=True,
+    poke_message=(
+        "Your response was empty or did not include a function call. "
+        "You MUST use the function calling API to call tools. "
+        "Do NOT simulate tool calls as text. "
+        "Continue with the task. If done, call SubmitResult."
+    ),
+)
+
 # Registry
 _REGISTRY: Dict[str, ModelManifest] = {
     "gpt-4": ModelManifest("gpt-4", GPT_FEATURES),
@@ -158,4 +182,6 @@ def get_model_manifest(model_id: Any) -> ModelManifest:
     # Default to GPT behavior for unknown models
     if "gpt" in model_id or "openai" in model_id:
         return _REGISTRY["gpt-4"]
+    if "qwen" in model_id or "llama" in model_id or "ollama" in model_id:
+        return ModelManifest(model_id, OLLAMA_FEATURES)
     return _REGISTRY["claude"]

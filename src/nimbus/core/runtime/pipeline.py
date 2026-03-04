@@ -6,7 +6,9 @@ It implements a pipeline of middleware that can inspect, modify, or block
 LLM responses before they reach the execution engine.
 """
 
+import json
 import logging
+import re
 from typing import Any, List, Optional, Protocol
 
 from nimbus.core.models.manifest import ModelFeatures
@@ -63,7 +65,11 @@ class ResponsePipeline:
         if self.features.firewall_hallucinations:
             self.middleware.append(HallucinationSanitizer(self.features.hallucination_patterns))
 
-        # 2. Then split (produce actions from modified response)
+        # 2. Extract JSON tool calls from content (for models like qwen3.5 via ollama)
+        if self.features.json_tool_call_extraction:
+            self.middleware.append(JsonToolCallExtractor())
+
+        # 3. Then split (produce actions from modified response)
         if self.features.split_mixed_responses:
             self.middleware.append(MixedResponseSplitter())
 
@@ -178,6 +184,180 @@ class HallucinationSanitizer:
                     return None # Continue to next middleware
 
         return None # Continue to next middleware
+
+
+class JsonToolCallExtractor:
+    """
+    Extracts tool calls from JSON embedded in content field.
+
+    Some local models (e.g. qwen3.5 via ollama) understand tool calling
+    semantics but output tool calls as JSON text in the content field
+    instead of using structured tool_calls.
+
+    Supported formats:
+    1. Single tool call: {"name": "func", "arguments": {...}}
+    2. Array of tool calls: [{"name": "func1", "arguments": {...}}, ...]
+    3. Content with trailing/leading whitespace or markdown code fences
+    """
+
+    def __init__(self, available_tools: list[str] | None = None):
+        self._available_tools = set(available_tools) if available_tools else None
+
+    def reset(self):
+        pass
+
+    def process_chunk(self, chunk: str) -> str | None:
+        return chunk  # pass through — extraction happens at response level
+
+    def process_response(self, response: LLMResponse, decoder: Any) -> list[ActionIR] | None:
+        """
+        If content looks like a JSON tool call and there are no native tool_calls,
+        extract tool calls from content and convert to proper response format.
+        Preserves any reasoning text outside the JSON block.
+        """
+        # Only activate when there's content but no tool_calls
+        if not response.content or response.tool_calls:
+            return None
+
+        content = response.content.strip()
+
+        # Find markdown code fences if present, and separate the reasoning text
+        import re
+        m = re.search(r'```(?:json)?\s*\n(.*?)\n\s*```', content, re.DOTALL)
+        if m:
+            json_str = m.group(1).strip()
+            reasoning_text = content[:m.start()].strip() + "\n" + content[m.end():].strip()
+            reasoning_text = reasoning_text.strip()
+        else:
+            json_str = content
+            reasoning_text = ""
+
+        # Must start with { or [ to be potential JSON
+        if not (json_str.startswith('{') or json_str.startswith('[')):
+            return None
+
+        try:
+            parsed = json.loads(json_str)
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+        # Normalize to list of tool call dicts
+        tool_call_dicts = self._extract_tool_calls(parsed)
+        if not tool_call_dicts:
+            return None
+
+        # Validate tool names if we have a tool list
+        if self._available_tools:
+            tool_call_dicts = [
+                tc for tc in tool_call_dicts
+                if tc["name"] in self._available_tools
+            ]
+            if not tool_call_dicts:
+                return None
+
+        # Convert to tool_calls format and set on response
+        logger.info(
+            "🔧 JsonToolCallExtractor: Extracted %d tool call(s) from content: %s",
+            len(tool_call_dicts),
+            ", ".join(tc["name"] for tc in tool_call_dicts)
+        )
+
+        # Build tool_calls in OpenAI format
+        tool_calls = []
+        for i, tc in enumerate(tool_call_dicts):
+            tool_calls.append({
+                "id": f"json_extract_{i}",
+                "type": "function",
+                "function": {
+                    "name": tc["name"],
+                    "arguments": json.dumps(tc["arguments"]) if isinstance(tc["arguments"], dict) else tc["arguments"]
+                }
+            })
+
+        # Mutate response: move JSON to tool_calls, preserve reasoning
+        try:
+            response.content = reasoning_text if reasoning_text else None
+            response.tool_calls = tool_calls
+        except AttributeError:
+            # If response doesn't support mutation, fall back
+            pass
+
+        # Let the pipeline continue — decoder.decode will now see tool_calls
+        return None
+
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        """Remove markdown code fences: ```json ... ``` or ``` ... ```"""
+        text = text.strip()
+        # Match ```json\n...\n``` or ```\n...\n```
+        m = re.match(r'^```(?:json)?\s*\n?(.*?)\n?\s*```$', text, re.DOTALL)
+        if m:
+            return m.group(1).strip()
+        return text
+
+    @staticmethod
+    def _extract_tool_calls(parsed: Any) -> list[dict]:
+        """
+        Extract tool call dicts from parsed JSON.
+
+        Supports:
+        - {"name": "func", "arguments": {...}}
+        - [{"name": "func1", "arguments": {...}}, ...]
+        - {"function": {"name": "func", "arguments": {...}}}  (OpenAI-ish)
+        """
+        results = []
+
+        if isinstance(parsed, dict):
+            tc = JsonToolCallExtractor._try_parse_single(parsed)
+            if tc:
+                results.append(tc)
+        elif isinstance(parsed, list):
+            for item in parsed:
+                if isinstance(item, dict):
+                    tc = JsonToolCallExtractor._try_parse_single(item)
+                    if tc:
+                        results.append(tc)
+
+        return results
+
+    @staticmethod
+    def _try_parse_single(d: dict) -> dict | None:
+        """
+        Try to parse a single dict as a tool call.
+
+        Accepts:
+        - {"name": "func", "arguments": {...}}
+        - {"function": {"name": "func", "arguments": {...}}}
+        - {"name": "func", "parameters": {...}}
+        - {"result": "..."} -> inferred as SubmitResult
+        """
+        # Format 1: {"name": ..., "arguments": ...}
+        if "name" in d and isinstance(d["name"], str):
+            name = d["name"]
+            args = d.get("arguments") or d.get("parameters") or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except (json.JSONDecodeError, ValueError):
+                    return None
+            if isinstance(args, dict):
+                return {"name": name, "arguments": args}
+
+        # Format 2: {"function": {"name": ..., "arguments": ...}}
+        if "function" in d and isinstance(d["function"], dict):
+            func = d["function"]
+            return JsonToolCallExtractor._try_parse_single(func)
+
+        # Format 3: Bare {"result": "..."} (Qwen specific hallucination mitigation)
+        if "name" not in d and "result" in d:
+            # Often Qwen hallucinates {"result": "...", "id": null, "type": "text"}
+            # Infer this as SubmitResult
+            return {
+                "name": "SubmitResult",
+                "arguments": {"result": d["result"]}
+            }
+
+        return None
 
 
 class MixedResponseSplitter:

@@ -57,32 +57,6 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-recover when page becomes visible (iOS app switch, desktop tab switch)
-  // Debounced 300ms to avoid rapid Tab-switch triggering multiple reloads
-  useEffect(() => {
-    let visibilityTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        if (visibilityTimer) clearTimeout(visibilityTimer);
-        visibilityTimer = setTimeout(() => {
-          const state = useChatStore.getState();
-          const currentSession = state.session;
-          if (currentSession && !state.isStreaming) {
-            console.log("[Page] Visibility restored, reloading session...");
-            state.loadSession(currentSession.id);
-          }
-        }, 300);
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      if (visibilityTimer) clearTimeout(visibilityTimer);
-    };
-  }, []);
-
   // Register Cmd+K / Ctrl+K shortcut for New Chat
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {

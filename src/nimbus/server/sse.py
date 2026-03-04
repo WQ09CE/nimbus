@@ -53,7 +53,7 @@ class SSEHub:
     EVENT_ERROR = "error"
     EVENT_HEARTBEAT = "heartbeat"
 
-    def __init__(self, heartbeat_interval: float = 30.0):
+    def __init__(self, heartbeat_interval: float = 15.0):
         """Initialize SSE Hub.
 
         Args:

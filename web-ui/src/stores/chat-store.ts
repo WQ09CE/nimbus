@@ -1112,22 +1112,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ activeArtifact: null });
   },
 
-  interruptMessage: () => {
+  interruptMessage: async () => {
     const { streamAbortController, isStreaming, session } = get();
 
     if (isStreaming && streamAbortController) {
       set({ isInterrupting: true });
 
-      // Call server-side interrupt to cancel the agent task
+      // First, request server-side interrupt and wait for confirmation
       if (session) {
-        import("@/lib/api/sessions").then(({ interruptSession }) => {
-          interruptSession(session.id).catch(err => {
-            console.warn("[Store] Server-side interrupt failed:", err);
-          });
-        });
+        try {
+          const { interruptSession } = await import("@/lib/api/sessions");
+          await interruptSession(session.id);
+        } catch (err) {
+          console.warn("[Store] Server-side interrupt failed:", err);
+        }
       }
 
-      // Abort the client-side SSE stream
+      // Then abort the client-side SSE stream
       streamAbortController.abort();
     }
   },

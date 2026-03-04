@@ -3,7 +3,9 @@
  *
  * Uses /api/v1/* endpoints with SSE streaming.
  * Regular requests are proxied through Next.js rewrites to nimbus server (port 4096).
- * SSE streaming requests bypass the proxy to avoid response buffering.
+ * SSE streaming requests go through Next.js Route Handlers (app/api/v1/sessions/[id]/chat|events)
+ * which transparently proxy SSE to the backend without buffering.
+ * All traffic goes through port 3000 — no direct backend access needed.
  * Set NEXT_PUBLIC_API_URL to override (e.g. for direct connection).
  */
 
@@ -18,17 +20,11 @@ const getApiBase = () => {
 };
 
 const getStreamBase = () => {
-  // For SSE streaming, bypass Next.js proxy to avoid response buffering.
-  // Next.js rewrites buffer the entire SSE response, breaking real-time streaming.
+  // SSE streaming now goes through Next.js Route Handlers (app/api/v1/sessions/[id]/chat|events)
+  // which proxy to the backend without buffering. No need to bypass Next.js anymore.
   if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
-  // In browser context, connect directly to nimbus backend using current hostname
-  if (typeof window !== "undefined") {
-    const nimbusPort = process.env.NEXT_PUBLIC_NIMBUS_PORT || "4096";
-    const protocol = window.location.protocol;
-    return `${protocol}//${window.location.hostname}:${nimbusPort}`;
-  }
-  // Server-side fallback
-  return "http://localhost:4096";
+  // Use relative URL — same as API_BASE — all traffic goes through port 3000
+  return "";
 };
 
 const API_BASE = getApiBase();

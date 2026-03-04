@@ -190,8 +190,14 @@ export const reconnectToSession = async (sessionId: string, attempt: number = 0)
                     }
                     break;
 
-                case "heartbeat":
+                case "heartbeat": {
+                    const hbData = event.data as Record<string, unknown>;
+                    useChatStore.setState({
+                        lastHeartbeat: Date.now(),
+                        ...(hbData?.fsm_state ? { fsmState: hbData.fsm_state as 'THINKING' | 'ACTING' | 'STREAMING' | 'IDLE' } : {}),
+                    });
                     break;
+                }
 
                 case "dag_complete":
                     try {
@@ -300,9 +306,30 @@ export function useSSEListener() {
         };
 
         document.addEventListener('visibilitychange', handleVisibilityChange);
+
+        // Heartbeat timeout watchdog: if no heartbeat received for 45s during streaming,
+        // attempt automatic reconnection
+        const HEARTBEAT_TIMEOUT_MS = 45_000;
+        const heartbeatWatchdog = setInterval(() => {
+            const state = useChatStore.getState();
+            if (!state.isStreaming || !state.session) return;
+            const lastHb = state.lastHeartbeat;
+            if (lastHb && Date.now() - lastHb > HEARTBEAT_TIMEOUT_MS) {
+                console.warn(
+                    "[SSE] Heartbeat timeout — no event received for",
+                    Math.round((Date.now() - lastHb) / 1000),
+                    "s. Attempting reconnection..."
+                );
+                // Reset lastHeartbeat to prevent repeated triggers
+                useChatStore.setState({ lastHeartbeat: Date.now() });
+                reconnectToSession(state.session.id);
+            }
+        }, 10_000); // Check every 10 seconds
+
         return () => {
             document.removeEventListener('visibilitychange', handleVisibilityChange);
             if (visibilityTimer) clearTimeout(visibilityTimer);
+            clearInterval(heartbeatWatchdog);
         };
     }, []);
 
