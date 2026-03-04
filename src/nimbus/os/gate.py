@@ -87,6 +87,7 @@ class KernelGate:
         self.default_timeout = default_timeout
         self.local_tools = local_tools or {}
         self.write_filter = write_filter
+        self.tool_context: Dict[str, Any] = {}
 
     async def syscall_tool(
         self,
@@ -220,17 +221,17 @@ class KernelGate:
             if tool_name in self.local_tools:
                 func = self.local_tools[tool_name]
                 if asyncio.iscoroutinefunction(func):
-                    coro = func(**action.args)
+                    coro = func(**action.args, **self.tool_context)
                     if timeout and timeout > 0:
                         output = await asyncio.wait_for(coro, timeout=timeout)
                     else:
                         output = await coro  # No Gate-level timeout for meta-tools
                 else:
                     # Run sync function in thread pool to avoid blocking loop
-                    output = await asyncio.to_thread(func, **action.args)
+                    output = await asyncio.to_thread(func, **action.args, **self.tool_context)
             else:
                 # Fallback to global registry
-                coro = self.executor.execute(tool_name, action.args)
+                coro = self.executor.execute(tool_name, {**action.args, **self.tool_context})
                 if timeout and timeout > 0:
                     output = await asyncio.wait_for(coro, timeout=timeout)
                 else:

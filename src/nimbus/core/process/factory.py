@@ -119,6 +119,7 @@ class ProcessFactory:
 
         # -- 5. Gate --
         gate = self._create_gate(pid, role, local_tools=local_tools, write_filter=write_filter)
+        gate.tool_context = {"mmu": mmu}  # Inject MMU for session-scoped tools (e.g. Memo)
 
         # -- 6. Decoder --
         from nimbus.core.runtime.decoder import InstructionDecoder

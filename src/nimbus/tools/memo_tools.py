@@ -39,9 +39,10 @@ def _infer_category(tags: str) -> MemoryCategory:
 @tool(
     name="Memo",
     description=(
-        "Save important knowledge for future sessions. Use this to remember "
-        "facts, decisions, patterns, or user preferences that should persist "
-        "across conversations."
+        "Save knowledge for later use. "
+        "scope='session': temporary scratchpad for current conversation (lost when session ends). "
+        "scope='project': persistent memory across sessions (default). "
+        "scope='global': persistent memory across all projects."
     ),
     category="extension",
 )
@@ -60,11 +61,24 @@ async def memo(
         title: Short descriptive title for the memo.
         content: Full content to remember (markdown supported).
         tags: Comma-separated tags for categorization (e.g. "profile,frontend,react").
-        scope: Storage scope -- "project" (default) or "global" (cross-project).
+        scope: Storage scope -- "session" (temporary), "project" (default), or "global" (cross-project).
         supersedes: Optional memo_id of an older entry this replaces.
     """
     if not title.strip() or not content.strip():
         return "Error: title and content must be non-empty."
+
+    # Session-scoped: write to MMU clipboard (in-memory, visible in context)
+    if scope.lower() == "session":
+        mmu = ctx.get("mmu")
+        if not mmu:
+            return "Error: session memo unavailable (no process context)."
+        existing = getattr(mmu, "_clipboard", "") or ""
+        entry = f"### {title}\n{content}\n"
+        mmu.update_clipboard((existing + "\n" + entry).strip() if existing else entry)
+        return (
+            f"Session memo saved: {title}\n"
+            f"(Visible in current conversation only, lost when session ends)"
+        )
 
     category = _infer_category(tags)
 
@@ -112,7 +126,8 @@ async def memo(
 @tool(
     name="Recall",
     description=(
-        "Search your long-term memory for previously saved knowledge. "
+        "Search your memory for previously saved knowledge. "
+        "Searches both session memos (temporary) and persistent memos. "
         "Returns summaries of matching memos with their IDs."
     ),
     category="extension",
@@ -129,30 +144,45 @@ async def recall(
     Args:
         query: Search keywords (searches titles and tags).
         top_k: Maximum number of results to return (default 5).
-        scope: Search scope -- "project", "global", or "all" (default).
+        scope: Search scope -- "session", "project", "global", or "all" (default).
     """
-    manager = _get_manager(**ctx)
-    results = manager.search_memory(query=query, top_k=top_k, scope=scope)
+    lines = []
+    found_count = 0
 
-    if not results:
+    # Search session memos (clipboard)
+    if scope in ("session", "all"):
+        mmu = ctx.get("mmu")
+        if mmu:
+            clipboard = getattr(mmu, "_clipboard", "") or ""
+            if clipboard and query.lower() in clipboard.lower():
+                lines.append("**Session Memos (temporary):**")
+                lines.append(clipboard[:500] + ("..." if len(clipboard) > 500 else ""))
+                lines.append("")
+                found_count += 1
+
+    # Search persistent memos (NimFS)
+    if scope != "session":
+        manager = _get_manager(**ctx)
+        results = manager.search_memory(query=query, top_k=top_k, scope=scope)
+        if results:
+            found_count += len(results)
+            lines.append(f"**Persistent Memos ({len(results)} found):**")
+            for entry in results:
+                try:
+                    abstract = manager.read_memory(entry.memory_id, layer=0)
+                    preview = abstract[:150] + "..." if len(abstract) > 150 else abstract
+                except Exception:
+                    preview = "(no preview)"
+                lines.append(
+                    f"- **{entry.title}** (ID: `{entry.memory_id}`)\n"
+                    f"  Tags: {', '.join(entry.tags) or 'none'} | "
+                    f"Updated: {entry.updated_at}\n"
+                    f"  {preview}\n"
+                )
+            lines.append("Use ReadMemo(memo_id=...) to read full content.")
+
+    if not found_count:
         return f"No memos found for '{query}'."
-
-    lines = [f"Found {len(results)} memo(s) for '{query}':\n"]
-    for entry in results:
-        try:
-            abstract = manager.read_memory(entry.memory_id, layer=0)
-            preview = abstract[:150] + "..." if len(abstract) > 150 else abstract
-        except Exception:
-            preview = "(no preview)"
-
-        lines.append(
-            f"- **{entry.title}** (ID: `{entry.memory_id}`)\n"
-            f"  Tags: {', '.join(entry.tags) or 'none'} | "
-            f"Updated: {entry.updated_at}\n"
-            f"  {preview}\n"
-        )
-
-    lines.append("Use ReadMemo(memo_id=...) to read full content.")
     return "\n".join(lines)
 
 
