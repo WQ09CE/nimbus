@@ -360,7 +360,7 @@ class SessionManagerV2:
             llm = None
             try:
                 from nimbus.adapters.llm_factory import create_llm_client
-                llm = await create_llm_client("google/gemini-3.1-flash-lite-preview", timeout=30.0)
+                llm = await create_llm_client("google/gemini-3-flash-preview", timeout=30.0)
             except Exception as e:
                 logger.warning(f"Failed to create flash client for title generation, falling back to shared: {e}")
                 llm = await self._get_shared_llm_client()
