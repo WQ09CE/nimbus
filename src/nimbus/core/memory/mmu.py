@@ -178,6 +178,10 @@ class MMU:
         if self._pinned is None: self._pinned = PinnedContext()
         self._pinned.update_env_state(state)
 
+    def update_recalled_memory(self, memory: str) -> None:
+        if self._pinned is None: self._pinned = PinnedContext()
+        self._pinned.update_recalled_memory(memory)
+
     def update_capabilities(self, caps: str) -> None:
         if self._pinned is None: self._pinned = PinnedContext()
         self._pinned.capabilities = caps

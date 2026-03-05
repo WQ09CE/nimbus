@@ -186,6 +186,7 @@ class PinnedContext:
     env_state: str = ""  # Dynamic environment state (e.g. key vars, paths)
     capabilities: str = ""
     custom_anchors: Dict[str, str] = field(default_factory=dict)
+    recalled_memory: str = ""
     version: str = "1.0"
 
     def to_system_message(self) -> Message:
@@ -207,6 +208,9 @@ class PinnedContext:
         for k, v in self.custom_anchors.items():
             parts.append(f"{k}:\n{v}")
 
+        if self.recalled_memory:
+            parts.append(f"# 🧠 RELEVANT PAST MEMORY\n{self.recalled_memory}")
+
         content = "\n\n".join(parts)
         return Message(role="system", content=content, meta={"pinned": True})
 
@@ -216,6 +220,7 @@ class PinnedContext:
         total += Message._estimate_text(self.workspace_info)
         total += Message._estimate_text(self.env_state)
         total += Message._estimate_text(self.capabilities)
+        total += Message._estimate_text(self.recalled_memory)
         for k, v in self.custom_anchors.items():
             total += Message._estimate_text(k) + Message._estimate_text(v)
         return total
@@ -235,6 +240,10 @@ class PinnedContext:
     def update_capabilities(self, caps: str) -> None:
         """Update capabilities description."""
         self.capabilities = caps
+
+    def update_recalled_memory(self, memory: str) -> None:
+        """Update automatically recalled memory."""
+        self.recalled_memory = memory
 
 
 # =============================================================================

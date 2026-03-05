@@ -50,7 +50,7 @@ class MemoryConsolidatorModule(HeartModule):
             # For now, we expect the emitter to provide the summary.
             return
 
-        # Simple structured extraction prompt
+        # Structured extraction prompt enforcing analytical breakdown
         prompt = f"""
 Analyze the following session execution summary.
 Your goal is to extract ANY reusable, cross-session knowledge.
@@ -58,6 +58,7 @@ Examples of reusable knowledge:
 - A new architectural pattern established
 - A critical bug and its root cause/fix
 - User preferences (e.g. "always use React 18")
+- Important API or interface contracts
 
 If you find something worth remembering, output it in JSON format.
 If nothing is worth remembering, output an empty JSON array: []
@@ -66,7 +67,9 @@ JSON Schema:
 [
   {{
     "title": "Short descriptive title",
-    "content": "Detailed markdown content of the memo",
+    "problem_statement": "What was the core issue, bug, or user requirement discussed? (Be concise)",
+    "solution_decision": "What was the exact solution implemented, or convention decided?",
+    "context_rationale": "Why was this decided? Include any key code snippets, file paths, or side-effects.",
     "tags": ["tag1", "tag2"],
     "category": "PATTERNS"  // "PATTERNS", "EVENTS", "CASES", "PROFILE", "ENTITIES"
   }}
@@ -103,16 +106,28 @@ Session Summary:
                         except:
                             category = MemoryCategory.PATTERNS
 
+                        # Compose high-quality markdown from structured fields
+                        title = memo.get("title", f"Auto-Memo: {session_id}")
+                        problem = memo.get("problem_statement", "")
+                        solution = memo.get("solution_decision", "")
+                        context = memo.get("context_rationale", "")
+                        
+                        markdown_content = (
+                            f"## 1. Problem / Context\n{problem}\n\n"
+                            f"## 2. Decision / Solution\n{solution}\n\n"
+                            f"## 3. Rationale / Artifacts\n{context}\n"
+                        )
+
                         heart.nimfs.write_memory(
                             category=category,
-                            title=memo.get("title", f"Auto-Memo: {session_id}"),
-                            content=memo.get("content", ""),
-                            summary=memo.get("content", "")[:180],
+                            title=title,
+                            content=markdown_content,
+                            summary=problem[:180] if problem else "No summary available",
                             source="Auto-Consolidator",
                             tags=memo.get("tags", ["auto-generated"]),
                             scope=MemoryScope.PROJECT
                         )
-                        logger.info(f"[MemoryConsolidator] Successfully saved Memo: {memo.get('title')}")
+                        logger.info(f"[MemoryConsolidator] Successfully saved structured Memo: {title}")
                     except Exception as e:
                         logger.error(f"[MemoryConsolidator] Failed to parse/save individual memo: {e}")
             else:
