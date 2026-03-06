@@ -372,128 +372,20 @@ class StateActionExecution(VCPUState):
             if action.kind in ("TOOL_CALL", "SUB_CALL")
         ]
         
-        # 2. Serial path: 0 or 1 executable action — no concurrency overhead
-        if len(executable_actions) <= 1:
-            for action in executable_actions:
-                logger.info(f"⚙️  [vCPU] Executing Tool: {action.name}")
-                try:
-                    if ctx.config.dry_run:
-                        logger.info(f"🌵 [Dry-Run] Simulating tool: {action.name}")
-                        result = ToolResult(
-                            status="OK",
-                            output=f"[Dry-Run] Successfully simulated execution of {action.name} with args {action.args}"
-                        )
-                    else:
-                        tool_task = asyncio.create_task(ctx.gate.syscall_tool(action))
-                        interrupt_task = None
-                        tasks = [tool_task]
-                        if ctx.interrupt_event:
-                            interrupt_task = asyncio.create_task(ctx.interrupt_event.wait())
-                            tasks.append(interrupt_task)
-                            
-                        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                        
-                        if interrupt_task and interrupt_task in done:
-                            tool_task.cancel()
-                            try:
-                                await tool_task
-                            except asyncio.CancelledError:
-                                pass
-                            ctx.interrupt_event.clear()
-                            raise Exception("Tool execution interrupted by user.")
-                            
-                        if interrupt_task:
-                            interrupt_task.cancel()
-                            
-                        result = tool_task.result()
-                    
-                    if not hasattr(action, 'result'):
-                        action.result = result
-                    ctx.current_results.append(result)
-                except Exception as e:
-                    logger.warning(f"Tool {action.name} failed with Exception: {e}")
-                    result = ToolResult(
-                        status="ERROR",
-                        output=f"Tool failed: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
-                    )
-                    action.result = result
-                    ctx.current_results.append(result)
-                    # Persist assistant tool_use + tool_results before error
-                    # recovery so the conversation stays well-formed.
-                    _persist_tool_turn(ctx)
-                    ctx.pending_error = e
-                    return StateErrorRecovery()
-            return StateObservation()
+        # 2. Delegate to ToolExecutor
+        from nimbus.core.runtime.tool_executor import ToolExecutor
+        executor = ToolExecutor()
+        results, error = await executor.execute_all(ctx, executable_actions)
         
-        # 3. Concurrent path: 2+ executable actions
-        tool_names = [action.name for action in executable_actions]
-        logger.info(f"⚡ [vCPU] Executing {len(executable_actions)} tools concurrently: {tool_names}")
+        # 3. Add results to context
+        ctx.current_results.extend(results)
         
-        async def _execute_one(action):
-            """Execute a single action with independent error handling."""
-            try:
-                if ctx.config.dry_run:
-                    logger.info(f"🌵 [Dry-Run] Simulating tool concurrently: {action.name}")
-                    result = ToolResult(
-                        status="OK",
-                        output=f"[Dry-Run] Successfully simulated execution of {action.name} with args {action.args}"
-                    )
-                else:
-                    tool_task = asyncio.create_task(ctx.gate.syscall_tool(action))
-                    interrupt_task = None
-                    tasks = [tool_task]
-                    if ctx.interrupt_event:
-                        interrupt_task = asyncio.create_task(ctx.interrupt_event.wait())
-                        tasks.append(interrupt_task)
-                        
-                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                    
-                    if interrupt_task and interrupt_task in done:
-                        tool_task.cancel()
-                        try:
-                            await tool_task
-                        except asyncio.CancelledError:
-                            pass
-                        # Only clear once if multiple tasks race to clear
-                        if ctx.interrupt_event.is_set():
-                            ctx.interrupt_event.clear()
-                        raise Exception("Tool execution interrupted by user.")
-                        
-                    if interrupt_task:
-                        interrupt_task.cancel()
-                        
-                    result = tool_task.result()
-                
-                if not hasattr(action, 'result'):
-                    action.result = result
-                return result, None
-            except Exception as e:
-                logger.warning(f"Tool {action.name} failed with Exception: {e}")
-                result = ToolResult(
-                    status="ERROR",
-                    output=f"Tool failed: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
-                )
-                action.result = result
-                return result, e
-        
-        # Launch all concurrently and collect results in original order
-        outcomes = await asyncio.gather(*[
-            _execute_one(action) for action in executable_actions
-        ])
-        
-        # 4. Collect results in order and check for errors
-        first_error = None
-        for result, error in outcomes:
-            ctx.current_results.append(result)
-            if error is not None and first_error is None:
-                first_error = error
-        
-        # 5. If any action failed, record and enter error recovery
-        if first_error is not None:
+        # 4. Handle errors if any
+        if error is not None:
             # Persist assistant tool_use + tool_results (including errors)
             # before error recovery so the conversation stays well-formed.
             _persist_tool_turn(ctx)
-            ctx.pending_error = first_error
+            ctx.pending_error = error
             return StateErrorRecovery()
         
         return StateObservation()

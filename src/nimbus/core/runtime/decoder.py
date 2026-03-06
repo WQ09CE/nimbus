@@ -242,22 +242,26 @@ class InstructionDecoder:
 
             # Distinguish between a final conversational reply and an intermediate
             # thought that precedes a tool call the LLM hasn't made yet.
-            #
-            # - _is_conversational_reply() detects short, self-contained answers
-            #   (e.g. greetings, direct answers <= 120 chars without planning
-            #   language, or short text with "done"/"completed" markers).
-            #   These map to REPLY -> FSM terminates.
-            #
-            # - Longer text or text containing planning language ("let me",
-            #   "next", "first", etc.) is treated as THOUGHT -> FSM gives the
-            #   LLM one more chance to call a tool. The consecutive_thoughts
-            #   counter in StateObservation prevents infinite THOUGHT loops
-            #   by terminating after max_consecutive_thoughts iterations
-            #   without tool calls.
             if self._is_conversational_reply(clean_text):
                 kind = "REPLY"
             else:
                 kind = "THOUGHT"
+                
+                # PROMISE GATE: Catch the LLM promising to code/act without calling a tool
+                _PLANNING_WORDS = ("next", "now i", "let me", "i will", "i'll", "i need to",
+                                   "first", "then", "step", "接下来", "首先", "然后", "我需要", "我将",
+                                   "i am going to", "allow me to")
+                lower = clean_text.lower()
+                if any(w in lower for w in _PLANNING_WORDS):
+                    raise Fault(
+                        domain="LLM",
+                        code="EMPTY_PROMISE",
+                        message=(
+                            "You indicated an intention to take an action in your text, "
+                            "but you did not actually call any tool. Please emit the actual tool call."
+                        ),
+                        retryable=True,
+                    )
 
             actions.append(ActionIR(
                 kind=kind,

@@ -290,6 +290,7 @@ class NimFSManager:
         source: str = "agent",
         tags: Optional[List[str]] = None,
         scope: MemoryScope = MemoryScope.PROJECT,
+        memory_id: Optional[str] = None,
     ) -> str:
         """
         Write a long-term memory entry with L0/L1/L2 hierarchy.
@@ -310,6 +311,7 @@ class NimFSManager:
             source:     Producing agent role.
             tags:       Tag list for filtering.
             scope:      PROJECT (default) or GLOBAL.
+            memory_id:  Optional explicit ID for updates/merges. If None, auto-generated.
 
         Returns:
             memory_id string.
@@ -349,11 +351,15 @@ class NimFSManager:
                                        category.value, title, existing.name)
                             return f"[Dedup] Already exists: {existing.name}"
 
-        memory_id = f"{category.value}-{uuid.uuid4().hex[:8]}"
-        now = _now_iso()
+        if memory_id:
+            _validate_id(memory_id, "memory_id")
+            # If updating, ensure category matches the existing one if we were doing a full DB update,
+            # but since we use directory structure, we just trust the supplied category/memory_id combo here.
+        else:
+            memory_id = f"{category.value}-{uuid.uuid4().hex[:8]}"
+            _validate_id(memory_id, "memory_id")
 
-        # C002: validate generated memory_id (safe by construction, but belt-and-suspenders)
-        _validate_id(memory_id, "memory_id")
+        now = _now_iso()
 
         # Determine storage root based on scope
         if scope == MemoryScope.GLOBAL:

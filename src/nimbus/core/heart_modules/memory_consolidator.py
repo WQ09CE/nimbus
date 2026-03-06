@@ -1,3 +1,4 @@
+import json
 import logging
 import time
 import asyncio
@@ -50,7 +51,27 @@ class MemoryConsolidatorModule(HeartModule):
             # For now, we expect the emitter to provide the summary.
             return
 
-        # Structured extraction prompt enforcing analytical breakdown
+        # Fetch existing memories to allow deduplication (top recent memories across key categories)
+        existing_memories = []
+        try:
+            # We fetch recent memories to let the LLM see what's already known
+            # and decide whether to UPDATE an existing one or create a NEW one.
+            recent = heart.nimfs.search_memory(query="*", top_k=20)
+            for m in recent:
+                if m.category in (MemoryCategory.PATTERNS, MemoryCategory.CASES, MemoryCategory.ENTITIES, MemoryCategory.EVENTS):
+                    # provide memory_id, title, and the L0 abstract
+                    existing_memories.append({
+                        "memory_id": m.memory_id,
+                        "category": m.category.value,
+                        "title": m.title,
+                        "abstract": m.abstract
+                    })
+        except Exception as e:
+            logger.debug(f"[MemoryConsolidator] Failed to fetch existing memories for dedup: {e}")
+
+        existing_memories_str = json.dumps(existing_memories, indent=2) if existing_memories else "[]"
+
+        # Structured extraction prompt enforcing analytical breakdown and deduplication
         prompt = f"""
 Analyze the following session execution summary.
 Your goal is to extract ANY reusable, cross-session knowledge.
@@ -60,12 +81,19 @@ Examples of reusable knowledge:
 - User preferences (e.g. "always use React 18")
 - Important API or interface contracts
 
+CRITICAL DEDUPLICATION RULE:
+We do not want duplicate memories. I have provided a list of `Existing Memories` below. 
+If the knowledge you want to extract is a continuation, update, or already covered by an existing memory, you MUST set "action" to "UPDATE" and provide its "target_id". 
+If it is entirely new knowledge, set "action" to "NEW" and "target_id" to null.
+
 If you find something worth remembering, output it in JSON format.
 If nothing is worth remembering, output an empty JSON array: []
 
 JSON Schema:
 [
   {{
+    "action": "NEW", // or "UPDATE"
+    "target_id": null, // or the memory_id (e.g., "patterns-abc123") if action is "UPDATE"
     "title": "Short descriptive title",
     "problem_statement": "What was the core issue, bug, or user requirement discussed? (Be concise)",
     "solution_decision": "What was the exact solution implemented, or convention decided?",
@@ -75,6 +103,11 @@ JSON Schema:
   }}
 ]
 
+---
+Existing Memories (For Deduplication):
+{existing_memories_str}
+
+---
 Session Summary:
 {summary}
 """
@@ -92,7 +125,6 @@ Session Summary:
                 
             # Attempt to parse JSON from the response
             # A robust implementation would use a JSON extractor, but for now we try a basic fast parse
-            import json
             import re
             
             match = re.search(r'\[\s*\{.*\}\s*\]', content, re.DOTALL)
@@ -106,6 +138,9 @@ Session Summary:
                         except:
                             category = MemoryCategory.PATTERNS
 
+                        action = memo.get("action", "NEW")
+                        target_id = memo.get("target_id", None)
+
                         # Compose high-quality markdown from structured fields
                         title = memo.get("title", f"Auto-Memo: {session_id}")
                         problem = memo.get("problem_statement", "")
@@ -118,16 +153,18 @@ Session Summary:
                             f"## 3. Rationale / Artifacts\n{context}\n"
                         )
 
-                        heart.nimfs.write_memory(
+                        memory_id = heart.nimfs.write_memory(
                             category=category,
                             title=title,
                             content=markdown_content,
                             summary=problem[:180] if problem else "No summary available",
                             source="Auto-Consolidator",
                             tags=memo.get("tags", ["auto-generated"]),
-                            scope=MemoryScope.PROJECT
+                            scope=MemoryScope.PROJECT,
+                            memory_id=target_id if action == "UPDATE" and target_id else None
                         )
-                        logger.info(f"[MemoryConsolidator] Successfully saved structured Memo: {title}")
+                        action_str = "Merged/Updated" if action == "UPDATE" else "Created"
+                        logger.info(f"[MemoryConsolidator] Successfully {action_str} structured Memo: {title} ({memory_id})")
                     except Exception as e:
                         logger.error(f"[MemoryConsolidator] Failed to parse/save individual memo: {e}")
             else:
