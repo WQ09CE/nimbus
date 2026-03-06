@@ -60,7 +60,7 @@ class SessionMonitorModule(HeartModule):
 
         if msg.topic in ("session.error", "session.timeout", "session.failure"):
             await self._handle_session_error(heart, session_id, msg)
-        
+
         elif msg.topic == "session.iteration":
             await self._handle_iteration(heart, session_id, payload)
 
@@ -143,7 +143,7 @@ class SessionMonitorModule(HeartModule):
         content = f"Session '{session_id}' failed {count} times.\n\nErrors:\n{error_logs}"
 
         try:
-            heart.nimfs.write_memory(
+            await heart.nimfs.write_memory_async(
                 category=MemoryCategory.CASES,
                 title=f"Session Failure: {session_id}",
                 content=content,
@@ -160,5 +160,5 @@ class SessionMonitorModule(HeartModule):
             data={"session_id": session_id, "error_count": count, "logs": error_logs}
         )
 
-        await heart.inbox.put(topic="evolution.propose", payload=proposal)
+        await asyncio.to_thread(heart.inbox.put, topic="evolution.propose", payload=proposal)
         self.session_errors[session_id].clear()

@@ -83,6 +83,10 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "ollama: marks tests requiring a local ollama server (deselect with '-m \"not ollama\"')",
+    "anthropic: marks tests requiring ANTHROPIC_API_KEY (deselect with '-m \"not anthropic\"')",
+    "google: marks tests requiring GEMINI_API_KEY (deselect with '-m \"not google\"')",
+    "openai: OpenAI GPT integration tests (require OPENAI_API_KEY)",
 ]
 
 [tool.ruff]

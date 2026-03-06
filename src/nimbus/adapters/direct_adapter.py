@@ -68,6 +68,60 @@ def _strip_gemini_thought_id(id_str: str) -> str:
     return clean_id or id_str
 
 
+def _try_parse_tool_call(d: dict) -> dict | None:
+    """Try to parse a dict as a tool call, normalizing various key formats.
+
+    Handles:
+      - "name"/"tool_name"/"tool" as tool name
+      - "arguments"/"parameters"/"args" as arguments (dict or JSON string)
+      - "function" key -> recursive parse
+      - "result" key -> SubmitResult
+    """
+    # Normalize: accept "name", "tool_name", or "tool" as the tool name key
+    tool_name = d.get("name") or d.get("tool_name") or d.get("tool")
+    if tool_name and isinstance(tool_name, str):
+        args = d.get("arguments") or d.get("parameters") or d.get("args") or {}
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (json.JSONDecodeError, ValueError):
+                return None
+        if isinstance(args, dict):
+            return {"name": tool_name, "arguments": args}
+    if "function" in d and isinstance(d["function"], dict):
+        return _try_parse_tool_call(d["function"])
+    if not tool_name and "result" in d:
+        return {"name": "SubmitResult", "arguments": {"result": d["result"]}}
+    return None
+
+
+def _extract_tool_calls_from_json(json_str: str) -> list[dict] | None:
+    """Extract tool calls from a JSON string, handling various small-model formats.
+
+    Returns a list of normalized tool call dicts [{"name": ..., "arguments": {...}}]
+    or None if the string is not a valid tool call.
+    """
+    try:
+        parsed = json.loads(json_str)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    # Unwrap {"tool_calls": [...]} wrapper (qwen/ollama format)
+    if isinstance(parsed, dict) and "tool_calls" in parsed and isinstance(parsed["tool_calls"], list):
+        parsed = parsed["tool_calls"]
+
+    results = []
+    if isinstance(parsed, dict):
+        tc = _try_parse_tool_call(parsed)
+        if tc: results.append(tc)
+    elif isinstance(parsed, list):
+        for item in parsed:
+            if isinstance(item, dict):
+                tc = _try_parse_tool_call(item)
+                if tc: results.append(tc)
+    return results if results else None
+
+
 def _classify_llm_exception(exc: Exception) -> Fault:
     """Map transient network/LLM upstream errors to retryable Fault."""
     msg = str(exc)
@@ -1199,39 +1253,6 @@ class DirectAdapter:
         """
         import re
 
-        def _extract_tool_calls_from_json(json_str: str) -> list[dict] | None:
-            try:
-                parsed = json.loads(json_str)
-            except (json.JSONDecodeError, ValueError):
-                return None
-            
-            def _try_parse(d: dict) -> dict | None:
-                if "name" in d and isinstance(d["name"], str):
-                    args = d.get("arguments") or d.get("parameters") or {}
-                    if isinstance(args, str):
-                        try:
-                            args = json.loads(args)
-                        except (json.JSONDecodeError, ValueError):
-                            return None
-                    if isinstance(args, dict):
-                        return {"name": d["name"], "arguments": args}
-                if "function" in d and isinstance(d["function"], dict):
-                    return _try_parse(d["function"])
-                if "name" not in d and "result" in d:
-                    return {"name": "SubmitResult", "arguments": {"result": d["result"]}}
-                return None
-
-            results = []
-            if isinstance(parsed, dict):
-                tc = _try_parse(parsed)
-                if tc: results.append(tc)
-            elif isinstance(parsed, list):
-                for item in parsed:
-                    if isinstance(item, dict):
-                        tc = _try_parse(item)
-                        if tc: results.append(tc)
-            return results if results else None
-
         openai_tools = self._convert_tools(tools)
 
         # Adjust model name for LiteLLM using ModelRegistry
@@ -1424,9 +1445,24 @@ class DirectAdapter:
                             }
                         )
                 else:
-                    # Not a tool call, yield as normal text chunk
-                    # (We could stream this progressively, but for catching JSON we buffered it)
-                    yield LLMStreamEvent(type="text", text=full_text)
+                    # Guard: small models sometimes output {"error": "..."} as text
+                    # instead of retrying with a proper tool call. Suppress these so
+                    # VCPU sees an empty response and triggers continuation poke.
+                    if is_json_like:
+                        try:
+                            parsed_obj = json.loads(json_str)
+                            if isinstance(parsed_obj, dict) and "error" in parsed_obj and len(parsed_obj) <= 3:
+                                logger.warning(
+                                    "[LiteLLM] Suppressed JSON error text (small model retry signal): %s",
+                                    json_str[:200],
+                                )
+                                # Don't yield — empty response triggers VCPU retry
+                            else:
+                                yield LLMStreamEvent(type="text", text=full_text)
+                        except (json.JSONDecodeError, ValueError):
+                            yield LLMStreamEvent(type="text", text=full_text)
+                    else:
+                        yield LLMStreamEvent(type="text", text=full_text)
 
             # 2. Fallback: if no text or tool_calls, but we got reasoning_content
             if not full_text and not tool_call_chunks and reasoning_chunks:
@@ -1497,33 +1533,10 @@ class DirectAdapter:
             yield LLMStreamEvent(type="error", error=str(e))
 
     async def list_models(self) -> List[Dict[str, str]]:
-        """List available models from configured providers."""
-        models = []
+        """List available models from ModelRegistry (single source of truth)."""
+        from nimbus.core.models.registry import ModelRegistry
 
-        # Google Gemini models
-        models.extend([
-            {"id": "google/gemini-3-flash-preview", "object": "model", "owned_by": "google"},
-            {"id": "google/gemini-3-pro-preview", "object": "model", "owned_by": "google"},
-            {"id": "google/gemini-3.1-pro-preview", "object": "model", "owned_by": "google"},
-            {"id": "google/gemini-3.1-pro-preview-customtools", "object": "model", "owned_by": "google"},
-            {"id": "google/gemini-3.1-flash-lite-preview", "object": "model", "owned_by": "google"},
-        ])
-
-        # Anthropic Claude models
-        models.extend([
-            {"id": "anthropic/claude-opus-4-6", "object": "model", "owned_by": "anthropic"},
-            {"id": "anthropic/claude-sonnet-4-6", "object": "model", "owned_by": "anthropic"},
-        ])
-
-        # OpenAI Codex models
-        models.extend([
-            {"id": "openai-codex/gpt-5.2-codex", "object": "model", "owned_by": "openai-codex"},
-            {"id": "openai-codex/gpt-5.3-codex", "object": "model", "owned_by": "openai-codex"},
-        ])
-
-        # Ollama / Local models
-        models.extend([
-            {"id": "ollama/qwen3.5:9b", "object": "model", "owned_by": "ollama"},
-        ])
-
-        return models
+        return [
+            {"id": info.full_name, "object": "model", "owned_by": info.provider}
+            for info in ModelRegistry.list_models()
+        ]

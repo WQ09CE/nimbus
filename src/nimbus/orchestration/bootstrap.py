@@ -207,4 +207,11 @@ def create_agent_os(
             # Standard Profile: All tools for everyone
             register_default_tools(os, workspace=ws)
 
+    elif kernel_tools:
+        # No default tools, but kernel tools requested (e.g. basic_tools_only models)
+        from nimbus.tools import register_default_tools
+        ws = workspace
+        register_default_tools(os, workspace=ws, tools=["Bash", "Read", "Write", "Edit"])
+        logger.info("🔧 Kernel-only tools registered: Bash, Read, Write, Edit")
+
     return os

@@ -22,6 +22,7 @@ class ModelInfo:
     aliases: List[str]     # List of aliases (e.g. ["sonnet", "claude"])
     manifest: ModelManifest # Features and behaviors
     context_window: int = 200_000  # Context window in tokens (default 200K)
+    basic_tools_only: bool = False  # If True, only register kernel tools (Bash/Read/Write/Edit)
 
     @property
     def full_name(self) -> str:
@@ -369,4 +370,30 @@ ModelRegistry.register(ModelInfo(
     ],
     manifest=ModelManifest("qwen3.5", OLLAMA_FEATURES),
     context_window=32_000,
+))
+
+ModelRegistry.register(ModelInfo(
+    model_id="qwen3.5:4b",
+    provider="ollama",
+    tier="flash",
+    aliases=[
+        "qwen4b",
+        "qwen3.5-4b",
+    ],
+    manifest=ModelManifest("qwen3.5", OLLAMA_FEATURES),
+    context_window=32_000,
+    basic_tools_only=True,  # 4B model: tool calling unreliable
+))
+
+ModelRegistry.register(ModelInfo(
+    model_id="qwen3.5:2b",
+    provider="ollama",
+    tier="flash",
+    aliases=[
+        "qwen2b",
+        "qwen3.5-2b",
+    ],
+    manifest=ModelManifest("qwen3.5", OLLAMA_FEATURES),
+    context_window=32_000,
+    basic_tools_only=True,  # 2B model: only Bash/Read/Write/Edit
 ))

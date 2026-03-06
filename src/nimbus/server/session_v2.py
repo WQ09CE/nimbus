@@ -211,6 +211,17 @@ class SessionManagerV2:
         # Extract model_id for prompt selection
         model_id = model_config.get("model_id", "default")
 
+        # Auto-downgrade: small models get standard mode + basic tools only
+        _is_basic_model = False
+        if model_id != "default":
+            from nimbus.core.models.registry import ModelRegistry
+            model_info = ModelRegistry.get(model_id)
+            if model_info and model_info.basic_tools_only:
+                _is_basic_model = True
+                if agent_mode == "dual_agent":
+                    logger.info(f"⚡ Auto-downgrade: {model_id} (basic_tools_only) → standard mode")
+                    agent_mode = "standard"
+
         # Create default LLM client if not provided
         if llm_client is None:
             if model_config:
@@ -294,10 +305,11 @@ class SessionManagerV2:
             max_processes=5,
             default_timeout=300.0,
             workspace=workspace,
-            register_defaults=True, # Registers Read, Write, etc.
-            profile=profile_name,   # Sets System Prompt & Config
+            register_defaults=not _is_basic_model,  # basic_tools_only models: no specialist/extension tools
+            kernel_tools=True,  # Always register Bash/Read/Write/Edit
+            profile=profile_name,
             model_id=model_id,
-            skill_paths=skill_paths,
+            skill_paths=skill_paths if not _is_basic_model else [],
         )
 
         logger.info(f"🔧 Created AgentOS (profile={profile_name}) for session {session_id}")
@@ -384,7 +396,8 @@ class SessionManagerV2:
                 # Notify frontend about title change via SSE
                 await self._sse_hub.publish(
                     session_id,
-                    {"event": "session_updated", "data": {"session_id": session_id, "name": title}},
+                    "session_updated",
+                    {"session_id": session_id, "name": title},
                 )
         except Exception as e:
             logger.warning(f"Auto-title failed for {session_id}: {e}")
