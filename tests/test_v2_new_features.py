@@ -18,7 +18,7 @@ from nimbus.core.compaction import (
 )
 from nimbus.core.memory.context import Message
 from nimbus.core.memory.mmu import MMU, MMUConfig
-from nimbus.core.session import InMemorySessionManager, SessionManager
+from nimbus.core.session.manager import InMemorySessionManager, SessionManager
 
 # =============================================================================
 # Session Persistence Tests

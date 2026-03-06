@@ -15,4 +15,4 @@ Key files to check:
 **Important Instructions**:
 - Always run `pytest tests/core --tb=short` before pushing commits manually.
 - Use `ruff` for linting/formatting.
-- Treat `AgentOS` and `vCPU` as legacy God Classes scheduled for decomposition. Add new features via modular refactoring, NOT by adding more lines to them.
+- ~~Treat `AgentOS` and `vCPU` as legacy God Classes scheduled for decomposition.~~ (*Status: Decomposed in Phase 10/11!*) AgentOS is now a facade, and VCPU tool execution is cleanly extracted. Any new sub-agents or processes should be orchestrated via the `ProcessManager`.

@@ -457,17 +457,7 @@ def auto_offload_file(file_path, tool_name="Read", workspace=None):
         f"Use NimFSReadArtifact(ref='{ref}') to retrieve the complete content."
     )
 
-# Now read existing utils.py and append this
-with open('src/nimbus/tools/utils.py', 'r') as f:
-    lines = f.readlines()
 
-# Check if already exists
-if 'def auto_offload_file' not in "".join(lines):
-    with open('src/nimbus/tools/utils.py', 'a') as f:
-        f.write("\n\n" + open('fix_utils.py').read())
-    print("Updated utils.py")
-else:
-    print("utils.py already updated")
 
 import os
 import uuid

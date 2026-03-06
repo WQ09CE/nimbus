@@ -113,10 +113,20 @@ Session Summary:
 """
 
         try:
+            from nimbus.core.memory.mmu import MMU, MMUConfig
+            from nimbus.core.memory.context import PinnedContext
+            
+            mmu = MMU(config=MMUConfig(max_context_tokens=120000))
+            mmu.set_pinned(PinnedContext(
+                system_rules="You are a data extractor.",
+                workspace_info="",
+            ))
+            mmu.add_user_message(prompt)
+
             # We use the generic chat interface of the LLM wrapper
             response = await self._llm.chat(
-                messages=[{"role": "user", "content": prompt}],
-                tools=None
+                mmu=mmu,
+                tools=[]
             )
             
             content = response.content

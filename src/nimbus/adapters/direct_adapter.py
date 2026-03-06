@@ -395,8 +395,6 @@ class DirectAdapter:
                         "parameters": t.get("parameters", {}),
                     }
                 })
-        return result
-
     async def chat(
         self,
         mmu: Any,
@@ -463,13 +461,14 @@ class DirectAdapter:
     ) -> AsyncIterator[LLMStreamEvent]:
         """
         Stream response — routes to Anthropic native or LiteLLM.
-        Assembles context Just-In-Time from the MMU.
+        Assembles context Just-In-Time from the MMU, or accepts raw messages list.
         """
         # Just-In-Time Context Assembly & Compaction
-        # We compact during assembly if the MMU config dictates it.
-        # This acts as the transform_context pipeline step.
-        compact_on_limit = getattr(mmu.config, "compact_on_limit", False) if hasattr(mmu, "config") else False
-        messages = mmu.assemble_context(compact_on_limit=compact_on_limit)
+        if isinstance(mmu, list):
+            messages = mmu
+        else:
+            compact_on_limit = getattr(mmu.config, "compact_on_limit", False) if hasattr(mmu, "config") else False
+            messages = mmu.assemble_context(compact_on_limit=compact_on_limit)
         
         # Stream Routing
         if self._is_anthropic_model() and self._anthropic_auth is not None:
@@ -1425,13 +1424,19 @@ class DirectAdapter:
             # Only try json parsing if it looks like json or if it's an ollama model emitting codeblocks
             if full_text.strip():
                 content_to_check = full_text.strip()
-                m = re.search(r'```(?:json)?\s*\n(.*?)\n\s*```', content_to_check, re.DOTALL)
-                json_str = m.group(1).strip() if m else content_to_check
-                
-                is_json_like = json_str.startswith('{') or json_str.startswith('[')
                 extracted_tcs = None
-                if is_json_like:
-                    extracted_tcs = _extract_tool_calls_from_json(json_str)
+                
+                # Check for markdown json or code blocks
+                m = re.search(r'```(?:json)?\s*\n(.*?)\n\s*```', content_to_check, re.DOTALL)
+                if m:
+                    extracted_tcs = _extract_tool_calls_from_json(m.group(1).strip())
+                
+                if not extracted_tcs:
+                    # Look for raw json blocks `{ ... }` or `[ ... ]`
+                    # Simple heuristic: find first { or [ and last } or ]
+                    m_raw = re.search(r'(\{.*\}|\[.*\])', content_to_check, re.DOTALL)
+                    if m_raw:
+                        extracted_tcs = _extract_tool_calls_from_json(m_raw.group(1).strip())
 
                 if extracted_tcs:
                     logger.info("[LiteLLM] Intercepted %d JSON tool call(s) from text stream.", len(extracted_tcs))
@@ -1448,20 +1453,21 @@ class DirectAdapter:
                     # Guard: small models sometimes output {"error": "..."} as text
                     # instead of retrying with a proper tool call. Suppress these so
                     # VCPU sees an empty response and triggers continuation poke.
-                    if is_json_like:
+                    handled_error = False
+                    if content_to_check.startswith('{') or content_to_check.startswith('['):
                         try:
-                            parsed_obj = json.loads(json_str)
+                            parsed_obj = json.loads(content_to_check)
                             if isinstance(parsed_obj, dict) and "error" in parsed_obj and len(parsed_obj) <= 3:
                                 logger.warning(
                                     "[LiteLLM] Suppressed JSON error text (small model retry signal): %s",
-                                    json_str[:200],
+                                    content_to_check[:200],
                                 )
+                                handled_error = True
                                 # Don't yield — empty response triggers VCPU retry
-                            else:
-                                yield LLMStreamEvent(type="text", text=full_text)
                         except (json.JSONDecodeError, ValueError):
-                            yield LLMStreamEvent(type="text", text=full_text)
-                    else:
+                            pass
+                            
+                    if not handled_error:
                         yield LLMStreamEvent(type="text", text=full_text)
 
             # 2. Fallback: if no text or tool_calls, but we got reasoning_content

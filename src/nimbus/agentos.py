@@ -255,6 +255,22 @@ class AgentOS:
         if self._intervention_task is None or self._intervention_task.done():
             self._intervention_task = asyncio.create_task(self._handle_interventions())
 
+    # =========================================================================
+    # Event Management
+    # =========================================================================
+
+    def add_event_listener(self, listener: Callable[[Event], Any]) -> None:
+        """Add an event listener to the OS global event stream."""
+        self._events.add_listener(listener)
+
+    def remove_event_listener(self, listener: Callable[[Event], Any]) -> None:
+        """Remove an event listener from the OS global event stream."""
+        self._events.remove_listener(listener)
+
+    def clear_events(self) -> None:
+        """Clear all buffered events from the OS global event stream."""
+        self._events.clear()
+
     async def _handle_interventions(self):
         """Monitor Heart for intervention signals."""
         while True:
@@ -405,6 +421,52 @@ class AgentOS:
             msg += f" Added skill dirs: {added_paths}"
         msg += f" Scanning: {[str(d) for d in self._skill_manager.skill_dirs]}"
         return msg
+
+    def register_tool(
+        self,
+        name: str,
+        func: Callable,
+        description: str = "",
+        parameters: Optional[Dict[str, Any]] = None,
+        category: str = "custom",
+    ) -> None:
+        """Register a tool with the unified ToolRegistry (Compatibility layer)."""
+        from nimbus.tools.base import ToolDefinition, ToolParameter
+
+        params = []
+        if isinstance(parameters, list):
+            for pdef in parameters:
+                if hasattr(pdef, "name"):
+                    params.append(pdef)
+                else:
+                    params.append(
+                        ToolParameter(
+                            name=pdef.get("name", "unknown"),
+                            type=pdef.get("type", "string"),
+                            description=pdef.get("description", ""),
+                            required=pdef.get("required", False),
+                        )
+                    )
+        elif isinstance(parameters, dict):
+            props = parameters.get("properties", {})
+            required = parameters.get("required", [])
+            for pname, pdef in props.items():
+                params.append(
+                    ToolParameter(
+                        name=pname,
+                        type=pdef.get("type", "string"),
+                        description=pdef.get("description", ""),
+                        required=(pname in required),
+                    )
+                )
+
+        definition = ToolDefinition(
+            name=name,
+            description=description,
+            parameters=params,
+            category=category,
+        )
+        self._tools.register(definition, func)
 
     # =========================================================================
     # Main API
