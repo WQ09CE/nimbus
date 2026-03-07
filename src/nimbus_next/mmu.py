@@ -123,9 +123,6 @@ class PinnedContext:
     """
     system_rules: str = ""
     workspace_info: str = ""
-    env_state: str = ""
-    capabilities: str = ""
-    custom_anchors: Dict[str, str] = field(default_factory=dict)
 
     def to_system_message(self) -> Message:
         parts = []
@@ -133,22 +130,10 @@ class PinnedContext:
             parts.append(f"# System Rules\n{self.system_rules}")
         if self.workspace_info:
             parts.append(f"# Workspace\n{self.workspace_info}")
-        if self.env_state:
-            parts.append(f"# Environment\n{self.env_state}")
-        if self.capabilities:
-            parts.append(f"# Capabilities\n{self.capabilities}")
-        for k, v in self.custom_anchors.items():
-            parts.append(f"# {k}\n{v}")
         return Message(role="system", content="\n\n".join(parts))
 
     def token_estimate(self) -> int:
-        total = estimate_text_tokens(self.system_rules)
-        total += estimate_text_tokens(self.workspace_info)
-        total += estimate_text_tokens(self.env_state)
-        total += estimate_text_tokens(self.capabilities)
-        for k, v in self.custom_anchors.items():
-            total += estimate_text_tokens(k) + estimate_text_tokens(v)
-        return total
+        return estimate_text_tokens(self.system_rules) + estimate_text_tokens(self.workspace_info)
 
 
 # =============================================================================
@@ -198,33 +183,6 @@ def _find_turn_boundaries(messages: List[Message]) -> List[tuple[int, int]]:
         else:
             i += 1
     return turns
-
-
-def _find_safe_cut_point(messages: List[Message], target_index: int) -> int:
-    """Find a safe index to cut history, never splitting tool-use turns.
-
-    If target_index lands inside a tool-use turn (assistant+tool_calls or
-    its tool results), adjust forward to keep the entire turn intact —
-    i.e. drop the whole turn rather than leave orphans.
-    """
-    if target_index <= 0:
-        return 0
-    if target_index >= len(messages):
-        return len(messages)
-
-    turns = _find_turn_boundaries(messages)
-
-    for start, end in turns:
-        if start < target_index <= end:
-            # Target lands inside a turn — must drop the whole turn
-            return end + 1
-
-    # If target lands on an orphaned tool result, skip past it
-    idx = target_index
-    while idx < len(messages) and messages[idx].is_tool_result:
-        idx += 1
-
-    return idx
 
 
 # =============================================================================
@@ -404,9 +362,6 @@ class MMU:
     def set_pinned(self, pinned: PinnedContext) -> None:
         self._pinned = pinned
 
-    def get_pinned(self) -> Optional[PinnedContext]:
-        return self._pinned
-
     def set_goal(self, goal: str) -> None:
         """Pin the user's original goal (resists recency bias)."""
         self._goal = goal
@@ -572,56 +527,6 @@ class MMU:
         if len(new_summary) > max_chars:
             new_summary = "..." + new_summary[-(max_chars - 3):]
         self._global_summary = new_summary
-
-    # --- Turn Safety ---
-
-    def rollback_incomplete_turn(self) -> int:
-        """Remove trailing orphaned tool results (no matching assistant message)."""
-        removed = 0
-        while self._messages and self._messages[-1].role == "tool":
-            self._messages.pop()
-            removed += 1
-        # Also remove trailing assistant with tool_calls if no results followed
-        if (self._messages and self._messages[-1].role == "assistant"
-                and self._messages[-1].tool_calls):
-            self._messages.pop()
-            removed += 1
-        return removed
-
-    def validate_turn_integrity(self) -> List[str]:
-        """Check that all tool-use turns are complete (assistant + all results).
-
-        Returns list of issues found (empty = all good).
-        """
-        issues: List[str] = []
-        i = 0
-        while i < len(self._messages):
-            msg = self._messages[i]
-            if msg.is_tool_call:
-                expected_ids = set()
-                if msg.tool_calls:
-                    for tc in msg.tool_calls:
-                        tc_id = tc.get("id")
-                        if tc_id:
-                            expected_ids.add(tc_id)
-                found_ids = set()
-                j = i + 1
-                while j < len(self._messages) and self._messages[j].is_tool_result:
-                    tid = self._messages[j].tool_call_id
-                    if tid:
-                        found_ids.add(tid)
-                    j += 1
-                missing = expected_ids - found_ids
-                if missing:
-                    issues.append(f"Message {i}: tool_calls missing results: {missing}")
-                i = j
-            elif msg.is_tool_result:
-                # Orphaned tool result
-                issues.append(f"Message {i}: orphaned tool result (id={msg.tool_call_id})")
-                i += 1
-            else:
-                i += 1
-        return issues
 
     def clear(self) -> None:
         self._messages.clear()

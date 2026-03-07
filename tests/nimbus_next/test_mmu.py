@@ -4,7 +4,7 @@ import pytest
 
 from nimbus_next.mmu import (
     MMU, MMUConfig, Message, PinnedContext, estimate_text_tokens,
-    _find_turn_boundaries, _find_safe_cut_point, _make_tombstone, _smart_drop,
+    _find_turn_boundaries, _make_tombstone, _smart_drop,
 )
 
 
@@ -57,12 +57,6 @@ class TestPinnedContext:
         assert msg.role == "system"
         assert "Be helpful" in msg.content
         assert "/home/user/project" in msg.content
-
-    def test_custom_anchors(self):
-        pc = PinnedContext(custom_anchors={"CLAUDE.md": "Use ruff for linting."})
-        msg = pc.to_system_message()
-        assert "CLAUDE.md" in msg.content
-        assert "ruff" in msg.content
 
     def test_token_estimate(self):
         pc = PinnedContext(system_rules="x" * 400)
@@ -161,17 +155,6 @@ class TestMMU:
         result = await mmu.archive_and_reset()
         assert result is None
 
-    def test_rollback_incomplete_turn(self):
-        mmu = MMU()
-        tc = [{"id": "tc1", "type": "function", "function": {"name": "Read", "arguments": "{}"}}]
-        mmu.add_assistant_with_tool_calls(None, tc)
-        mmu.add_tool_result("tc1", "Read", "output")
-        # Add orphaned tool result (no assistant message before it)
-        mmu.add_tool_result("tc2", "Bash", "orphan")
-        assert mmu.message_count == 3
-        removed = mmu.rollback_incomplete_turn()
-        assert removed >= 1
-
     def test_clear(self):
         mmu = MMU()
         mmu.set_goal("test")
@@ -212,33 +195,6 @@ class TestMMU:
         await mmu.archive_and_reset(summarizer=mock_summarizer)
         # Should be the new summary, not old + new concatenated
         assert mmu._global_summary == "Complete merged summary of everything"
-
-    def test_validate_turn_integrity_clean(self):
-        """Complete tool-use turns should have no issues."""
-        mmu = MMU()
-        tc = [{"id": "tc1", "type": "function", "function": {"name": "Read", "arguments": "{}"}}]
-        mmu.add_assistant_with_tool_calls(None, tc)
-        mmu.add_tool_result("tc1", "Read", "contents")
-        assert mmu.validate_turn_integrity() == []
-
-    def test_validate_turn_integrity_orphan(self):
-        """Orphaned tool result should be flagged."""
-        mmu = MMU()
-        mmu.add_tool_result("tc99", "Bash", "orphan output")
-        issues = mmu.validate_turn_integrity()
-        assert len(issues) == 1
-        assert "orphaned" in issues[0]
-
-    def test_validate_turn_integrity_missing_result(self):
-        """Tool call without matching result should be flagged."""
-        mmu = MMU()
-        tc = [{"id": "tc1", "type": "function", "function": {"name": "Read", "arguments": "{}"}}]
-        mmu.add_assistant_with_tool_calls(None, tc)
-        # No tool result added
-        mmu.add_user_message("next")
-        issues = mmu.validate_turn_integrity()
-        assert len(issues) == 1
-        assert "missing results" in issues[0]
 
 
 # =============================================================================
@@ -327,42 +283,6 @@ class TestTurnBoundaries:
         ]
         turns = _find_turn_boundaries(msgs)
         assert turns == []
-
-
-class TestSafeCutPoint:
-    def test_cut_between_turns(self):
-        msgs = [
-            _assistant_tc("tc1"), _tool_result("tc1"),  # turn 0-1
-            Message(role="user", content="next"),        # idx 2
-            _assistant_tc("tc2"), _tool_result("tc2"),   # turn 3-4
-        ]
-        # Cutting at 2 (user message) is safe
-        assert _find_safe_cut_point(msgs, 2) == 2
-
-    def test_cut_inside_turn_pushes_forward(self):
-        msgs = [
-            _assistant_tc("tc1"), _tool_result("tc1"),  # turn 0-1
-            _assistant_tc("tc2"), _tool_result("tc2"),  # turn 2-3
-        ]
-        # Cutting at 3 (inside turn 2-3) → push to 4
-        assert _find_safe_cut_point(msgs, 3) == 4
-
-    def test_cut_on_orphan_tool_result(self):
-        msgs = [
-            Message(role="user", content="x"),
-            _tool_result("tc1"),  # orphaned
-            Message(role="user", content="y"),
-        ]
-        # Cutting at 1 (orphan tool) → push past it
-        assert _find_safe_cut_point(msgs, 1) == 2
-
-    def test_cut_at_zero(self):
-        msgs = [_assistant_tc("tc1"), _tool_result("tc1")]
-        assert _find_safe_cut_point(msgs, 0) == 0
-
-    def test_cut_at_end(self):
-        msgs = [Message(role="user", content="x")]
-        assert _find_safe_cut_point(msgs, 5) == 1
 
 
 # =============================================================================
