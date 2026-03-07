@@ -428,27 +428,240 @@ Nimbus Next 不是 pi 的 Python 翻版。关键差异：
 
 ---
 
+## 8.1 从 pi 吸收的接口设计（已实施）
+
+以下是从 pi-coding-agent 学习并落地到 nimbus next 的 5 个接口模式：
+
+### 8.1.1 Split Tool Results — 分离 LLM 输出与 UI 渲染数据
+
+**pi 的做法**：工具返回 `{output, details}`，output 给 LLM，details 给 UI。
+
+**nimbus next 的实现**：`ToolResult` 新增 `ui_detail: Optional[Dict]` 字段。
+
+```python
+# protocol.py — ToolResult
+@dataclass
+class ToolResult:
+    status: ResultStatus = "OK"
+    output: Any = None           # → 给 LLM（简洁文本）
+    ui_detail: Optional[Dict] = None  # → 给 UI（结构化数据）
+    ...
+```
+
+**工具返回示例**（Bash）：
+
+```python
+return {
+    "output": "hello\n",                          # LLM 看到的
+    "ui_detail": {                                 # UI 拿到的
+        "command": "echo hello",
+        "exit_code": 0,
+        "total_lines": 1,
+        "truncated": False,
+        "timed_out": False,
+    },
+}
+```
+
+**数据流**：
+
+```
+Tool 返回 dict → Gate 识别 split result → ToolResult(output=..., ui_detail=...)
+                                            ↓                    ↓
+                                       写入 MMU 给 LLM      TOOL_FINISHED 事件带给 UI
+```
+
+**为什么比 pi 多做了一步**：pi 的 UI 是同进程 TUI，可以直接拿 details 对象。
+nimbus 的 UI 是 Web 前端，需要通过 SSE 事件传递，所以 Gate 在 `TOOL_FINISHED` 事件里
+也带上了 `ui_detail`。
+
+### 8.1.2 Fine-grained Stream Events — 细粒度事件流
+
+**pi 的做法**：agent loop 发射 `text_delta`、`tool_call` 等事件，UI 用 async iterator 消费。
+
+**nimbus next 的实现**：RuntimeLoop 把粗粒度的 `step` 事件拆为多个细粒度事件：
+
+```
+旧：  step → { actions: [...], results: [...] }     ← 一团数据，UI 自己拆
+
+新：  tool_call_start → { tool, args_preview }       ← 工具开始
+      tool_call_delta → { tool, chunk }              ← 流式输出（bash stdout）
+      tool_call_done  → { tool, status, ui_detail }  ← 工具完成
+      text_delta      → { content, is_final }        ← LLM 文本流
+      step            → { iteration, elapsed_ms }    ← 步骤摘要（静默）
+```
+
+**Protocol 的 EventType 对应**：
+
+| 事件 | 层级 | 说明 |
+|---|---|---|
+| `TEXT_DELTA` | Loop | LLM 流式文本块 |
+| `TOOL_CALL_START` | Loop | 工具调用开始，含参数预览 |
+| `TOOL_CALL_DELTA` | Gate | 流式工具输出（如 bash stdout） |
+| `TOOL_CALL_DONE` | Loop | 工具执行完毕，含 ui_detail |
+| `INTERRUPTED` | Loop | 执行中断，携带 partial results |
+| `CONTEXT_COMPACTED` | Loop | MMU 压缩触发 |
+
+### 8.1.3 Message Queuing — 消息队列
+
+**pi 的做法**：agent loop 每轮结束后调回调问"有排队消息吗？"，支持 one-at-a-time / all-at-once。
+
+**nimbus next 的实现**：`RuntimeLoop` 内置 `MessageQueue`，每步之间自动 drain 注入 MMU。
+
+```python
+# loop.py
+class MessageQueue:
+    def enqueue(self, message: str) -> None    # 入队
+    def drain(self) -> List[str]               # 批量取出
+    def drain_one(self) -> Optional[str]       # 逐条取出
+    def pending(self) -> int                   # 队列深度
+
+class RuntimeLoop:
+    message_queue: MessageQueue  # 公开属性，外部可入队
+```
+
+**使用方式**：
+
+```python
+# API 层
+loop = agent.stream_with_queue("fix the bug")
+loop.message_queue.enqueue("also update tests")  # agent 工作时注入
+async for event in loop.stream():
+    ...
+
+# CLI 层：后台线程读 stdin，入队到 loop.message_queue
+```
+
+**Loop 内部逻辑**：
+
+```
+while True:
+    if interrupted: yield partial results; return
+    queued = message_queue.drain()           ← 每步前检查
+    for msg in queued:
+        mmu.add_user_message(msg)            ← 注入到上下文
+        yield {"type": "message_queued"}     ← 通知 UI
+    step_result = vcpu.step()
+    ...
+```
+
+### 8.1.4 Partial Results on Abort — 中断不丢数据
+
+**pi 的做法**：abort 后仍能拿到 `response.content`（`stopReason === 'aborted'`）。
+
+**nimbus next 的实现**：RuntimeLoop 持续跟踪所有 tool results，中断时打包返回。
+
+```python
+class RuntimeLoop:
+    partial_results: List[ToolResult]   # 累积所有工具结果
+
+    # 中断时：
+    # → status="CANCELLED"
+    # → output=所有 partial results 摘要
+    # → ui_detail={"partial_results_count": N}
+    # → yield {"type": "interrupted", "partial_results": [...]}
+```
+
+**CLI 的 Ctrl+C 处理**：
+
+```python
+try:
+    async for event in loop.stream():
+        print_stream_event(event)
+except KeyboardInterrupt:
+    loop.request_interruption()
+    # loop.partial_results 里有所有已完成的工具调用
+    for r in loop.partial_results:
+        print(f"[{r.status}] {r.output[:100]}")
+```
+
+### 8.1.5 Streaming Tool Output — 工具流式输出
+
+**pi 的做法**：提到 tool result streaming 是 TODO（"bash 工具想显示 ANSI 序列"）。
+
+**nimbus next 的实现**：已落地。Bash 工具支持 `on_update` 回调，Gate 自动注入。
+
+```
+用户 → AgentOS(on_tool_output=callback)
+                  ↓
+       → Gate(on_tool_output=callback)
+                  ↓
+          Bash 执行时: Gate 注入 on_update 到 args
+                  ↓
+          每读 4KB stdout → on_update(chunk)
+                         → callback(tool_name, chunk)
+                         → Gate 发射 TOOL_CALL_DELTA 事件
+                         → CLI/Web 实时显示
+```
+
+**在 pi 之上多做的**：
+- pi 只描述了需求，nimbus next 已经实现
+- Gate 层自动识别哪些工具支持 streaming（目前是 Bash），按需注入回调
+- 同时发射 `TOOL_CALL_DELTA` 事件，Web UI 可通过 SSE 接收
+
+---
+
+### 完整数据流图
+
+```
+用户输入 "fix the bug"
+    │
+    ├─→ AgentOS.stream_with_queue(goal)
+    │       │
+    │       ├─→ MMU.set_goal(goal)
+    │       ├─→ MMU.add_user_message(goal)
+    │       └─→ RuntimeLoop
+    │               │
+    │               ├─→ message_queue.drain()          ← [1] 消息队列注入
+    │               │       ↓ "also check tests"
+    │               │       MMU.add_user_message()
+    │               │       yield {type: message_queued}
+    │               │
+    │               ├─→ VCPU.step()
+    │               │       ├─→ ALU.chat() (LLM 调用)
+    │               │       │       ↓ text_delta       ← [2] LLM 流式输出
+    │               │       ├─→ Decoder.decode()
+    │               │       │       ↓ TOOL_CALL ActionIR
+    │               │       │       yield {type: tool_call_start}
+    │               │       └─→ Gate.syscall_tool()
+    │               │               ├─→ inject on_update  ← [3] 流式工具输出
+    │               │               │       ↓ TOOL_CALL_DELTA
+    │               │               └─→ ToolResult
+    │               │                       ├─ output     → MMU (给 LLM)
+    │               │                       └─ ui_detail  → Event (给 UI)  ← [4] Split Result
+    │               │                       yield {type: tool_call_done, ui_detail}
+    │               │
+    │               ├─→ partial_results.append(result)  ← [5] 累积部分结果
+    │               │
+    │               └─→ (Ctrl+C) → yield {type: interrupted, partial_results}
+    │
+    └─→ CLI / Web UI 消费事件流
+```
+
+---
+
 ## 9. 代码行数预算
 
-| 组件 | 目标行数 | 备注 |
-|---|---|---|
-| protocol.py | 100 | 删除 IPC, NimFS |
-| mmu.py | 400 | 删除 NimFS, scroll, clipboard |
-| vcpu.py | 300 | 删除 checkpoint, tracer |
-| decoder.py | 250 | 保持不变 |
-| gate.py | 200 | 删除 write_filter, meta timeouts |
-| adapter.py | 500 | 从 73KB 重构精简 |
-| loop.py | 200 | 删除 Heart, NimFS GC |
-| agent.py | 150 | 精简 Facade |
-| tools/ | 300 | 5 个核心工具 |
-| cli.py | 100 | 最简 CLI |
-| **总计** | **~2500** | 现有 ~5000+ 行的一半 |
+| 组件 | 目标行数 | 实际行数 | 备注 |
+|---|---|---|---|
+| protocol.py | 100 | ~150 | 新增 ui_detail + 细粒度 EventType |
+| mmu.py | 400 | ~310 | 删除 NimFS, scroll, clipboard |
+| vcpu.py | 300 | ~250 | 删除 checkpoint, tracer |
+| decoder.py | 250 | ~170 | 保持不变 |
+| gate.py | 200 | ~200 | 新增 split result 处理 + streaming callback 注入 |
+| adapter.py | 500 | ~280 | 从 73KB 重构精简 |
+| loop.py | 200 | ~270 | 新增 MessageQueue + partial results + fine-grained events |
+| agent.py | 150 | ~240 | 新增 stream_with_queue + on_tool_output |
+| tools/ | 300 | ~430 | bash.py 扩展 split result + on_update |
+| cli.py | 100 | ~200 | 新增消息队列输入线程 + 细粒度事件渲染 |
+| **总计** | **~2500** | **~2500** | 在预算内 |
 
 ---
 
 ## 10. 一句话总结
 
-> **Nimbus Next = pi 的极简哲学 + nimbus 的分层纪律 + 差异化能力（MMU/Decoder/Gate）**
+> **Nimbus Next = pi 的极简哲学 + pi 的接口设计 + nimbus 的分层纪律 + 差异化能力（MMU/Decoder/Gate）**
 
 保留真正有价值的创新（Anchor & Stream、幻觉防火墙、Doom Loop 检测、参数容错），
+从 pi 吸收优秀的接口模式（Split Results、Message Queue、Streaming、Partial Results、Fine-grained Events），
 删除一切"可能有用但现在不需要"的功能。
