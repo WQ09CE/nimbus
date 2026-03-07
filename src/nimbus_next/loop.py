@@ -4,13 +4,22 @@ RuntimeLoop — The outer execution driver.
 Drives VCPU.step() in a loop, handling:
 1. Context overflow → trigger compaction and retry
 2. Iteration limit → optional compaction or graceful termination
-3. Interrupt signals → clean shutdown
-4. Event streaming → yield step events for UI/debugging
+3. Interrupt signals → clean shutdown with partial results
+4. Event streaming → fine-grained events for reactive UI (pi-style)
+5. Message queuing → inject user messages while agent is working
 
 Why separate from VCPU?
 VCPU handles a single Think-Act-Observe cycle. The RuntimeLoop handles
 the *lifecycle*: when to stop, when to compact, when to yield to the user.
 This separation keeps VCPU testable without async complexity.
+
+Design notes (pi-coding-agent influence):
+- Message queue: pi uses a callback after each turn to ask for queued messages.
+  We use an asyncio.Queue for the same effect — messages injected between steps.
+- Partial results: pi returns partial content on abort (stopReason === 'aborted').
+  We track accumulated results so interruption never loses work.
+- Fine-grained events: pi emits text_delta, tool_call events as async iterators.
+  We emit similar typed events for reactive UI binding.
 """
 
 import asyncio
@@ -37,6 +46,48 @@ class LoopConfig:
 
 
 # =============================================================================
+# Message Queue (pi-style)
+# =============================================================================
+
+
+class MessageQueue:
+    """Queue for injecting user messages while the agent is working.
+
+    Pi-coding-agent uses a callback after each turn to ask for queued messages,
+    supporting two modes: one-at-a-time or all-at-once. We implement the same
+    via asyncio.Queue with a drain method.
+    """
+
+    def __init__(self) -> None:
+        self._queue: asyncio.Queue[str] = asyncio.Queue()
+
+    def enqueue(self, message: str) -> None:
+        """Add a message to the queue (thread-safe via asyncio.Queue)."""
+        self._queue.put_nowait(message)
+
+    def drain(self) -> List[str]:
+        """Drain all queued messages at once."""
+        messages: List[str] = []
+        while not self._queue.empty():
+            try:
+                messages.append(self._queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        return messages
+
+    def drain_one(self) -> Optional[str]:
+        """Drain one message at a time."""
+        try:
+            return self._queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return None
+
+    @property
+    def pending(self) -> int:
+        return self._queue.qsize()
+
+
+# =============================================================================
 # RuntimeLoop
 # =============================================================================
 
@@ -50,6 +101,16 @@ class RuntimeLoop:
         # or
         async for event in loop.stream():
             print(event)
+
+    Message queuing (pi-style):
+        loop = RuntimeLoop(vcpu, mmu)
+        loop.message_queue.enqueue("Also check the tests")
+        async for event in loop.stream():
+            ...
+
+    Partial results on abort:
+        loop.request_interruption()
+        # loop.partial_results contains all results accumulated so far
     """
 
     def __init__(
@@ -67,6 +128,12 @@ class RuntimeLoop:
         self._compaction_count = 0
         self._steps_since_compaction = 0
         self._interrupted = False
+
+        # Pi-style message queue
+        self.message_queue = MessageQueue()
+
+        # Partial result tracking (pi-style abort recovery)
+        self.partial_results: List[ToolResult] = []
 
     def request_interruption(self) -> None:
         """Signal the loop to stop after the current step."""
@@ -89,7 +156,7 @@ class RuntimeLoop:
     # --- Streaming run (yields events) ---
 
     async def stream(self) -> AsyncIterator[Dict[str, Any]]:
-        """Run the loop, yielding events at each step."""
+        """Run the loop, yielding fine-grained events at each step."""
         async for event in self._loop():
             yield event
 
@@ -101,20 +168,36 @@ class RuntimeLoop:
         Drives VCPU.step() and handles lifecycle concerns:
         - Context overflow triggers compaction
         - Iteration limits trigger compaction or termination
-        - Interrupts cause clean shutdown
+        - Interrupts cause clean shutdown with partial results
+        - Queued messages are injected between steps
         """
         while True:
-            # Check interrupt
+            # Check interrupt — return partial results (pi-style)
             if self._interrupted:
-                result = ToolResult(status="CANCELLED", output="Execution interrupted.", is_final=True)
+                partial_output = self._collect_partial_output()
+                result = ToolResult(
+                    status="CANCELLED",
+                    output=partial_output,
+                    ui_detail={"partial_results_count": len(self.partial_results)},
+                    is_final=True,
+                )
+                self._emit("INTERRUPTED", {
+                    "partial_results_count": len(self.partial_results),
+                })
+                yield {"type": "interrupted", "result": result, "partial_results": self.partial_results}
                 yield {"type": "final", "result": result}
                 return
+
+            # Inject queued messages (pi-style message queuing)
+            queued = self.message_queue.drain()
+            for msg in queued:
+                self.mmu.add_user_message(msg)
+                yield {"type": "message_queued", "content": msg}
 
             # Check if context needs compaction before next step
             if self.mmu.needs_compaction():
                 compacted = await self._try_compaction()
                 if not compacted:
-                    # Can't compact anymore — force termination
                     result = ToolResult(
                         status="ERROR",
                         output="Context window exhausted after max compactions.",
@@ -123,6 +206,7 @@ class RuntimeLoop:
                     )
                     yield {"type": "final", "result": result}
                     return
+                yield {"type": "context_compacted", "compaction_count": self._compaction_count}
 
             # ---- Execute one VCPU step ----
             t0 = time.monotonic()
@@ -141,14 +225,18 @@ class RuntimeLoop:
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             self._steps_since_compaction += 1
 
-            # Yield step event
-            yield self._step_event(step_result, elapsed_ms)
+            # Track partial results (pi-style abort recovery)
+            for r in step_result.results:
+                self.partial_results.append(r)
+
+            # Yield fine-grained events (pi-style)
+            for event in self._step_events(step_result, elapsed_ms):
+                yield event
 
             # Handle context overflow fault (retry after compaction)
             if step_result.fault and step_result.fault.code == "CTX_OVERFLOW":
                 compacted = await self._try_compaction()
                 if compacted:
-                    # Reset VCPU state to allow retry
                     step_result.is_final = False
                     continue
                 else:
@@ -164,6 +252,18 @@ class RuntimeLoop:
             if self.config.yield_interval > 0:
                 await asyncio.sleep(self.config.yield_interval)
 
+    # --- Partial result collection (pi-style) ---
+
+    def _collect_partial_output(self) -> str:
+        """Collect all partial outputs into a summary string."""
+        if not self.partial_results:
+            return "Execution interrupted. No results collected yet."
+        parts = []
+        for i, r in enumerate(self.partial_results, 1):
+            preview = str(r.output)[:200] if r.output else "(no output)"
+            parts.append(f"[{i}] {r.status}: {preview}")
+        return f"Execution interrupted. Partial results ({len(parts)} tool calls):\n" + "\n".join(parts)
+
     # --- Compaction ---
 
     async def _try_compaction(self) -> bool:
@@ -177,7 +277,6 @@ class RuntimeLoop:
                 "Compaction cooldown: %d steps since last (min %d)",
                 self._steps_since_compaction, self.config.compaction_cooldown,
             )
-            # Allow it anyway if we really need it (context is full)
             pass
 
         logger.info("Compacting context (attempt %d/%d)",
@@ -192,36 +291,73 @@ class RuntimeLoop:
 
         return False
 
-    # --- Events ---
+    # --- Fine-grained Events (pi-style) ---
 
-    def _step_event(self, step: StepResult, elapsed_ms: int) -> Dict[str, Any]:
-        """Convert a StepResult into a stream event."""
-        event: Dict[str, Any] = {
+    def _step_events(self, step: StepResult, elapsed_ms: int) -> List[Dict[str, Any]]:
+        """Convert a StepResult into fine-grained stream events.
+
+        Pi emits individual events for text deltas, tool call starts/results.
+        We do the same instead of bundling everything into one 'step' event.
+        """
+        events: List[Dict[str, Any]] = []
+
+        # Emit per-action events
+        for action in step.actions:
+            if action.kind == "TOOL_CALL":
+                events.append({
+                    "type": "tool_call_start",
+                    "tool": action.name,
+                    "args_preview": {k: str(v)[:100] for k, v in action.args.items()},
+                    "call_id": action.id,
+                })
+            elif action.kind in ("REPLY", "RETURN"):
+                text = action.args.get("text", action.args.get("result", ""))
+                events.append({
+                    "type": "text_delta",
+                    "content": text,
+                    "is_final": True,
+                })
+            elif action.kind == "THOUGHT":
+                text = action.args.get("text", "")
+                events.append({
+                    "type": "text_delta",
+                    "content": text,
+                    "is_final": False,
+                })
+
+        # Emit per-result events (with split ui_detail)
+        for i, result in enumerate(step.results):
+            tool_name = step.actions[i].name if i < len(step.actions) else "unknown"
+            event: Dict[str, Any] = {
+                "type": "tool_call_done",
+                "tool": tool_name,
+                "status": result.status,
+                "output_preview": str(result.output)[:200] if result.output else None,
+            }
+            # Include ui_detail if present (split tool result)
+            if result.ui_detail:
+                event["ui_detail"] = result.ui_detail
+            events.append(event)
+
+        # Emit step summary
+        events.append({
             "type": "step",
             "iteration": self.vcpu.iteration,
             "elapsed_ms": elapsed_ms,
             "is_final": step.is_final,
-        }
+            "action_count": len(step.actions),
+            "result_count": len(step.results),
+        })
 
-        # Include actions
-        if step.actions:
-            event["actions"] = [
-                {"kind": a.kind, "name": a.name}
-                for a in step.actions
-            ]
-
-        # Include tool results
-        if step.results:
-            event["results"] = [
-                {"status": r.status, "output_preview": str(r.output)[:200]}
-                for r in step.results
-            ]
-
-        # Include final result
+        # Final result
         if step.is_final and step.final_result:
-            event["final_output"] = str(step.final_result.output)[:500]
+            events.append({
+                "type": "text_delta",
+                "content": str(step.final_result.output)[:500] if step.final_result.output else "",
+                "is_final": True,
+            })
 
-        return event
+        return events
 
     def _emit(self, event_type: str, data: Dict) -> None:
         if self._event_cb:

@@ -210,13 +210,18 @@ class TestBashTool:
     async def test_simple_command(self):
         from nimbus_next.tools.bash import bash_command
         result = await bash_command("echo hello")
-        assert "hello" in result
+        # Bash now returns split result: {output, ui_detail}
+        assert isinstance(result, dict)
+        assert "hello" in result["output"]
+        assert result["ui_detail"]["exit_code"] == 0
+        assert result["ui_detail"]["timed_out"] is False
 
     @pytest.mark.asyncio
     async def test_exit_code(self):
         from nimbus_next.tools.bash import bash_command
         result = await bash_command("exit 1")
-        assert "Exit code: 1" in result
+        assert "Exit code: 1" in result["output"]
+        assert result["ui_detail"]["exit_code"] == 1
 
     @pytest.mark.asyncio
     async def test_empty_command(self):
@@ -228,7 +233,21 @@ class TestBashTool:
     async def test_timeout(self):
         from nimbus_next.tools.bash import bash_command
         result = await bash_command("sleep 10", timeout=0.5)
-        assert "timed out" in result
+        assert "timed out" in result["output"]
+        assert result["ui_detail"]["timed_out"] is True
+
+    @pytest.mark.asyncio
+    async def test_streaming_callback(self):
+        """Test pi-style on_update streaming callback."""
+        from nimbus_next.tools.bash import bash_command
+        chunks: list[str] = []
+        result = await bash_command("echo line1; echo line2", on_update=lambda c: chunks.append(c))
+        assert isinstance(result, dict)
+        assert "line1" in result["output"]
+        # Streaming callback should have received output chunks
+        assert len(chunks) > 0
+        combined = "".join(chunks)
+        assert "line1" in combined
 
 
 class TestGrepTool:

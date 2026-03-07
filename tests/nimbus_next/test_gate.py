@@ -197,3 +197,51 @@ class TestKernelGate:
         action = ActionIR(kind="TOOL_CALL", name="Bash", args={"command": "echo"})
         result = await gate.syscall_tool(action)
         assert "exec" in result.timing_ms
+
+    @pytest.mark.asyncio
+    async def test_split_tool_result(self):
+        """Gate should handle pi-style split results {output, ui_detail}."""
+        async def executor(name, args):
+            return {
+                "output": "executed ok",
+                "ui_detail": {"exit_code": 0, "lines": 5},
+            }
+
+        gate = KernelGate("p1", executor)
+        action = ActionIR(kind="TOOL_CALL", name="Bash", args={"command": "echo"})
+        result = await gate.syscall_tool(action)
+        assert result.status == "OK"
+        assert result.output == "executed ok"
+        assert result.ui_detail == {"exit_code": 0, "lines": 5}
+
+    @pytest.mark.asyncio
+    async def test_plain_result_no_ui_detail(self):
+        """Plain string results should have ui_detail=None."""
+        async def executor(name, args):
+            return "plain string"
+
+        gate = KernelGate("p1", executor)
+        action = ActionIR(kind="TOOL_CALL", name="Read", args={"file_path": "x"})
+        result = await gate.syscall_tool(action)
+        assert result.output == "plain string"
+        assert result.ui_detail is None
+
+    @pytest.mark.asyncio
+    async def test_streaming_callback_injection(self):
+        """Gate should inject on_update into Bash args when on_tool_output is set."""
+        chunks: list[tuple[str, str]] = []
+
+        async def executor(name, args):
+            # on_update should be injected by gate
+            if "on_update" in args:
+                args["on_update"]("hello chunk")
+            return {"output": "done", "ui_detail": {}}
+
+        gate = KernelGate(
+            "p1", executor,
+            on_tool_output=lambda tool, chunk: chunks.append((tool, chunk)),
+        )
+        action = ActionIR(kind="TOOL_CALL", name="Bash", args={"command": "echo"})
+        await gate.syscall_tool(action)
+        assert len(chunks) == 1
+        assert chunks[0] == ("Bash", "hello chunk")

@@ -113,12 +113,15 @@ class KernelGate:
         tool_executor: Callable,
         event_callback: Optional[Callable[[Event], None]] = None,
         default_timeout: float = 60.0,
+        on_tool_output: Optional[Callable[[str, str], None]] = None,
     ):
         self.pid = pid
         self._executor = tool_executor
         self._event_cb = event_callback
         self._default_timeout = default_timeout
         self._doom = DoomLoopDetector()
+        # Pi-style: callback for streaming tool output (tool_name, chunk)
+        self._on_tool_output = on_tool_output
 
     async def syscall_tool(self, action: ActionIR, timeout: Optional[float] = None) -> ToolResult:
         """Execute a TOOL_CALL action through the gate."""
@@ -146,17 +149,34 @@ class KernelGate:
 
         # 4. Execute with timeout
         effective_timeout = timeout or self._default_timeout
+
+        # Inject streaming callback for tools that support it (pi-style)
+        exec_args = dict(action.args)
+        if self._on_tool_output and tool_name == "Bash":
+            def _on_update(chunk: str) -> None:
+                assert self._on_tool_output is not None
+                self._on_tool_output(tool_name, chunk)
+                self._emit("TOOL_CALL_DELTA", {"tool": tool_name, "chunk": chunk})
+            exec_args["on_update"] = _on_update
+
         try:
             raw_output = await asyncio.wait_for(
-                self._executor(tool_name, action.args),
+                self._executor(tool_name, exec_args),
                 timeout=effective_timeout,
             )
-            output = _truncate_output(raw_output)
-            result = ToolResult(status="OK", output=output)
+
+            # Handle split tool results (pi-style: output + ui_detail)
+            if isinstance(raw_output, dict) and "output" in raw_output:
+                output = _truncate_output(raw_output["output"])
+                ui_detail = raw_output.get("ui_detail")
+                result = ToolResult(status="OK", output=output, ui_detail=ui_detail)
+            else:
+                output = _truncate_output(raw_output)
+                result = ToolResult(status="OK", output=output)
 
             # Append doom loop guidance if first warning
             if doom_msg:
-                result.output = f"{output}\n\n[WARNING: Doom loop detected]\n{doom_msg}"
+                result.output = f"{result.output}\n\n[WARNING: Doom loop detected]\n{doom_msg}"
 
         except asyncio.TimeoutError:
             result = ToolResult(
@@ -178,10 +198,14 @@ class KernelGate:
     def _finish(self, action: ActionIR, t0: float, result: ToolResult) -> ToolResult:
         elapsed = int((time.monotonic() - t0) * 1000)
         result.timing_ms = {"exec": elapsed}
-        self._emit("TOOL_FINISHED", {
+        event_data: Dict[str, Any] = {
             "tool": action.name, "status": result.status,
             "duration_ms": elapsed,
-        })
+        }
+        # Include ui_detail in event for UI subscribers (pi-style split result)
+        if result.ui_detail:
+            event_data["ui_detail"] = result.ui_detail
+        self._emit("TOOL_FINISHED", event_data)
         return result
 
     def _emit(self, event_type: str, data: Dict) -> None:

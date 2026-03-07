@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from nimbus_next.loop import LoopConfig, RuntimeLoop
+from nimbus_next.loop import LoopConfig, MessageQueue, RuntimeLoop
 from nimbus_next.mmu import MMU, MMUConfig, PinnedContext
 from nimbus_next.protocol import ActionIR, Fault, StepResult, ToolResult
 
@@ -254,3 +254,162 @@ class TestRuntimeLoopErrorHandling:
         result = await loop.run()
         assert result.status == "ERROR"
         assert "kaboom" in result.output
+
+
+class TestMessageQueue:
+    """Tests for pi-style message queuing."""
+
+    def test_enqueue_and_drain(self):
+        q = MessageQueue()
+        q.enqueue("msg1")
+        q.enqueue("msg2")
+        assert q.pending == 2
+        msgs = q.drain()
+        assert msgs == ["msg1", "msg2"]
+        assert q.pending == 0
+
+    def test_drain_one(self):
+        q = MessageQueue()
+        q.enqueue("msg1")
+        q.enqueue("msg2")
+        assert q.drain_one() == "msg1"
+        assert q.drain_one() == "msg2"
+        assert q.drain_one() is None
+
+    def test_drain_empty(self):
+        q = MessageQueue()
+        assert q.drain() == []
+        assert q.drain_one() is None
+
+    @pytest.mark.asyncio
+    async def test_message_queue_in_loop(self):
+        """Queued messages should be injected between steps."""
+        vcpu = MockVCPU([
+            make_tool_step("Read", "file data"),
+            make_step(is_final=True, output="Done"),
+        ])
+        mmu = MMU()
+        loop = RuntimeLoop(vcpu, mmu)
+
+        # Queue a message before streaming
+        loop.message_queue.enqueue("Also check tests")
+
+        events = []
+        async for event in loop.stream():
+            events.append(event)
+
+        # Should have a message_queued event
+        queued_events = [e for e in events if e.get("type") == "message_queued"]
+        assert len(queued_events) == 1
+        assert queued_events[0]["content"] == "Also check tests"
+
+
+class TestPartialResults:
+    """Tests for pi-style partial result tracking on abort."""
+
+    @pytest.mark.asyncio
+    async def test_partial_results_on_interrupt(self):
+        """Interrupting should preserve partial results."""
+        vcpu = MockVCPU([
+            make_tool_step("Read", "file contents"),
+            make_tool_step("Bash", "test output"),
+        ])
+        mmu = MMU()
+        loop = RuntimeLoop(vcpu, mmu)
+
+        events = []
+        async for event in loop.stream():
+            events.append(event)
+            # Interrupt after first step yields events
+            step_events = [e for e in events if e.get("type") == "step"]
+            if len(step_events) == 1:
+                loop.request_interruption()
+
+        # Should have partial results from the first step
+        assert len(loop.partial_results) >= 1
+        assert loop.partial_results[0].output == "file contents"
+
+        # Should have an interrupted event
+        interrupted = [e for e in events if e.get("type") == "interrupted"]
+        assert len(interrupted) == 1
+        assert interrupted[0]["result"].status == "CANCELLED"
+
+    @pytest.mark.asyncio
+    async def test_partial_results_empty_on_clean_finish(self):
+        """Clean completion should have partial_results from tool calls."""
+        vcpu = MockVCPU([
+            make_tool_step("Read", "data"),
+            make_step(is_final=True, output="Done"),
+        ])
+        mmu = MMU()
+        loop = RuntimeLoop(vcpu, mmu)
+        await loop.run()
+        # Tool call results are tracked
+        assert len(loop.partial_results) == 1
+
+
+class TestFineGrainedEvents:
+    """Tests for pi-style fine-grained event streaming."""
+
+    @pytest.mark.asyncio
+    async def test_tool_call_events(self):
+        """Should emit tool_call_start and tool_call_done events."""
+        vcpu = MockVCPU([
+            make_tool_step("Bash", "hello world"),
+            make_step(is_final=True, output="Done"),
+        ])
+        mmu = MMU()
+        loop = RuntimeLoop(vcpu, mmu)
+
+        events = []
+        async for event in loop.stream():
+            events.append(event)
+
+        event_types = [e.get("type") for e in events]
+        assert "tool_call_start" in event_types
+        assert "tool_call_done" in event_types
+
+    @pytest.mark.asyncio
+    async def test_text_delta_on_final(self):
+        """Final reply should emit text_delta event."""
+        vcpu = MockVCPU([
+            make_step(
+                is_final=True, output="The answer",
+                actions=[ActionIR(kind="REPLY", args={"text": "The answer"})],
+            ),
+        ])
+        mmu = MMU()
+        loop = RuntimeLoop(vcpu, mmu)
+
+        events = []
+        async for event in loop.stream():
+            events.append(event)
+
+        text_deltas = [e for e in events if e.get("type") == "text_delta"]
+        assert len(text_deltas) >= 1
+        assert "The answer" in text_deltas[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_ui_detail_in_events(self):
+        """Split tool results should include ui_detail in events."""
+        step = StepResult(
+            actions=[ActionIR(kind="TOOL_CALL", name="Bash")],
+            results=[ToolResult(
+                status="OK", output="ok",
+                ui_detail={"exit_code": 0, "lines": 3},
+            )],
+        )
+        vcpu = MockVCPU([
+            step,
+            make_step(is_final=True, output="Done"),
+        ])
+        mmu = MMU()
+        loop = RuntimeLoop(vcpu, mmu)
+
+        events = []
+        async for event in loop.stream():
+            events.append(event)
+
+        done_events = [e for e in events if e.get("type") == "tool_call_done"]
+        assert len(done_events) >= 1
+        assert done_events[0]["ui_detail"] == {"exit_code": 0, "lines": 3}

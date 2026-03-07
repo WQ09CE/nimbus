@@ -5,10 +5,14 @@ Core data structures (ISA/ABI) that all components communicate through.
 
 Types:
 - ActionIR: Instruction format for vCPU (the "assembly language")
-- ToolResult: Return value for any side-effect
+- ToolResult: Return value for any side-effect (split: output for LLM, ui_detail for UI)
 - StepResult: Single tick of vCPU execution
 - Fault: Structured exception for recovery routing
 - Event: Observable events for UI/debugging
+
+Design influenced by pi-coding-agent's structured split tool results:
+- output: text/JSON consumed by the LLM
+- ui_detail: structured data for rich UI rendering (charts, diffs, tables, etc.)
 """
 
 import time
@@ -52,9 +56,18 @@ ResultStatus = Literal["OK", "ERROR", "CANCELLED", "TIMEOUT"]
 
 @dataclass
 class ToolResult:
-    """Standard return value for any side-effect."""
+    """Standard return value for any side-effect.
+
+    Split result pattern (inspired by pi-coding-agent):
+    - output: Text/JSON for the LLM to consume (kept concise)
+    - ui_detail: Structured data for rich UI rendering (diffs, charts, tables)
+
+    This separation lets the LLM work with minimal text summaries while
+    the UI gets structured data it can render without parsing text output.
+    """
     status: ResultStatus = "OK"
     output: Any = None
+    ui_detail: Optional[Dict[str, Any]] = None  # Structured data for UI rendering
     is_final: bool = False
     fault: Optional["Fault"] = None
     timing_ms: Dict[str, int] = field(default_factory=dict)
@@ -118,11 +131,23 @@ class Fault(Exception):
 # =============================================================================
 
 EventType = Literal[
-    "STEP_STARTED",    # vCPU step began
-    "ACTION_EMITTED",  # ActionIR produced
-    "TOOL_STARTED",    # Tool execution began
-    "TOOL_FINISHED",   # Tool execution completed
-    "FAULT_RAISED",    # Fault occurred
+    # Coarse (step-level)
+    "STEP_STARTED",      # vCPU step began
+    "STEP_FINISHED",     # vCPU step completed
+
+    # Fine-grained (pi-style streaming events)
+    "TEXT_DELTA",        # LLM streaming text chunk
+    "TOOL_CALL_START",   # Tool call decoded, about to execute
+    "TOOL_CALL_DELTA",   # Streaming output from tool (e.g. bash stdout)
+    "TOOL_CALL_DONE",    # Tool execution completed with result
+    "ACTION_EMITTED",    # ActionIR produced (legacy compat)
+
+    # Lifecycle
+    "TOOL_STARTED",      # Tool execution began (Gate-level)
+    "TOOL_FINISHED",     # Tool execution completed (Gate-level)
+    "FAULT_RAISED",      # Fault occurred
+    "INTERRUPTED",       # Execution interrupted with partial results
+    "CONTEXT_COMPACTED", # MMU compaction triggered
 ]
 
 

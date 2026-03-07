@@ -10,9 +10,21 @@ This is the entry point for users. It wires together:
 - VCPU → runs the Think-Act-Observe FSM
 - RuntimeLoop → drives VCPU to completion
 
+Pi-coding-agent inspired features:
+- Message queuing: inject messages while agent is working
+- Streaming tool output: on_tool_output callback for live bash output
+- Partial results on abort: interrupt never loses accumulated work
+- Split tool results: output (LLM) + ui_detail (UI) separation
+
 Usage:
     agent = AgentOS(adapter)
     result = await agent.run("列出当前目录的文件")
+
+    # With message queuing:
+    loop = agent.stream_with_queue("fix the bug")
+    loop.message_queue.enqueue("also update the tests")
+    async for event in loop.stream():
+        print(event)
 """
 
 import logging
@@ -108,9 +120,12 @@ class AgentOS:
         tools: Optional[ToolRegistry] = None,
         system_prompt: str = "",
         event_callback: Optional[Callable[[Event], None]] = None,
+        on_tool_output: Optional[Callable[[str, str], None]] = None,
     ):
         self.config = config or AgentConfig()
         self._event_cb = event_callback
+        # Pi-style: callback for streaming tool output (tool_name, chunk)
+        self._on_tool_output = on_tool_output
 
         # 1. Adapter (ALU)
         if adapter:
@@ -154,10 +169,22 @@ class AgentOS:
         return await loop.run()
 
     async def stream(self, goal: str) -> AsyncIterator[Dict[str, Any]]:
-        """Run the agent, streaming step events."""
+        """Run the agent, streaming fine-grained events (pi-style)."""
         loop = self._build_loop(goal)
         async for event in loop.stream():
             yield event
+
+    def stream_with_queue(self, goal: str) -> RuntimeLoop:
+        """Build a RuntimeLoop with message queue access (pi-style).
+
+        Returns the loop so callers can enqueue messages while streaming:
+            loop = agent.stream_with_queue("fix the bug")
+            loop.message_queue.enqueue("also update tests")
+            async for event in loop.stream():
+                ...
+            # On interrupt, partial results are in loop.partial_results
+        """
+        return self._build_loop(goal)
 
     async def chat(self, message: str) -> str:
         """Simple chat interface. Returns the text response."""
@@ -193,6 +220,7 @@ class AgentOS:
             tool_executor=tool_executor,
             event_callback=self._event_cb,
             default_timeout=self.config.tool_timeout,
+            on_tool_output=self._on_tool_output,
         )
 
         # Decoder
