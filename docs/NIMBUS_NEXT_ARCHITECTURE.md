@@ -228,26 +228,184 @@ class VCPU:
 
 ---
 
-## 7. 迁移策略
+## 7. 实施计划：按概念深度排序的学习路径
 
-### Phase 1: 创建 nimbus_next 包（不破坏现有代码）
+> 核心原则：每个 Step 只聚焦一个概念，做完后有可运行的验证，
+> 不是赶工期，而是通过亲手重构来彻底内化 agent 框架的每一块骨头。
 
-1. 在 `src/nimbus_next/` 下创建新包
-2. 从现有代码中提取核心组件
-3. 精简每个组件，删除不需要的功能
-4. 编写独立测试
+### Step 1: Protocol — "Agent 的语言"
 
-### Phase 2: 验证
+**你在学什么**：一个 agent 框架的所有组件之间靠什么通信？答案是一套极小的数据结构。
+这是整个系统的"脊柱"——搞懂 ActionIR 和 ToolResult，就搞懂了 agent 的指令集。
 
-1. 使用 Terminal-Bench 风格的任务验证能力
-2. 对比 nimbus v2 的表现
-3. 确保分层边界清晰
+**做什么**：
+1. 创建 `src/nimbus_next/__init__.py` + `src/nimbus_next/protocol.py`
+2. 从现有 `core/protocol.py` 提取：ActionIR、ToolResult、Fault、Event
+3. 删除：IPCMessage、NimFS helpers、NIMFS_OFFLOAD_THRESHOLD
+4. 写单元测试：ActionIR 创建/序列化、Fault 分类路由
 
-### Phase 3: 逐步替换
+**验证**：`pytest tests/nimbus_next/test_protocol.py` 全绿
 
-1. CLI 切换到 nimbus_next
-2. Web UI 适配
-3. 旧代码标记为 legacy
+**行数预算**：~100 行
+
+---
+
+### Step 2: Tools + Registry — "Agent 的手脚"
+
+**你在学什么**：工具是 agent 与外界交互的唯一方式。工具的定义、注册、查找机制
+是所有 agent 框架的基础设施。pi 用 4 个工具就能做 90% 的事，这是极简设计的精髓。
+
+**做什么**：
+1. 创建 `src/nimbus_next/tools/registry.py` — 精简的 ToolRegistry（注册+查找，~100行）
+2. 创建 `src/nimbus_next/tools/` 下 5 个核心工具：read/write/edit/bash/grep
+3. 每个工具用 `@tool` 装饰器自注册
+4. 写测试：工具注册、查找、schema 导出
+
+**验证**：能从 registry 导出 OpenAI function calling 格式的 tool schema
+
+**行数预算**：~400 行（registry 100 + 工具 300）
+
+---
+
+### Step 3: Decoder — "Agent 的防火墙"
+
+**你在学什么**：LLM 的输出是不可信的。Decoder 是 LLM 和执行引擎之间的翻译层+过滤层。
+这是 nimbus 相比 pi 的核心差异化能力——幻觉检测、控制流映射、参数验证。
+
+**做什么**：
+1. 创建 `src/nimbus_next/decoder.py`
+2. 从现有 decoder.py 提取：幻觉检测模式、tool_call → ActionIR 转换、done-pattern 检测
+3. 移除：与 IPC/SubAgent 相关的控制流映射
+4. 写测试：正常 tool_call 解码、幻觉文本检测、done 判定
+
+**验证**：喂入模拟的 LLM 响应，验证能正确输出 ActionIR 或检测到幻觉
+
+**行数预算**：~250 行
+
+---
+
+### Step 4: Gate — "Agent 的系统调用"
+
+**你在学什么**：工具执行不是直接调函数——需要超时控制、参数容错、doom loop 检测、
+输出截断。Gate 就是 agent 的 syscall 层，所有副作用都经过这个瓶颈点。
+
+**做什么**：
+1. 创建 `src/nimbus_next/gate.py`
+2. 从现有 gate.py 提取：syscall_tool()、超时机制、doom loop 检测、arg normalization、output truncation
+3. 移除：write_filter、meta tool timeouts、IPC local tools
+4. 写测试：正常执行、超时中断、doom loop 触发、参数修正
+
+**验证**：能通过 Gate 执行一个真实的 Bash 工具调用并拿到 ToolResult
+
+**行数预算**：~200 行
+
+**里程碑 A**：到这里，你有了完整的"工具执行通路"——Tool 定义 → Gate 执行 → ToolResult 返回。
+可以单独跑一个 `gate.syscall_tool("Bash", {"command": "echo hello"})` 验证整条链路。
+
+---
+
+### Step 5: MMU — "Agent 的记忆"
+
+**你在学什么**：context window 管理是 agent 和普通 chatbot 的根本区别。
+Anchor（不变的系统上下文）+ Stream（会被压缩的动态历史）是 nimbus 最核心的创新。
+理解了这个，就理解了为什么 Claude Code 在长任务中不会迷失方向。
+
+**做什么**：
+1. 创建 `src/nimbus_next/mmu.py`
+2. 从现有 MMU 提取：PinnedContext（Anchor）、StackFrame（Stream，单层）、assemble_context()、archive_and_reset()（compaction）
+3. 移除：NimFS offload、scroll/viewport、clipboard、milestone tracking、StateManager
+4. 写测试：消息添加、context 组装、token 统计、压缩触发
+
+**验证**：能组装出一个完整的 messages 数组（system + history），并在超限时自动压缩
+
+**行数预算**：~400 行
+
+---
+
+### Step 6: VCPU + FSM — "Agent 的大脑"
+
+**你在学什么**：Think-Act-Observe 循环是所有 agent 的核心模式。
+把它实现为 FSM 而不是简单 while 循环，带来的好处是：可中断、可恢复、状态可观测。
+这一步把前面所有组件串起来。
+
+**做什么**：
+1. 创建 `src/nimbus_next/vcpu.py` + `src/nimbus_next/fsm.py`（或合并）
+2. 从现有代码提取：FSM 状态定义、VCPUConfig、step() 方法
+3. 移除：checkpoint、tracer、与 ProcessManager 的耦合
+4. VCPU 接收：ALU（LLM client）、Decoder、Gate、MMU、Tools
+5. 写测试：单步执行（mock LLM）、状态转换验证、中断测试
+
+**验证**：用 mock LLM 驱动一个完整的 Think→Act→Observe→Complete 循环
+
+**行数预算**：~350 行
+
+---
+
+### Step 7: Adapter — "Agent 的嘴和耳"
+
+**你在学什么**：LLM API 调用看似简单，实际上要处理：流式/非流式、多 provider 适配、
+tool_choice 控制、token 统计、重试。Adapter 是 vCPU 的 ALU（算术逻辑单元）。
+
+**做什么**：
+1. 创建 `src/nimbus_next/adapter.py`
+2. 从现有 73KB 的 DirectAdapter 中只提取核心路径：
+   - `generate()`：非流式调用
+   - `stream()`：流式调用
+   - token 统计
+3. 先只支持 Anthropic（或 OpenAI 二选一），不做多 provider
+4. 写测试：mock API 调用，验证响应解析
+
+**验证**：能用真实 API key 发一次请求，拿到正确解析的响应
+
+**行数预算**：~500 行
+
+---
+
+### Step 8: RuntimeLoop + AgentOS — "Agent 的心跳"
+
+**你在学什么**：RuntimeLoop 是驱动 VCPU 持续运转的外层循环——处理迭代限制、
+context overflow（触发 compaction）、中断信号。AgentOS 是最终的组装点。
+
+**做什么**：
+1. 创建 `src/nimbus_next/loop.py` — 精简的 RuntimeLoop
+2. 创建 `src/nimbus_next/agent.py` — AgentOS facade（~150 行）
+3. RuntimeLoop: step 循环 + compaction 触发 + 迭代限制 + 中断
+4. AgentOS: 组装所有组件 + 暴露 run()/stream()/chat()
+5. 写集成测试
+
+**验证**：`AgentOS(llm).run("列出当前目录的文件")` 端到端执行成功
+
+**行数预算**：~350 行
+
+**里程碑 B**：一个完整可运行的 agent，能接收任务、调用工具、返回结果。
+
+---
+
+### Step 9: CLI — "Agent 的皮肤"
+
+**你在学什么**：交互式 CLI 是 agent 与人类的界面。流式输出、工具调用展示、
+中断处理（Ctrl+C）是 UX 的核心。
+
+**做什么**：
+1. 创建 `src/nimbus_next/cli.py`
+2. 最简 CLI：读取用户输入 → 调用 AgentOS.chat() → 流式输出
+3. 支持：流式 token 输出、工具调用显示、Ctrl+C 中断
+
+**验证**：在终端里跑起来，能对话、能执行工具、能中断
+
+**行数预算**：~100 行
+
+**最终里程碑**：一个 ~2500 行的完整 agent 框架，你理解每一行代码的存在理由。
+
+---
+
+### 每步完成后的 Checklist
+
+- [ ] 代码行数是否在预算内？超了说明没删干净
+- [ ] 能否用一句话解释这个组件为什么存在？
+- [ ] 它的上游（谁调用它）和下游（它调用谁）是否清晰？
+- [ ] 测试是否覆盖了核心路径？
+- [ ] 与 pi 的对应关系是否清楚？（pi 没有的部分，nimbus 为什么需要？）
 
 ---
 
