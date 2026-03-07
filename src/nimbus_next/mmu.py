@@ -7,12 +7,21 @@ The core innovation: Anchor & Stream architecture.
 - Stream (message history): Mutable conversation history that gets
   compressed (archived) when approaching the context limit.
 
+History dropping design (from original nimbus):
+- Safe cut points: NEVER split tool_call ↔ tool_result pairs
+- Tombstone stubs: dropped messages leave behind a one-line trace
+- Smart drop: failures/errors dropped first, then oldest non-essential
+- Archive merge: global summary is merged (not appended) to prevent growth
+
 This is what separates a capable agent from a naive chatbot.
 Without it, the LLM drifts off-task after ~20 turns.
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
+
+logger = logging.getLogger("nimbus.mmu")
 
 
 # =============================================================================
@@ -69,6 +78,36 @@ class Message:
                 tokens += estimate_text_tokens(str(args))
         return tokens
 
+    @property
+    def is_tool_call(self) -> bool:
+        """This is an assistant message that initiates tool calls."""
+        return self.role == "assistant" and bool(self.tool_calls)
+
+    @property
+    def is_tool_result(self) -> bool:
+        """This is a tool result message."""
+        return self.role == "tool"
+
+    @property
+    def is_error(self) -> bool:
+        """Heuristic: does this message contain an error/failure?"""
+        if not isinstance(self.content, str):
+            return False
+        c = self.content
+        # Explicit error markers
+        if c.startswith("[Error]"):
+            return True
+        # Python traceback
+        stripped = c.lstrip()
+        if stripped.startswith("Traceback (most recent call last)"):
+            return True
+        # Common error patterns (only at start to avoid false positives)
+        lower = c[:200].lower()
+        return any(marker in lower for marker in [
+            "error:", "failed:", "exception:", "command timed out",
+            "doom loop terminated", "tool_failure",
+        ])
+
 
 # =============================================================================
 # Pinned Context (Anchor)
@@ -122,6 +161,213 @@ class MMUConfig:
     max_context_tokens: int = 100_000
     compress_threshold: float = 0.85  # trigger compaction at 85% capacity
     summary_max_tokens: int = 2000
+    keep_recent_messages: int = 20  # minimum hot messages to always retain
+
+
+# =============================================================================
+# Tool-Use Turn Detection
+# =============================================================================
+
+
+def _find_turn_boundaries(messages: List[Message]) -> List[tuple[int, int]]:
+    """Identify tool-use turns: (assistant_with_tool_calls, last_tool_result).
+
+    A tool-use turn is:
+      messages[i]   = assistant with tool_calls
+      messages[i+1] = tool result
+      messages[i+2] = tool result  (possibly more)
+      ...until next non-tool message
+
+    These are ATOMIC — dropping any part breaks the LLM API contract.
+    """
+    turns: List[tuple[int, int]] = []
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        if msg.is_tool_call:
+            start = i
+            end = i
+            # Collect all following tool results
+            j = i + 1
+            while j < len(messages) and messages[j].is_tool_result:
+                end = j
+                j += 1
+            if end > start:
+                turns.append((start, end))
+            i = j
+        else:
+            i += 1
+    return turns
+
+
+def _find_safe_cut_point(messages: List[Message], target_index: int) -> int:
+    """Find a safe index to cut history, never splitting tool-use turns.
+
+    If target_index lands inside a tool-use turn (assistant+tool_calls or
+    its tool results), adjust forward to keep the entire turn intact —
+    i.e. drop the whole turn rather than leave orphans.
+    """
+    if target_index <= 0:
+        return 0
+    if target_index >= len(messages):
+        return len(messages)
+
+    turns = _find_turn_boundaries(messages)
+
+    for start, end in turns:
+        if start < target_index <= end:
+            # Target lands inside a turn — must drop the whole turn
+            return end + 1
+
+    # If target lands on an orphaned tool result, skip past it
+    idx = target_index
+    while idx < len(messages) and messages[idx].is_tool_result:
+        idx += 1
+
+    return idx
+
+
+# =============================================================================
+# Tombstone Stubs
+# =============================================================================
+
+
+def _make_tombstone(messages: List[Message]) -> str:
+    """Create a one-line-per-message tombstone for dropped messages.
+
+    Instead of silently deleting history, leave a compact trace so the LLM
+    knows what happened (even if it can't see the full content).
+    """
+    lines: List[str] = []
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        if msg.is_tool_call:
+            # Summarize the tool-use turn as one line
+            tool_names = []
+            if msg.tool_calls:
+                for tc in msg.tool_calls:
+                    fname = tc.get("function", {}).get("name", "?")
+                    tool_names.append(fname)
+            # Collect results
+            results_summary = []
+            j = i + 1
+            while j < len(messages) and messages[j].is_tool_result:
+                r = messages[j]
+                status = "ERR" if r.is_error else "OK"
+                results_summary.append(f"{r.name or '?'}→{status}")
+                j += 1
+            tools_str = "+".join(tool_names)
+            results_str = ", ".join(results_summary)
+            lines.append(f"  [{tools_str}] {results_str}")
+            i = j
+        elif msg.role == "assistant":
+            preview = str(msg.content)[:80].replace("\n", " ") if msg.content else "(empty)"
+            lines.append(f"  Assistant: {preview}")
+            i += 1
+        elif msg.role == "user":
+            preview = str(msg.content)[:80].replace("\n", " ") if msg.content else "(empty)"
+            lines.append(f"  User: {preview}")
+            i += 1
+        else:
+            i += 1
+
+    if not lines:
+        return "(empty history dropped)"
+
+    count = len(messages)
+    return f"[Dropped {count} messages. Trace:]\n" + "\n".join(lines)
+
+
+# =============================================================================
+# Smart Drop
+# =============================================================================
+
+
+def _smart_drop(
+    messages: List[Message],
+    target_tokens: int,
+    keep_recent: int,
+) -> tuple[List[Message], str]:
+    """Drop messages to fit within token budget, with priority ordering.
+
+    Priority (drop first → last):
+    1. Failed/error tool-use turns (least valuable — agent already failed)
+    2. Old successful tool-use turns (content was consumed by the LLM)
+    3. Old user/assistant exchanges
+
+    Never drops the last `keep_recent` messages.
+    Never splits tool_call ↔ tool_result pairs.
+    Dropped messages become a tombstone stub.
+
+    Returns: (surviving messages, tombstone text)
+    """
+    if not messages:
+        return messages, ""
+
+    # Protect hot zone
+    hot_boundary = max(0, len(messages) - keep_recent)
+
+    # Nothing to drop
+    current_tokens = sum(m.token_estimate() for m in messages)
+    if current_tokens <= target_tokens:
+        return messages, ""
+
+    # Build droppable segments: each is (start, end, priority, tokens)
+    # Lower priority number = drop first
+    segments: List[tuple[int, int, int, int]] = []
+    turns = _find_turn_boundaries(messages)
+    covered: set[int] = set()
+
+    for start, end in turns:
+        if start >= hot_boundary:
+            continue  # In hot zone, don't touch
+        turn_msgs = messages[start:end + 1]
+        turn_tokens = sum(m.token_estimate() for m in turn_msgs)
+        has_error = any(m.is_error for m in turn_msgs)
+        priority = 1 if has_error else 2
+        segments.append((start, end, priority, turn_tokens))
+        for k in range(start, end + 1):
+            covered.add(k)
+
+    # Non-turn messages in history zone
+    for i in range(hot_boundary):
+        if i in covered:
+            continue
+        priority = 3  # plain messages are lowest priority for dropping
+        segments.append((i, i, priority, messages[i].token_estimate()))
+
+    # Sort by priority (drop first = lowest number), then by index (oldest first)
+    segments.sort(key=lambda s: (s[2], s[0]))
+
+    # Drop segments until under budget
+    to_drop: set[int] = set()
+    tokens_freed = 0
+    tokens_needed = current_tokens - target_tokens
+
+    for start, end, priority, seg_tokens in segments:
+        if tokens_freed >= tokens_needed:
+            break
+        for k in range(start, end + 1):
+            to_drop.add(k)
+        tokens_freed += seg_tokens
+
+    if not to_drop:
+        return messages, ""
+
+    # Build tombstone from dropped messages
+    dropped_msgs = [messages[i] for i in sorted(to_drop)]
+    tombstone = _make_tombstone(dropped_msgs)
+
+    # Build surviving list
+    surviving = [messages[i] for i in range(len(messages)) if i not in to_drop]
+
+    logger.info(
+        "Smart drop: removed %d messages (%d tokens freed), %d remaining",
+        len(to_drop), tokens_freed, len(surviving),
+    )
+
+    return surviving, tombstone
 
 
 # =============================================================================
@@ -131,6 +377,12 @@ class MMUConfig:
 
 class MMU:
     """Manages the context window: Anchor (pinned) + Stream (history).
+
+    Key safety guarantees:
+    - Tool-use turns (assistant+tool_calls → tool results) are NEVER split
+    - Dropped messages leave a tombstone trace
+    - Archives are merged (not infinitely appended)
+    - Hot zone (recent N messages) is always preserved
 
     Usage:
         mmu = MMU(config)
@@ -144,7 +396,7 @@ class MMU:
         self.config = config or MMUConfig()
         self._pinned: Optional[PinnedContext] = None
         self._messages: List[Message] = []
-        self._archives: List[str] = []  # past compaction summaries
+        self._global_summary: str = ""  # merged summary (NOT a list — prevents growth)
         self._goal: str = ""
 
     # --- Pinned Context (Anchor) ---
@@ -191,7 +443,7 @@ class MMU:
         Structure:
         1. System message (from PinnedContext) — always first
         2. Goal reminder (if set) — pinned after system
-        3. Archive summaries (from past compactions)
+        3. Global summary (merged from past compactions)
         4. Current message history
         """
         messages = []
@@ -204,12 +456,11 @@ class MMU:
         if self._goal:
             messages.append({"role": "user", "content": f"[Goal] {self._goal}"})
 
-        # 3. Archive summaries
-        if self._archives:
-            summary = "\n\n---\n\n".join(self._archives)
+        # 3. Global summary (single merged string, not a growing list)
+        if self._global_summary:
             messages.append({
                 "role": "user",
-                "content": f"[Previous conversation summary]\n{summary}",
+                "content": f"[Previous conversation summary]\n{self._global_summary}",
             })
 
         # 4. Current stream
@@ -226,8 +477,8 @@ class MMU:
             total += self._pinned.token_estimate()
         if self._goal:
             total += estimate_text_tokens(self._goal) + MESSAGE_OVERHEAD
-        for archive in self._archives:
-            total += estimate_text_tokens(archive) + MESSAGE_OVERHEAD
+        if self._global_summary:
+            total += estimate_text_tokens(self._global_summary) + MESSAGE_OVERHEAD
         for msg in self._messages:
             total += msg.token_estimate()
         return total
@@ -244,15 +495,15 @@ class MMU:
     ) -> Optional[str]:
         """Compress current history into a summary and start fresh.
 
-        This is the key mechanism for infinite-horizon conversations.
-        When context is running out:
-        1. Summarize the current conversation (via LLM or simple truncation)
-        2. Store the summary in archives
-        3. Clear the message history
+        Key improvements over naive compaction:
+        1. Safe cut: never splits tool_call ↔ tool_result pairs
+        2. Smart drop: errors/failures dropped first
+        3. Tombstone: dropped messages leave a trace
+        4. Merge: global summary is UPDATED (not appended) to prevent growth
 
         Args:
             summarizer: async function(messages) -> summary string.
-                       If None, uses a simple last-N-messages extraction.
+                       If None, uses deterministic extraction.
 
         Returns:
             The summary text, or None if nothing to compact.
@@ -261,30 +512,68 @@ class MMU:
             return None
 
         if summarizer:
-            # Use LLM to generate a summary
+            # LLM-powered summarization
             context = self.assemble_context()
-            summary = await summarizer(context)
-        else:
-            # Fallback: keep last few messages as "summary"
-            recent = self._messages[-4:]
-            parts = []
-            for msg in self._messages[:-4]:
-                if msg.role == "assistant" and msg.content:
-                    parts.append(str(msg.content)[:200])
-                elif msg.role == "tool" and msg.content:
-                    parts.append(f"[{msg.name}]: {str(msg.content)[:100]}")
-            if parts:
-                summary = "Previous actions:\n" + "\n".join(parts[-10:])
-            else:
-                summary = "(conversation history compacted)"
-            self._messages = list(recent)
-            self._archives.append(summary)
-            return summary
+            new_summary = await summarizer(context)
+            # Merge with existing summary (not append)
+            self._update_global_summary(new_summary)
+            self._messages.clear()
+            return new_summary
 
-        # After LLM summary
-        self._messages.clear()
-        self._archives.append(summary)
-        return summary
+        # --- Fallback: deterministic compaction ---
+
+        # Calculate how many tokens we need to free
+        anchor_tokens = 0
+        if self._pinned:
+            anchor_tokens += self._pinned.token_estimate()
+        if self._goal:
+            anchor_tokens += estimate_text_tokens(self._goal) + MESSAGE_OVERHEAD
+        if self._global_summary:
+            anchor_tokens += estimate_text_tokens(self._global_summary) + MESSAGE_OVERHEAD
+
+        stream_budget = int(self.config.max_context_tokens * 0.7) - anchor_tokens
+        keep_recent = min(self.config.keep_recent_messages, len(self._messages))
+
+        # Smart drop: prioritized dropping with safe cut points
+        surviving, tombstone = _smart_drop(
+            self._messages,
+            target_tokens=max(stream_budget, 0),
+            keep_recent=keep_recent,
+        )
+
+        # Build summary from tombstone + previous summary
+        summary_parts: List[str] = []
+        if self._global_summary:
+            summary_parts.append(self._global_summary)
+        if tombstone:
+            summary_parts.append(tombstone)
+
+        new_summary = "\n\n".join(summary_parts) if summary_parts else "(history compacted)"
+
+        # Trim summary if too long (keep last N chars)
+        max_summary_chars = self.config.summary_max_tokens * 4  # rough token→char
+        if len(new_summary) > max_summary_chars:
+            new_summary = "..." + new_summary[-(max_summary_chars - 3):]
+
+        self._global_summary = new_summary
+        self._messages = surviving
+
+        return new_summary
+
+    def _update_global_summary(self, new_summary: str) -> None:
+        """Merge new summary into global summary (not append).
+
+        If there's an existing summary, the new one should supersede it
+        since the LLM summarizer was given the full context including
+        the old summary. We replace, not append, to prevent unbounded growth.
+        """
+        # LLM summary replaces old one (it already incorporated the old)
+        max_chars = self.config.summary_max_tokens * 4
+        if len(new_summary) > max_chars:
+            new_summary = "..." + new_summary[-(max_chars - 3):]
+        self._global_summary = new_summary
+
+    # --- Turn Safety ---
 
     def rollback_incomplete_turn(self) -> int:
         """Remove trailing orphaned tool results (no matching assistant message)."""
@@ -299,7 +588,42 @@ class MMU:
             removed += 1
         return removed
 
+    def validate_turn_integrity(self) -> List[str]:
+        """Check that all tool-use turns are complete (assistant + all results).
+
+        Returns list of issues found (empty = all good).
+        """
+        issues: List[str] = []
+        i = 0
+        while i < len(self._messages):
+            msg = self._messages[i]
+            if msg.is_tool_call:
+                expected_ids = set()
+                if msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        tc_id = tc.get("id")
+                        if tc_id:
+                            expected_ids.add(tc_id)
+                found_ids = set()
+                j = i + 1
+                while j < len(self._messages) and self._messages[j].is_tool_result:
+                    tid = self._messages[j].tool_call_id
+                    if tid:
+                        found_ids.add(tid)
+                    j += 1
+                missing = expected_ids - found_ids
+                if missing:
+                    issues.append(f"Message {i}: tool_calls missing results: {missing}")
+                i = j
+            elif msg.is_tool_result:
+                # Orphaned tool result
+                issues.append(f"Message {i}: orphaned tool result (id={msg.tool_call_id})")
+                i += 1
+            else:
+                i += 1
+        return issues
+
     def clear(self) -> None:
         self._messages.clear()
-        self._archives.clear()
+        self._global_summary = ""
         self._goal = ""
