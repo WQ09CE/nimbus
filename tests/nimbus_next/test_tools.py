@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from nimbus_next.tools.registry import ToolDefinition, ToolParameter, ToolRegistry, tool
+from nimbus.core.tools.registry import ToolDefinition, ToolParameter, ToolRegistry, tool
 
 
 # =============================================================================
@@ -132,7 +132,7 @@ class TestReadTool:
     async def test_read_file(self, tmp_path):
         f = tmp_path / "test.txt"
         f.write_text("line1\nline2\nline3")
-        from nimbus_next.tools.read import read_file
+        from nimbus.core.tools.read import read_file
         result = await read_file(str(f))
         assert "line1" in result
         assert "line2" in result
@@ -141,13 +141,13 @@ class TestReadTool:
     async def test_read_with_offset(self, tmp_path):
         f = tmp_path / "test.txt"
         f.write_text("\n".join(f"line{i}" for i in range(1, 11)))
-        from nimbus_next.tools.read import read_file
+        from nimbus.core.tools.read import read_file
         result = await read_file(str(f), offset=5, limit=3)
         assert "line5" in result
 
     @pytest.mark.asyncio
     async def test_read_not_found(self):
-        from nimbus_next.tools.read import read_file
+        from nimbus.core.tools.read import read_file
         with pytest.raises(FileNotFoundError):
             await read_file("/nonexistent/file.txt")
 
@@ -155,7 +155,7 @@ class TestReadTool:
     async def test_read_directory(self, tmp_path):
         (tmp_path / "a.txt").write_text("a")
         (tmp_path / "sub").mkdir()
-        from nimbus_next.tools.read import read_file
+        from nimbus.core.tools.read import read_file
         result = await read_file(str(tmp_path))
         assert "Directory" in result
 
@@ -164,7 +164,7 @@ class TestWriteTool:
     @pytest.mark.asyncio
     async def test_write_new_file(self, tmp_path):
         target = tmp_path / "new" / "file.txt"
-        from nimbus_next.tools.write import write_file
+        from nimbus.core.tools.write import write_file
         result = await write_file(str(target), "hello world")
         assert "Successfully wrote" in result
         assert target.read_text() == "hello world"
@@ -173,7 +173,7 @@ class TestWriteTool:
     async def test_write_overwrite(self, tmp_path):
         target = tmp_path / "file.txt"
         target.write_text("old")
-        from nimbus_next.tools.write import write_file
+        from nimbus.core.tools.write import write_file
         await write_file(str(target), "new")
         assert target.read_text() == "new"
 
@@ -183,7 +183,7 @@ class TestEditTool:
     async def test_exact_replace(self, tmp_path):
         f = tmp_path / "test.py"
         f.write_text("def hello():\n    pass\n")
-        from nimbus_next.tools.edit import edit_file
+        from nimbus.core.tools.edit import edit_file
         result = await edit_file(str(f), "pass", "return 42")
         assert "Successfully" in result
         assert "return 42" in f.read_text()
@@ -192,7 +192,7 @@ class TestEditTool:
     async def test_multiple_occurrences(self, tmp_path):
         f = tmp_path / "test.py"
         f.write_text("x = 1\nx = 1\n")
-        from nimbus_next.tools.edit import edit_file
+        from nimbus.core.tools.edit import edit_file
         with pytest.raises(ValueError, match="occurrences"):
             await edit_file(str(f), "x = 1", "x = 2")
 
@@ -200,7 +200,7 @@ class TestEditTool:
     async def test_not_found(self, tmp_path):
         f = tmp_path / "test.py"
         f.write_text("hello world")
-        from nimbus_next.tools.edit import edit_file
+        from nimbus.core.tools.edit import edit_file
         with pytest.raises(ValueError, match="not found"):
             await edit_file(str(f), "xyz", "abc")
 
@@ -208,7 +208,7 @@ class TestEditTool:
 class TestBashTool:
     @pytest.mark.asyncio
     async def test_simple_command(self):
-        from nimbus_next.tools.bash import bash_command
+        from nimbus.core.tools.bash import bash_command
         result = await bash_command("echo hello")
         # Bash now returns split result: {output, ui_detail}
         assert isinstance(result, dict)
@@ -218,20 +218,20 @@ class TestBashTool:
 
     @pytest.mark.asyncio
     async def test_exit_code(self):
-        from nimbus_next.tools.bash import bash_command
+        from nimbus.core.tools.bash import bash_command
         result = await bash_command("exit 1")
         assert "Exit code: 1" in result["output"]
         assert result["ui_detail"]["exit_code"] == 1
 
     @pytest.mark.asyncio
     async def test_empty_command(self):
-        from nimbus_next.tools.bash import bash_command
+        from nimbus.core.tools.bash import bash_command
         with pytest.raises(ValueError):
             await bash_command("")
 
     @pytest.mark.asyncio
     async def test_timeout(self):
-        from nimbus_next.tools.bash import bash_command
+        from nimbus.core.tools.bash import bash_command
         result = await bash_command("sleep 10", timeout=0.5)
         assert "timed out" in result["output"]
         assert result["ui_detail"]["timed_out"] is True
@@ -239,7 +239,7 @@ class TestBashTool:
     @pytest.mark.asyncio
     async def test_streaming_callback(self):
         """Test pi-style on_update streaming callback."""
-        from nimbus_next.tools.bash import bash_command
+        from nimbus.core.tools.bash import bash_command
         chunks: list[str] = []
         result = await bash_command("echo line1; echo line2", on_update=lambda c: chunks.append(c))
         assert isinstance(result, dict)
@@ -255,7 +255,7 @@ class TestGrepTool:
     async def test_grep_file(self, tmp_path):
         f = tmp_path / "test.py"
         f.write_text("def hello():\n    pass\ndef world():\n    pass\n")
-        from nimbus_next.tools.grep import grep_search
+        from nimbus.core.tools.grep import grep_search
         result = await grep_search("def", str(f))
         assert "def hello" in result
         assert "def world" in result
@@ -264,7 +264,7 @@ class TestGrepTool:
     async def test_grep_directory(self, tmp_path):
         (tmp_path / "a.py").write_text("import os\n")
         (tmp_path / "b.py").write_text("import sys\n")
-        from nimbus_next.tools.grep import grep_search
+        from nimbus.core.tools.grep import grep_search
         result = await grep_search("import", str(tmp_path), glob="*.py")
         assert "a.py" in result
         assert "b.py" in result
@@ -272,6 +272,6 @@ class TestGrepTool:
     @pytest.mark.asyncio
     async def test_no_matches(self, tmp_path):
         (tmp_path / "a.txt").write_text("hello")
-        from nimbus_next.tools.grep import grep_search
+        from nimbus.core.tools.grep import grep_search
         result = await grep_search("xyz", str(tmp_path))
         assert "No matches" in result

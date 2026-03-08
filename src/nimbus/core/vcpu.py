@@ -113,6 +113,11 @@ class VCPU:
 
         self._exec = ExecutionState()
         self._interrupted = False
+        self._wakeup_event: Optional[asyncio.Event] = None
+
+    def set_wakeup_event(self, event: asyncio.Event) -> None:
+        """Receive a wakeup event from the RuntimeLoop to enable graceful steering."""
+        self._wakeup_event = event
 
     def request_interruption(self) -> None:
         self._interrupted = True
@@ -152,12 +157,42 @@ class VCPU:
         # ---- THINK (Reasoning) ----
         try:
             messages = self.mmu.assemble_context()
-            response = await asyncio.wait_for(
-                self.alu.chat(messages, self.tools),
-                timeout=self.config.llm_call_timeout,
-            )
+            chat_coro = self.alu.chat(messages, self.tools)
+            
+            if self._wakeup_event:
+                chat_task = asyncio.create_task(chat_coro)
+                wakeup_task = asyncio.create_task(self._wakeup_event.wait())
+                done, pending = await asyncio.wait(
+                    [chat_task, wakeup_task],
+                    timeout=self.config.llm_call_timeout,
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+                
+                if self._wakeup_event.is_set():
+                    if not chat_task.done():
+                        chat_task.cancel()
+                        try:
+                            await chat_task
+                        except asyncio.CancelledError:
+                            pass
+                    self.mmu.add_system_message("[System] Execution gracefully interrupted by user message.")
+                    result.actions = []
+                    return result
+
+                if chat_task not in done:
+                    chat_task.cancel()
+                    raise asyncio.TimeoutError()
+                    
+                response = chat_task.result()
+            else:
+                response = await asyncio.wait_for(
+                    chat_coro,
+                    timeout=self.config.llm_call_timeout,
+                )
         except asyncio.TimeoutError:
             return self._error_step(result, "LLM call timed out", retryable=True)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             return self._error_step(result, f"LLM error: {e}")
 
@@ -214,7 +249,40 @@ class VCPU:
 
             # Execute each tool through the Gate
             for action in tool_actions:
-                tool_result = await self.gate.syscall_tool(action)
+                if self._wakeup_event and self._wakeup_event.is_set():
+                    self.mmu.add_system_message("[System] Tool execution interrupted by user message.")
+                    break
+
+                tool_coro = self.gate.syscall_tool(action)
+                if self._wakeup_event:
+                    tool_task = asyncio.create_task(tool_coro)
+                    wakeup_task = asyncio.create_task(self._wakeup_event.wait())
+                    
+                    done, pending = await asyncio.wait(
+                        [tool_task, wakeup_task],
+                        return_when=asyncio.FIRST_COMPLETED
+                    )
+                    
+                    if self._wakeup_event.is_set():
+                        if not tool_task.done():
+                            tool_task.cancel()
+                            try:
+                                await tool_task
+                            except asyncio.CancelledError:
+                                pass
+                        
+                        tool_result = ToolResult(
+                            status="CANCELLED", 
+                            output="[Tool execution cancelled due to new user instruction]"
+                        )
+                        result.results.append(tool_result)
+                        self.mmu.add_tool_result(action.id, action.name, str(tool_result.output))
+                        break
+                        
+                    tool_result = tool_task.result()
+                else:
+                    tool_result = await tool_coro
+
                 result.results.append(tool_result)
 
                 # ---- OBSERVE (write result to MMU) ----

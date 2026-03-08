@@ -3,9 +3,9 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from nimbus_next.agent import AgentConfig, AgentOS, _register_default_tools
-from nimbus_next.adapter import LLMResponse
-from nimbus_next.tools.registry import ToolRegistry, ToolParameter, tool
+from nimbus.core.agent import AgentConfig, AgentOS, _register_default_tools
+from nimbus.core.adapter import LLMResponse
+from nimbus.core.tools.registry import ToolRegistry, ToolParameter, tool
 
 
 # =============================================================================

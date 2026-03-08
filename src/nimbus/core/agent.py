@@ -140,6 +140,9 @@ class AgentOS:
 
         # 3. System prompt
         self._system_prompt = system_prompt or self._default_system_prompt()
+        
+        # 4. Session State (MMUs)
+        self._mmus: Dict[str, MMU] = {}
 
     def _create_adapter(self) -> Any:
         """Create the appropriate LLM adapter based on config."""
@@ -163,18 +166,18 @@ class AgentOS:
 
     # --- Public API ---
 
-    async def run(self, goal: str) -> ToolResult:
+    async def run(self, goal: str, session_id: str = "default") -> ToolResult:
         """Run the agent on a goal until completion. Returns final ToolResult."""
-        loop = self._build_loop(goal)
+        loop = self._build_loop(goal, session_id=session_id)
         return await loop.run()
 
-    async def stream(self, goal: str) -> AsyncIterator[Dict[str, Any]]:
+    async def stream(self, goal: str, session_id: str = "default") -> AsyncIterator[Dict[str, Any]]:
         """Run the agent, streaming fine-grained events (pi-style)."""
-        loop = self._build_loop(goal)
+        loop = self._build_loop(goal, session_id=session_id)
         async for event in loop.stream():
             yield event
 
-    def stream_with_queue(self, goal: str) -> RuntimeLoop:
+    def stream_with_queue(self, goal: str, session_id: str = "default") -> RuntimeLoop:
         """Build a RuntimeLoop with message queue access (pi-style).
 
         Returns the loop so callers can enqueue messages while streaming:
@@ -184,32 +187,40 @@ class AgentOS:
                 ...
             # On interrupt, partial results are in loop.partial_results
         """
-        return self._build_loop(goal)
+        return self._build_loop(goal, session_id=session_id)
 
-    async def chat(self, message: str) -> str:
+    async def chat(self, message: str, session_id: str = "default") -> str:
         """Simple chat interface. Returns the text response."""
-        loop = self._build_loop(message, text_is_final=True)
+        loop = self._build_loop(message, text_is_final=True, session_id=session_id)
         result = await loop.run()
         return str(result.output) if result.output else ""
 
     # --- Build Pipeline ---
 
-    def _build_loop(self, goal: str, text_is_final: Optional[bool] = None) -> RuntimeLoop:
+    def _build_loop(self, goal: str, text_is_final: Optional[bool] = None, session_id: str = "default") -> RuntimeLoop:
         """Assemble all components into a RuntimeLoop for one execution."""
         pid = uuid.uuid4().hex[:8]
 
-        # MMU
-        mmu_config = MMUConfig(
-            max_context_tokens=self.config.max_context_tokens,
-            compress_threshold=self.config.compress_threshold,
-        )
-        mmu = MMU(mmu_config)
-        mmu.set_pinned(PinnedContext(
-            system_rules=self._system_prompt,
-            workspace_info=f"Working directory: {os.getcwd()}",
-        ))
-        mmu.set_goal(goal)
-        mmu.add_user_message(goal)
+        # MMU Stateful Retrieval
+        if session_id not in self._mmus:
+            mmu_config = MMUConfig(
+                max_context_tokens=self.config.max_context_tokens,
+                compress_threshold=self.config.compress_threshold,
+            )
+            mmu = MMU(mmu_config)
+            mmu.set_pinned(PinnedContext(
+                system_rules=self._system_prompt,
+                workspace_info=f"Working directory: {os.getcwd()}",
+            ))
+            self._mmus[session_id] = mmu
+            
+        mmu = self._mmus[session_id]
+        
+        # In a long conversation, the very first user message sets the anchor goal
+        if goal:
+            if not getattr(mmu, "_goal", ""):
+                mmu.set_goal(goal)
+            mmu.add_user_message(goal)
 
         # Gate
         async def tool_executor(name: str, args: Dict) -> Any:

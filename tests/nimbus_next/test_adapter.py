@@ -5,13 +5,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nimbus_next.adapter import (
+from nimbus.core.adapter import (
     AdapterConfig,
     AnthropicAdapter,
     LLMResponse,
     OpenAIAdapter,
 )
-from nimbus_next.protocol import Fault
+from nimbus.core.protocol import Fault
 
 
 class TestLLMResponse:

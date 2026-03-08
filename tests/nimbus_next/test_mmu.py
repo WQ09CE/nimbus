@@ -2,7 +2,7 @@
 
 import pytest
 
-from nimbus_next.mmu import (
+from nimbus.core.mmu import (
     MMU, MMUConfig, Message, PinnedContext, estimate_text_tokens,
     _find_turn_boundaries, _make_tombstone, _smart_drop,
 )

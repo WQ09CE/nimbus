@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from nimbus_next.decoder import InstructionDecoder
-from nimbus_next.mmu import MMU, PinnedContext
-from nimbus_next.protocol import ActionIR, ToolResult
-from nimbus_next.vcpu import VCPU, VCPUConfig
+from nimbus.core.decoder import InstructionDecoder
+from nimbus.core.mmu import MMU, PinnedContext
+from nimbus.core.protocol import ActionIR, ToolResult
+from nimbus.core.vcpu import VCPU, VCPUConfig
 
 
 # =============================================================================

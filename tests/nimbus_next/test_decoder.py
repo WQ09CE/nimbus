@@ -2,8 +2,8 @@
 
 import pytest
 
-from nimbus_next.decoder import InstructionDecoder
-from nimbus_next.protocol import Fault
+from nimbus.core.decoder import InstructionDecoder
+from nimbus.core.protocol import Fault
 
 
 class MockFunction:

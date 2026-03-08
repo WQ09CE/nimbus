@@ -2,7 +2,7 @@
 
 import pytest
 
-from nimbus_next.cli import parse_args, Colors
+from nimbus.core.cli import parse_args, Colors
 
 
 class TestParseArgs:

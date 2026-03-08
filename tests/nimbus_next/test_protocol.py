@@ -1,6 +1,6 @@
 """Tests for nimbus_next.protocol — the system spine."""
 
-from nimbus_next.protocol import (
+from nimbus.core.protocol import (
     ActionIR,
     Event,
     Fault,

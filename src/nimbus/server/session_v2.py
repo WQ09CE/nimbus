@@ -45,6 +45,7 @@ class SessionManagerV2:
         self._max_sessions = max_sessions
         self._sessions: Dict[str, AgentOS] = {}  # session_id -> AgentOS
         self._active_tasks: Dict[str, asyncio.Task] = {}  # session_id -> running task
+        self._active_loops: Dict[str, Any] = {}  # session_id -> RuntimeLoop
         self._lock = asyncio.Lock()
         self._shared_llm_lock = asyncio.Lock()
         self._shared_llm_client = None
@@ -299,20 +300,23 @@ class SessionManagerV2:
             if ws_skills.is_dir():
                 skill_paths.append(ws_skills)
 
-        agent_os = create_agent_os(
-            llm_client=llm_client,
-            tools={},
-            max_processes=5,
-            default_timeout=300.0,
-            workspace=workspace,
-            register_defaults=not _is_basic_model,  # basic_tools_only models: no specialist/extension tools
-            kernel_tools=True,  # Always register Bash/Read/Write/Edit
-            profile=profile_name,
-            model_id=model_id,
-            skill_paths=skill_paths if not _is_basic_model else [],
+        # Build the new nimbus-next AgentOS
+        from nimbus.core.agent import AgentOS, AgentConfig
+        
+        agent_config = AgentConfig()
+        # Ensure timeout config propagates to VCPU
+        if isinstance(llm_client, getattr(__import__("nimbus.adapters.direct_adapter", fromlist=["DirectAdapter"]), "DirectAdapter", object)):
+            agent_config.llm_call_timeout = 120.0
+            
+        system_prompt = getattr(nimbus_config, "system_prompt", "") or "You are a capable AI coding assistant. Use tools to solve the user's tasks. Always think step by step in Chinese."
+
+        agent_os = AgentOS(
+            config=agent_config,
+            adapter=llm_client,
+            system_prompt=system_prompt,
         )
 
-        logger.info(f"🔧 Created AgentOS (profile={profile_name}) for session {session_id}")
+        logger.info(f"🔧 Created nimbus-next AgentOS (profile={profile_name}) for session {session_id}")
 
         async with self._lock:
             self._sessions[session_id] = agent_os
@@ -421,232 +425,104 @@ class SessionManagerV2:
         message: "str | list",
     ):
         """
-        Stream chat response with SSE events.
-
-        Yields SSE events in the format expected by the API.
+        Stream chat response with SSE events directly from nimbus-next RuntimeLoop.
         """
         logger.info(f"[stream_chat] Starting for session {session_id}")
-
-        # Get or create AgentOS
         agent_os = await self.get_or_create_agent(session_id)
 
-        # Check if process needs restoration from checkpoint
-        process = agent_os.get_process(session_id)
-        logger.info(f"🔍 Checking process for session {session_id}: exists={process is not None}")
-
-        if not process:
-            # Try to restore from checkpoint
-            try:
-                checkpoint = await self._storage.load_latest_session_checkpoint(session_id)
-                logger.info(f"🔍 Checkpoint loaded: {checkpoint is not None}")
-
-                if checkpoint:
-                    try:
-                        logger.info(f"🔄 Restoring session {session_id} from checkpoint")
-                        agent_os.restore_session(session_id, checkpoint)
-                    except Exception as e:
-                        logger.error(f"Failed to restore session: {e}", exc_info=True)
-                        # Fallback to fresh start (will be created by chat())
-            except Exception as e:
-                logger.error(f"Error loading checkpoint: {e}", exc_info=True)
-
-
-        # Emit connected event
+        # Emit connected and message_start
         await self._sse_hub.publish(
-            session_id,
-            "connected",
+            session_id, "connected",
             {"session_id": session_id, "timestamp": datetime.now(timezone.utc).isoformat()},
         )
+        await self._sse_hub.publish(session_id, "message_start", {"role": "assistant"})
 
-        # Emit message_start
-        await self._sse_hub.publish(
-            session_id,
-            "message_start",
-            {"role": "assistant"},
-        )
-
+        _msg_watermark = 0
+        loop = None
         try:
-            # Setup real-time event streaming
-            queue = asyncio.Queue()
+            logger.info("[stream_chat] Calling agent_os.stream_with_queue...")
+            
+            # Stringify multimodal message list for now (nimbus-next uses string natively)
+            if isinstance(message, list):
+                str_msg = json.dumps(message, ensure_ascii=False)
+            else:
+                str_msg = message
 
-            def event_listener(event):
-                queue.put_nowait(event)
+            # Generate the RuntimeLoop (pi-style)
+            loop = agent_os.stream_with_queue(str_msg, session_id=session_id)
+            self._active_loops[session_id] = loop
 
-            # Add listener if supported
-            if hasattr(agent_os, "add_event_listener"):
-                agent_os.add_event_listener(event_listener)
-
-            # Start consumer task
-            async def event_consumer():
-                while True:
-                    event = await queue.get()
-                    if event is None:
-                        break
-                    await self._emit_v2_event(session_id, event)
-
-            consumer_task = asyncio.create_task(event_consumer())
-
-            # Use chat method for multi-turn conversation
-            logger.info("[stream_chat] Calling agent_os.chat...")
-
-            # Record message watermark before chat (for reliable save boundary)
-            # For new sessions (process not yet created), watermark is 0 — correct
-            # because chat() will create a new process and all messages are new.
-            # For restored sessions, watermark equals the count of restored old messages.
-            _msg_watermark = 0
-            _pre_process = agent_os.get_process(session_id)
-            if _pre_process and _pre_process.mmu and _pre_process.mmu._stack:
-                _msg_watermark = len(_pre_process.mmu.current_frame.messages)
-
-            _chat_start_ms = int(time.monotonic() * 1000)
-            try:
-                result = await agent_os.chat(message, session_id=session_id)
-
-                # SPECIAL HANDLING FOR INJECTION
-                if (
-                    result.status == "OK"
-                    and result.output == "[Instruction appended to running task]"
-                ):
-                    # This was an injection, not a full turn.
-                    # We must save the user message immediately because it's not in MMU yet.
-                    msg_id = f"msg_{uuid.uuid4().hex[:12]}"
-                    # Store complete content (multimodal JSON or plain string)
-                    if isinstance(message, list):
-                        storage_content = json.dumps(message, ensure_ascii=False)
-                    else:
-                        storage_content = message
-                    await self._storage.add_message(
-                        message_id=msg_id,
-                        session_id=session_id,
-                        role="user",
-                        content=storage_content,
-                    )
-                    # Mark that user message has already been persisted for this injection
-                    # so late_messages path and _save_conversation_to_storage won't save it again
-                    self._injection_persisted_sessions.add(session_id)
-                    preview = storage_content[:20]
-                    logger.info(f"💾 Saved injected message '{preview}...' to storage")
-
-                    # Emit completion and exit
-                    await self._sse_hub.publish(session_id, "dag_complete", {"status": "OK"})
-                    await self._sse_hub.close_session(session_id)
-                    return
-
-                if result.status == "ERROR":
-                    fault = result.fault
-                    logger.error(f"[stream_chat] Result Error: {fault}")
-                    # Send structured error event to frontend so it can display a meaningful message
-                    try:
-                        if fault and hasattr(fault, 'domain'):
-                            error_payload = {
-                                "code": f"{fault.domain.lower()}_{fault.code.lower()}",
-                                "message": fault.message,
-                                "retryable": fault.retryable,
-                            }
-                        else:
-                            error_payload = {
-                                "code": "agent_error",
-                                "message": str(fault) if fault else "Agent execution failed",
-                                "retryable": False,
-                            }
-                        await self._sse_hub.publish(session_id, "error", error_payload)
-                    except Exception as _pub_err:
-                        logger.warning(f"Failed to publish error event: {_pub_err}")
-                elif result.status == "CANCELLED":
+            # Yield fine-grained events mapped to SSE UI format
+            async for event in loop.stream():
+                evt_type = event.get("type")
+                
+                if evt_type == "interrupted":
                     logger.info("[stream_chat] Execution cancelled by interrupt request")
-                    # Manual Fix: Drain pending injection queue from Process Inbox to MMU
-                    try:
-                        proc = agent_os.get_process(session_id)
-                        if proc and hasattr(proc, "inbox"):
-                            while proc.inbox:
-                                msg = proc.inbox.pop(0)
-                                logger.info(f"Draining pending injection: {msg}")
-                                if proc.is_interactive:
-                                    proc.mmu.add_user_message(msg)
-                                else:
-                                    proc.mmu.add_user_message(
-                                        f"[User Intervention] {msg} (Cancelled)"
-                                    )
-                    except Exception as drain_err:
-                        logger.warning(f"Failed to drain message queue: {drain_err}")
-                else:
-                    logger.info(f"[stream_chat] Completed with status: {result.status}")
-            except asyncio.CancelledError:
-                # User interrupted - cleanup incomplete state
-                logger.info(f"[stream_chat] Cancelled by user for session {session_id}")
+                    await self._sse_hub.publish(session_id, "dag_complete", {"status": "CANCELLED"})
+                    continue
+                
+                if evt_type == "message_queued":
+                    logger.info(f"[stream_chat] Handled enqueued message: {str(event.get('content'))[:50]}...")
+                    continue
 
-                # Save current progress before rollback
-                # If the user cancels, we still want to keep what has been done so far.
-                try:
-                    # Get MMU from the process (not from agent_os._vcpu which doesn't exist)
-                    process = agent_os.get_process(session_id)
-                    if process and process.mmu:
-                        # IMPORTANT: Save any pending messages in inbox that weren't processed yet
-                        # These are injected user messages that arrived during execution
-                        if process.inbox:
-                            logger.info(
-                                f"[stream_chat] Saving {len(process.inbox)} pending inbox messages..."
-                            )
-                            for pending_msg in process.inbox:
-                                msg_id = f"msg_{uuid.uuid4().hex[:12]}"
-                                await self._storage.add_message(
-                                    message_id=msg_id,
-                                    session_id=session_id,
-                                    role="user",
-                                    content=pending_msg,
-                                )
-                            process.inbox.clear()  # Clear after saving
-
-                        # Save whatever state we have to database
-                        logger.info("[stream_chat] Saving partial progress before interruption...")
-                        await self._save_conversation_to_storage(session_id, agent_os, message, _msg_watermark)
-
-                        # Persist cancelled turn to NimFS
-                        _cancel_ms = int(time.monotonic() * 1000) - _chat_start_ms
-                        await self._save_turn_to_nimfs(session_id, agent_os, message, status="CANCELLED", duration_ms=_cancel_ms)
-
-                        # Save checkpoint on interruption
-                        try:
-                            if process.vcpu:
-                                checkpoint = process.vcpu.create_checkpoint(
-                                    session_id=session_id,
-                                    reason="interrupted"
-                                )
-                                await self._storage.save_session_checkpoint(checkpoint)
-                                logger.info(f"💾 Saved interrupted checkpoint for {session_id}")
-                        except Exception as e:
-                            logger.error(f"Failed to save interrupted checkpoint: {e}")
-
-                        # NOTE: We intentionally do NOT rollback MMU here.
-                        # If user continues the conversation, they need the full context.
-                        # The saved messages in DB are for page refresh recovery.
-                        logger.info("[stream_chat] Progress saved (MMU preserved for continuation)")
-                    else:
-                        logger.warning(
-                            f"[stream_chat] No process/MMU found for session {session_id}, cannot save progress"
+                if evt_type == "text_delta":
+                    await self._sse_hub.publish(
+                        session_id, "text_delta", {"content": event.get("content", "")}
+                    )
+                elif evt_type == "tool_call_start":
+                    await self._sse_hub.publish(
+                        session_id, "tool_start",
+                        {"tool": event.get("tool"), "args_preview": event.get("args_preview", {})}
+                    )
+                elif evt_type == "tool_call_done":
+                    await self._sse_hub.publish(
+                        session_id, "tool_complete",
+                        {
+                            "tool": event.get("tool"),
+                            "status": event.get("status"),
+                            "output": event.get("output_preview"),
+                            "ui_detail": event.get("ui_detail")
+                        }
+                    )
+                elif evt_type == "context_compacted":
+                    summary = event.get("summary")
+                    if summary:
+                        from nimbus.core.storage.nimfs import NimFSManager
+                        from nimbus.config import get_config
+                        nimfs = NimFSManager(get_config().data_dir)
+                        import uuid
+                        await nimfs.write_memory(
+                             obj_id=f"{session_id}_archive_{uuid.uuid4().hex[:8]}",
+                             content=f"Archived Conversation Context:\n\n{summary}",
+                             source="mmu_compaction",
+                             tags=[session_id, "archive", "auto-generated"]
                         )
-                except Exception as e:
-                    logger.error(f"[stream_chat] Failed to save partial progress: {e}")
+                        logger.info(f"📦 Saved MMU context compaction archive to NimFS for {session_id}")
 
-                # Re-raise to propagate cancellation
-                raise
-            except Exception as chat_err:
-                logger.error(f"[stream_chat] agent_os.chat FAILED: {chat_err}")
-                raise
-            finally:
-                # Cleanup listener and consumer
-                if hasattr(agent_os, "remove_event_listener"):
-                    agent_os.remove_event_listener(event_listener)
-                queue.put_nowait(None)
-                await consumer_task
+                elif evt_type == "final":
+                    result = event.get("result")
+                    if result and result.status == "ERROR":
+                        fault = getattr(result, "fault", None)
+                        error_payload = {
+                            "code": "agent_error",
+                            "message": fault.message if fault else str(result.output),
+                            "retryable": False,
+                        }
+                        await self._sse_hub.publish(session_id, "error", error_payload)
+                    elif result and result.status == "OK":
+                        logger.info(f"[stream_chat] Completed with status: OK")
+            
+            await self._sse_hub.publish(session_id, "dag_complete", {"status": "OK"})
 
-            # Note: LLM output is already streamed via THINKING events in real-time.
-            # No need to re-emit result.output here — doing so causes duplicate messages.
-            if not result.output:
-                logger.warning(f"[stream_chat] NO OUTPUT in result for session {session_id}")
-
-            # Clear events for next turn
-            agent_os.clear_events()
+        except asyncio.CancelledError:
+            logger.info(f"[stream_chat] Cancelled by user for session {session_id}")
+            raise
+        except Exception as chat_err:
+            logger.error(f"[stream_chat] Streaming failed: {chat_err}", exc_info=True)
+            raise
+        finally:
+            if session_id in self._active_loops:
+                del self._active_loops[session_id]
 
             # Save assistant messages to storage
             await self._save_conversation_to_storage(session_id, agent_os, message, _msg_watermark)
@@ -725,351 +601,7 @@ class SessionManagerV2:
             # Close SSE connection to signal end of stream
             await self._sse_hub.close_session(session_id)
 
-        except asyncio.CancelledError:
-            # Already handled above, just propagate
-            raise
-        except Exception as e:
-            import uuid as _uuid
-            _error_id = _uuid.uuid4().hex[:8]
-            logger.error(f"Error in stream_chat [#{_error_id}]: {e}", exc_info=True)
-            _err_str = str(e).lower()
-            if "rate limit" in _err_str or "429" in _err_str or "resource exhausted" in _err_str:
-                _code, _msg, _retry = "llm_rate_limit", "模型请求过频，请稍后重试", True
-            elif "timeout" in _err_str or "timed out" in _err_str:
-                _code, _msg, _retry = "resource_timeout", "请求超时，请重试", True
-            elif "budget" in _err_str or "ctx_overflow" in _err_str or "context" in _err_str:
-                _code, _msg, _retry = "llm_ctx_overflow", "上下文长度已超限", False
-            elif "auth" in _err_str or "401" in _err_str or "403" in _err_str or "forbidden" in _err_str:
-                _code, _msg, _retry = "auth_error", "认证失败，请检查 API 密钥", False
-            else:
-                _code, _msg, _retry = "kernel_system_error", f"系统错误 [#{_error_id}]", False
-            await self._sse_hub.publish(
-                session_id,
-                "error",
-                {"code": _code, "message": _msg, "retryable": _retry, "error_id": _error_id},
-            )
 
-    async def _save_turn_to_nimfs(
-        self,
-        session_id: str,
-        agent_os: AgentOS,
-        user_message: "str | list",
-        status: str = "OK",
-        duration_ms: int = 0,
-    ) -> None:
-        """
-        Persist one conversation turn (user message + assistant reply) to NimFS.
-
-        Each call writes a new immutable artifact grouped under task_id=f"conv-{session_id}".
-        Failures are silently logged to avoid disrupting the main flow.
-        Delegates to ConversationTracer for formatting and writing.
-        """
-        try:
-            from nimbus.core.nimfs.manager import NimFSManager
-            from nimbus.server.conv_tracer import ConversationTracer
-
-            # Resolve NimFSManager from the process MMU
-            process = agent_os.get_process(session_id)
-            nimfs_manager: Optional[NimFSManager] = None
-            if process and process.mmu and hasattr(process.mmu, "_nimfs_manager"):
-                nimfs_manager = process.mmu._nimfs_manager
-
-            if nimfs_manager is None:
-                logger.warning(
-                    f"[_save_turn_to_nimfs] No NimFSManager found for session {session_id}, skipping"
-                )
-                return
-
-            # Get or create ConversationTracer for this session
-            if session_id not in self._conv_tracers:
-                self._conv_tracers[session_id] = ConversationTracer(session_id, nimfs_manager)
-            tracer = self._conv_tracers[session_id]
-
-            # Extract last assistant reply from MMU
-            assistant_text = ""
-            if process and process.mmu and process.mmu._stack:
-                messages = process.mmu.current_frame.messages
-                for msg in reversed(messages):
-                    if msg.role == "assistant" and msg.content:
-                        assistant_text = (
-                            msg.content
-                            if isinstance(msg.content, str)
-                            else json.dumps(msg.content, ensure_ascii=False)
-                        )
-                        break
-
-            tracer.record_turn(
-                user_message=user_message,
-                assistant_reply=assistant_text,
-                duration_ms=duration_ms,
-                status=status,
-            )
-        except Exception as e:
-            logger.warning(f"[_save_turn_to_nimfs] Failed to write to NimFS (non-fatal): {e}")
-
-    async def _save_conversation_to_storage(
-        self, session_id: str, agent_os: AgentOS, user_message: "str | list", msg_watermark: int = 0
-    ):
-        """
-        Save conversation messages to storage after chat completion.
-
-        This extracts messages from MMU and saves them to the database,
-        so they can be restored when the user refreshes the page.
-
-        Args:
-            session_id: The session ID.
-            agent_os: The AgentOS instance.
-            user_message: The user message that triggered this chat turn.
-            msg_watermark: The message count in the frame BEFORE this chat turn
-                started. Messages at index >= msg_watermark are from this turn.
-                Default 0 means save all non-user messages (backward compatible).
-        """
-
-        try:
-            # Get the process for this session to access MMU
-            process = agent_os.get_process(session_id)
-            if not process or not process.mmu:
-                logger.warning(
-                    f"No process/MMU found for session {session_id}, cannot save messages"
-                )
-                return
-
-            mmu = process.mmu
-
-            # Get messages from the current frame
-            if not mmu._stack:
-                return
-
-            frame = mmu.current_frame
-            messages = frame.messages
-
-            # Find new messages using watermark (index-based, more reliable than content matching).
-            # msg_watermark is the message count BEFORE this chat turn started.
-            # Messages at index >= msg_watermark are from this turn.
-            messages_to_save = []
-
-            start_idx = msg_watermark
-            for msg in messages[start_idx:]:
-                # Skip the user message itself (already saved by frontend)
-                if msg.role == "user":
-                    # If injection path already persisted this user message, skip entirely
-                    if session_id in self._injection_persisted_sessions:
-                        self._injection_persisted_sessions.discard(session_id)
-                        continue
-                    # Skip the triggering user message to avoid duplicates.
-                    # The frontend already shows it via optimistic update.
-                    # Use robust comparison: handle both str and list (multimodal) content.
-                    def _content_matches(stored: any, original: any) -> bool:
-                        if stored == original:
-                            return True
-                        # Both might be list (multimodal) in different serialization forms
-                        if isinstance(original, list) and isinstance(stored, str):
-                            try:
-                                return json.loads(stored) == original
-                            except Exception:
-                                pass
-                        if isinstance(original, str) and isinstance(stored, list):
-                            try:
-                                return stored == json.loads(original)
-                            except Exception:
-                                pass
-                        # Fallback: compare text content only
-                        if isinstance(original, list):
-                            orig_text = " ".join(p.get("text", "") for p in original if isinstance(p, dict) and p.get("type") == "text").strip()
-                        else:
-                            orig_text = str(original).strip()
-                        if isinstance(stored, list):
-                            stored_text = " ".join(p.get("text", "") for p in stored if isinstance(p, dict) and p.get("type") == "text").strip()
-                        elif isinstance(stored, str):
-                            try:
-                                parsed = json.loads(stored)
-                                if isinstance(parsed, list):
-                                    stored_text = " ".join(p.get("text", "") for p in parsed if isinstance(p, dict) and p.get("type") == "text").strip()
-                                else:
-                                    stored_text = str(stored).strip()
-                            except Exception:
-                                stored_text = str(stored).strip()
-                        else:
-                            stored_text = str(stored).strip()
-                        return orig_text == stored_text and bool(orig_text)
-
-                    if _content_matches(msg.content, user_message):
-                        continue
-                # Skip ephemeral messages (internal system hints, not for user)
-                if msg.meta.get("ephemeral", False):
-                    continue
-                messages_to_save.append(msg)
-
-            # Save each message
-            for msg in messages_to_save:
-                msg_id = f"msg_{uuid.uuid4().hex[:12]}"
-
-                # Prepare content - handle tool_calls specially
-                # Multimodal messages (with images) have list content; serialize for SQLite.
-                content = msg.content or ""
-                if isinstance(content, list):
-                    content = json.dumps(content)
-                artifacts = None
-
-                # If this is an assistant message with tool calls, store them as artifacts
-                if msg.role == "assistant" and msg.tool_calls:
-                    artifacts = [{"type": "tool_calls", "tool_calls": msg.tool_calls}]
-
-                # For tool results, include the tool name
-                if msg.role == "tool":
-                    artifacts = [
-                        {
-                            "type": "tool_result",
-                            "tool_call_id": msg.tool_call_id,
-                            "name": msg.name,
-                        }
-                    ]
-                    # Only pop sub_tool_buffer for meta-tools (specialist agents)
-                    # Non-meta tools (Bash, Read, etc.) should NOT consume the buffer
-                    META_TOOLS = {"Dispatch", "Explore", "Implement", "Design", "Test", "Verify",
-                                  "ReviewCommittee", "ParallelDispatch"}
-                    if session_id in self._sub_tool_buffer and msg.name in META_TOOLS:
-                        sub_events = self._sub_tool_buffer.pop(session_id)
-                        if sub_events:
-                            artifacts.append({
-                                "type": "sub_tool_events",
-                                "events": sub_events,
-                            })
-
-                await self._storage.add_message(
-                    message_id=msg_id,
-                    session_id=session_id,
-                    role=msg.role,
-                    content=content,
-                    artifacts=artifacts,
-                )
-
-            logger.info(f"💾 Saved {len(messages_to_save)} messages for session {session_id}")
-
-        except Exception as e:
-            logger.error(f"Failed to save conversation to storage: {e}", exc_info=True)
-
-    async def _emit_v2_event(self, session_id: str, event: Event):
-        """Convert v2 Event to SSE event."""
-        event_type = event.type.lower()
-
-        # Debug: Log tool events for SSE tracing
-        if event_type in ("tool_started", "tool_finished"):
-            logger.info(
-                f"SSE emit: {event_type} -> pid={event.pid}, session={session_id}, "
-                f"tool={event.data.get('tool', '?')}, action_id={event.data.get('action_id', '?')}"
-            )
-
-        # Detect sub-agent (executor) events by comparing pid with session_id.
-        # Core/chat processes use session_id as pid; executor processes use "proc-xxx".
-        is_sub_agent = event.pid != session_id
-
-        # Inject batch metadata for sub-agent events (parallel routing)
-        if is_sub_agent:
-            agent_os = self._sessions.get(session_id)
-            if agent_os:
-                proc = agent_os._processes.get(event.pid)
-                if proc:
-                    for key in ("parent_action_id", "batch_slot_index", "specialist", "resolved_model"):
-                        val = proc.signals.get(key)
-                        if val is not None:
-                            event.data[key] = val
-
-        # Map v2 event types to SSE event types
-        type_mapping = {
-            "tool_started": "tool_call",
-            "tool_finished": "tool_result",
-            "proc_spawned": "task_start",
-            "proc_finished": "task_done",
-            "step_started": "step_start",
-            "thinking": "message",
-            # Legacy/Alternative mappings
-            "tool_call": "tool_call",
-            "tool_result": "tool_result",
-            "task_start": "task_start",
-            "task_done": "task_done",
-            "task_failed": "task_failed",
-        }
-
-        sse_type = type_mapping.get(event_type, "heartbeat")
-
-        # Special handling for "thinking" token streams to ensure proper text streaming
-        if event_type == "thinking":
-            if is_sub_agent:
-                # Suppress sub-agent thinking tokens -- they should NOT appear
-                # in the orchestrator's message stream.
-                return
-            sse_type = "message"
-            chunk_text = event.data.get("chunk", "")
-            # Forward chunk correctly instead of nesting inside another generic data dict
-            if chunk_text:
-                await self._sse_hub.publish(session_id, "message", {"chunk": chunk_text})
-            return
-
-        if is_sub_agent:
-            # For sub-agent events, only forward tool calls/results (prefixed)
-            # and lifecycle events. Suppress step_start/heartbeat to avoid
-            # interfering with the frontend's message commit flow.
-            if sse_type in ("tool_call", "tool_result"):
-                sse_type = f"sub_{sse_type}"
-            elif sse_type == "task_start":
-                sse_type = "executor_start"
-                # Inject executor metadata for the frontend
-                event.data["_executor_pid"] = event.pid
-            elif sse_type == "task_done":
-                sse_type = "executor_done"
-                event.data["_executor_pid"] = event.pid
-            else:
-                # Suppress other sub-agent events (step_start, heartbeat, etc.)
-                return
-
-        # Buffer sub-tool events for later persistence with Dispatch result
-        if sse_type in ("sub_tool_call", "sub_tool_result"):
-            if session_id not in self._sub_tool_buffer:
-                self._sub_tool_buffer[session_id] = []
-            self._sub_tool_buffer[session_id].append({
-                "type": sse_type,
-                "data": event.data,
-            })
-        elif sse_type == "executor_start":
-            # Only clear buffer for non-batch executors (single Dispatch/Explore/etc.)
-            # Batch executors (parallel native calls) share the buffer -- don't clear per-executor
-            if not event.data.get("parent_action_id"):
-                self._sub_tool_buffer[session_id] = []
-
-        # --- V3 Standard Protocol Injection ---
-        import uuid
-        event.data["event_id"] = str(uuid.uuid4())
-
-        # Map to V3 fsm_state
-        if sse_type == "message":
-            event.data["fsm_state"] = "STREAMING"
-        elif sse_type in ("step_start", "thinking"):
-            event.data["fsm_state"] = "THINKING"
-        elif sse_type in ("tool_call", "tool_result", "executor_start", "executor_done"):
-            event.data["fsm_state"] = "ACTING"
-        else:
-            # Fallback or lifecycle events
-            event.data["fsm_state"] = "IDLE"
-
-        # Artifact ref extraction
-        if "artifact" in event.data:
-            event.data["artifact_ref"] = event.data["artifact"]
-        # -------------------------------------
-
-        # Emit to SSE hub
-        sent_count = await self._sse_hub.publish(
-            session_id,
-            sse_type,
-            event.data,
-        )
-
-        # Debug: Log tool event delivery
-        if sse_type in ("tool_call", "tool_result"):
-            logger.info(
-                f"SSE delivered: {sse_type} -> {sent_count} connections, "
-                f"tool={event.data.get('tool', '?')}"
-            )
 
     async def interrupt_session(self, session_id: str) -> Dict[str, Any]:
         """
@@ -1082,26 +614,22 @@ class SessionManagerV2:
             return {"success": False, "error": "Session not loaded"}
 
         try:
-            # Request interrupt via AgentOS (Phase 2 Kernel)
-            interrupted = agent_os.interrupt(session_id)
+            loop = self._active_loops.get(session_id)
+            interrupted = False
+            if loop:
+                loop.request_interruption()
+                interrupted = True
 
-            # Also cancel the asyncio task to force-stop the agent
-            # (cooperative interrupt only takes effect at next iteration boundary,
-            # but user expects immediate stop)
             task = self._active_tasks.get(session_id)
             if task and not task.done():
                 task.cancel()
                 logger.info(f"🛑 Cancelled active task for session {session_id}")
 
-            # Create and save checkpoint
-            checkpoint_info = None
-            # ... (checkpoint logic remains similar, but access via process)
-
             return {
                 "success": True,
                 "session_id": session_id,
                 "interrupted_processes": 1 if interrupted else 0,
-                "checkpoint": checkpoint_info,
+                "checkpoint": None,
             }
         except Exception as e:
             logger.error(f"Failed to interrupt session {session_id}: {e}")
@@ -1115,10 +643,15 @@ class SessionManagerV2:
         if not agent_os:
             return False
 
-        # Inject via AgentOS (Phase 1 Kernel)
-        # Note: In chat mode, session_id IS the pid
-        # content can be str or list[dict] for multimodal messages
-        return agent_os.inject_message(session_id, content)
+        loop = self._active_loops.get(session_id)
+        if loop and hasattr(loop, "message_queue"):
+            if isinstance(content, list):
+                content = json.dumps(content, ensure_ascii=False)
+            loop.message_queue.enqueue(content)
+            logger.info(f"💉 Injected message into running nimbus-next loop for {session_id}")
+            return True
+            
+        return False
 
     async def save_session_state(self, session_id: str) -> None:
         """Save session state (v2 handles this internally)."""

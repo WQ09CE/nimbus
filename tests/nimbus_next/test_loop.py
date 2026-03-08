@@ -6,9 +6,9 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from nimbus_next.loop import LoopConfig, MessageQueue, RuntimeLoop
-from nimbus_next.mmu import MMU, MMUConfig, PinnedContext
-from nimbus_next.protocol import ActionIR, Fault, StepResult, ToolResult
+from nimbus.core.loop import LoopConfig, MessageQueue, RuntimeLoop
+from nimbus.core.mmu import MMU, MMUConfig, PinnedContext
+from nimbus.core.protocol import ActionIR, Fault, StepResult, ToolResult
 
 
 # =============================================================================

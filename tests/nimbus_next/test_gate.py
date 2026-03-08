@@ -4,13 +4,13 @@ import asyncio
 
 import pytest
 
-from nimbus_next.gate import (
+from nimbus.core.gate import (
     DoomLoopDetector,
     KernelGate,
     _normalize_args,
     _truncate_output,
 )
-from nimbus_next.protocol import ActionIR, Event
+from nimbus.core.protocol import ActionIR, Event
 
 
 # =============================================================================

@@ -58,12 +58,15 @@ class MessageQueue:
     via asyncio.Queue with a drain method.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, wakeup_event: Optional[asyncio.Event] = None) -> None:
         self._queue: asyncio.Queue[str] = asyncio.Queue()
+        self._wakeup_event = wakeup_event
 
     def enqueue(self, message: str) -> None:
         """Add a message to the queue (thread-safe via asyncio.Queue)."""
         self._queue.put_nowait(message)
+        if self._wakeup_event:
+            self._wakeup_event.set()
 
     def drain(self) -> List[str]:
         """Drain all queued messages at once."""
@@ -73,12 +76,17 @@ class MessageQueue:
                 messages.append(self._queue.get_nowait())
             except asyncio.QueueEmpty:
                 break
+        if self._wakeup_event and self._queue.empty():
+            self._wakeup_event.clear()
         return messages
 
     def drain_one(self) -> Optional[str]:
         """Drain one message at a time."""
         try:
-            return self._queue.get_nowait()
+            msg = self._queue.get_nowait()
+            if self._wakeup_event and self._queue.empty():
+                self._wakeup_event.clear()
+            return msg
         except asyncio.QueueEmpty:
             return None
 
@@ -129,8 +137,11 @@ class RuntimeLoop:
         self._steps_since_compaction = 0
         self._interrupted = False
 
-        # Pi-style message queue
-        self.message_queue = MessageQueue()
+        # Pi-style message queue + Graceful steering interrupt
+        self._wakeup_event = asyncio.Event()
+        self.message_queue = MessageQueue(self._wakeup_event)
+        if hasattr(self.vcpu, "set_wakeup_event"):
+            self.vcpu.set_wakeup_event(self._wakeup_event)
 
         # Partial result tracking (pi-style abort recovery)
         self.partial_results: List[ToolResult] = []
@@ -196,8 +207,8 @@ class RuntimeLoop:
 
             # Check if context needs compaction before next step
             if self.mmu.needs_compaction():
-                compacted = await self._try_compaction()
-                if not compacted:
+                summary = await self._try_compaction()
+                if not summary:
                     result = ToolResult(
                         status="ERROR",
                         output="Context window exhausted after max compactions.",
@@ -206,7 +217,7 @@ class RuntimeLoop:
                     )
                     yield {"type": "final", "result": result}
                     return
-                yield {"type": "context_compacted", "compaction_count": self._compaction_count}
+                yield {"type": "context_compacted", "compaction_count": self._compaction_count, "summary": summary}
 
             # ---- Execute one VCPU step ----
             t0 = time.monotonic()
@@ -235,8 +246,9 @@ class RuntimeLoop:
 
             # Handle context overflow fault (retry after compaction)
             if step_result.fault and step_result.fault.code == "CTX_OVERFLOW":
-                compacted = await self._try_compaction()
-                if compacted:
+                summary = await self._try_compaction()
+                if summary:
+                    yield {"type": "context_compacted", "compaction_count": self._compaction_count, "summary": summary}
                     step_result.is_final = False
                     continue
                 else:
@@ -266,11 +278,11 @@ class RuntimeLoop:
 
     # --- Compaction ---
 
-    async def _try_compaction(self) -> bool:
-        """Attempt to compact the context. Returns True if successful."""
+    async def _try_compaction(self) -> Optional[str]:
+        """Attempt to compact the context. Returns summary if successful, None otherwise."""
         if self._compaction_count >= self.config.max_compactions:
             logger.warning("Max compactions (%d) reached", self.config.max_compactions)
-            return False
+            return None
 
         if self._steps_since_compaction < self.config.compaction_cooldown:
             logger.warning(
@@ -287,9 +299,9 @@ class RuntimeLoop:
             self._compaction_count += 1
             self._steps_since_compaction = 0
             self._emit("CONTEXT_COMPACTED", {"summary_len": len(summary)})
-            return True
+            return summary
 
-        return False
+        return None
 
     # --- Fine-grained Events (pi-style) ---
 
