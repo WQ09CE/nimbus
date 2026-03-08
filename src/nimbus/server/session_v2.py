@@ -437,7 +437,6 @@ class SessionManagerV2:
         )
         await self._sse_hub.publish(session_id, "message_start", {"role": "assistant"})
 
-        _msg_watermark = 0
         loop = None
         try:
             logger.info("[stream_chat] Calling agent_os.stream_with_queue...")
@@ -524,78 +523,11 @@ class SessionManagerV2:
             if session_id in self._active_loops:
                 del self._active_loops[session_id]
 
-            # Save assistant messages to storage
-            await self._save_conversation_to_storage(session_id, agent_os, message, _msg_watermark)
-
-            # Persist this turn to NimFS for conversation history
-            _ok_ms = int(time.monotonic() * 1000) - _chat_start_ms
-            await self._save_turn_to_nimfs(session_id, agent_os, message, status="OK", duration_ms=_ok_ms)
-
-            # Check for late-arriving injected messages (race condition fix)
-            # There's a narrow window where inject_message() succeeds (state was still
-            # RUNNING) but _run_process already exited its loop. Those messages sit in
-            # inbox unconsumed. Atomic-swap and persist them here.
-            process = agent_os.get_process(session_id)
-            if process and process.inbox:
-                # Atomic swap — no await between read and clear
-                late_messages, process.inbox = process.inbox, []
-                logger.warning(
-                    f"[stream_chat] Found {len(late_messages)} late-arriving message(s) "
-                    f"in inbox after process finished. Persisting to storage + MMU."
-                )
-                # Skip storage if injection path already persisted this user message
-                if session_id in self._injection_persisted_sessions:
-                    self._injection_persisted_sessions.discard(session_id)
-                    # Still add to MMU for context, but don't re-persist to storage
-                    for late_msg in late_messages:
-                        if process.mmu:
-                            process.mmu.add_user_message(late_msg)
-                        logger.info(f"[stream_chat] Skipped re-saving late message (injection already persisted): {str(late_msg)[:50]}...")
-                else:
-                    for late_msg in late_messages:
-                        msg_id = f"msg_{uuid.uuid4().hex[:12]}"
-                        await self._storage.add_message(
-                            message_id=msg_id,
-                            session_id=session_id,
-                            role="user",
-                            content=late_msg if isinstance(late_msg, str) else json.dumps(late_msg, ensure_ascii=False),
-                        )
-                        if process.mmu:
-                            process.mmu.add_user_message(late_msg)
-                        logger.info(f"[stream_chat] Saved late message: {str(late_msg)[:50]}...")
-                # Re-check: more messages may have arrived during the await calls above
-                if process.inbox:
-                    extras, process.inbox = process.inbox, []
-                    for extra_msg in extras:
-                        msg_id = f"msg_{uuid.uuid4().hex[:12]}"
-                        await self._storage.add_message(
-                            message_id=msg_id,
-                            session_id=session_id,
-                            role="user",
-                            content=extra_msg if isinstance(extra_msg, str) else json.dumps(extra_msg, ensure_ascii=False),
-                        )
-                        if process.mmu:
-                            process.mmu.add_user_message(extra_msg)
-                        logger.info(f"[stream_chat] Saved extra late message: {str(extra_msg)[:50]}...")
-
-            # Save session checkpoint (for persistence/restore)
-            try:
-                process = agent_os.get_process(session_id)
-                if process and process.vcpu:
-                    checkpoint = process.vcpu.create_checkpoint(
-                        session_id=session_id,
-                        reason="turn_complete"
-                    )
-                    await self._storage.save_session_checkpoint(checkpoint)
-                    logger.info(f"💾 Saved session checkpoint for {session_id}")
-            except Exception as e:
-                logger.error(f"Failed to save checkpoint: {e}")
-
             # Emit completion
             await self._sse_hub.publish(
                 session_id,
                 "dag_complete",
-                {"status": result.status},
+                {"status": "OK"},
             )
 
             # Close SSE connection to signal end of stream

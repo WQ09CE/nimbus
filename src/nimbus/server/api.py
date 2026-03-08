@@ -384,32 +384,11 @@ async def inject_message(
     success = await session_manager.inject_message(session_id, inject_content)
 
     if success:
-        # NOTE: We do NOT save to storage here directly.
-        # The vCPU will add it to MMU, and session_v2._save_conversation_to_storage
-        # will persist it along with the assistant's response and tool executions.
-        # This ensures the history strictly reflects what the vCPU actually processed.
         return {"status": "injected", "message": "Message injected into execution loop"}
     else:
-        # Process is not RUNNING (already finished or not started).
-        # inject_message did NOT touch inbox, so we are the sole writer.
-        # Persist to storage + MMU so the message appears in next turn.
-        import uuid
-        message_id = f"msg_{uuid.uuid4().hex[:12]}"
-        await storage.add_message(
-            message_id=message_id,
-            session_id=session_id,
-            role="user",
-            content=data.content,  # Always store text version for persistence
-        )
-        try:
-            agent_os = await session_manager.get_or_create_agent(session_id)
-            process = agent_os.get_process(session_id)
-            if process and process.mmu:
-                process.mmu.add_user_message(inject_content)
-                logger.info(f"[inject] Late message written to MMU for {session_id}")
-        except Exception as e:
-            logger.warning(f"[inject] Could not write late message to MMU: {e}")
-        return {"status": "queued", "message": "Session not active, message saved to history"}
+        # Process is not RUNNING
+        # We stripped legacy SQLite persistence and AgentOS gets MMUs dynamically
+        return {"status": "queued", "message": "Session not active, message ignored in stripped mode"}
 
 
 # =============================================================================
