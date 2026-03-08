@@ -193,6 +193,12 @@ class VCPU:
             return self._error_step(result, "LLM call timed out", retryable=True)
         except asyncio.CancelledError:
             raise
+        except Fault as f:
+            self.mmu.add_system_message(f"[LLM Error] {f.message}")
+            errs = self._exec.on_error()
+            if errs >= self.config.max_consecutive_errors:
+                return self._error_step(result, f"Too many LLM stream errors: {f.message}")
+            return result  # non-final, will retry
         except Exception as e:
             return self._error_step(result, f"LLM error: {e}")
 

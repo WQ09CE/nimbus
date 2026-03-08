@@ -1413,6 +1413,12 @@ class DirectAdapter:
                             if tc.function.name: tool_call_chunks[idx]["name"] += tc.function.name
                             if tc.function.arguments: tool_call_chunks[idx]["arguments"] += tc.function.arguments
 
+                reason = chunk.choices[0].finish_reason
+                if reason and reason not in ("stop", "length", "tool_calls", "function_call", "max_tokens"):
+                    logger.error(f"[LiteLLM] Abnormal finish reason: {reason} (model={current_model})")
+                    yield LLMStreamEvent(type="error", error=f"LLM stopped abruptly with reason: {reason}")
+                    return
+
             total = time.monotonic() - t_start
             logger.info(
                 "[LiteLLM] model=%s TTFB=%.1fs total=%.1fs chunks=%d",
