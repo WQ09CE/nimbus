@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from nimbus import AgentOS, create_agent_os
+from nimbus import AgentOS
 from nimbus.core.protocol import Event
 
 from .permission import PermissionManager

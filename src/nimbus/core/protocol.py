@@ -158,3 +158,19 @@ class Event:
     pid: str
     data: Dict[str, Any] = field(default_factory=dict)
     ts_ms: int = field(default_factory=lambda: int(time.time() * 1000))
+
+# =============================================================================
+# 5. IPC Message (Restored from V3 for server compatibility)
+# =============================================================================
+
+@dataclass
+class IPCMessage:
+    """Inter-process communication message.
+    
+    IPC messages carry references (not data) between processes.
+    """
+    channel: str
+    key: str
+    value_ref: str
+    meta: Dict[str, Any] = field(default_factory=dict)
+    version: str = "1.0"

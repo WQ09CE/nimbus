@@ -72,8 +72,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Initialize default AgentOS for /api/chat endpoint
     from pathlib import Path
 
-    from nimbus.agentos import AgentOS, AgentOSConfig
-    from nimbus.core.runtime.vcpu import VCPUConfig
+    from nimbus.core.agent import AgentOS, AgentConfig
 
     if os.environ.get("NIMBUS_LLM") == "mock":
         # Deterministic mock adapter for integration testing (no external LLM)
@@ -96,19 +95,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Config skills path
     skill_paths = [Path("examples/skills")]
 
-    vcpu_config = VCPUConfig(max_iterations=50)
-    agent_config = AgentOSConfig(
-        vcpu_config=vcpu_config,
-        skill_paths=skill_paths
+    agent_config = AgentConfig(
+        max_iterations=50,
     )
 
-    agent_os = AgentOS(llm_client=llm, config=agent_config)
+    agent_os = AgentOS(adapter=llm, config=agent_config)
 
-    # Register default tools
-    from nimbus.tools import register_default_tools
-
+    # AgentOS registers default tools via its internal ToolRegistry automatically.
     workspace = Path.cwd()
-    register_default_tools(agent_os, workspace=workspace)
 
     logger.info(f"Initialized default AgentOS with model={model}, workspace={workspace}")
     logger.info(f"Loaded skills from: {skill_paths}")
@@ -125,11 +119,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.workspace_agents = {}  # Cache for workspace-specific agents
     app.state.llm = llm  # Keep reference to close on shutdown
 
-    agent_os._ensure_heart_running()
-
     yield
-
-    await agent_os.shutdown()
 
     # Cleanup LLM adapter
     await llm.stop()
