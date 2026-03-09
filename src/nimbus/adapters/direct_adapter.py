@@ -363,6 +363,14 @@ class DirectAdapter:
         if btype == "image":
             mime = block.get("mimeType", "image/png")
             data = block.get("data", "")
+            
+            # Remove data URL prefix if it exists in the raw base64 data
+            if data.startswith("data:"):
+                # format is usually data:image/jpeg;base64,/9j/4AA...
+                parts = data.split(",", 1)
+                if len(parts) == 2:
+                    data = parts[1]
+            
             if target == "anthropic":
                 return {
                     "type": "image",

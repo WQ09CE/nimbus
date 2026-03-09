@@ -141,13 +141,41 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const parsedMessages: Message[] = serverMessages
         .filter(m => m.role !== 'tool')  // tool results are merged into assistant messages
         .map(m => {
-          let content = m.content || "";
-          if (Array.isArray(content)) {
-            content = content.map((b: any) => typeof b === 'string' ? b : b?.text || '').join('\n').trim();
-          } else if (typeof content === 'object') {
-            content = JSON.stringify(content);
+          const rawContent = m.content || "";
+
+          // Extract text and reconstruct image attachments from multimodal content blocks
+          let textContent = "";
+          const reloadedAttachments: ChatAttachment[] = [];
+
+          if (Array.isArray(rawContent)) {
+            for (const block of rawContent as any[]) {
+              if (typeof block === 'string') {
+                textContent += block;
+              } else if (block?.type === 'text') {
+                textContent += (textContent ? '\n' : '') + (block.text || '');
+              } else if (block?.type === 'image') {
+                // Reconstruct image attachment from stored content block
+                const mimeType = block.mimeType || block.mime_type || 'image/png';
+                const base64 = block.data || block.content || '';
+                reloadedAttachments.push({
+                  id: `reload-img-${reloadedAttachments.length}-${Date.now()}`,
+                  type: 'image',
+                  name: block.name || 'image.png',
+                  size: base64.length,
+                  content: base64,
+                  mimeType,
+                  // Build a data URL as preview (no blob URL available after reload)
+                  preview: base64 ? `data:${mimeType};base64,${base64}` : undefined,
+                });
+              }
+            }
+            textContent = textContent.trim();
+          } else if (typeof rawContent === 'object') {
+            textContent = JSON.stringify(rawContent);
+          } else {
+            textContent = String(rawContent);
           }
-          const textContent = String(content);
+
           const timestamp = m.created_at ? new Date(m.created_at.replace(" ", "T") + (m.created_at.includes("Z") ? "" : "Z")).getTime() : Date.now();
 
           // Reconstruct tool parts for assistant messages with tool_calls
@@ -199,6 +227,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             parts,
             toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
             toolResults: toolResults.length > 0 ? toolResults : undefined,
+            attachments: reloadedAttachments.length > 0 ? reloadedAttachments : undefined,
             timestamp,
           };
         });

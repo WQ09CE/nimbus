@@ -503,8 +503,9 @@ class RuntimeLoop:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        # The adapter's chat() returns an LLMResponse with .content
-        response = await self._adapter.chat(messages=messages, tools=[])
+        # Pass messages list as first positional arg (not keyword).
+        # DirectAdapter.chat(mmu, tools) → stream(mmu) handles isinstance(mmu, list).
+        response = await self._adapter.chat(messages, [])
         return response.content or ""
 
     async def _try_compaction(self) -> Optional[str]:

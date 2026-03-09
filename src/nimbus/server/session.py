@@ -127,11 +127,15 @@ class SessionManagerV2:
                 raise ValueError(f"Session not found: {session_id}")
 
             meta = dump.get("metadata", {})
+            need_rebuild = False
             for k, v in updates.items():
                 if k in ("name", "workspace_path"):
                     meta[k] = v
+                    if k == "workspace_path":
+                        need_rebuild = True
                 elif k == "model_config":
                     dump["llm_config"] = v
+                    need_rebuild = True
 
             self._storage.save_session(
                 session_id=session_id,
@@ -143,11 +147,9 @@ class SessionManagerV2:
                 metadata=meta,
             )
 
-            # Invalidate cached AgentOS if config changed
-            if session_id in self._sessions:
-                if any(k in updates for k in ("model_config", "workspace_path")):
-                    logger.info(f"Invalidating cached AgentOS for {session_id}")
-                    del self._sessions[session_id]
+            if need_rebuild and session_id in self._sessions:
+                logger.info(f"Invalidating cached AgentOS for {session_id}")
+                del self._sessions[session_id]
 
             return dump
 
@@ -416,12 +418,6 @@ class SessionManagerV2:
         try:
             logger.info("[stream_chat] Calling agent_os.stream_with_queue...")
             
-            # Stringify multimodal message list for now (nimbus-next uses string natively)
-            if isinstance(message, list):
-                str_msg = json.dumps(message, ensure_ascii=False)
-            else:
-                str_msg = message
-
             # Fire off auto-titling if this is the first real interaction
             session = await self.get_session(session_id)
             if session and session.get("name", "").startswith("New Chat"):
@@ -435,14 +431,20 @@ class SessionManagerV2:
             loop_metadata = dump.get("metadata", {})
             loop_metadata["llm_config"] = dump.get("llm_config", {})
 
+            # Reset execution counters for new turn (iteration is per-task, not cumulative)
+            vcpu_state = dump.get("vcpu_state", {})
+            vcpu_state["iteration"] = 0
+            vcpu_state["consecutive_thoughts"] = 0
+            vcpu_state["consecutive_errors"] = 0
+
             # Generate the RuntimeLoop (pi-style)
             loop = agent_os.stream_with_queue(
-                str_msg,
+                message,
                 session_id=session_id,
                 storage=self._storage,
                 metadata=loop_metadata,
                 initial_messages=dump.get("messages", []),
-                initial_vcpu_state=dump.get("vcpu_state", {}),
+                initial_vcpu_state=vcpu_state,
             )
             self._active_loops[session_id] = loop
 
@@ -551,8 +553,6 @@ class SessionManagerV2:
 
         loop = self._active_loops.get(session_id)
         if loop and hasattr(loop, "message_queue"):
-            if isinstance(content, list):
-                content = json.dumps(content, ensure_ascii=False)
             loop.message_queue.enqueue(content)
             logger.info(f"💉 Injected message into running nimbus-next loop for {session_id}")
             return True

@@ -110,6 +110,33 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
               relative px-4 md:px-5 py-3 md:py-4 shadow-xl
               bg-sky-500/15 border border-sky-400/20 backdrop-blur-md text-nimbus-text rounded-2xl rounded-tr-sm min-w-[30%]
             `}>
+            {/* Image attachments */}
+            {message.attachments && message.attachments.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {message.attachments.map((att) => {
+                  if (att.type === "image") {
+                    const src = att.preview || `data:${att.mimeType};base64,${att.content}`;
+                    return (
+                      <img
+                        key={att.id}
+                        src={src}
+                        alt={att.name}
+                        className="max-w-[240px] max-h-[240px] rounded-xl object-cover border border-sky-400/20 shadow-md"
+                      />
+                    );
+                  }
+                  if (att.type === "text" || att.type === "pdf") {
+                    return (
+                      <div key={att.id} className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-sky-500/10 border border-sky-400/20 text-xs text-sky-200">
+                        <span>{att.type === "pdf" ? "📄" : "📝"}</span>
+                        <span className="truncate max-w-[160px]">{att.name}</span>
+                      </div>
+                    );
+                  }
+                  return null;
+                })}
+              </div>
+            )}
             <div className="text-[15px] leading-relaxed whitespace-pre-wrap font-sans selection:bg-white/20">
               {message.isInjection && (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 mr-2 mb-1 rounded-full text-[11px] font-medium bg-amber-500/20 text-amber-300 border border-amber-400/30">
