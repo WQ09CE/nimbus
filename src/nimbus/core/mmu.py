@@ -409,7 +409,10 @@ class MMU:
 
         # 2. Goal reminder (resists recency bias in long conversations)
         if self._goal:
-            messages.append({"role": "user", "content": f"[Goal] {self._goal}"})
+            messages.append({
+                "role": "user", 
+                "content": f"### 🎯 CURRENT GOAL\n{self._goal}\n\n---\n"
+            })
 
         # 3. Global summary (single merged string, not a growing list)
         if self._global_summary:
