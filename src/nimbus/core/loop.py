@@ -309,19 +309,43 @@ class RuntimeLoop:
         """Convert a StepResult into fine-grained stream events.
 
         Pi emits individual events for text deltas, tool call starts/results.
-        We do the same instead of bundling everything into one 'step' event.
+        We emit events in chronological order: text → tool_call → tool_result
+        paired per tool, so the UI can render them interleaved.
         """
         events: List[Dict[str, Any]] = []
 
-        # Emit per-action events
-        for action in step.actions:
+        # Build a result lookup by action index for pairing
+        result_by_idx: Dict[int, Any] = {}
+        tool_action_idx = 0
+        for i, action in enumerate(step.actions):
             if action.kind == "TOOL_CALL":
+                if tool_action_idx < len(step.results):
+                    result_by_idx[i] = step.results[tool_action_idx]
+                    tool_action_idx += 1
+
+        # Emit events in action order: text and tool pairs interleaved
+        for i, action in enumerate(step.actions):
+            if action.kind == "TOOL_CALL":
+                # Emit tool_call_start
                 events.append({
                     "type": "tool_call_start",
                     "tool": action.name,
                     "args_preview": {k: str(v)[:100] for k, v in action.args.items()},
                     "call_id": action.id,
                 })
+                # Immediately pair with tool_call_done (result)
+                result = result_by_idx.get(i)
+                if result:
+                    event: Dict[str, Any] = {
+                        "type": "tool_call_done",
+                        "tool": action.name,
+                        "call_id": action.id,
+                        "status": result.status,
+                        "output_preview": str(result.output)[:200] if result.output else None,
+                    }
+                    if result.ui_detail:
+                        event["ui_detail"] = result.ui_detail
+                    events.append(event)
             elif action.kind in ("REPLY", "RETURN"):
                 text = action.args.get("text", action.args.get("result", ""))
                 events.append({
@@ -336,22 +360,6 @@ class RuntimeLoop:
                     "content": text,
                     "is_final": False,
                 })
-
-        # Emit per-result events (with split ui_detail)
-        for i, result in enumerate(step.results):
-            tool_name = step.actions[i].name if i < len(step.actions) else "unknown"
-            call_id = step.actions[i].id if i < len(step.actions) else None
-            event: Dict[str, Any] = {
-                "type": "tool_call_done",
-                "tool": tool_name,
-                "call_id": call_id,
-                "status": result.status,
-                "output_preview": str(result.output)[:200] if result.output else None,
-            }
-            # Include ui_detail if present (split tool result)
-            if result.ui_detail:
-                event["ui_detail"] = result.ui_detail
-            events.append(event)
 
         # Emit step summary
         events.append({

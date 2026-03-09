@@ -11,10 +11,15 @@ import {
   getSession,
 } from "@/lib/api";
 
+export type MessagePart =
+  | { type: "text"; content: string }
+  | { type: "tool"; toolCall: ToolCall; toolResult?: ToolResult };
+
 export interface Message {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  parts: MessagePart[];
   toolCalls?: ToolCall[];
   toolResults?: ToolResult[];
   attachments?: ChatAttachment[];
@@ -132,10 +137,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
           content = JSON.stringify(content);
         }
 
+        const textContent = String(content);
         return {
           id: m.id,
           role: m.role as "user" | "assistant" | "system",
-          content: String(content),
+          content: textContent,
+          parts: textContent ? [{ type: "text" as const, content: textContent }] : [],
           timestamp: m.created_at ? new Date(m.created_at.replace(" ", "T") + (m.created_at.includes("Z") ? "" : "Z")).getTime() : Date.now(),
         };
       }).filter(m => (m as any).role !== 'tool');
@@ -189,6 +196,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         id: `user-inject-${Date.now()}`,
         role: "user",
         content,
+        parts: [{ type: "text", content }],
         attachments,
         timestamp: Date.now(),
         isInjection: true,
@@ -203,12 +211,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
 
     // Standard send
-    const userMessage: Message = { id: `user-${Date.now()}`, role: "user", content, attachments, timestamp: Date.now() };
+    const userMessage: Message = { id: `user-${Date.now()}`, role: "user", content, parts: [{ type: "text", content }], attachments, timestamp: Date.now() };
     const abortController = new AbortController();
 
     // Start streaming: prepare an empty assistant message
     const STREAMING_ID = "streaming-assistant";
-    const initialAssistantMsg: Message = { id: STREAMING_ID, role: "assistant", content: "", timestamp: Date.now(), toolCalls: [], toolResults: [] };
+    const initialAssistantMsg: Message = { id: STREAMING_ID, role: "assistant", content: "", parts: [], timestamp: Date.now(), toolCalls: [], toolResults: [] };
 
     set({
       messages: [...get().messages, userMessage, initialAssistantMsg],
@@ -233,14 +241,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
         let updated = false;
 
         switch (type) {
-          case "message":
+          case "message": {
             const chunk = typeof data === "string" ? data : (data as any)?.content || (data as any)?.chunk || "";
             if (chunk) {
               targetMsg.content += chunk;
+              // Build ordered parts: append to last text part or create new one
+              const parts = [...(targetMsg.parts || [])];
+              const lastPart = parts[parts.length - 1];
+              if (lastPart && lastPart.type === "text") {
+                parts[parts.length - 1] = { ...lastPart, content: lastPart.content + chunk };
+              } else {
+                parts.push({ type: "text", content: chunk });
+              }
+              targetMsg.parts = parts;
               updated = true;
             }
             break;
-          case "tool_call":
+          }
+          case "tool_call": {
             if (data && typeof data === "object") {
               const d = data as any;
               const tc: ToolCall = {
@@ -249,10 +267,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 arguments: d.args || d.arguments || {},
               };
               targetMsg.toolCalls = [...(targetMsg.toolCalls || []), tc];
+              // Append tool part in order
+              const parts = [...(targetMsg.parts || [])];
+              parts.push({ type: "tool", toolCall: tc });
+              targetMsg.parts = parts;
               updated = true;
             }
             break;
-          case "tool_result":
+          }
+          case "tool_result": {
             if (data && typeof data === "object") {
               const d = data as any;
               const tcId = d.action_id || d.id;
@@ -263,9 +286,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 error: d.status === "ERROR" ? (d.fault?.message || "Error") : undefined,
               };
               targetMsg.toolResults = [...(targetMsg.toolResults || []), tr];
+              // Find matching tool part and attach result
+              const parts = [...(targetMsg.parts || [])];
+              const matchIdx = parts.findIndex(p => p.type === "tool" && p.toolCall?.id === tcId);
+              if (matchIdx !== -1) {
+                const toolPart = parts[matchIdx] as { type: "tool"; toolCall: ToolCall; toolResult?: ToolResult };
+                parts[matchIdx] = { ...toolPart, toolResult: tr };
+              }
+              targetMsg.parts = parts;
               updated = true;
             }
             break;
+          }
           case "error":
             throw new Error(typeof data === "string" ? data : (data as any)?.message || "Stream error");
         }

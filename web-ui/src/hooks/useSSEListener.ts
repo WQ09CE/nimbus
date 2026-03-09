@@ -18,6 +18,7 @@ export const reconnectToSession = async (sessionId: string, attempt: number = 0)
         id: STREAMING_ID,
         role: "assistant",
         content: "",
+        parts: [],
         timestamp: Date.now(),
         toolCalls: [],
         toolResults: []
@@ -41,14 +42,23 @@ export const reconnectToSession = async (sessionId: string, attempt: number = 0)
             let updated = false;
 
             switch (type) {
-                case "message":
+                case "message": {
                     const chunk = typeof data === "string" ? data : (data as any)?.content || (data as any)?.chunk || "";
                     if (chunk) {
                         targetMsg.content += chunk;
+                        const parts = [...(targetMsg.parts || [])];
+                        const lastPart = parts[parts.length - 1];
+                        if (lastPart && lastPart.type === "text") {
+                            parts[parts.length - 1] = { ...lastPart, content: lastPart.content + chunk };
+                        } else {
+                            parts.push({ type: "text", content: chunk });
+                        }
+                        targetMsg.parts = parts;
                         updated = true;
                     }
                     break;
-                case "tool_call":
+                }
+                case "tool_call": {
                     if (data && typeof data === "object") {
                         const d = data as any;
                         const tc: ToolCall = {
@@ -57,22 +67,35 @@ export const reconnectToSession = async (sessionId: string, attempt: number = 0)
                             arguments: d.args || d.arguments || {},
                         };
                         targetMsg.toolCalls = [...(targetMsg.toolCalls || []), tc];
+                        const parts = [...(targetMsg.parts || [])];
+                        parts.push({ type: "tool", toolCall: tc });
+                        targetMsg.parts = parts;
                         updated = true;
                     }
                     break;
-                case "tool_result":
+                }
+                case "tool_result": {
                     if (data && typeof data === "object") {
                         const d = data as any;
+                        const tcId = d.action_id || d.id;
                         const tr: ToolResult = {
-                            id: d.action_id || d.id || "",
+                            id: tcId || "",
                             name: d.tool || d.name || "unknown",
                             result: d.output !== undefined ? d.output : d.result,
                             error: d.status === "ERROR" ? (d.fault?.message || "Error") : undefined,
                         };
                         targetMsg.toolResults = [...(targetMsg.toolResults || []), tr];
+                        const parts = [...(targetMsg.parts || [])];
+                        const matchIdx = parts.findIndex(p => p.type === "tool" && p.toolCall?.id === tcId);
+                        if (matchIdx !== -1) {
+                            const toolPart = parts[matchIdx] as { type: "tool"; toolCall: ToolCall; toolResult?: ToolResult };
+                            parts[matchIdx] = { ...toolPart, toolResult: tr };
+                        }
+                        targetMsg.parts = parts;
                         updated = true;
                     }
                     break;
+                }
                 case "error":
                     useChatStore.setState({ error: typeof data === "string" ? data : (data as any)?.message || "Stream error" });
                     abortController.abort();

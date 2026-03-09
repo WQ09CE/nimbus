@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import type { Message } from "@/stores/chat-store";
+import type { Message, MessagePart } from "@/stores/chat-store";
 import { useTypewriter } from "@/hooks/useTypewriter";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import type { ToolCall, ToolResult } from "@/lib/api";
@@ -38,7 +38,6 @@ function ThoughtBlock({ content }: { content: string }) {
   );
 }
 
-// Render simple tool pill
 function ToolPill({ call, result }: { call: ToolCall; result?: ToolResult }) {
   const isError = result?.error;
   const isRunning = !result;
@@ -66,11 +65,46 @@ function ToolPill({ call, result }: { call: ToolCall; result?: ToolResult }) {
   );
 }
 
+/** Render a text part with thought block detection */
+function TextPart({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
+  const displayed = useTypewriter(content, isStreaming === true);
+  const clean = displayed.trim();
+  if (!clean) return null;
+
+  const lines = clean.split("\n");
+  const processed: React.ReactNode[] = [];
+  let currentMarkdown: string[] = [];
+
+  const flushMarkdown = () => {
+    if (currentMarkdown.length > 0) {
+      processed.push(
+        <MarkdownRenderer
+          key={`md-${processed.length}`}
+          content={currentMarkdown.join("\n")}
+          isStreaming={isStreaming}
+          className="prose-invert prose-p:leading-relaxed prose-pre:bg-[#0d1117]/80 text-[14px] text-gray-100 w-full max-w-none break-words"
+        />
+      );
+      currentMarkdown = [];
+    }
+  };
+
+  lines.forEach((line, i) => {
+    if (/^`?thought:`?/i.test(line.trim())) {
+      flushMarkdown();
+      processed.push(<ThoughtBlock key={`thought-${i}`} content={line.trim()} />);
+    } else {
+      currentMarkdown.push(line);
+    }
+  });
+  flushMarkdown();
+
+  return <>{processed}</>;
+}
+
 export const ChatMessage = React.memo(function ChatMessage({ message, isStreaming }: ChatMessageProps) {
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
-
-  const typewriterContent = useTypewriter(message.content || "", isStreaming === true && !isSystem);
 
   if (isSystem) {
     return (
@@ -80,12 +114,8 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
     );
   }
 
-  const cleanContent = typewriterContent.trim();
-  const hasContent = Boolean(cleanContent);
-  const hasTools = message.toolCalls && message.toolCalls.length > 0;
-
-  // Show Bubble if there's text content, or if it's the user's message, or if there's no text but we are streaming from assistant with no tools yet
-  const showBubble = hasContent || isUser || (isStreaming && !hasTools && !isUser);
+  const parts = message.parts || [];
+  const hasParts = parts.length > 0;
 
   return (
     <div data-testid={isUser ? "message-user" : "message-assistant"}
@@ -102,72 +132,51 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
           </span>
         </div>
 
-        {showBubble && (
+        {isUser ? (
           <div className={`
               relative px-4 md:px-5 py-3 md:py-4 shadow-xl
-              ${isUser
-              ? "bg-sky-500/15 border border-sky-400/20 backdrop-blur-md text-nimbus-text rounded-2xl rounded-tr-sm min-w-[30%]"
-              : "bg-nimbus-surface backdrop-blur-xl border border-nimbus-border text-gray-100 rounded-2xl rounded-tl-sm w-full"
-            }
+              bg-sky-500/15 border border-sky-400/20 backdrop-blur-md text-nimbus-text rounded-2xl rounded-tr-sm min-w-[30%]
             `}>
-            {isUser ? (
-              <div className="text-[15px] leading-relaxed whitespace-pre-wrap font-sans selection:bg-white/20">
-                {message.isInjection && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 mr-2 mb-1 rounded-full text-[11px] font-medium bg-amber-500/20 text-amber-300 border border-amber-400/30">
-                    <span className="not-italic">&#9889;</span> 插入消息
-                  </span>
-                )}
-                {message.content}
-              </div>
-            ) : (
-              <div className="text-[15px] leading-relaxed w-full">
-                {hasContent ? (
-                  <div className="flex flex-col gap-1 w-full overflow-hidden">
-                    {(() => {
-                      const lines = cleanContent.split("\n");
-                      const processed: React.ReactNode[] = [];
-                      let currentMarkdown: string[] = [];
-
-                      const flushMarkdown = () => {
-                        if (currentMarkdown.length > 0) {
-                          processed.push(
-                            <MarkdownRenderer
-                              key={`md-${processed.length}`}
-                              content={currentMarkdown.join("\n")}
-                              isStreaming={isStreaming}
-                              className="prose-invert prose-p:leading-relaxed prose-pre:bg-[#0d1117]/80 text-[14px] text-gray-100 w-full max-w-none break-words"
-                            />
-                          );
-                          currentMarkdown = [];
-                        }
-                      };
-
-                      lines.forEach((line, i) => {
-                        if (/^`?thought:`?/i.test(line.trim())) {
-                          flushMarkdown();
-                          processed.push(<ThoughtBlock key={`thought-${i}`} content={line.trim()} />);
-                        } else {
-                          currentMarkdown.push(line);
-                        }
-                      });
-                      flushMarkdown();
-                      return processed;
-                    })()}
-                  </div>
-                ) : (
-                  isStreaming && <span className="animate-pulse text-gray-400 text-sm">Thinking...</span>
-                )}
-              </div>
-            )}
+            <div className="text-[15px] leading-relaxed whitespace-pre-wrap font-sans selection:bg-white/20">
+              {message.isInjection && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 mr-2 mb-1 rounded-full text-[11px] font-medium bg-amber-500/20 text-amber-300 border border-amber-400/30">
+                  <span className="not-italic">&#9889;</span> 插入消息
+                </span>
+              )}
+              {message.content}
+            </div>
           </div>
-        )}
-
-        {!isUser && hasTools && (
-          <div className="mt-3 flex flex-col gap-3 w-[95%] border-l-[3px] border-nimbus-border pl-4 ml-6">
-            {message.toolCalls!.map((call, idx) => {
-              const result = message.toolResults?.find(r => r.id === call.id);
-              return <ToolPill key={call.id || idx} call={call} result={result} />;
-            })}
+        ) : (
+          /* Assistant: render parts in chronological order */
+          <div className="flex flex-col gap-3 w-full">
+            {hasParts ? (
+              parts.map((part, idx) => {
+                if (part.type === "text") {
+                  const isLastPart = idx === parts.length - 1;
+                  return (
+                    <div key={`part-${idx}`} className="relative px-4 md:px-5 py-3 md:py-4 shadow-xl bg-nimbus-surface backdrop-blur-xl border border-nimbus-border text-gray-100 rounded-2xl rounded-tl-sm w-full">
+                      <div className="text-[15px] leading-relaxed w-full">
+                        <div className="flex flex-col gap-1 w-full overflow-hidden">
+                          <TextPart content={part.content} isStreaming={isStreaming && isLastPart} />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                } else {
+                  return (
+                    <div key={`part-${idx}`} className="w-[95%] ml-2">
+                      <ToolPill call={part.toolCall} result={part.toolResult} />
+                    </div>
+                  );
+                }
+              })
+            ) : (
+              isStreaming && (
+                <div className="relative px-4 md:px-5 py-3 md:py-4 shadow-xl bg-nimbus-surface backdrop-blur-xl border border-nimbus-border text-gray-100 rounded-2xl rounded-tl-sm w-full">
+                  <span className="animate-pulse text-gray-400 text-sm">Thinking...</span>
+                </div>
+              )
+            )}
           </div>
         )}
       </div>
@@ -178,7 +187,6 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
     prevProps.message.id === nextProps.message.id &&
     prevProps.message.content === nextProps.message.content &&
     prevProps.isStreaming === nextProps.isStreaming &&
-    prevProps.message.toolCalls === nextProps.message.toolCalls &&
-    prevProps.message.toolResults === nextProps.message.toolResults
+    prevProps.message.parts === nextProps.message.parts
   );
 });

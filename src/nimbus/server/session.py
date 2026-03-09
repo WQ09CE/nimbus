@@ -249,6 +249,8 @@ class SessionManagerV2:
 
         agent_config = AgentConfig()
         agent_config.llm_call_timeout = 120.0
+        agent_config.text_is_final = True  # Chat mode: pure text = final response, don't poke
+        agent_config.max_consecutive_thoughts = 2  # Safety net: stop after 2 thoughts max
 
         system_prompt = getattr(nimbus_config, "system_prompt", "") or "You are a capable AI coding assistant. Use tools to solve the user's tasks. Always think step by step in Chinese."
 
