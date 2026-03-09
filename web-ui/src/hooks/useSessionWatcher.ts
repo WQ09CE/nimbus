@@ -14,7 +14,7 @@
 
 import { useEffect, useRef, useCallback } from "react";
 import { useChatStore } from "@/stores/chat-store";
-import { subscribeToEvents } from "@/lib/api";
+import { subscribeToEvents, getSessionMessages } from "@/lib/api";
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
@@ -53,9 +53,34 @@ export function useSessionWatcher() {
 
                     if (event.type === "message_start" && !state.isStreaming) {
                         // Remote client started a task on this session.
-                        // Step 1: reload history to capture the user message they sent
+                        // Step 1: reload history to capture the user message they sent.
+                        // We cannot use switchSession() here because isSameSession=true
+                        // would skip the message reload. Fetch directly and merge instead.
                         try {
-                            await state.switchSession(state.session!);
+                            const serverMessages = await getSessionMessages(sid);
+                            // Find user messages not yet in local state
+                            const localIds = new Set(useChatStore.getState().messages.map(m => m.id));
+                            const newUserMsgs = serverMessages
+                                .filter(m => m.role === "user" && !localIds.has(m.id))
+                                .map(m => {
+                                    const rawContent = m.content || "";
+                                    const textContent = Array.isArray(rawContent)
+                                        ? (rawContent as any[]).filter(b => b?.type === "text" || typeof b === "string").map(b => typeof b === "string" ? b : b.text || "").join("\n").trim()
+                                        : String(rawContent);
+                                    const ts = m.created_at ? new Date(m.created_at.replace(" ", "T") + (m.created_at.includes("Z") ? "" : "Z")).getTime() : Date.now();
+                                    return {
+                                        id: m.id,
+                                        role: "user" as const,
+                                        content: textContent,
+                                        parts: textContent ? [{ type: "text" as const, content: textContent }] : [],
+                                        timestamp: ts,
+                                    };
+                                });
+                            if (newUserMsgs.length > 0) {
+                                useChatStore.setState(s => ({
+                                    messages: [...s.messages, ...newUserMsgs].sort((a, b) => a.timestamp - b.timestamp),
+                                }));
+                            }
                         } catch { /* non-fatal */ }
 
                         // Step 2: attach to the running stream
