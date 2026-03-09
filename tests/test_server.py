@@ -1,14 +1,13 @@
-"""Tests for Nimbus Server API Layer.
+"""Tests for Nimbus Server API Layer (nimbus-next).
 
 This module tests:
 - Pydantic models validation
 - SSE Hub functionality
+- SSE Event Builder
 - Permission Manager functionality
 - API routes (basic structure)
 """
 
-
-# Server modules use relative imports that work within the package
 import sys
 from datetime import datetime
 
@@ -27,8 +26,8 @@ class TestServerModels:
         session = SessionCreate()
         assert session.name is None
         assert session.workspace_path is None
-        assert session.memory_type == "tiered"
-        assert session.planner_type == "dag"
+        assert session.llm_config is None
+        assert session.agent_mode == "standard"
 
     def test_session_create_custom(self):
         """Test SessionCreate with custom values."""
@@ -37,13 +36,13 @@ class TestServerModels:
         session = SessionCreate(
             name="test-session",
             workspace_path="/tmp/test",
-            memory_type="simple",
-            planner_type="simple",
+            llm_config={"provider": "anthropic", "model_id": "claude-sonnet-4-5"},
+            agent_mode="dual_agent",
         )
         assert session.name == "test-session"
         assert session.workspace_path == "/tmp/test"
-        assert session.memory_type == "simple"
-        assert session.planner_type == "simple"
+        assert session.llm_config["provider"] == "anthropic"
+        assert session.agent_mode == "dual_agent"
 
     def test_session_response(self):
         """Test SessionResponse model."""
@@ -53,11 +52,11 @@ class TestServerModels:
             id="sess_12345",
             created_at=datetime.now(),
             status=SessionStatus.ACTIVE,
-            memory_type="tiered",
-            planner_type="dag",
+            agent_mode="standard",
         )
         assert response.id == "sess_12345"
         assert response.status == SessionStatus.ACTIVE
+        assert response.agent_mode == "standard"
 
     def test_permission_decision_enum(self):
         """Test PermissionDecision enum values."""
@@ -82,60 +81,48 @@ class TestServerModels:
         assert len(request.attachments) == 1
         assert request.attachments[0].type == "file"
 
-    def test_dag_response(self):
-        """Test DAGResponse model."""
-        from nimbus.server.models import (
-            DAGResponse,
-            DAGStatsResponse,
-            TaskNodeResponse,
-            TaskStatusEnum,
-        )
+    def test_session_detail(self):
+        """Test SessionDetail model (replaces v3 DAG tests)."""
+        from nimbus.server.models import SessionDetail, SessionStatus
 
-        stats = DAGStatsResponse(
-            total=5,
-            completed=3,
-            running=1,
-            pending=1,
-            failed=0,
-            skipped=0,
-        )
-
-        node = TaskNodeResponse(
-            id="task_1",
-            skill="synthesize",
-            status=TaskStatusEnum.COMPLETED,
-        )
-
-        dag = DAGResponse(
-            id="dag_12345",
-            goal="Test goal",
-            status="running",
+        detail = SessionDetail(
+            id="sess_12345",
             created_at=datetime.now(),
-            nodes=[node],
-            stats=stats,
+            status=SessionStatus.ACTIVE,
+            agent_mode="standard",
+            workspace_path="/tmp/test",
+            memory_stats={"message_count": 10},
         )
-        assert dag.id == "dag_12345"
-        assert len(dag.nodes) == 1
+        assert detail.id == "sess_12345"
+        assert detail.workspace_path == "/tmp/test"
+        assert detail.memory_stats["message_count"] == 10
 
-    def test_skill_response(self):
-        """Test SkillResponse model."""
-        from nimbus.server.models import SkillParameter, SkillResponse
+    def test_session_update(self):
+        """Test SessionUpdate model."""
+        from nimbus.server.models import SessionUpdate
 
-        skill = SkillResponse(
-            name="synthesize",
-            description="Chat skill",
-            source="builtin",
-            parameters=[
-                SkillParameter(
-                    name="message",
-                    type="string",
-                    description="Message to send",
-                    required=True,
-                )
-            ],
+        update = SessionUpdate(
+            name="updated-name",
+            llm_config={"provider": "google", "model_id": "gemini-3-flash-preview"},
         )
-        assert skill.name == "synthesize"
-        assert len(skill.parameters) == 1
+        assert update.name == "updated-name"
+        assert update.llm_config["provider"] == "google"
+
+    def test_sse_event(self):
+        """Test SSEEvent model."""
+        from nimbus.server.models import SSEEvent
+
+        event = SSEEvent(event="message", data={"content": "Hello"})
+        assert event.event == "message"
+        assert event.data["content"] == "Hello"
+
+    def test_health_response(self):
+        """Test HealthResponse model."""
+        from nimbus.server.models import HealthResponse
+
+        health = HealthResponse(status="healthy", version="0.2.0")
+        assert health.status == "healthy"
+        assert health.version == "0.2.0"
 
 
 class TestPermissionManager:
@@ -220,7 +207,7 @@ class TestSSEHub:
 
 
 class TestSSEEventBuilder:
-    """Test SSE event builder helper."""
+    """Test SSE event builder helper (nimbus-next events)."""
 
     def test_connected_event(self):
         """Test connected event creation."""
@@ -230,52 +217,56 @@ class TestSSEEventBuilder:
         assert event.event == SSEHub.EVENT_CONNECTED
         assert event.data["session_id"] == "sess_123"
 
-    def test_planning_event(self):
-        """Test planning event creation."""
+    def test_message_start_event(self):
+        """Test message_start event creation."""
         from nimbus.server.sse import SSEEventBuilder, SSEHub
 
-        event = SSEEventBuilder.planning("analyzing")
-        assert event.event == SSEHub.EVENT_PLANNING
-        assert event.data["status"] == "analyzing"
+        event = SSEEventBuilder.message_start("msg_123")
+        assert event.event == SSEHub.EVENT_MESSAGE_START
+        assert event.data["message_id"] == "msg_123"
 
-    def test_dag_created_event(self):
-        """Test dag_created event creation."""
+    def test_message_event(self):
+        """Test message event creation."""
         from nimbus.server.sse import SSEEventBuilder, SSEHub
 
-        event = SSEEventBuilder.dag_created(
-            dag_id="dag_123",
-            goal="Test goal",
-            total_tasks=5,
-        )
-        assert event.event == SSEHub.EVENT_DAG_CREATED
-        assert event.data["dag_id"] == "dag_123"
-        assert event.data["total_tasks"] == 5
+        event = SSEEventBuilder.message("Hello world")
+        assert event.event == SSEHub.EVENT_MESSAGE
+        assert event.data["content"] == "Hello world"
 
-    def test_task_done_event(self):
-        """Test task_done event creation."""
+    def test_tool_call_event(self):
+        """Test tool_call event creation."""
         from nimbus.server.sse import SSEEventBuilder, SSEHub
 
-        event = SSEEventBuilder.task_done(
-            task_id="task_1",
-            result="Success",
-            duration_ms=150,
-        )
-        assert event.event == SSEHub.EVENT_TASK_DONE
-        assert event.data["task_id"] == "task_1"
-        assert event.data["duration_ms"] == 150
-
-    def test_permission_request_event(self):
-        """Test permission_request event creation."""
-        from nimbus.server.sse import SSEEventBuilder, SSEHub
-
-        event = SSEEventBuilder.permission_request(
-            request_id="perm_123",
+        event = SSEEventBuilder.tool_call(
             tool="bash",
             args={"command": "ls -la"},
+            action_id="act_123",
         )
-        assert event.event == SSEHub.EVENT_PERMISSION_REQUEST
-        assert event.data["request_id"] == "perm_123"
+        assert event.event == SSEHub.EVENT_TOOL_CALL
         assert event.data["tool"] == "bash"
+        assert event.data["args"]["command"] == "ls -la"
+
+    def test_tool_result_event(self):
+        """Test tool_result event creation."""
+        from nimbus.server.sse import SSEEventBuilder, SSEHub
+
+        event = SSEEventBuilder.tool_result(
+            tool="bash",
+            result="output",
+            action_id="act_123",
+            status="OK",
+        )
+        assert event.event == SSEHub.EVENT_TOOL_RESULT
+        assert event.data["tool"] == "bash"
+        assert event.data["status"] == "OK"
+
+    def test_done_event(self):
+        """Test done event creation."""
+        from nimbus.server.sse import SSEEventBuilder, SSEHub
+
+        event = SSEEventBuilder.done("OK")
+        assert event.event == SSEHub.EVENT_DONE
+        assert event.data["status"] == "OK"
 
     def test_error_event(self):
         """Test error event creation."""
@@ -286,25 +277,13 @@ class TestSSEEventBuilder:
         assert event.data["code"] == "execution_error"
         assert event.data["message"] == "Task failed"
 
+    def test_heartbeat_event(self):
+        """Test heartbeat event creation."""
+        from nimbus.server.sse import SSEEventBuilder, SSEHub
 
-class TestMiddleware:
-    """Test middleware helpers."""
-
-    def test_create_error_response(self):
-        """Test error response creation."""
-        from nimbus.server.middleware import create_error_response
-
-        response = create_error_response(
-            status_code=404,
-            code="not_found",
-            message="Resource not found",
-            details={"id": "123"},
-        )
-
-        assert response["code"] == "not_found"
-        assert response["message"] == "Resource not found"
-        assert response["details"]["id"] == "123"
-        assert "timestamp" in response
+        event = SSEEventBuilder.heartbeat()
+        assert event.event == SSEHub.EVENT_HEARTBEAT
+        assert "timestamp" in event.data
 
 
 class TestAPIRouter:
@@ -316,12 +295,12 @@ class TestAPIRouter:
 
         assert router is not None
 
-        # Check some routes exist
+        # Check some routes exist (nimbus-next routes)
         route_paths = [r.path for r in router.routes]
         assert "/health" in route_paths
         assert "/config" in route_paths
         assert "/sessions" in route_paths
-        assert "/skills" in route_paths
+        assert "/models" in route_paths
 
     def test_fastapi_app_creation(self):
         """Test FastAPI app can be created with router."""

@@ -162,7 +162,7 @@ class TestMMU:
         mmu.clear()
         assert mmu.message_count == 0
         ctx = mmu.assemble_context()
-        assert not any("Goal" in str(m.get("content", "")) for m in ctx)
+        assert not any("GOAL" in str(m.get("content", "")).upper() for m in ctx)
 
     def test_system_message(self):
         mmu = MMU()
