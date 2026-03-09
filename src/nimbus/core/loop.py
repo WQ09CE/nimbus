@@ -340,9 +340,11 @@ class RuntimeLoop:
         # Emit per-result events (with split ui_detail)
         for i, result in enumerate(step.results):
             tool_name = step.actions[i].name if i < len(step.actions) else "unknown"
+            call_id = step.actions[i].id if i < len(step.actions) else None
             event: Dict[str, Any] = {
                 "type": "tool_call_done",
                 "tool": tool_name,
+                "call_id": call_id,
                 "status": result.status,
                 "output_preview": str(result.output)[:200] if result.output else None,
             }
@@ -361,8 +363,9 @@ class RuntimeLoop:
             "result_count": len(step.results),
         })
 
-        # Final result
-        if step.is_final and step.final_result:
+        # Final result — only emit if no REPLY/RETURN action already emitted text
+        has_reply = any(a.kind in ("REPLY", "RETURN") for a in step.actions)
+        if step.is_final and step.final_result and not has_reply:
             events.append({
                 "type": "text_delta",
                 "content": str(step.final_result.output)[:500] if step.final_result.output else "",

@@ -38,7 +38,7 @@ class PermissionDecision(str, Enum):
 
 
 class TaskStatusEnum(str, Enum):
-    """Task execution status."""
+    """Task execution status (kept for session status)."""
 
     PENDING = "pending"
     RUNNING = "running"
@@ -57,8 +57,6 @@ class SessionCreate(BaseModel):
 
     name: Optional[str] = None
     workspace_path: Optional[str] = None
-    memory_type: str = "tiered"  # simple | tiered
-    planner_type: str = "dag"  # simple | dag
     llm_config: Optional[Dict[str, str]] = None  # {provider, model_id}
     agent_mode: str = "standard"  # standard | dual_agent
 
@@ -79,14 +77,9 @@ class SessionResponse(BaseModel):
     name: Optional[str] = None
     created_at: datetime
     status: SessionStatus
-    memory_type: str
-    planner_type: str
-    agent_mode: str = "standard"  # standard | dual_agent
+    agent_mode: str = "standard"
     workspace_path: Optional[str] = None
-    last_message_at: Optional[datetime] = None
-    message_count: int = 0
     llm_config: Optional[Dict[str, str]] = None
-    first_message_preview: Optional[str] = None
 
 
 class SessionDetail(SessionResponse):
@@ -206,93 +199,6 @@ class PermissionRuleUpdate(BaseModel):
 
 
 # =============================================================================
-# DAG Models (Nimbus Extension)
-# =============================================================================
-
-
-class TaskNodeResponse(BaseModel):
-    """Task node in a DAG."""
-
-    id: str
-    skill: str
-    params: Dict[str, Any] = Field(default_factory=dict)
-    status: TaskStatusEnum
-    depends_on: List[str] = Field(default_factory=list)
-    result: Optional[Any] = None
-    error: Optional[str] = None
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
-    duration_ms: Optional[int] = None
-
-
-class DAGStatsResponse(BaseModel):
-    """Statistics for DAG execution."""
-
-    total: int
-    completed: int
-    running: int
-    pending: int
-    failed: int
-    skipped: int
-
-
-class DAGResponse(BaseModel):
-    """Response model for DAG status."""
-
-    id: str
-    goal: str
-    status: str  # pending | running | completed | failed
-    created_at: datetime
-    nodes: List[TaskNodeResponse]
-    stats: DAGStatsResponse
-
-
-# =============================================================================
-# Skill/Tool Models
-# =============================================================================
-
-
-class SkillParameter(BaseModel):
-    """Parameter definition for a skill."""
-
-    name: str
-    type: str
-    description: str
-    required: bool = False
-    default: Optional[Any] = None
-
-
-class SkillResponse(BaseModel):
-    """Response model for a skill."""
-
-    name: str
-    description: str
-    source: str  # builtin | mcp:{server_name} | markdown
-    parameters: List[SkillParameter]
-
-
-class SkillList(BaseModel):
-    """List of available skills."""
-
-    skills: List[SkillResponse]
-
-
-class MCPServerStatus(BaseModel):
-    """Status of an MCP server."""
-
-    name: str
-    status: str  # connected | disconnected | error
-    tools: List[str]
-    error: Optional[str] = None
-
-
-class MCPServerList(BaseModel):
-    """List of MCP servers."""
-
-    servers: List[MCPServerStatus]
-
-
-# =============================================================================
 # SSE Event Models
 # =============================================================================
 
@@ -312,10 +218,7 @@ class SSEEvent(BaseModel):
 class ServerConfig(BaseModel):
     """Server configuration response."""
 
-    default_memory_type: str = "tiered"
-    default_planner_type: str = "dag"
     max_concurrent_sessions: int = 10
-    mcp_servers: List[str] = Field(default_factory=list)
     default_model: str = ""
 
 

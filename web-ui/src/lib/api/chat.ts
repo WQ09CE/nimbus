@@ -44,10 +44,6 @@ export interface ToolCall {
   id?: string;
   name: string;
   arguments: Record<string, unknown>;
-  agentType?: "core" | "dispatch";
-  // Nested executor tool calls (only present on Dispatch tools)
-  subCalls?: ToolCall[];
-  subResults?: ToolResult[];
 }
 
 export interface ToolResult {
@@ -64,25 +60,12 @@ export interface ToolResult {
 export type ChatEventType =
   | "connected"
   | "message_start"
-  | "planning"
-  | "dag_created"
-  | "task_start"
-  | "step_start"
+  | "message"
   | "tool_call"
   | "tool_result"
-  | "sub_tool_call"
-  | "sub_tool_result"
-  | "executor_start"
-  | "executor_done"
-  | "task_done"
-  | "task_failed"
-  | "permission_request"
-  | "dag_complete"
-  | "message"
+  | "done"
   | "error"
-  | "heartbeat"
-  | "session_updated"
-  | "thinking";
+  | "heartbeat";
 
 export interface ChatEvent {
   type: ChatEventType;

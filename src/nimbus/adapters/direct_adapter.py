@@ -104,7 +104,42 @@ def _extract_tool_calls_from_json(json_str: str) -> list[dict] | None:
     try:
         parsed = json.loads(json_str)
     except (json.JSONDecodeError, ValueError):
-        return None
+        # Fallback: model might have generated implicit python code blocks like `ls(".")`
+        # Or implicit agent OS tools like `call:ls{"path":"."}`
+        results = []
+        
+        # 1. Match `call:tool_name{...}`
+        call_matches = re.finditer(r'call:\s*([a-zA-Z0-9_-]+)\s*(\{.*?\})', json_str, re.DOTALL)
+        for m in call_matches:
+            name, args_str = m.group(1), m.group(2)
+            try:
+                args = json.loads(args_str)
+                results.append({"name": name, "arguments": args})
+            except:
+                pass
+                
+        # 2. Match python style `tool_name(k="v", k2=v2)` 
+        # Very simple heuristic: word(string)
+        py_matches = re.finditer(r'([a-zA-Z0-9_-]+)\s*\((.*?)\)', json_str, re.DOTALL)
+        for m in py_matches:
+            name, args_str = m.group(1), m.group(2)
+            # If we already found call: matches, skip this to avoid double counting
+            if results: continue
+            
+            # Simple heuristic for argument string e.g., `"."` or `path="."`
+            args = {}
+            if args_str.strip():
+                # Attempt to parse as json string if it's just a single string argument like `"."`
+                try:
+                    val = json.loads(args_str)
+                    if isinstance(val, str):
+                        args["path"] = val
+                except:
+                    # Generic fallback: just dump the raw string
+                    args["raw_args"] = args_str.strip()
+            results.append({"name": name, "arguments": args})
+            
+        return results if results else None
 
     # Unwrap {"tool_calls": [...]} wrapper (qwen/ollama format)
     if isinstance(parsed, dict) and "tool_calls" in parsed and isinstance(parsed["tool_calls"], list):
@@ -395,6 +430,8 @@ class DirectAdapter:
                         "parameters": t.get("parameters", {}),
                     }
                 })
+        return result
+
     async def chat(
         self,
         mmu: Any,
@@ -1414,7 +1451,16 @@ class DirectAdapter:
                             if tc.function.arguments: tool_call_chunks[idx]["arguments"] += tc.function.arguments
 
                 reason = chunk.choices[0].finish_reason
-                if reason and reason not in ("stop", "length", "tool_calls", "function_call", "max_tokens"):
+                if reason == "malformed_function_call":
+                    # The LLM tried to call a non-existent tool or bad schema natively. 
+                    # Instead of returning empty (which causes infinite retry loops), yield a fake text response.
+                    error_msg = getattr(chunk.choices[0], 'finishMessage', 'malformed_function_call')
+                    logger.warning(f"[LiteLLM] Intercepted malformed function call: {error_msg}")
+                    yield LLMStreamEvent(type="text", text=f"\n\n[System Error: Native tool call failed ({error_msg}). Please try again using only the exact tool names provided in the schema, such as 'Bash' or 'Read'.]\n")
+                    yield LLMStreamEvent(type="stop", reason="stop")
+                    return
+                    
+                if reason and reason not in ("stop", "length", "tool_calls", "function_call", "max_tokens", "content_filter"):
                     logger.error(f"[LiteLLM] Abnormal finish reason: {reason} (model={current_model})")
                     yield LLMStreamEvent(type="error", error=f"LLM stopped abruptly with reason: {reason}")
                     return

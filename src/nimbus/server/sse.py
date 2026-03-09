@@ -37,19 +37,13 @@ class SSEHub:
     - Heartbeat for keeping connections alive
     """
 
-    # SSE Event Types
+    # SSE Event Types (pi-style minimal set)
     EVENT_CONNECTED = "connected"
     EVENT_MESSAGE_START = "message_start"
-    EVENT_PLANNING = "planning"
-    EVENT_DAG_CREATED = "dag_created"
-    EVENT_TASK_START = "task_start"
+    EVENT_MESSAGE = "message"
     EVENT_TOOL_CALL = "tool_call"
     EVENT_TOOL_RESULT = "tool_result"
-    EVENT_TASK_DONE = "task_done"
-    EVENT_TASK_FAILED = "task_failed"
-    EVENT_PERMISSION_REQUEST = "permission_request"
-    EVENT_DAG_COMPLETE = "dag_complete"
-    EVENT_MESSAGE = "message"
+    EVENT_DONE = "done"
     EVENT_ERROR = "error"
     EVENT_HEARTBEAT = "heartbeat"
 
@@ -65,12 +59,14 @@ class SSEHub:
         self._heartbeat_interval = heartbeat_interval
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
+        self._closed_sessions = set()
 
     def prepare_session(self, session_id: str) -> None:
         """Prepare event buffer for a session. Call before starting background work."""
         if session_id not in self._pending_events:
             self._pending_events[session_id] = []
         self._event_log[session_id] = []  # Reset log for new session run
+        self._closed_sessions.discard(session_id)
 
     async def start(self) -> None:
         """Start the heartbeat task."""
@@ -128,6 +124,9 @@ class SSEHub:
                 pending = self._pending_events.pop(session_id, [])
                 for event_str in pending:
                     await connection.queue.put(event_str)
+
+            if session_id in self._closed_sessions:
+                await connection.queue.put(None)
 
         # Send connected event (after replay, so order is: buffered events -> connected)
         await self._send_to_connection(connection, self.EVENT_CONNECTED, {"session_id": session_id})
@@ -270,7 +269,7 @@ class SSEHub:
 
     async def close_session(self, session_id: str) -> None:
         """Close all connections for a session.
-
+        
         Args:
             session_id: Session to close.
         """
@@ -280,9 +279,9 @@ class SSEHub:
                 await conn.queue.put(None)  # Signal to close
             if session_id in self._connections:
                 del self._connections[session_id]
-            # Also clean up any pending events and event log
-            self._pending_events.pop(session_id, None)
-            self._event_log.pop(session_id, None)
+            self._closed_sessions.add(session_id)
+            # Event log and pending events are kept so late-subscribing clients can still replay.
+            # They will be reset by `prepare_session` on the next run.
 
     def get_active_sessions(self) -> List[str]:
         """Get list of session IDs with active connections."""
@@ -303,80 +302,19 @@ class SSEEventBuilder:
         return SSEEvent(event=SSEHub.EVENT_MESSAGE_START, data={"message_id": message_id})
 
     @staticmethod
-    def planning(status: str = "creating_plan") -> SSEEvent:
-        """Create planning event."""
-        return SSEEvent(event=SSEHub.EVENT_PLANNING, data={"status": status})
-
-    @staticmethod
-    def dag_created(
-        dag_id: str, goal: str, total_tasks: int, nodes: Optional[List[Dict]] = None
-    ) -> SSEEvent:
-        """Create dag_created event."""
-        return SSEEvent(
-            event=SSEHub.EVENT_DAG_CREATED,
-            data={
-                "dag_id": dag_id,
-                "goal": goal,
-                "total_tasks": total_tasks,
-                "nodes": nodes or [],
-            },
-        )
-
-    @staticmethod
-    def task_start(task_id: str, skill: str, params: Dict[str, Any]) -> SSEEvent:
-        """Create task_start event."""
-        return SSEEvent(
-            event=SSEHub.EVENT_TASK_START,
-            data={
-                "task_id": task_id,
-                "skill": skill,
-                "params": params,
-            },
-        )
-
-    @staticmethod
-    def tool_call(tool: str, args: Dict[str, Any]) -> SSEEvent:
+    def tool_call(tool: str, args: Dict[str, Any], action_id: str = None) -> SSEEvent:
         """Create tool_call event."""
-        return SSEEvent(event=SSEHub.EVENT_TOOL_CALL, data={"tool": tool, "args": args})
+        return SSEEvent(event=SSEHub.EVENT_TOOL_CALL, data={"tool": tool, "args": args, "action_id": action_id})
 
     @staticmethod
-    def tool_result(tool: str, result: Any) -> SSEEvent:
+    def tool_result(tool: str, result: Any, action_id: str = None, status: str = "OK") -> SSEEvent:
         """Create tool_result event."""
-        return SSEEvent(event=SSEHub.EVENT_TOOL_RESULT, data={"tool": tool, "result": result})
+        return SSEEvent(event=SSEHub.EVENT_TOOL_RESULT, data={"tool": tool, "result": result, "action_id": action_id, "status": status})
 
     @staticmethod
-    def task_done(task_id: str, result: Any, duration_ms: int) -> SSEEvent:
-        """Create task_done event."""
-        return SSEEvent(
-            event=SSEHub.EVENT_TASK_DONE,
-            data={
-                "task_id": task_id,
-                "result": result,
-                "duration_ms": duration_ms,
-            },
-        )
-
-    @staticmethod
-    def task_failed(task_id: str, error: str) -> SSEEvent:
-        """Create task_failed event."""
-        return SSEEvent(event=SSEHub.EVENT_TASK_FAILED, data={"task_id": task_id, "error": error})
-
-    @staticmethod
-    def permission_request(request_id: str, tool: str, args: Dict[str, Any]) -> SSEEvent:
-        """Create permission_request event."""
-        return SSEEvent(
-            event=SSEHub.EVENT_PERMISSION_REQUEST,
-            data={
-                "request_id": request_id,
-                "tool": tool,
-                "args": args,
-            },
-        )
-
-    @staticmethod
-    def dag_complete(dag_id: str, stats: Dict[str, int]) -> SSEEvent:
-        """Create dag_complete event."""
-        return SSEEvent(event=SSEHub.EVENT_DAG_COMPLETE, data={"dag_id": dag_id, "stats": stats})
+    def done(status: str = "OK") -> SSEEvent:
+        """Create done event."""
+        return SSEEvent(event=SSEHub.EVENT_DONE, data={"status": status})
 
     @staticmethod
     def message(content: str, artifacts: Optional[List] = None) -> SSEEvent:
