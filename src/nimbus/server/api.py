@@ -551,9 +551,15 @@ async def subscribe_events(
     session_manager=Depends(get_session_manager),
     sse_hub=Depends(get_sse_hub),
 ):
-    """Subscribe to SSE events for a running session (for reconnection)."""
-    if not session_manager.is_session_running(session_id):
-        raise HTTPException(status_code=404, detail="No active task for this session")
+    """Subscribe to SSE events for a session.
+
+    Supports both reconnection (mid-stream) and multi-client observation.
+    When no task is running, the subscriber stays connected and will receive
+    events when the next task starts (event log replay via SSEHub).
+    """
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     async def event_stream():
         async for event in sse_hub.subscribe(session_id):

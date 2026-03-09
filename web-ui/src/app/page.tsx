@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { useChatStore } from "@/stores";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatList } from "@/components/chat/ChatList";
@@ -11,7 +12,7 @@ import { ArtifactViewer } from "@/components/chat/ArtifactViewer";
 
 import { SessionPanel } from "@/components/session/SessionPanel";
 
-export default function Home() {
+function Home() {
   // Fine-grained selectors — only subscribe to what Home actually needs
   const session = useChatStore(s => s.session);
   const messages = useChatStore(s => s.messages);
@@ -29,6 +30,7 @@ export default function Home() {
   const interruptMessage = useChatStore(s => s.interruptMessage);
   const clearError = useChatStore(s => s.clearError);
 
+  const searchParams = useSearchParams();
   const [mounted, setMounted] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
   const [showSessionPanel, setShowSessionPanel] = useState(false);
@@ -44,9 +46,13 @@ export default function Home() {
   useEffect(() => {
     setMounted(true);
     const init = async () => {
+      // URL param takes highest priority: ?session=<id> for multi-client sharing
+      const urlSessionId = searchParams.get("session");
       const savedSessionId = sessionStorage.getItem("nimbus_session_id");
-      if (savedSessionId && !session) {
-        await loadSession(savedSessionId);
+      const targetSessionId = urlSessionId || savedSessionId;
+
+      if (targetSessionId && !session) {
+        await loadSession(targetSessionId);
       } else if (!session) {
         await createNewSession();
       }
@@ -321,5 +327,17 @@ export default function Home() {
         onClose={() => setShowSessionPanel(false)}
       />
     </div>
+  );
+}
+
+export default function Page() {
+  return (
+    <Suspense fallback={
+      <div className="h-screen bg-nimbus-bg flex items-center justify-center">
+        <div className="text-gray-500 font-mono">Loading...</div>
+      </div>
+    }>
+      <Home />
+    </Suspense>
   );
 }
