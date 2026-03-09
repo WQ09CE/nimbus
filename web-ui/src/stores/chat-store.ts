@@ -9,6 +9,8 @@ import {
   injectMessage,
   getSessionMessages,
   getSession,
+  getSessionStatus,
+  subscribeToEvents,
 } from "@/lib/api";
 
 export type MessagePart =
@@ -54,6 +56,7 @@ interface ChatState {
   clearError: () => void;
   closeArtifact: () => void;
   reset: () => void;
+  _attachToRunningSession: (sessionId: string) => void;
 }
 
 const initialState = {
@@ -243,10 +246,136 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set({ messages: [...parsedMessages, ...streaming], isLoading: false });
       }
 
+      // Check if the session has a running task — if so, attach to the SSE stream
+      // so this client receives real-time events (multi-client observation)
+      try {
+        const status = await getSessionStatus(session.id);
+        if (status.running && get().session?.id === session.id && !get().isStreaming) {
+          get()._attachToRunningSession(session.id);
+        }
+      } catch {
+        // Status check failure is non-fatal
+      }
+
     } catch (err) {
       console.error("[Store] Load messages failed", err);
       set({ isLoading: false });
     }
+  },
+
+  /** Attach to an already-running session's SSE stream (multi-client / reconnect). */
+  _attachToRunningSession: (sessionId: string) => {
+    const STREAMING_ID = "streaming-assistant";
+    const abortController = new AbortController();
+
+    const initialAssistantMsg: Message = {
+      id: STREAMING_ID,
+      role: "assistant",
+      content: "",
+      parts: [],
+      timestamp: Date.now(),
+      toolCalls: [],
+      toolResults: [],
+    };
+
+    set(s => ({
+      isStreaming: true,
+      streamAbortController: abortController,
+      messages: [...s.messages, initialAssistantMsg],
+    }));
+
+    (async () => {
+      try {
+        for await (const event of subscribeToEvents(sessionId, abortController.signal)) {
+          // Bail out if the session has changed
+          if (get().session?.id !== sessionId) { abortController.abort(); break; }
+
+          const { type, data } = event;
+          const currentMsgs = get().messages;
+          const targetIdx = currentMsgs.findIndex(m => m.id === STREAMING_ID);
+          if (targetIdx === -1) continue;
+
+          const targetMsg = { ...currentMsgs[targetIdx] };
+          let updated = false;
+
+          switch (type) {
+            case "message": {
+              const chunk = typeof data === "string" ? data : (data as any)?.content || (data as any)?.chunk || "";
+              if (chunk) {
+                targetMsg.content += chunk;
+                const parts = [...(targetMsg.parts || [])];
+                const last = parts[parts.length - 1];
+                if (last?.type === "text") {
+                  parts[parts.length - 1] = { ...last, content: last.content + chunk };
+                } else {
+                  parts.push({ type: "text", content: chunk });
+                }
+                targetMsg.parts = parts;
+                updated = true;
+              }
+              break;
+            }
+            case "tool_call": {
+              if (data && typeof data === "object") {
+                const d = data as any;
+                const tc: ToolCall = {
+                  id: d.action_id || d.id || `tc-${Date.now()}`,
+                  name: d.tool || d.name || "unknown",
+                  arguments: d.args || d.arguments || {},
+                };
+                targetMsg.toolCalls = [...(targetMsg.toolCalls || []), tc];
+                const parts = [...(targetMsg.parts || [])];
+                parts.push({ type: "tool", toolCall: tc });
+                targetMsg.parts = parts;
+                updated = true;
+              }
+              break;
+            }
+            case "tool_result": {
+              if (data && typeof data === "object") {
+                const d = data as any;
+                const tcId = d.action_id || d.id;
+                const tr: ToolResult = {
+                  id: tcId || "",
+                  name: d.tool || d.name || "unknown",
+                  result: d.output !== undefined ? d.output : d.result,
+                  error: d.status === "ERROR" ? (d.fault?.message || "Error") : undefined,
+                  ui_detail: d.ui_detail,
+                };
+                targetMsg.toolResults = [...(targetMsg.toolResults || []), tr];
+                const parts = [...(targetMsg.parts || [])];
+                const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
+                if (matchIdx !== -1) {
+                  parts[matchIdx] = { ...(parts[matchIdx] as any), toolResult: tr };
+                }
+                targetMsg.parts = parts;
+                updated = true;
+              }
+              break;
+            }
+            case "done":
+            case "error":
+              abortController.abort();
+              break;
+          }
+
+          if (updated) {
+            const nextMsgs = [...currentMsgs];
+            nextMsgs[targetIdx] = targetMsg;
+            set({ messages: nextMsgs });
+          }
+        }
+      } catch {
+        // stream ended or aborted
+      } finally {
+        if (get().session?.id === sessionId) {
+          const finalMsgs = [...get().messages];
+          const idx = finalMsgs.findIndex(m => m.id === STREAMING_ID);
+          if (idx !== -1) finalMsgs[idx] = { ...finalMsgs[idx], id: `assistant-${Date.now()}` };
+          set({ messages: finalMsgs, isStreaming: false, streamAbortController: null });
+        }
+      }
+    })();
   },
 
   loadSession: async (sessionId: string) => {
