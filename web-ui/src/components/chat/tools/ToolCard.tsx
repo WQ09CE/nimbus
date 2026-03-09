@@ -22,6 +22,7 @@ interface ToolCardProps {
     agentType?: "core" | "dispatch";
     subCalls?: ToolCall[];
     subResults?: ToolResult[];
+    ui_detail?: Record<string, any>;
   };
   defaultExpanded?: boolean;
   /**
@@ -103,11 +104,28 @@ export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: To
             summary += ` :1-${limit}`;
           }
         }
+
+        // For Edit, add a brief summary of what changed
+        if (tool.name === "Edit" && typeof tool.args?.old_string === 'string') {
+          const oldLines = tool.args.old_string.split('\n').length;
+          const newLines = (tool.args.new_string || '').split('\n').length;
+          if (oldLines !== newLines) {
+            summary += ` (${oldLines}\u2192${newLines} lines)`;
+          }
+        }
       }
     } else if (["Bash", "RunCommand", "run_command", "execute"].some(n => tool.name.toLowerCase().includes(n.toLowerCase()))) {
       if (typeof cmdArg === 'string') {
         summary = cmdArg;
       }
+    } else if (tool.name === "Grep") {
+      summary = tool.args.pattern || '';
+      if (tool.args.path) {
+        const parts = String(tool.args.path).split('/');
+        summary += ` in ${parts.pop()}`;
+      }
+    } else if (tool.name === "Glob") {
+      summary = tool.args.pattern || '';
     } else if (tool.name.toLowerCase().includes("search") && (tool.args.query || tool.args.Query)) {
       summary = (tool.args.query || tool.args.Query) as string;
     }

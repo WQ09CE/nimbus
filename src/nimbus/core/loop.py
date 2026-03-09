@@ -30,8 +30,10 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
+import uuid
 
 from .protocol import Event, Fault, StepResult, ToolResult
+from .storage import SessionStorage
 
 logger = logging.getLogger("nimbus.loop")
 
@@ -209,12 +211,19 @@ class RuntimeLoop:
         steering_queue: Optional[SteeringQueue] = None,
         followup_queue: Optional[FollowUpQueue] = None,
         abort_event: Optional[asyncio.Event] = None,
+        session_id: Optional[str] = None,
+        storage: Optional[SessionStorage] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ):
         self.vcpu = vcpu
         self.mmu = mmu
         self.config = config or LoopConfig()
         self._event_cb = event_callback
         self._adapter = adapter
+        
+        self.session_id = session_id or uuid.uuid4().hex
+        self.storage = storage or SessionStorage()
+        self.metadata = metadata or {}
 
         self._compaction_count = 0
         self._steps_since_compaction = 0
@@ -319,6 +328,7 @@ class RuntimeLoop:
                     self._emit("INTERRUPTED", {
                         "partial_results_count": len(self.partial_results),
                     })
+                    self._save_core_dump("suspended")
                     yield {"type": "interrupted", "result": result, "partial_results": self.partial_results}
                     yield {"type": "final", "result": result}
                     return
@@ -346,6 +356,7 @@ class RuntimeLoop:
                             fault=Fault(domain="RESOURCE", code="CTX_OVERFLOW",
                                         message="Context exhausted", retryable=False),
                         )
+                        self._save_core_dump("error")
                         yield {"type": "final", "result": result}
                         return
                     yield {"type": "context_compacted", "compaction_count": self._compaction_count, "summary": summary}
@@ -361,6 +372,7 @@ class RuntimeLoop:
                         fault=Fault(domain="KERNEL", code="SYSTEM_ERROR",
                                     message=str(e), retryable=False),
                     )
+                    self._save_core_dump("error")
                     yield {"type": "final", "result": result}
                     return
 
@@ -409,8 +421,63 @@ class RuntimeLoop:
                 continue  # re-enter inner loop
 
             # No follow-ups -- done
+            self._save_core_dump("completed")
             yield {"type": "final", "result": step_result.final_result}
             return
+
+    # --- Core Dump (pi-style minimalism) ---
+    
+    def _save_core_dump(self, status: str) -> None:
+        """Serialize the complete agent state to disk (Core Dump)."""
+        messages = [m.to_dict() for m in self.mmu._messages]
+
+        # Pull vcpu state (Registers) -- defensive for mock VCPUs in tests
+        vcpu_state = {}
+        exec_ctx = getattr(self.vcpu, "_exec", None)
+        if exec_ctx:
+            vcpu_state = {
+                "iteration": getattr(exec_ctx, "iteration", 0),
+                "consecutive_thoughts": getattr(exec_ctx, "consecutive_thoughts", 0),
+                "consecutive_errors": getattr(exec_ctx, "consecutive_errors", 0),
+            }
+
+        # Serialize config info
+        vcpu_config = {}
+        if hasattr(self.vcpu, "config"):
+            cfg = self.vcpu.config
+            vcpu_config = {
+                "max_iterations": getattr(cfg, "max_iterations", 50),
+                "max_consecutive_thoughts": getattr(cfg, "max_consecutive_thoughts", 8),
+                "max_consecutive_errors": getattr(cfg, "max_consecutive_errors", 3),
+            }
+
+        # Persist MMU critical state (global_summary + goal survive compaction)
+        mmu_state = {
+            "global_summary": self.mmu._global_summary,
+            "goal": self.mmu._goal,
+        }
+
+        # Merge mmu_state into metadata so it persists across restarts
+        metadata = dict(self.metadata) if self.metadata else {}
+        metadata["mmu_state"] = mmu_state
+
+        # Preserve llm_config from metadata (set at session creation)
+        # so it doesn't get lost when vcpu_config is overwritten with runtime state
+        llm_config = metadata.get("llm_config", {})
+
+        try:
+            self.storage.save_session(
+                session_id=self.session_id,
+                status=status,
+                messages=messages,
+                vcpu_state=vcpu_state,
+                vcpu_config=vcpu_config,
+                llm_config=llm_config,
+                metadata=metadata,
+            )
+            logger.info(f"Core Dump saved for session {self.session_id} ({status})")
+        except Exception as e:
+            logger.error(f"Failed to save Core Dump for session {self.session_id}: {e}")
 
     # --- Partial result collection (pi-style) ---
 

@@ -103,6 +103,7 @@ class VCPU:
         config: Optional[VCPUConfig] = None,
         text_is_final: bool = True,
         get_steering: Optional[Callable[[], List[str]]] = None,
+        initial_state: Optional[Dict[str, int]] = None,
     ):
         self.alu = alu
         self.decoder = decoder
@@ -113,6 +114,11 @@ class VCPU:
         self.text_is_final = text_is_final
 
         self._exec = ExecutionState()
+        if initial_state:
+            self._exec.iteration = initial_state.get("iteration", 0)
+            self._exec.consecutive_thoughts = initial_state.get("consecutive_thoughts", 0)
+            self._exec.consecutive_errors = initial_state.get("consecutive_errors", 0)
+            
         self._interrupted = False
         self._wakeup_event: Optional[asyncio.Event] = None
         self._get_steering = get_steering

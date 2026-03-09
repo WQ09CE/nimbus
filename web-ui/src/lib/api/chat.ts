@@ -52,6 +52,7 @@ export interface ToolResult {
   result: unknown;
   error?: string;
   duration?: number;
+  ui_detail?: Record<string, any>;
 }
 
 /**

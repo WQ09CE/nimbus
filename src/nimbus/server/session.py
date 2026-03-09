@@ -7,14 +7,17 @@ message injection and interruption.
 import asyncio
 import json
 import logging
-import time
+import os
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from nimbus import AgentOS
 
 from .permission import PermissionManager
 from .sse import SSEHub
+from nimbus.core.storage import SessionStorage
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +44,7 @@ class SessionManagerV2:
         self._sessions: Dict[str, AgentOS] = {}  # session_id -> AgentOS
         self._active_tasks: Dict[str, asyncio.Task] = {}  # session_id -> running task
         self._active_loops: Dict[str, Any] = {}  # session_id -> RuntimeLoop
-        self._session_metadata: Dict[str, Any] = {}  # In-memory store for sessions
+        self._storage = SessionStorage()
         self._lock = asyncio.Lock()
         self._shared_llm_lock = asyncio.Lock()
         self._shared_llm_client = None
@@ -72,19 +75,35 @@ class SessionManagerV2:
         # Store agent_mode in config_overrides
         config_overrides = {"agent_mode": agent_mode}
 
+        now_iso = datetime.now(timezone.utc).isoformat()
+
         session = {
             "id": session_id,
             "name": name or "New Chat",
             "workspace_path": workspace_path,
-            "model_config": model_config or {},
+            "llm_config": model_config or {},
             "config_overrides": config_overrides,
             "status": "active",
-            "created_at": time.time(),
-            "updated_at": time.time(),
+            "created_at": now_iso,
+            "updated_at": now_iso,
         }
-        
-        self._session_metadata[session_id] = session
-        logger.info(f"✨ Created in-memory session {session_id} ({agent_mode})")
+
+        # Save placeholder "created" dump
+        self._storage.save_session(
+            session_id=session_id,
+            status="active",
+            messages=[],
+            vcpu_state={},
+            vcpu_config={},
+            llm_config=model_config or {},
+            metadata={
+                "name": name or "New Chat",
+                "workspace_path": workspace_path,
+                "config_overrides": config_overrides,
+                "created_at": now_iso,
+            }
+        )
+        logger.info(f"✨ Created session {session_id} ({agent_mode}) on disk")
 
         # Pre-warm AgentOS in background
         asyncio.create_task(self._prewarm_agent(session_id))
@@ -102,15 +121,27 @@ class SessionManagerV2:
     async def update_session(self, session_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
         """Update session metadata."""
         async with self._lock:
-            session = self._session_metadata.get(session_id)
-            if not session:
+            # Load full dump
+            dump = self._storage.load_session(session_id)
+            if not dump:
                 raise ValueError(f"Session not found: {session_id}")
 
+            meta = dump.get("metadata", {})
             for k, v in updates.items():
-                if k in ("name", "workspace_path", "model_config"):
-                    session[k] = v
+                if k in ("name", "workspace_path"):
+                    meta[k] = v
+                elif k == "model_config":
+                    dump["llm_config"] = v
 
-            session["updated_at"] = time.time()
+            self._storage.save_session(
+                session_id=session_id,
+                status=dump.get("status", "active"),
+                messages=dump.get("messages", []),
+                vcpu_state=dump.get("vcpu_state", {}),
+                vcpu_config=dump.get("vcpu_config", {}),
+                llm_config=dump.get("llm_config", {}),
+                metadata=meta,
+            )
 
             # Invalidate cached AgentOS if config changed
             if session_id in self._sessions:
@@ -118,11 +149,25 @@ class SessionManagerV2:
                     logger.info(f"Invalidating cached AgentOS for {session_id}")
                     del self._sessions[session_id]
 
-            return session
+            return dump
 
     async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Get session metadata from memory."""
-        return self._session_metadata.get(session_id)
+        """Get session metadata from disk."""
+        dump = self._storage.load_session(session_id)
+        if dump:
+            meta = dump.get("metadata", {})
+            return {
+                "id": session_id,
+                "status": dump.get("status", "unknown"),
+                "name": meta.get("name", "Unknown"),
+                "workspace_path": meta.get("workspace_path"),
+                "llm_config": dump.get("llm_config", {}),
+                "config_overrides": meta.get("config_overrides", {}),
+                "created_at": meta.get("created_at") or dump.get("updated_at"),
+                "updated_at": dump.get("updated_at"),
+                "message_count": len(dump.get("messages", [])),
+            }
+        return None
 
     async def list_sessions(
         self,
@@ -130,12 +175,24 @@ class SessionManagerV2:
         limit: int = 20,
         offset: int = 0,
     ) -> tuple[List[Dict[str, Any]], int]:
-        """List sessions with pagination."""
-        sessions = sorted(
-            self._session_metadata.values(),
-            key=lambda s: s.get("updated_at", 0),
-            reverse=True
-        )
+        """List sessions from disk."""
+        dumps = self._storage.list_sessions()
+        sessions = []
+        for d in dumps:
+            meta = d.get("metadata", {})
+            sessions.append({
+                "id": d.get("session_id"),
+                "status": d.get("status", "unknown"),
+                "name": meta.get("name", "Unknown"),
+                "workspace_path": meta.get("workspace_path"),
+                "llm_config": d.get("llm_config", {}),
+                "config_overrides": meta.get("config_overrides", {}),
+                "created_at": meta.get("created_at") or d.get("updated_at"),
+                "updated_at": d.get("updated_at"),
+                "message_count": len(d.get("messages", [])),
+            })
+        
+        # Sort is already handled by list_sessions
         return sessions[offset:offset+limit], len(sessions)
 
     async def delete_session(self, session_id: str) -> None:
@@ -143,8 +200,7 @@ class SessionManagerV2:
         async with self._lock:
             if session_id in self._sessions:
                 del self._sessions[session_id]
-            if session_id in self._session_metadata:
-                del self._session_metadata[session_id]
+            self._storage.delete_session(session_id)
         self._permission_manager.cancel_pending(session_id)
         logger.info(f"🗑️ Deleted session {session_id}")
 
@@ -173,7 +229,7 @@ class SessionManagerV2:
             elif isinstance(config_overrides, dict):
                 overrides = config_overrides
 
-        model_config = overrides.get("model_config") or {}
+        model_config = session.get("llm_config") or overrides.get("model_config") or {}
         agent_mode = overrides.get("agent_mode", "standard")
 
         # Extract model_id for prompt selection
@@ -237,7 +293,6 @@ class SessionManagerV2:
         workspace = None
 
         if workspace_path:
-            import os
             workspace = Path(os.path.expanduser(workspace_path))
             logger.info(f"📁 Using workspace: {workspace}")
 
@@ -275,6 +330,8 @@ class SessionManagerV2:
                     }
                 ))
 
+        # Let AgentOS know this session is being instantiated
+        # (MMU and VCPU will be rehydrated when stream_with_queue is called)
         agent_os = AgentOS(
             config=agent_config,
             adapter=llm_client,
@@ -293,8 +350,6 @@ class SessionManagerV2:
         """Get or create shared LLM client (respects NIMBUS_LLM=mock)."""
         async with self._shared_llm_lock:
             if self._shared_llm_client is None:
-                import os
-
                 if os.environ.get("NIMBUS_LLM") == "mock":
                     from nimbus.testing.mock_llm import MockLLMAdapter
 
@@ -326,15 +381,15 @@ class SessionManagerV2:
         session = await self.get_session(session_id)
         if session and session.get("name", "").startswith("New Chat"):
             try:
-                # Ask a secondary agent to summarize the initial request
-                # For nimbus-next, we just yank the goal from the MMU
+                # For nimbus-next, yank the goal from the MMU via public API
                 title = "Conversation"
-                if agent_os.mmu.stack_depth > 0:
-                     for msg in agent_os.mmu.current_frame.messages:
-                          if msg.role == "user" and msg.content:
-                              title = str(msg.content)[:30].replace("\n", " ").strip()
-                              break
-                
+                mmu = agent_os.get_mmu(session_id)
+                if mmu and mmu._messages:
+                    for msg in mmu._messages:
+                        if msg.role == "user" and msg.content:
+                            title = str(msg.content)[:30].replace("\n", " ").strip()
+                            break
+
                 if title:
                     logger.info(f"Auto-generated title for {session_id}: {title}")
                     # Update without firing event
@@ -372,8 +427,23 @@ class SessionManagerV2:
             if session and session.get("name", "").startswith("New Chat"):
                 asyncio.create_task(self._auto_generate_title(session_id, agent_os))
 
+            # Retrieve previous state if any
+            dump = self._storage.load_session(session_id) or {}
+
+            # Inject llm_config into metadata so RuntimeLoop._save_core_dump()
+            # can preserve it when writing vcpu_config (which is VCPU runtime state)
+            loop_metadata = dump.get("metadata", {})
+            loop_metadata["llm_config"] = dump.get("llm_config", {})
+
             # Generate the RuntimeLoop (pi-style)
-            loop = agent_os.stream_with_queue(str_msg, session_id=session_id)
+            loop = agent_os.stream_with_queue(
+                str_msg,
+                session_id=session_id,
+                storage=self._storage,
+                metadata=loop_metadata,
+                initial_messages=dump.get("messages", []),
+                initial_vcpu_state=dump.get("vcpu_state", {}),
+            )
             self._active_loops[session_id] = loop
 
             # Yield fine-grained events mapped to SSE UI format
@@ -451,12 +521,15 @@ class SessionManagerV2:
             interrupted = False
             if loop:
                 loop.abort()
+                # Wait for the loop to finish cleanly (saves core dump on exit)
+                try:
+                    await asyncio.wait_for(loop.wait_for_idle(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timed out waiting for loop idle on {session_id}")
                 interrupted = True
 
-            task = self._active_tasks.get(session_id)
-            if task and not task.done():
-                task.cancel()
-                logger.info(f"Cancelled active task for session {session_id}")
+            # Do NOT cancel the task -- loop.abort() already causes clean shutdown.
+            # Calling task.cancel() injects CancelledError that may bypass the core dump save.
 
             return {
                 "success": True,

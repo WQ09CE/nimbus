@@ -182,7 +182,7 @@ async def get_session(
         raise HTTPException(status_code=404, detail="Session not found")
 
     base_data = dict(session)
-    base_data["message_count"] = 0 # Cannot pull from storage anymore
+    # message_count is already injected by SessionManager now
 
     return SessionDetail(**base_data)
 
@@ -201,7 +201,7 @@ async def update_session(
         update_data["model_config"] = update_data.pop("llm_config")
 
     try:
-        session = await session_manager.update_session(session_id, **update_data)
+        session = await session_manager.update_session(session_id, update_data)
 
         updated = await session_manager.get_session(session_id)
         return SessionResponse(**updated)
@@ -491,11 +491,42 @@ async def get_messages(
     session_manager=Depends(get_session_manager),
 ):
     """Get messages for a session."""
+    import hashlib
+
     session = await session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    return MessageList(items=[])
+    dump = session_manager._storage.load_session(session_id)
+    if not dump:
+        return MessageList(items=[])
+
+    messages = dump.get("messages", [])
+
+    # Optional sorting
+    if order == "DESC":
+        messages.reverse()
+
+    # Optional pagination
+    if limit > 0:
+        messages = messages[offset:offset+limit]
+
+    # Wrap raw MMU dicts into MessageResponse-compatible dicts
+    now_iso = datetime.now(timezone.utc).isoformat()
+    items = []
+    for i, msg in enumerate(messages):
+        items.append({
+            "id": hashlib.md5(f"{session_id}:{i}".encode()).hexdigest()[:12],
+            "role": msg.get("role", "unknown"),
+            "content": msg.get("content", ""),
+            "created_at": now_iso,
+            "artifacts": [],
+            "name": msg.get("name"),
+            "tool_call_id": msg.get("tool_call_id"),
+            "tool_calls": msg.get("tool_calls"),
+        })
+
+    return MessageList(items=items)
 
 
 # =============================================================================

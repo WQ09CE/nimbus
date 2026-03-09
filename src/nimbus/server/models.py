@@ -26,6 +26,10 @@ class SessionStatus(str, Enum):
     ACTIVE = "active"
     ARCHIVED = "archived"
     DELETED = "deleted"
+    RUNNING = "running"
+    SUSPENDED = "suspended"
+    COMPLETED = "completed"
+    ERROR = "error"
 
 
 class PermissionDecision(str, Enum):
@@ -57,7 +61,7 @@ class SessionCreate(BaseModel):
 
     name: Optional[str] = None
     workspace_path: Optional[str] = None
-    llm_config: Optional[Dict[str, str]] = None  # {provider, model_id}
+    llm_config: Optional[Dict[str, Any]] = None  # {provider, model_id, ...}
     agent_mode: str = "standard"  # standard | dual_agent
 
 
@@ -66,7 +70,7 @@ class SessionUpdate(BaseModel):
 
     name: Optional[str] = None
     workspace_path: Optional[str] = None
-    llm_config: Optional[Dict[str, str]] = None
+    llm_config: Optional[Dict[str, Any]] = None
     agent_mode: Optional[str] = None
 
 
@@ -79,7 +83,7 @@ class SessionResponse(BaseModel):
     status: SessionStatus
     agent_mode: str = "standard"
     workspace_path: Optional[str] = None
-    llm_config: Optional[Dict[str, str]] = None
+    llm_config: Optional[Dict[str, Any]] = None
 
 
 class SessionDetail(SessionResponse):
@@ -141,6 +145,10 @@ class MessageResponse(BaseModel):
     created_at: datetime
     artifacts: List[Any] = Field(default_factory=list)  # Flexible artifact format
     dag_id: Optional[str] = None
+    # Tool-specific fields (pass-through from MMU dicts)
+    name: Optional[str] = None
+    tool_call_id: Optional[str] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
 
 
 class MessageList(BaseModel):

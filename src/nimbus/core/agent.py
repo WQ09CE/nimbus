@@ -164,6 +164,10 @@ class AgentOS:
             "Use the available tools to accomplish the user's task. "
             "Think step by step. When the task is complete, provide a concise summary."
         )
+        
+    def get_mmu(self, session_id: str = "default") -> Optional[MMU]:
+        """Get the MMU for a specific session_id, if it has been instantiated via stream_with_queue or run."""
+        return self._mmus.get(session_id)
 
     # --- Public API ---
 
@@ -178,7 +182,15 @@ class AgentOS:
         async for event in loop.stream():
             yield event
 
-    def stream_with_queue(self, goal: str, session_id: str = "default") -> RuntimeLoop:
+    def stream_with_queue(
+        self, 
+        goal: str, 
+        session_id: str = "default",
+        storage: Optional[Any] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        initial_messages: Optional[List[Dict[str, Any]]] = None,
+        initial_vcpu_state: Optional[Dict[str, Any]] = None,
+    ) -> RuntimeLoop:
         """Build a RuntimeLoop with message queue access (pi-style).
 
         Returns the loop so callers can enqueue messages while streaming:
@@ -188,7 +200,14 @@ class AgentOS:
                 ...
             # On interrupt, partial results are in loop.partial_results
         """
-        return self._build_loop(goal, session_id=session_id)
+        return self._build_loop(
+            goal, 
+            session_id=session_id,
+            storage=storage,
+            metadata=metadata,
+            initial_messages=initial_messages,
+            initial_vcpu_state=initial_vcpu_state,
+        )
 
     async def chat(self, message: str, session_id: str = "default") -> str:
         """Simple chat interface. Returns the text response."""
@@ -198,7 +217,16 @@ class AgentOS:
 
     # --- Build Pipeline ---
 
-    def _build_loop(self, goal: str, text_is_final: Optional[bool] = None, session_id: str = "default") -> RuntimeLoop:
+    def _build_loop(
+        self, 
+        goal: str, 
+        text_is_final: Optional[bool] = None, 
+        session_id: str = "default",
+        storage: Optional[Any] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        initial_messages: Optional[List[Dict[str, Any]]] = None,
+        initial_vcpu_state: Optional[Dict[str, Any]] = None,
+    ) -> RuntimeLoop:
         """Assemble all components into a RuntimeLoop for one execution.
 
         Wiring (pi-coding-agent style):
@@ -220,7 +248,54 @@ class AgentOS:
                 system_rules=self._system_prompt,
                 workspace_info=f"Working directory: {os.getcwd()}",
             ))
+            
+            # Rehydrate initial messages directly into MMU from Dict cache
+            if initial_messages:
+                from nimbus.core.mmu import Message
+                mmu._messages = []
+                for m_dict in initial_messages:
+                    mmu._messages.append(
+                        Message(
+                            role=m_dict.get("role", "user"),
+                            content=m_dict.get("content", ""),
+                            name=m_dict.get("name"),
+                            tool_call_id=m_dict.get("tool_call_id"),
+                            tool_calls=m_dict.get("tool_calls"),
+                            meta=m_dict.get("meta", {})
+                        )
+                    )
+
+            # Restore MMU critical state (global_summary + goal) from metadata
+            if metadata:
+                mmu_state = metadata.get("mmu_state")
+                if mmu_state:
+                    mmu._global_summary = mmu_state.get("global_summary", "")
+                    mmu._goal = mmu_state.get("goal", "")
+
             self._mmus[session_id] = mmu
+        else:
+            # MMU already exists -- restore messages if provided and MMU is empty
+            # (fixes H002: prewarm creates empty MMU, then stream_chat skips restoration)
+            existing_mmu = self._mmus[session_id]
+            if initial_messages and existing_mmu.message_count == 0:
+                from nimbus.core.mmu import Message
+                for m_dict in initial_messages:
+                    existing_mmu._messages.append(
+                        Message(
+                            role=m_dict.get("role", "user"),
+                            content=m_dict.get("content", ""),
+                            name=m_dict.get("name"),
+                            tool_call_id=m_dict.get("tool_call_id"),
+                            tool_calls=m_dict.get("tool_calls"),
+                            meta=m_dict.get("meta", {})
+                        )
+                    )
+                # Also restore MMU state if available
+                if metadata:
+                    mmu_state = metadata.get("mmu_state")
+                    if mmu_state:
+                        existing_mmu._global_summary = mmu_state.get("global_summary", "")
+                        existing_mmu._goal = mmu_state.get("goal", "")
 
         mmu = self._mmus[session_id]
 
@@ -277,6 +352,7 @@ class AgentOS:
             config=vcpu_config,
             text_is_final=final,
             get_steering=drain_steering,
+            initial_state=initial_vcpu_state,
         )
 
         # Loop (with both queues and abort event)
@@ -290,6 +366,9 @@ class AgentOS:
             steering_queue=steering_queue,
             followup_queue=followup_queue,
             abort_event=abort_event,
+            session_id=session_id,
+            storage=storage,
+            metadata=metadata,
         )
 
     # --- Registry access ---

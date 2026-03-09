@@ -129,31 +129,89 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const serverMessages = await getSessionMessages(session.id);
 
-      const parsedMessages: Message[] = serverMessages.map(m => {
-        let content = m.content || "";
-        if (Array.isArray(content)) {
-          content = content.map((b: any) => typeof b === 'string' ? b : b?.text || '').join('\n').trim();
-        } else if (typeof content === 'object') {
-          content = JSON.stringify(content);
+      // Build tool result lookup from role='tool' messages
+      const toolResultMap = new Map<string, { name: string; content: string }>();
+      for (const m of serverMessages) {
+        if (m.role === 'tool' && m.tool_call_id) {
+          const resultContent = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
+          toolResultMap.set(m.tool_call_id, { name: m.name || 'unknown', content: resultContent });
         }
+      }
 
-        const textContent = String(content);
-        return {
-          id: m.id,
-          role: m.role as "user" | "assistant" | "system",
-          content: textContent,
-          parts: textContent ? [{ type: "text" as const, content: textContent }] : [],
-          timestamp: m.created_at ? new Date(m.created_at.replace(" ", "T") + (m.created_at.includes("Z") ? "" : "Z")).getTime() : Date.now(),
-        };
-      }).filter(m => (m as any).role !== 'tool');
+      const parsedMessages: Message[] = serverMessages
+        .filter(m => m.role !== 'tool')  // tool results are merged into assistant messages
+        .map(m => {
+          let content = m.content || "";
+          if (Array.isArray(content)) {
+            content = content.map((b: any) => typeof b === 'string' ? b : b?.text || '').join('\n').trim();
+          } else if (typeof content === 'object') {
+            content = JSON.stringify(content);
+          }
+          const textContent = String(content);
+          const timestamp = m.created_at ? new Date(m.created_at.replace(" ", "T") + (m.created_at.includes("Z") ? "" : "Z")).getTime() : Date.now();
+
+          // Reconstruct tool parts for assistant messages with tool_calls
+          const parts: MessagePart[] = [];
+          const toolCalls: ToolCall[] = [];
+          const toolResults: ToolResult[] = [];
+
+          if (m.role === 'assistant' && m.tool_calls && Array.isArray(m.tool_calls)) {
+            // Add text part first if there's content before tools
+            if (textContent) {
+              parts.push({ type: "text" as const, content: textContent });
+            }
+            // Add tool parts
+            for (const tc of m.tool_calls) {
+              const fn = tc.function;
+              const tcId = tc.id || `tc-${Date.now()}`;
+              const tcObj: ToolCall = {
+                id: tcId,
+                name: fn?.name || tc.name || 'unknown',
+                arguments: typeof fn?.arguments === 'string' ? JSON.parse(fn.arguments || '{}') : (fn?.arguments || tc.arguments || {}),
+              };
+              toolCalls.push(tcObj);
+
+              // Find matching tool result
+              const result = toolResultMap.get(tcId);
+              const toolPart: MessagePart = { type: "tool" as const, toolCall: tcObj };
+              if (result) {
+                const tr: ToolResult = {
+                  id: tcObj.id,
+                  name: result.name,
+                  result: result.content,
+                };
+                toolResults.push(tr);
+                (toolPart as any).toolResult = tr;
+              }
+              parts.push(toolPart);
+            }
+          } else {
+            // Non-tool-call messages: just text
+            if (textContent) {
+              parts.push({ type: "text" as const, content: textContent });
+            }
+          }
+
+          return {
+            id: m.id,
+            role: m.role as "user" | "assistant" | "system",
+            content: textContent,
+            parts,
+            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+            toolResults: toolResults.length > 0 ? toolResults : undefined,
+            timestamp,
+          };
+        });
 
       parsedMessages.sort((a, b) => a.timestamp - b.timestamp);
 
       // Prevent stale updates
       if (get().session?.id === session.id) {
-        // Sync server history but keep current optimistic messages to avoid flickering
-        const currentOptimistic = get().messages.filter(m => m.id.startsWith("user-") || m.id === "streaming-assistant");
-        set({ messages: [...parsedMessages, ...currentOptimistic], isLoading: false });
+        // Only keep the in-flight streaming message (if any).
+        // Do NOT keep "user-*" messages — they are already in server history.
+        // Merging them causes duplicates when reloading the same session.
+        const streaming = get().messages.filter(m => m.id === "streaming-assistant");
+        set({ messages: [...parsedMessages, ...streaming], isLoading: false });
       }
 
     } catch (err) {
@@ -284,6 +342,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 name: d.tool || d.name || "unknown",
                 result: d.output !== undefined ? d.output : d.result,
                 error: d.status === "ERROR" ? (d.fault?.message || "Error") : undefined,
+                ui_detail: d.ui_detail,
               };
               targetMsg.toolResults = [...(targetMsg.toolResults || []), tr];
               // Find matching tool part and attach result

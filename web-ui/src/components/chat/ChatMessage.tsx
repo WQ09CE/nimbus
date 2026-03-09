@@ -4,7 +4,7 @@ import React from "react";
 import type { Message, MessagePart } from "@/stores/chat-store";
 import { useTypewriter } from "@/hooks/useTypewriter";
 import { MarkdownRenderer } from "./MarkdownRenderer";
-import type { ToolCall, ToolResult } from "@/lib/api";
+import { ToolCard } from './tools/ToolCard';
 
 interface ChatMessageProps {
   message: Message;
@@ -34,33 +34,6 @@ function ThoughtBlock({ content }: { content: string }) {
     <div className="my-2 pl-3 py-1 border-l-2 border-blue-500/30 bg-blue-500/5 rounded-r-lg flex items-start gap-2 group/thought">
       <span className="text-sm mt-0.5 opacity-70" title="Thinking">🧠</span>
       <div className="text-sm italic text-gray-400 font-sans leading-relaxed">{displayContent}</div>
-    </div>
-  );
-}
-
-function ToolPill({ call, result }: { call: ToolCall; result?: ToolResult }) {
-  const isError = result?.error;
-  const isRunning = !result;
-
-  return (
-    <div className={`text-[12px] font-mono inline-flex flex-col gap-1.5 my-1 px-4 py-2.5 rounded-lg border backdrop-blur-md ${isError ? 'bg-red-500/10 border-red-500/30 text-red-100' : isRunning ? 'bg-blue-500/10 border-blue-500/30 text-blue-100 animate-pulse' : 'bg-green-500/10 border-green-500/30 text-green-100'}`}>
-      <div className="flex items-center gap-2 border-b border-white/5 pb-1 mb-0.5">
-        <span>{isRunning ? '▶' : isError ? '❌' : '✓'} </span>
-        <span className="font-semibold text-nimbus-accent">{call.name}</span>
-      </div>
-      <div className="opacity-80 break-words max-h-32 overflow-y-auto custom-scrollbar">
-        {JSON.stringify(call.arguments, null, 2)}
-      </div>
-      {result && result.result != null && (
-        <div className="opacity-60 text-[10px] truncate pt-1 border-t border-white/5">
-          Return: {String(typeof result.result === 'string' ? (result.result as string).replace(/\n/g, ' ') : JSON.stringify(result.result))}
-        </div>
-      )}
-      {result && result.error && (
-        <div className="text-red-400 italic text-[10px] break-words pt-1 border-t border-white/5">
-          Error: {result.error}
-        </div>
-      )}
     </div>
   );
 }
@@ -164,8 +137,17 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
                   );
                 } else {
                   return (
-                    <div key={`part-${idx}`} className="w-[95%] ml-2">
-                      <ToolPill call={part.toolCall} result={part.toolResult} />
+                    <div key={`part-${idx}`} className="ml-2">
+                      <ToolCard tool={{
+                        id: part.toolCall.id,
+                        name: part.toolCall.name,
+                        args: part.toolCall.arguments,
+                        result: part.toolResult?.result,
+                        error: part.toolResult?.error,
+                        status: part.toolResult ? (part.toolResult.error ? "failed" : "completed") : "running",
+                        duration: part.toolResult?.duration,
+                        ui_detail: (part.toolResult as any)?.ui_detail,
+                      }} />
                     </div>
                   );
                 }

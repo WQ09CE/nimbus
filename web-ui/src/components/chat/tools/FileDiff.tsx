@@ -44,7 +44,7 @@ export function FileDiff({ name, args, result, error, status }: FileDiffProps) {
               <table className="w-full text-left border-collapse">
                 <tbody>
                   {(() => {
-                    const diffs = diffLines(args.old_text || '', args.new_text || '');
+                    const diffs = diffLines(args.old_string || args.old_text || '', args.new_string || args.new_text || '');
                     const result: React.ReactNode[] = [];
                     let oldLineNum = 1;
                     let newLineNum = 1;
