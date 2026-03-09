@@ -44,7 +44,7 @@ export default function Home() {
   useEffect(() => {
     setMounted(true);
     const init = async () => {
-      const savedSessionId = localStorage.getItem("nimbus_session_id");
+      const savedSessionId = sessionStorage.getItem("nimbus_session_id");
       if (savedSessionId && !session) {
         await loadSession(savedSessionId);
       } else if (!session) {

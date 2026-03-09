@@ -97,7 +97,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       } as any);
 
       if (typeof window !== "undefined") {
-        localStorage.setItem("nimbus_session_id", newSession.id);
+        sessionStorage.setItem("nimbus_session_id", newSession.id);
       }
 
       set({ session: newSession, messages: [], isLoading: false, isCreatingSession: false });
@@ -112,7 +112,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     if (!session) {
       set({ ...initialState });
-      if (typeof window !== "undefined") localStorage.removeItem("nimbus_session_id");
+      if (typeof window !== "undefined") sessionStorage.removeItem("nimbus_session_id");
       return;
     }
 
@@ -124,7 +124,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: isSameSession ? get().messages : [],
     });
 
-    if (typeof window !== "undefined") localStorage.setItem("nimbus_session_id", session.id);
+    if (typeof window !== "undefined") sessionStorage.setItem("nimbus_session_id", session.id);
 
     try {
       const serverMessages = await getSessionMessages(session.id);
@@ -256,7 +256,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (session) {
         await get().switchSession(session);
       } else {
-        if (typeof window !== "undefined") localStorage.removeItem("nimbus_session_id");
+        if (typeof window !== "undefined") sessionStorage.removeItem("nimbus_session_id");
         set({ isLoading: false });
       }
     } catch {
