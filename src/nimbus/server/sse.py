@@ -267,6 +267,20 @@ class SSEHub:
             return len(self._connections.get(session_id, []))
         return sum(len(conns) for conns in self._connections.values())
 
+    async def reset_session_log(self, session_id: str) -> None:
+        """Reset event log for a session after a task completes.
+
+        Keeps existing SSE connections alive so multi-client subscribers
+        continue receiving events on the next task without reconnecting.
+
+        Args:
+            session_id: Session whose log should be cleared.
+        """
+        async with self._lock:
+            self._event_log.pop(session_id, None)
+            self._pending_events.pop(session_id, None)
+            self._closed_sessions.discard(session_id)
+
     async def close_session(self, session_id: str) -> None:
         """Close all connections for a session.
         

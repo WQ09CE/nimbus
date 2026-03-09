@@ -11,6 +11,7 @@ import { WorkingIndicator } from "@/components/chat/WorkingIndicator";
 import { ArtifactViewer } from "@/components/chat/ArtifactViewer";
 
 import { SessionPanel } from "@/components/session/SessionPanel";
+import { useSessionWatcher } from "@/hooks/useSessionWatcher";
 
 function Home() {
   // Fine-grained selectors — only subscribe to what Home actually needs
@@ -29,6 +30,9 @@ function Home() {
   const sendMessage = useChatStore(s => s.sendMessage);
   const interruptMessage = useChatStore(s => s.interruptMessage);
   const clearError = useChatStore(s => s.clearError);
+
+  // Background watcher: detects when a remote client starts a task on this session
+  useSessionWatcher();
 
   const searchParams = useSearchParams();
   const [mounted, setMounted] = useState(false);

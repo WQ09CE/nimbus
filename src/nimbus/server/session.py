@@ -503,8 +503,10 @@ class SessionManagerV2:
 
             await self._sse_hub.publish(session_id, "done", {"status": "OK"})
 
-            # Close SSE connection to signal end of stream
-            await self._sse_hub.close_session(session_id)
+            # Do NOT close the SSE connections — keep subscribers alive so they
+            # can receive the next task's events without reconnecting.
+            # Only reset the event log so the next prepare_session starts fresh.
+            await self._sse_hub.reset_session_log(session_id)
 
 
 
