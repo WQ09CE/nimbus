@@ -27,16 +27,17 @@ Usage:
         print(event)
 """
 
+import asyncio
 import logging
 import os
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
 from .adapter import AdapterConfig, AnthropicAdapter, OpenAIAdapter
 from .decoder import InstructionDecoder
 from .gate import KernelGate
-from .loop import LoopConfig, RuntimeLoop
+from .loop import FollowUpQueue, LoopConfig, RuntimeLoop, SteeringQueue
 from .mmu import MMU, MMUConfig, PinnedContext
 from .protocol import Event, ToolResult
 from .tools.registry import ToolRegistry
@@ -198,7 +199,14 @@ class AgentOS:
     # --- Build Pipeline ---
 
     def _build_loop(self, goal: str, text_is_final: Optional[bool] = None, session_id: str = "default") -> RuntimeLoop:
-        """Assemble all components into a RuntimeLoop for one execution."""
+        """Assemble all components into a RuntimeLoop for one execution.
+
+        Wiring (pi-coding-agent style):
+        1. Create steering/followup queues and abort event first
+        2. Create Gate with abort event
+        3. Create VCPU with steering callback
+        4. Create RuntimeLoop with both queues
+        """
         pid = uuid.uuid4().hex[:8]
 
         # MMU Stateful Retrieval
@@ -213,16 +221,27 @@ class AgentOS:
                 workspace_info=f"Working directory: {os.getcwd()}",
             ))
             self._mmus[session_id] = mmu
-            
+
         mmu = self._mmus[session_id]
-        
+
         # In a long conversation, the very first user message sets the anchor goal
         if goal:
             if not getattr(mmu, "_goal", ""):
                 mmu.set_goal(goal)
             mmu.add_user_message(goal)
 
-        # Gate
+        # Create steering/followup queues and abort event first
+        wakeup_event = asyncio.Event()
+        steering_queue = SteeringQueue(wakeup_event)
+        followup_queue = FollowUpQueue()
+        abort_event = asyncio.Event()
+
+        # Steering callback: drain one message from the steering queue
+        def drain_steering() -> List[str]:
+            msg = steering_queue.drain_one()
+            return [msg] if msg else []
+
+        # Gate (with abort event for process group kill)
         async def tool_executor(name: str, args: Dict) -> Any:
             return await self._registry.execute(name, args)
 
@@ -232,6 +251,7 @@ class AgentOS:
             event_callback=self._event_cb,
             default_timeout=self.config.tool_timeout,
             on_tool_output=self._on_tool_output,
+            abort_event=abort_event,
         )
 
         # Decoder
@@ -241,7 +261,7 @@ class AgentOS:
         schema_format = "anthropic" if self.config.provider == "anthropic" else "openai"
         tool_schemas = self._registry.get_schemas(format=schema_format)
 
-        # VCPU
+        # VCPU (with steering callback)
         vcpu_config = VCPUConfig(
             max_iterations=self.config.max_iterations,
             max_consecutive_thoughts=self.config.max_consecutive_thoughts,
@@ -256,15 +276,20 @@ class AgentOS:
             tools=tool_schemas,
             config=vcpu_config,
             text_is_final=final,
+            get_steering=drain_steering,
         )
 
-        # Loop
+        # Loop (with both queues and abort event)
         loop_config = LoopConfig(max_compactions=self.config.max_compactions)
         return RuntimeLoop(
             vcpu=vcpu,
             mmu=mmu,
             config=loop_config,
             event_callback=self._event_cb,
+            adapter=self._adapter,
+            steering_queue=steering_queue,
+            followup_queue=followup_queue,
+            abort_event=abort_event,
         )
 
     # --- Registry access ---

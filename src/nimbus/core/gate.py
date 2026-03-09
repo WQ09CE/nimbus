@@ -114,6 +114,7 @@ class KernelGate:
         event_callback: Optional[Callable[[Event], None]] = None,
         default_timeout: float = 60.0,
         on_tool_output: Optional[Callable[[str, str], None]] = None,
+        abort_event: Optional[asyncio.Event] = None,
     ):
         self.pid = pid
         self._executor = tool_executor
@@ -122,6 +123,8 @@ class KernelGate:
         self._doom = DoomLoopDetector()
         # Pi-style: callback for streaming tool output (tool_name, chunk)
         self._on_tool_output = on_tool_output
+        # Abort event -- propagated to tools (e.g., bash) for process group kill
+        self._abort_event = abort_event
 
     async def syscall_tool(self, action: ActionIR, timeout: Optional[float] = None) -> ToolResult:
         """Execute a TOOL_CALL action through the gate."""
@@ -162,6 +165,10 @@ class KernelGate:
                 self._on_tool_output(tool_name, chunk)
                 self._emit("TOOL_CALL_DELTA", {"tool": tool_name, "chunk": chunk})
             exec_args["on_update"] = _on_update
+
+        # Propagate abort event to tools that support it (pi-style process group kill)
+        if self._abort_event:
+            exec_args["_abort_event"] = self._abort_event
 
         try:
             raw_output = await asyncio.wait_for(

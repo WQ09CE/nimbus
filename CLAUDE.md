@@ -15,4 +15,11 @@ Key files to check:
 **Important Instructions**:
 - Always run `pytest tests/core --tb=short` before pushing commits manually.
 - Use `ruff` for linting/formatting.
-- ~~Treat `AgentOS` and `vCPU` as legacy God Classes scheduled for decomposition.~~ (*Status: Decomposed in Phase 10/11!*) AgentOS is now a facade, and VCPU tool execution is cleanly extracted. Any new sub-agents or processes should be orchestrated via the `ProcessManager`.
+- **Architecture**: `AgentOS` is a facade orchestrating specialized components:
+    - **VCPU**: FSM-based execution engine (Think-Act-Observe).
+    - **MMU**: Context & state management (Message compression, Pinned context).
+    - **KernelGate**: Tool execution with safety, timeouts, and process-group abort.
+    - **ALU/Adapter**: LLM interface (OpenAI/Anthropic).
+    - **RuntimeLoop**: Drives the VCPU and handles message queues (Steering/Follow-up).
+- **Tooling**: Registered via `ToolRegistry`. Built-in tools: `read`, `write`, `edit`, `bash`, `grep`.
+- **Advanced Features**: Supports real-time steering, streaming tool outputs, and clean interruptions.

@@ -389,6 +389,14 @@ class SessionManagerV2:
                     logger.info(f"[stream_chat] Handled enqueued message: {str(event.get('content'))[:50]}...")
                     continue
 
+                if evt_type == "steering_injected":
+                    logger.info(f"[stream_chat] Steering injected: {str(event.get('content'))[:50]}...")
+                    continue
+
+                if evt_type == "followup_injected":
+                    logger.info(f"[stream_chat] Follow-up injected: {str(event.get('content'))[:50]}...")
+                    continue
+
                 if evt_type == "text_delta":
                     await self._sse_hub.publish(
                         session_id, "message", {"content": event.get("content", "")}
@@ -442,13 +450,13 @@ class SessionManagerV2:
             loop = self._active_loops.get(session_id)
             interrupted = False
             if loop:
-                loop.request_interruption()
+                loop.abort()
                 interrupted = True
 
             task = self._active_tasks.get(session_id)
             if task and not task.done():
                 task.cancel()
-                logger.info(f"🛑 Cancelled active task for session {session_id}")
+                logger.info(f"Cancelled active task for session {session_id}")
 
             return {
                 "success": True,

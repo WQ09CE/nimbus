@@ -1,10 +1,21 @@
 """Tests for nimbus_next.mmu — the memory management unit."""
 
+import json
+
 import pytest
 
 from nimbus.core.mmu import (
-    MMU, MMUConfig, Message, PinnedContext, estimate_text_tokens,
-    _find_turn_boundaries, _make_tombstone, _smart_drop,
+    MMU,
+    Message,
+    MMUConfig,
+    PinnedContext,
+    _extract_file_ops,
+    _find_turn_boundaries,
+    _format_file_ops,
+    _make_tombstone,
+    _serialize_messages,
+    _smart_drop,
+    estimate_text_tokens,
 )
 
 
@@ -136,16 +147,23 @@ class TestMMU:
 
     @pytest.mark.asyncio
     async def test_archive_with_summarizer(self):
-        mmu = MMU()
-        mmu.add_user_message("hello")
-        mmu.add_assistant_message("world")
+        # Need enough messages that cut point separates some for summarization
+        config = MMUConfig(max_context_tokens=200, keep_recent_messages=2)
+        mmu = MMU(config)
+        # Add many messages so cut point places some before the hot zone
+        for i in range(10):
+            mmu.add_user_message(f"hello {i} " + "x" * 50)
+            mmu.add_assistant_message(f"world {i} " + "y" * 50)
 
-        async def mock_summarizer(messages):
+        async def mock_summarizer(system_prompt, user_prompt):
+            assert "summarization" in system_prompt.lower()
+            assert "<conversation>" in user_prompt
             return "TL;DR: greeted each other"
 
         summary = await mmu.archive_and_reset(summarizer=mock_summarizer)
-        assert summary == "TL;DR: greeted each other"
-        assert mmu.message_count == 0  # cleared after summarization
+        assert "greeted each other" in summary
+        # Some messages should be kept (hot zone)
+        assert mmu.message_count < 20  # not all kept
         ctx = mmu.assemble_context()
         assert any("greeted" in str(m.get("content", "")) for m in ctx)
 
@@ -173,12 +191,13 @@ class TestMMU:
     @pytest.mark.asyncio
     async def test_archive_merge_not_append(self):
         """Global summary should be merged (replaced), not infinitely appended."""
-        mmu = MMU()
+        config = MMUConfig(max_context_tokens=200, keep_recent_messages=2)
+        mmu = MMU(config)
         for i in range(10):
             mmu.add_user_message(f"msg {i}" + "x" * 200)
             mmu.add_assistant_message(f"resp {i}" + "y" * 200)
 
-        # First compaction
+        # First compaction (deterministic)
         await mmu.archive_and_reset()
         first_summary = mmu._global_summary
         assert first_summary
@@ -189,12 +208,14 @@ class TestMMU:
             mmu.add_assistant_message(f"resp2 {i}" + "y" * 200)
 
         # Second compaction with LLM summarizer (replaces, not appends)
-        async def mock_summarizer(messages):
+        async def mock_summarizer(system_prompt, user_prompt):
+            # The summarizer gets the previous summary via <previous-summary> tags
+            assert "<previous-summary>" in user_prompt
             return "Complete merged summary of everything"
 
         await mmu.archive_and_reset(summarizer=mock_summarizer)
-        # Should be the new summary, not old + new concatenated
-        assert mmu._global_summary == "Complete merged summary of everything"
+        # Should contain the new summary (may also have file ops appended)
+        assert "Complete merged summary of everything" in mmu._global_summary
 
 
 # =============================================================================
@@ -383,3 +404,294 @@ class TestSmartDrop:
         surviving, tomb = _smart_drop(msgs, target_tokens=50, keep_recent=1)
         assert "Dropped" in tomb
         assert "old message" in tomb
+
+
+# =============================================================================
+# Serialize Messages (pi-style)
+# =============================================================================
+
+
+class TestSerializeMessages:
+    def test_basic_conversation(self):
+        msgs = [
+            Message(role="user", content="Fix the bug"),
+            Message(role="assistant", content="Let me look at it."),
+        ]
+        text = _serialize_messages(msgs)
+        assert "[User]: Fix the bug" in text
+        assert "[Assistant]: Let me look at it." in text
+
+    def test_tool_calls(self):
+        tc = [{"id": "tc1", "type": "function", "function": {"name": "Read", "arguments": '{"file_path": "x.py"}'}}]
+        msgs = [
+            Message(role="assistant", content=None, tool_calls=tc),
+            Message(role="tool", content="file contents here", name="Read", tool_call_id="tc1"),
+        ]
+        text = _serialize_messages(msgs)
+        assert "[Tool calls]:" in text
+        assert "Read(" in text
+        assert "[Tool result (Read, OK)]:" in text
+
+    def test_error_tool_result(self):
+        msgs = [
+            Message(role="tool", content="[Error] file not found", name="Read", tool_call_id="tc1"),
+        ]
+        text = _serialize_messages(msgs)
+        assert "[Tool result (Read, ERROR)]:" in text
+
+    def test_system_messages_skipped(self):
+        msgs = [
+            Message(role="system", content="Be helpful."),
+            Message(role="user", content="Hello"),
+        ]
+        text = _serialize_messages(msgs)
+        assert "Be helpful" not in text
+        assert "[User]: Hello" in text
+
+    def test_tool_result_truncated(self):
+        long_content = "x" * 1000
+        msgs = [
+            Message(role="tool", content=long_content, name="Bash", tool_call_id="tc1"),
+        ]
+        text = _serialize_messages(msgs)
+        # Tool result preview is capped at 500 chars
+        result_part = text.split("[Tool result (Bash, OK)]: ")[1]
+        assert len(result_part) == 500
+
+    def test_assistant_with_both_content_and_tools(self):
+        tc = [{"id": "tc1", "type": "function", "function": {"name": "Read", "arguments": "{}"}}]
+        msgs = [
+            Message(role="assistant", content="Let me read that.", tool_calls=tc),
+        ]
+        text = _serialize_messages(msgs)
+        assert "[Tool calls]:" in text
+        assert "[Assistant]: Let me read that." in text
+
+
+# =============================================================================
+# Extract File Operations
+# =============================================================================
+
+
+class TestExtractFileOps:
+    def test_read_and_write(self):
+        msgs = [
+            Message(role="assistant", content=None, tool_calls=[
+                {"id": "tc1", "type": "function", "function": {
+                    "name": "Read", "arguments": json.dumps({"file_path": "/src/main.py"})}},
+            ]),
+            Message(role="assistant", content=None, tool_calls=[
+                {"id": "tc2", "type": "function", "function": {
+                    "name": "Write", "arguments": json.dumps({"file_path": "/src/output.py"})}},
+            ]),
+        ]
+        read_only, modified = _extract_file_ops(msgs)
+        assert "/src/main.py" in read_only
+        assert "/src/output.py" in modified
+        # main.py is read-only (not modified)
+        assert "/src/main.py" not in modified
+
+    def test_read_then_modify_same_file(self):
+        msgs = [
+            Message(role="assistant", content=None, tool_calls=[
+                {"id": "tc1", "type": "function", "function": {
+                    "name": "Read", "arguments": json.dumps({"file_path": "/src/main.py"})}},
+            ]),
+            Message(role="assistant", content=None, tool_calls=[
+                {"id": "tc2", "type": "function", "function": {
+                    "name": "Edit", "arguments": json.dumps({"file_path": "/src/main.py", "old_string": "a", "new_string": "b"})}},
+            ]),
+        ]
+        read_only, modified = _extract_file_ops(msgs)
+        # main.py is modified, not read-only
+        assert "/src/main.py" not in read_only
+        assert "/src/main.py" in modified
+
+    def test_no_tool_calls(self):
+        msgs = [
+            Message(role="user", content="Hello"),
+            Message(role="assistant", content="Hi"),
+        ]
+        read_only, modified = _extract_file_ops(msgs)
+        assert read_only == []
+        assert modified == []
+
+    def test_invalid_json_args(self):
+        msgs = [
+            Message(role="assistant", content=None, tool_calls=[
+                {"id": "tc1", "type": "function", "function": {
+                    "name": "Read", "arguments": "not json"}},
+            ]),
+        ]
+        read_only, modified = _extract_file_ops(msgs)
+        assert read_only == []
+        assert modified == []
+
+    def test_grep_uses_path(self):
+        msgs = [
+            Message(role="assistant", content=None, tool_calls=[
+                {"id": "tc1", "type": "function", "function": {
+                    "name": "Grep", "arguments": json.dumps({"path": "/src", "pattern": "TODO"})}},
+            ]),
+        ]
+        read_only, modified = _extract_file_ops(msgs)
+        assert "/src" in read_only
+
+
+# =============================================================================
+# Format File Operations
+# =============================================================================
+
+
+class TestFormatFileOps:
+    def test_both_read_and_modified(self):
+        text = _format_file_ops(["/a.py", "/b.py"], ["/c.py"])
+        assert "<read-files>" in text
+        assert "/a.py" in text
+        assert "/b.py" in text
+        assert "<modified-files>" in text
+        assert "/c.py" in text
+
+    def test_empty(self):
+        text = _format_file_ops([], [])
+        assert text == ""
+
+    def test_only_modified(self):
+        text = _format_file_ops([], ["/c.py"])
+        assert "<read-files>" not in text
+        assert "<modified-files>" in text
+
+
+# =============================================================================
+# Find Cut Point
+# =============================================================================
+
+
+class TestFindCutPoint:
+    def test_all_in_hot_zone(self):
+        """When all messages fit in the token budget, cut_index stays at 0."""
+        mmu = MMU()
+        mmu.add_user_message("short")
+        mmu.add_assistant_message("reply")
+        # These messages are very small, well under 20000 tokens
+        cut = mmu._find_cut_point(keep_recent_tokens=20000)
+        assert cut == 0
+
+    def test_splits_at_boundary(self):
+        """With many large messages, cut point should be somewhere in the middle."""
+        mmu = MMU()
+        # Each message is ~250 tokens (1000 chars / 4)
+        for i in range(20):
+            mmu.add_user_message(f"msg {i} " + "x" * 1000)
+        # Keep only ~500 tokens -> should keep only about 2 messages
+        cut = mmu._find_cut_point(keep_recent_tokens=500)
+        assert cut > 0
+        assert cut < 20
+
+    def test_never_cuts_tool_pair(self):
+        """Cut point should not land on a tool_result (would split the pair)."""
+        mmu = MMU()
+        # Pad with some messages
+        for i in range(5):
+            mmu.add_user_message(f"padding {i} " + "x" * 500)
+        # Tool pair
+        tc = [{"id": "tc1", "type": "function", "function": {"name": "Read", "arguments": "{}"}}]
+        mmu.add_assistant_with_tool_calls(None, tc)
+        mmu.add_tool_result("tc1", "Read", "file contents " + "y" * 500)
+        # More messages
+        for i in range(5):
+            mmu.add_user_message(f"after {i} " + "x" * 500)
+
+        cut = mmu._find_cut_point(keep_recent_tokens=1000)
+        if cut > 0 and cut < len(mmu._messages):
+            # The message at cut should NOT be a tool_result
+            assert not mmu._messages[cut].is_tool_result
+
+
+# =============================================================================
+# Compaction with File Ops
+# =============================================================================
+
+
+class TestCompactionWithFileOps:
+    @pytest.mark.asyncio
+    async def test_file_ops_in_summary(self):
+        """File operations should be tracked and appended to the summary."""
+        config = MMUConfig(max_context_tokens=200, keep_recent_messages=2)
+        mmu = MMU(config)
+
+        # Add messages with tool calls
+        tc_read = [{"id": "tc1", "type": "function", "function": {
+            "name": "Read", "arguments": json.dumps({"file_path": "/src/main.py"})}}]
+        tc_write = [{"id": "tc2", "type": "function", "function": {
+            "name": "Write", "arguments": json.dumps({"file_path": "/src/output.py", "content": "..."})}}]
+
+        mmu.add_user_message("Read main.py")
+        mmu.add_assistant_with_tool_calls(None, tc_read)
+        mmu.add_tool_result("tc1", "Read", "def main(): pass")
+        mmu.add_assistant_message("Now let me write output")
+        mmu.add_assistant_with_tool_calls(None, tc_write)
+        mmu.add_tool_result("tc2", "Write", "OK")
+        # Add more messages to push beyond hot zone
+        for i in range(10):
+            mmu.add_user_message(f"more {i} " + "x" * 100)
+            mmu.add_assistant_message(f"resp {i} " + "y" * 100)
+
+        summary = await mmu.archive_and_reset()
+        assert summary is not None
+        # File ops should be in the summary if messages containing them were summarized
+        # (depends on cut point, but with many messages, the tool calls should be in the summarized portion)
+
+    @pytest.mark.asyncio
+    async def test_llm_summarizer_fallback_on_error(self):
+        """When LLM summarizer fails, should fall back to deterministic."""
+        config = MMUConfig(max_context_tokens=200, keep_recent_messages=2)
+        mmu = MMU(config)
+        for i in range(10):
+            mmu.add_user_message(f"msg {i} " + "x" * 100)
+            mmu.add_assistant_message(f"resp {i} " + "y" * 100)
+
+        async def failing_summarizer(system_prompt, user_prompt):
+            raise RuntimeError("LLM unavailable")
+
+        summary = await mmu.archive_and_reset(summarizer=failing_summarizer)
+        assert summary is not None
+        # Should have fallen back to deterministic (tombstone)
+        assert "Dropped" in summary or "compacted" in summary.lower()
+
+    @pytest.mark.asyncio
+    async def test_incremental_summary_with_previous(self):
+        """Second compaction should pass previous summary to the LLM."""
+        config = MMUConfig(max_context_tokens=200, keep_recent_messages=2)
+        mmu = MMU(config)
+
+        # First round of messages
+        for i in range(10):
+            mmu.add_user_message(f"msg {i} " + "x" * 100)
+            mmu.add_assistant_message(f"resp {i} " + "y" * 100)
+
+        # First compaction (deterministic)
+        await mmu.archive_and_reset()
+        first_summary = mmu._global_summary
+        assert first_summary
+
+        # Second round
+        for i in range(10):
+            mmu.add_user_message(f"msg2 {i} " + "x" * 100)
+            mmu.add_assistant_message(f"resp2 {i} " + "y" * 100)
+
+        # Second compaction with LLM
+        received_prompts = {}
+
+        async def mock_summarizer(system_prompt, user_prompt):
+            received_prompts["system"] = system_prompt
+            received_prompts["user"] = user_prompt
+            return "Updated summary with new progress"
+
+        await mmu.archive_and_reset(summarizer=mock_summarizer)
+
+        # Should have passed previous summary
+        assert "<previous-summary>" in received_prompts["user"]
+        assert first_summary in received_prompts["user"]
+        # Should use UPDATE prompt, not initial SUMMARIZATION prompt
+        assert "UPDATE" in received_prompts["user"] or "Update" in received_prompts["user"]

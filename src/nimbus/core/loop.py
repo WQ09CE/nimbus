@@ -1,12 +1,14 @@
 """
-RuntimeLoop — The outer execution driver.
+RuntimeLoop -- The outer execution driver.
 
 Drives VCPU.step() in a loop, handling:
-1. Context overflow → trigger compaction and retry
-2. Iteration limit → optional compaction or graceful termination
-3. Interrupt signals → clean shutdown with partial results
-4. Event streaming → fine-grained events for reactive UI (pi-style)
-5. Message queuing → inject user messages while agent is working
+1. Context overflow -> trigger compaction and retry
+2. Iteration limit -> optional compaction or graceful termination
+3. Interrupt signals -> clean shutdown with partial results
+4. Event streaming -> fine-grained events for reactive UI (pi-style)
+5. Steering queue -> inject user messages between tool calls (pi-style)
+6. Follow-up queue -> re-enter the loop after agent finishes (pi-style)
+7. Abort -> hard stop with process group kill
 
 Why separate from VCPU?
 VCPU handles a single Think-Act-Observe cycle. The RuntimeLoop handles
@@ -14,8 +16,9 @@ the *lifecycle*: when to stop, when to compact, when to yield to the user.
 This separation keeps VCPU testable without async complexity.
 
 Design notes (pi-coding-agent influence):
-- Message queue: pi uses a callback after each turn to ask for queued messages.
-  We use an asyncio.Queue for the same effect — messages injected between steps.
+- Steering queue: messages injected while agent is executing tools.
+  Checked between each tool call -- skips remaining tools.
+- Follow-up queue: messages sent after agent finishes. Re-enters the loop.
 - Partial results: pi returns partial content on abort (stopReason === 'aborted').
   We track accumulated results so interruption never loses work.
 - Fine-grained events: pi emits text_delta, tool_call events as async iterators.
@@ -25,7 +28,7 @@ Design notes (pi-coding-agent influence):
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
 from .protocol import Event, Fault, StepResult, ToolResult
@@ -46,29 +49,43 @@ class LoopConfig:
 
 
 # =============================================================================
-# Message Queue (pi-style)
+# Steering Queue (pi-style: checked between tool calls)
 # =============================================================================
 
 
-class MessageQueue:
-    """Queue for injecting user messages while the agent is working.
+class SteeringQueue:
+    """Messages injected while agent is executing tools.
 
+    Checked between each tool call -- skips remaining tools.
     Pi-coding-agent uses a callback after each turn to ask for queued messages,
-    supporting two modes: one-at-a-time or all-at-once. We implement the same
-    via asyncio.Queue with a drain method.
+    supporting two modes: one-at-a-time or all-at-once.
     """
 
     def __init__(self, wakeup_event: Optional[asyncio.Event] = None) -> None:
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._wakeup_event = wakeup_event
 
-    def enqueue(self, message: str) -> None:
-        """Add a message to the queue (thread-safe via asyncio.Queue)."""
+    def steer(self, message: str) -> None:
+        """Add a steering message (thread-safe via asyncio.Queue).
+
+        This triggers the wakeup event to interrupt the current LLM call
+        if one is in progress.
+        """
         self._queue.put_nowait(message)
         if self._wakeup_event:
             self._wakeup_event.set()
 
-    def drain(self) -> List[str]:
+    def drain_one(self) -> Optional[str]:
+        """Drain one message at a time (default mode)."""
+        try:
+            msg = self._queue.get_nowait()
+            if self._wakeup_event and self._queue.empty():
+                self._wakeup_event.clear()
+            return msg
+        except asyncio.QueueEmpty:
+            return None
+
+    def drain_all(self) -> List[str]:
         """Drain all queued messages at once."""
         messages: List[str] = []
         while not self._queue.empty():
@@ -80,19 +97,71 @@ class MessageQueue:
             self._wakeup_event.clear()
         return messages
 
-    def drain_one(self) -> Optional[str]:
-        """Drain one message at a time."""
-        try:
-            msg = self._queue.get_nowait()
-            if self._wakeup_event and self._queue.empty():
-                self._wakeup_event.clear()
-            return msg
-        except asyncio.QueueEmpty:
-            return None
+    @property
+    def pending(self) -> int:
+        return self._queue.qsize()
+
+
+# =============================================================================
+# Follow-Up Queue (pi-style: re-enters loop after agent finishes)
+# =============================================================================
+
+
+class FollowUpQueue:
+    """Messages sent after agent finishes. Re-enters the loop."""
+
+    def __init__(self) -> None:
+        self._queue: asyncio.Queue[str] = asyncio.Queue()
+
+    def follow_up(self, message: str) -> None:
+        """Add a follow-up message."""
+        self._queue.put_nowait(message)
+
+    def drain(self) -> List[str]:
+        """Drain all queued follow-up messages."""
+        messages: List[str] = []
+        while not self._queue.empty():
+            try:
+                messages.append(self._queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        return messages
 
     @property
     def pending(self) -> int:
         return self._queue.qsize()
+
+
+# =============================================================================
+# MessageQueue (backward-compatible facade)
+# =============================================================================
+
+
+class MessageQueue:
+    """Backward-compatible facade over SteeringQueue.
+
+    Existing code (e.g., session.py) uses message_queue.enqueue().
+    This delegates to the steering queue transparently.
+    """
+
+    def __init__(self, steering_queue: SteeringQueue) -> None:
+        self._steering = steering_queue
+
+    def enqueue(self, message: str) -> None:
+        """Add a message to the steering queue (backward compat)."""
+        self._steering.steer(message)
+
+    def drain(self) -> List[str]:
+        """Drain all queued messages at once."""
+        return self._steering.drain_all()
+
+    def drain_one(self) -> Optional[str]:
+        """Drain one message at a time."""
+        return self._steering.drain_one()
+
+    @property
+    def pending(self) -> int:
+        return self._steering.pending
 
 
 # =============================================================================
@@ -110,11 +179,20 @@ class RuntimeLoop:
         async for event in loop.stream():
             print(event)
 
-    Message queuing (pi-style):
-        loop = RuntimeLoop(vcpu, mmu)
-        loop.message_queue.enqueue("Also check the tests")
-        async for event in loop.stream():
-            ...
+    Steering (pi-style):
+        loop.steering_queue.steer("Change approach")
+        # -> skips remaining tools in current step, injects message
+
+    Follow-up (pi-style):
+        loop.followup_queue.follow_up("Now also fix tests")
+        # -> after agent finishes, re-enters the loop
+
+    Message queue (backward compat):
+        loop.message_queue.enqueue("Also check tests")
+
+    Abort:
+        loop.abort()
+        await loop.wait_for_idle()
 
     Partial results on abort:
         loop.request_interruption()
@@ -127,29 +205,63 @@ class RuntimeLoop:
         mmu: Any,  # MMU instance
         config: Optional[LoopConfig] = None,
         event_callback: Optional[Callable[[Event], None]] = None,
+        adapter: Any = None,  # LLM adapter for summarization
+        steering_queue: Optional[SteeringQueue] = None,
+        followup_queue: Optional[FollowUpQueue] = None,
+        abort_event: Optional[asyncio.Event] = None,
     ):
         self.vcpu = vcpu
         self.mmu = mmu
         self.config = config or LoopConfig()
         self._event_cb = event_callback
+        self._adapter = adapter
 
         self._compaction_count = 0
         self._steps_since_compaction = 0
         self._interrupted = False
 
-        # Pi-style message queue + Graceful steering interrupt
+        # Pi-style steering + wakeup for LLM call interruption
         self._wakeup_event = asyncio.Event()
-        self.message_queue = MessageQueue(self._wakeup_event)
+        self.steering_queue = steering_queue or SteeringQueue(self._wakeup_event)
+        self.followup_queue = followup_queue or FollowUpQueue()
+
+        # Backward-compatible message_queue facade
+        self.message_queue = MessageQueue(self.steering_queue)
+
+        # Wire wakeup event to VCPU for LLM call interruption
         if hasattr(self.vcpu, "set_wakeup_event"):
             self.vcpu.set_wakeup_event(self._wakeup_event)
 
+        # Abort support
+        self._abort_event = abort_event or asyncio.Event()
+
+        # Idle tracking (pi-style waitForIdle)
+        self._idle_event = asyncio.Event()
+        self._idle_event.set()  # Start idle
+        self._running = False
+
         # Partial result tracking (pi-style abort recovery)
         self.partial_results: List[ToolResult] = []
+
+        # Pending steering messages to inject at top of next loop iteration
+        self._pending_steering: List[str] = []
 
     def request_interruption(self) -> None:
         """Signal the loop to stop after the current step."""
         self._interrupted = True
         self.vcpu.request_interruption()
+
+    def abort(self) -> None:
+        """Hard stop -- cancel everything including running bash processes."""
+        self._interrupted = True
+        self._abort_event.set()
+        self.vcpu.request_interruption()
+
+    async def wait_for_idle(self) -> None:
+        """Wait until the loop finishes. Used after abort()."""
+        if not self._running:
+            return
+        await self._idle_event.wait()
 
     # --- Sync run (returns final result) ---
 
@@ -168,101 +280,137 @@ class RuntimeLoop:
 
     async def stream(self) -> AsyncIterator[Dict[str, Any]]:
         """Run the loop, yielding fine-grained events at each step."""
-        async for event in self._loop():
-            yield event
+        self._running = True
+        self._idle_event.clear()
+        try:
+            async for event in self._loop():
+                yield event
+        finally:
+            self._running = False
+            self._idle_event.set()
 
-    # --- Core loop ---
+    # --- Core loop (pi-style two-loop structure) ---
 
     async def _loop(self) -> AsyncIterator[Dict[str, Any]]:
         """The heart of the RuntimeLoop.
 
-        Drives VCPU.step() and handles lifecycle concerns:
+        Two-loop structure (pi-coding-agent style):
+        - OUTER: follow-up loop -- re-enters after agent finishes if follow-ups exist
+        - INNER: step loop -- drives VCPU.step() with steering injection
+
+        Handles lifecycle concerns:
+        - Steering messages injected between steps (skip remaining tools)
         - Context overflow triggers compaction
         - Iteration limits trigger compaction or termination
         - Interrupts cause clean shutdown with partial results
-        - Queued messages are injected between steps
+        - Follow-up messages re-enter the loop after completion
         """
-        while True:
-            # Check interrupt — return partial results (pi-style)
-            if self._interrupted:
-                partial_output = self._collect_partial_output()
-                result = ToolResult(
-                    status="CANCELLED",
-                    output=partial_output,
-                    ui_detail={"partial_results_count": len(self.partial_results)},
-                    is_final=True,
-                )
-                self._emit("INTERRUPTED", {
-                    "partial_results_count": len(self.partial_results),
-                })
-                yield {"type": "interrupted", "result": result, "partial_results": self.partial_results}
-                yield {"type": "final", "result": result}
-                return
-
-            # Inject queued messages (pi-style message queuing)
-            queued = self.message_queue.drain()
-            for msg in queued:
-                self.mmu.add_user_message(msg)
-                yield {"type": "message_queued", "content": msg}
-
-            # Check if context needs compaction before next step
-            if self.mmu.needs_compaction():
-                summary = await self._try_compaction()
-                if not summary:
+        while True:  # OUTER: follow-up loop
+            while True:  # INNER: step loop
+                # Check interrupt -- return partial results (pi-style)
+                if self._interrupted:
+                    partial_output = self._collect_partial_output()
                     result = ToolResult(
-                        status="ERROR",
-                        output="Context window exhausted after max compactions.",
-                        fault=Fault(domain="RESOURCE", code="CTX_OVERFLOW",
-                                    message="Context exhausted", retryable=False),
+                        status="CANCELLED",
+                        output=partial_output,
+                        ui_detail={"partial_results_count": len(self.partial_results)},
+                        is_final=True,
+                    )
+                    self._emit("INTERRUPTED", {
+                        "partial_results_count": len(self.partial_results),
+                    })
+                    yield {"type": "interrupted", "result": result, "partial_results": self.partial_results}
+                    yield {"type": "final", "result": result}
+                    return
+
+                # Inject steering messages from last step (pi-style)
+                for msg in self._pending_steering:
+                    self.mmu.add_user_message(msg)
+                    yield {"type": "steering_injected", "content": msg}
+                self._pending_steering = []
+
+                # Also drain any queued messages not yet consumed by VCPU steering
+                # (backward compat: messages queued before loop starts)
+                queued = self.steering_queue.drain_all()
+                for msg in queued:
+                    self.mmu.add_user_message(msg)
+                    yield {"type": "message_queued", "content": msg}
+
+                # Check if context needs compaction before next step
+                if self.mmu.needs_compaction():
+                    summary = await self._try_compaction()
+                    if not summary:
+                        result = ToolResult(
+                            status="ERROR",
+                            output="Context window exhausted after max compactions.",
+                            fault=Fault(domain="RESOURCE", code="CTX_OVERFLOW",
+                                        message="Context exhausted", retryable=False),
+                        )
+                        yield {"type": "final", "result": result}
+                        return
+                    yield {"type": "context_compacted", "compaction_count": self._compaction_count, "summary": summary}
+
+                # ---- Execute one VCPU step ----
+                t0 = time.monotonic()
+                try:
+                    step_result = await self.vcpu.step()
+                except Exception as e:
+                    logger.exception("Unexpected error in VCPU step")
+                    result = ToolResult(
+                        status="ERROR", output=f"Runtime error: {e}",
+                        fault=Fault(domain="KERNEL", code="SYSTEM_ERROR",
+                                    message=str(e), retryable=False),
                     )
                     yield {"type": "final", "result": result}
                     return
-                yield {"type": "context_compacted", "compaction_count": self._compaction_count, "summary": summary}
 
-            # ---- Execute one VCPU step ----
-            t0 = time.monotonic()
-            try:
-                step_result = await self.vcpu.step()
-            except Exception as e:
-                logger.exception("Unexpected error in VCPU step")
-                result = ToolResult(
-                    status="ERROR", output=f"Runtime error: {e}",
-                    fault=Fault(domain="KERNEL", code="SYSTEM_ERROR",
-                                message=str(e), retryable=False),
-                )
-                yield {"type": "final", "result": result}
-                return
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
+                self._steps_since_compaction += 1
 
-            elapsed_ms = int((time.monotonic() - t0) * 1000)
-            self._steps_since_compaction += 1
+                # Track partial results (pi-style abort recovery)
+                for r in step_result.results:
+                    self.partial_results.append(r)
 
-            # Track partial results (pi-style abort recovery)
-            for r in step_result.results:
-                self.partial_results.append(r)
-
-            # Yield fine-grained events (pi-style)
-            for event in self._step_events(step_result, elapsed_ms):
-                yield event
-
-            # Handle context overflow fault (retry after compaction)
-            if step_result.fault and step_result.fault.code == "CTX_OVERFLOW":
-                summary = await self._try_compaction()
-                if summary:
-                    yield {"type": "context_compacted", "compaction_count": self._compaction_count, "summary": summary}
+                # Collect steering messages from step result (pi-style)
+                if step_result.steering_messages:
+                    self._pending_steering = step_result.steering_messages
+                    # Don't mark as final -- loop continues with steering
                     step_result.is_final = False
-                    continue
-                else:
-                    yield {"type": "final", "result": step_result.final_result}
-                    return
 
-            # Check if done
-            if step_result.is_final:
-                yield {"type": "final", "result": step_result.final_result}
-                return
+                # Yield fine-grained events (pi-style)
+                for event in self._step_events(step_result, elapsed_ms):
+                    yield event
 
-            # Cooperative yield
-            if self.config.yield_interval > 0:
-                await asyncio.sleep(self.config.yield_interval)
+                # Handle context overflow fault (retry after compaction)
+                if step_result.fault and step_result.fault.code == "CTX_OVERFLOW":
+                    summary = await self._try_compaction()
+                    if summary:
+                        yield {"type": "context_compacted", "compaction_count": self._compaction_count, "summary": summary}
+                        step_result.is_final = False
+                        continue
+                    else:
+                        yield {"type": "final", "result": step_result.final_result}
+                        return
+
+                # Check if done (inner loop)
+                if step_result.is_final:
+                    break  # exit inner loop, check follow-up
+
+                # Cooperative yield
+                if self.config.yield_interval > 0:
+                    await asyncio.sleep(self.config.yield_interval)
+
+            # OUTER: Check follow-up queue
+            follow_ups = self.followup_queue.drain()
+            if follow_ups:
+                for msg in follow_ups:
+                    self.mmu.add_user_message(msg)
+                    yield {"type": "followup_injected", "content": msg}
+                continue  # re-enter inner loop
+
+            # No follow-ups -- done
+            yield {"type": "final", "result": step_result.final_result}
+            return
 
     # --- Partial result collection (pi-style) ---
 
@@ -277,6 +425,20 @@ class RuntimeLoop:
         return f"Execution interrupted. Partial results ({len(parts)} tool calls):\n" + "\n".join(parts)
 
     # --- Compaction ---
+
+    async def _llm_summarize(self, system_prompt: str, user_prompt: str) -> str:
+        """Call the LLM adapter for context summarization.
+
+        Uses the adapter's chat() interface with system + user messages,
+        no tools. Collects all text from the response.
+        """
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        # The adapter's chat() returns an LLMResponse with .content
+        response = await self._adapter.chat(messages=messages, tools=[])
+        return response.content or ""
 
     async def _try_compaction(self) -> Optional[str]:
         """Attempt to compact the context. Returns summary if successful, None otherwise."""
@@ -294,7 +456,8 @@ class RuntimeLoop:
         logger.info("Compacting context (attempt %d/%d)",
                      self._compaction_count + 1, self.config.max_compactions)
 
-        summary = await self.mmu.archive_and_reset()
+        summarizer = self._llm_summarize if self._adapter else None
+        summary = await self.mmu.archive_and_reset(summarizer=summarizer)
         if summary:
             self._compaction_count += 1
             self._steps_since_compaction = 0
@@ -309,7 +472,7 @@ class RuntimeLoop:
         """Convert a StepResult into fine-grained stream events.
 
         Pi emits individual events for text deltas, tool call starts/results.
-        We emit events in chronological order: text → tool_call → tool_result
+        We emit events in chronological order: text -> tool_call -> tool_result
         paired per tool, so the UI can render them interleaved.
         """
         events: List[Dict[str, Any]] = []
@@ -371,7 +534,7 @@ class RuntimeLoop:
             "result_count": len(step.results),
         })
 
-        # Final result — only emit if no REPLY/RETURN action already emitted text
+        # Final result -- only emit if no REPLY/RETURN action already emitted text
         has_reply = any(a.kind in ("REPLY", "RETURN") for a in step.actions)
         if step.is_final and step.final_result and not has_reply:
             events.append({

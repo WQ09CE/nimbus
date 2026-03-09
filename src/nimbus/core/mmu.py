@@ -7,16 +7,22 @@ The core innovation: Anchor & Stream architecture.
 - Stream (message history): Mutable conversation history that gets
   compressed (archived) when approaching the context limit.
 
-History dropping design (from original nimbus):
-- Safe cut points: NEVER split tool_call ↔ tool_result pairs
-- Tombstone stubs: dropped messages leave behind a one-line trace
-- Smart drop: failures/errors dropped first, then oldest non-essential
-- Archive merge: global summary is merged (not appended) to prevent growth
+Compaction strategy (aligned with pi-coding-agent):
+1. Token-based cut point: walk backward keeping ~20K tokens verbatim ("hot zone")
+2. LLM summarization: everything before cut is serialized to text and summarized
+3. Incremental updates: second compaction passes <previous-summary> for update
+4. File operation tracking: read/modified files appended as XML tags
+5. Structured prompt: Goal, Progress, Key Decisions, Next Steps format
+6. Fallback: deterministic tombstone stubs when no summarizer is available
 
-This is what separates a capable agent from a naive chatbot.
-Without it, the LLM drifts off-task after ~20 turns.
+Safety guarantees:
+- Tool-use turns (assistant+tool_calls -> tool results) are NEVER split
+- Dropped messages leave a tombstone trace
+- Global summary is MERGED (not appended) to prevent unbounded growth
+- Hot zone (recent N tokens) is always preserved
 """
 
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
@@ -38,6 +44,140 @@ def estimate_text_tokens(text: str) -> int:
     cjk = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
     other = len(text) - cjk
     return int(cjk / 1.5) + (other // 4)
+
+
+# =============================================================================
+# Summarization Prompts (aligned with pi-coding-agent)
+# =============================================================================
+
+SUMMARIZATION_SYSTEM_PROMPT = """You are a context summarization assistant. Your task is to read a conversation between a user and an AI coding assistant, then produce a structured summary following the exact format specified.
+
+Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary."""
+
+SUMMARIZATION_PROMPT = """The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
+
+Use this EXACT format:
+
+## Goal
+[What is the user trying to accomplish?]
+
+## Constraints & Preferences
+- [Any constraints, preferences, or requirements mentioned by user]
+
+## Progress
+### Done
+- [x] [Completed tasks/changes]
+
+### In Progress
+- [ ] [Current work]
+
+### Blocked
+- [Issues preventing progress, if any]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale]
+
+## Next Steps
+1. [Ordered list of what should happen next]
+
+## Critical Context
+- [Any data, examples, or references needed to continue]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages."""
+
+UPDATE_SUMMARIZATION_PROMPT = """The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
+
+Update the existing structured summary with new information. RULES:
+- PRESERVE all existing information from the previous summary
+- ADD new progress, decisions, and context from the new messages
+- UPDATE the Progress section: move items from "In Progress" to "Done" when completed
+- UPDATE "Next Steps" based on what was accomplished
+- PRESERVE exact file paths, function names, and error messages
+- If something is no longer relevant, you may remove it
+
+Use the same format as above (Goal, Constraints, Progress, Key Decisions, Next Steps, Critical Context)."""
+
+
+# =============================================================================
+# Message Serialization & File Operation Tracking (pi-style)
+# =============================================================================
+
+
+def _serialize_messages(messages: List["Message"]) -> str:
+    """Serialize messages to flat text for summarization.
+
+    Converts to [User]: / [Assistant]: / [Tool call]: / [Tool result]: format.
+    This prevents the summarization LLM from "continuing" the conversation.
+    (Aligned with pi-coding-agent's serializeConversation)
+    """
+    parts: List[str] = []
+    for msg in messages:
+        if msg.role == "user":
+            content = str(msg.content) if msg.content else ""
+            if content:
+                parts.append(f"[User]: {content}")
+        elif msg.role == "assistant":
+            if msg.tool_calls:
+                calls = []
+                for tc in (msg.tool_calls or []):
+                    func = tc.get("function", {})
+                    name = func.get("name", "?")
+                    args = func.get("arguments", "{}")
+                    calls.append(f"{name}({args})")
+                parts.append(f"[Tool calls]: {'; '.join(calls)}")
+            if msg.content:
+                parts.append(f"[Assistant]: {msg.content}")
+        elif msg.role == "tool":
+            preview = str(msg.content)[:500] if msg.content else ""
+            status = "ERROR" if msg.is_error else "OK"
+            parts.append(f"[Tool result ({msg.name or '?'}, {status})]: {preview}")
+        elif msg.role == "system":
+            pass  # Skip system messages in serialization
+    return "\n\n".join(parts)
+
+
+def _extract_file_ops(messages: List["Message"]) -> tuple[list[str], list[str]]:
+    """Extract file paths from tool calls, returning (read_only_files, modified_files).
+
+    Aligned with pi-coding-agent's file operation tracking.
+    """
+    read_files: set[str] = set()
+    modified_files: set[str] = set()
+
+    for msg in messages:
+        if not msg.tool_calls:
+            continue
+        for tc in msg.tool_calls:
+            func = tc.get("function", {})
+            name = func.get("name", "")
+            try:
+                args = json.loads(func.get("arguments", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            path = args.get("file_path") or args.get("path") or ""
+            if not path:
+                continue
+            if name in ("Read", "read_file", "Glob", "grep_search", "Grep"):
+                read_files.add(path)
+            elif name in ("Write", "write_file", "Edit", "edit_file"):
+                modified_files.add(path)
+
+    # read_only = read but not modified
+    read_only = sorted(read_files - modified_files)
+    modified = sorted(modified_files)
+    return read_only, modified
+
+
+def _format_file_ops(read_files: list[str], modified_files: list[str]) -> str:
+    """Format file operations as XML tags (pi-style)."""
+    sections: List[str] = []
+    if read_files:
+        sections.append(f"<read-files>\n{chr(10).join(read_files)}\n</read-files>")
+    if modified_files:
+        sections.append(f"<modified-files>\n{chr(10).join(modified_files)}\n</modified-files>")
+    if not sections:
+        return ""
+    return "\n\n" + "\n\n".join(sections)
 
 
 # =============================================================================
@@ -445,22 +585,56 @@ class MMU:
         threshold = int(self.config.max_context_tokens * self.config.compress_threshold)
         return self.estimate_tokens() >= threshold
 
+    # --- Token-Based Cut Point (pi-style) ---
+
+    def _find_cut_point(self, keep_recent_tokens: int = 20000) -> int:
+        """Find the cut point by walking backward, keeping ~keep_recent_tokens.
+
+        Never cuts inside a tool_call -> tool_result pair.
+        Returns the index of the first message to KEEP (everything before is summarized).
+        (Aligned with pi-coding-agent's findCutPoint)
+        """
+        accumulated = 0
+        cut_index = 0  # Default: summarize everything
+
+        for i in range(len(self._messages) - 1, -1, -1):
+            msg = self._messages[i]
+            accumulated += msg.token_estimate()
+            if accumulated >= keep_recent_tokens:
+                cut_index = i
+                # Walk forward to avoid cutting inside a tool turn:
+                # if cut_index lands on a tool_result, include its preceding tool_call
+                while cut_index < len(self._messages):
+                    m = self._messages[cut_index]
+                    if m.is_tool_result:
+                        # Can't start with a tool result -- go back to include its tool_call
+                        if cut_index > 0:
+                            cut_index -= 1
+                        else:
+                            break
+                    else:
+                        break
+                break
+
+        return cut_index
+
     # --- Compaction (Archive & Reset) ---
 
     async def archive_and_reset(
         self,
         summarizer: Optional[Callable] = None,
     ) -> Optional[str]:
-        """Compress current history into a summary and start fresh.
+        """Compress history: LLM summarization (preferred) or deterministic fallback.
 
-        Key improvements over naive compaction:
-        1. Safe cut: never splits tool_call ↔ tool_result pairs
-        2. Smart drop: errors/failures dropped first
-        3. Tombstone: dropped messages leave a trace
-        4. Merge: global summary is UPDATED (not appended) to prevent growth
+        Aligned with pi-coding-agent's compaction:
+        1. Token-based cut point (keep ~20K recent tokens verbatim)
+        2. Serialize old messages to text -> LLM summary
+        3. Incremental update with <previous-summary>
+        4. File operation tracking via XML tags
+        5. Structured prompt (Goal, Progress, Decisions, Next Steps)
 
         Args:
-            summarizer: async function(messages) -> summary string.
+            summarizer: async function(system_prompt: str, user_prompt: str) -> str
                        If None, uses deterministic extraction.
 
         Returns:
@@ -469,67 +643,100 @@ class MMU:
         if not self._messages:
             return None
 
-        if summarizer:
-            # LLM-powered summarization
-            context = self.assemble_context()
-            new_summary = await summarizer(context)
-            # Merge with existing summary (not append)
-            self._update_global_summary(new_summary)
-            self._messages.clear()
+        # 1. Find cut point (token-based, aligned with pi's keepRecentTokens)
+        keep_tokens = min(20000, self.config.max_context_tokens // 4)
+        cut_index = self._find_cut_point(keep_recent_tokens=keep_tokens)
+
+        to_summarize = self._messages[:cut_index]
+        to_keep = self._messages[cut_index:]
+
+        if not to_summarize:
+            # Nothing to summarize -- all messages are in hot zone.
+            # Fall back to the old smart_drop approach on all messages.
+            anchor_tokens = 0
+            if self._pinned:
+                anchor_tokens += self._pinned.token_estimate()
+            if self._goal:
+                anchor_tokens += estimate_text_tokens(self._goal) + MESSAGE_OVERHEAD
+            if self._global_summary:
+                anchor_tokens += estimate_text_tokens(self._global_summary) + MESSAGE_OVERHEAD
+
+            stream_budget = int(self.config.max_context_tokens * 0.7) - anchor_tokens
+            keep_recent = min(self.config.keep_recent_messages, len(self._messages))
+
+            surviving, tombstone = _smart_drop(
+                self._messages,
+                target_tokens=max(stream_budget, 0),
+                keep_recent=keep_recent,
+            )
+
+            summary_parts: List[str] = []
+            if self._global_summary:
+                summary_parts.append(self._global_summary)
+            if tombstone:
+                summary_parts.append(tombstone)
+
+            new_summary = "\n\n".join(summary_parts) if summary_parts else "(history compacted)"
+
+            max_summary_chars = self.config.summary_max_tokens * 4
+            if len(new_summary) > max_summary_chars:
+                new_summary = "..." + new_summary[-(max_summary_chars - 3):]
+
+            self._global_summary = new_summary
+            self._messages = surviving
             return new_summary
 
-        # --- Fallback: deterministic compaction ---
+        # 2. Extract file operations from messages being summarized
+        read_files, modified_files = _extract_file_ops(to_summarize)
 
-        # Calculate how many tokens we need to free
-        anchor_tokens = 0
-        if self._pinned:
-            anchor_tokens += self._pinned.token_estimate()
-        if self._goal:
-            anchor_tokens += estimate_text_tokens(self._goal) + MESSAGE_OVERHEAD
-        if self._global_summary:
-            anchor_tokens += estimate_text_tokens(self._global_summary) + MESSAGE_OVERHEAD
+        # 3. Generate summary (LLM or deterministic)
+        if summarizer:
+            # LLM-powered summarization (pi-style)
+            serialized = _serialize_messages(to_summarize)
+            user_prompt = f"<conversation>\n{serialized}\n</conversation>\n\n"
+            if self._global_summary:
+                user_prompt += f"<previous-summary>\n{self._global_summary}\n</previous-summary>\n\n"
+                user_prompt += UPDATE_SUMMARIZATION_PROMPT
+            else:
+                user_prompt += SUMMARIZATION_PROMPT
 
-        stream_budget = int(self.config.max_context_tokens * 0.7) - anchor_tokens
-        keep_recent = min(self.config.keep_recent_messages, len(self._messages))
+            try:
+                new_summary = await summarizer(SUMMARIZATION_SYSTEM_PROMPT, user_prompt)
+            except Exception as e:
+                logger.warning("LLM summarization failed (%s), falling back to deterministic", e)
+                new_summary = self._deterministic_summary(to_summarize)
+        else:
+            # Deterministic fallback
+            new_summary = self._deterministic_summary(to_summarize)
 
-        # Smart drop: prioritized dropping with safe cut points
-        surviving, tombstone = _smart_drop(
-            self._messages,
-            target_tokens=max(stream_budget, 0),
-            keep_recent=keep_recent,
-        )
+        # 4. Append file operations
+        new_summary += _format_file_ops(read_files, modified_files)
 
-        # Build summary from tombstone + previous summary
-        summary_parts: List[str] = []
-        if self._global_summary:
-            summary_parts.append(self._global_summary)
-        if tombstone:
-            summary_parts.append(tombstone)
-
-        new_summary = "\n\n".join(summary_parts) if summary_parts else "(history compacted)"
-
-        # Trim summary if too long (keep last N chars)
-        max_summary_chars = self.config.summary_max_tokens * 4  # rough token→char
-        if len(new_summary) > max_summary_chars:
-            new_summary = "..." + new_summary[-(max_summary_chars - 3):]
-
-        self._global_summary = new_summary
-        self._messages = surviving
-
-        return new_summary
-
-    def _update_global_summary(self, new_summary: str) -> None:
-        """Merge new summary into global summary (not append).
-
-        If there's an existing summary, the new one should supersede it
-        since the LLM summarizer was given the full context including
-        the old summary. We replace, not append, to prevent unbounded growth.
-        """
-        # LLM summary replaces old one (it already incorporated the old)
+        # 5. Trim if too long
         max_chars = self.config.summary_max_tokens * 4
         if len(new_summary) > max_chars:
             new_summary = "..." + new_summary[-(max_chars - 3):]
+
+        # 6. Update state
         self._global_summary = new_summary
+        self._messages = to_keep
+
+        logger.info(
+            "Compaction: summarized %d messages, kept %d, summary %d chars",
+            len(to_summarize), len(to_keep), len(new_summary),
+        )
+
+        return new_summary
+
+    def _deterministic_summary(self, messages: List["Message"]) -> str:
+        """Fallback: create tombstone summary without LLM."""
+        tombstone = _make_tombstone(messages)
+        parts: List[str] = []
+        if self._global_summary:
+            parts.append(self._global_summary)
+        if tombstone:
+            parts.append(tombstone)
+        return "\n\n".join(parts) if parts else "(history compacted)"
 
     def clear(self) -> None:
         self._messages.clear()

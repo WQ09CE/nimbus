@@ -51,7 +51,7 @@ class ActionIR:
 # 2. Tool & Execution Results (ABI)
 # =============================================================================
 
-ResultStatus = Literal["OK", "ERROR", "CANCELLED", "TIMEOUT"]
+ResultStatus = Literal["OK", "ERROR", "CANCELLED", "TIMEOUT", "SKIPPED"]
 
 
 @dataclass
@@ -83,6 +83,7 @@ class StepResult:
     final_result: Optional[ToolResult] = None
     fault: Optional["Fault"] = None
     timing_ms: Dict[str, int] = field(default_factory=dict)
+    steering_messages: List[str] = field(default_factory=list)
 
 
 # =============================================================================

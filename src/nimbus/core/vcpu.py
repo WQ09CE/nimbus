@@ -20,7 +20,7 @@ This is the "brain" that ties together:
 import asyncio
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
 from .protocol import ActionIR, Fault, StepResult, ToolResult
@@ -102,6 +102,7 @@ class VCPU:
         tools: List[Dict[str, Any]],
         config: Optional[VCPUConfig] = None,
         text_is_final: bool = True,
+        get_steering: Optional[Callable[[], List[str]]] = None,
     ):
         self.alu = alu
         self.decoder = decoder
@@ -114,6 +115,7 @@ class VCPU:
         self._exec = ExecutionState()
         self._interrupted = False
         self._wakeup_event: Optional[asyncio.Event] = None
+        self._get_steering = get_steering
 
     def set_wakeup_event(self, event: asyncio.Event) -> None:
         """Receive a wakeup event from the RuntimeLoop to enable graceful steering."""
@@ -158,8 +160,11 @@ class VCPU:
         try:
             messages = self.mmu.assemble_context()
             chat_coro = self.alu.chat(messages, self.tools)
-            
+
             if self._wakeup_event:
+                # Race LLM call against wakeup event (steering message arrived).
+                # If wakeup fires during LLM call: cancel, return empty step (non-final).
+                # The loop will inject the steering message and re-run step().
                 chat_task = asyncio.create_task(chat_coro)
                 wakeup_task = asyncio.create_task(self._wakeup_event.wait())
                 done, pending = await asyncio.wait(
@@ -167,7 +172,7 @@ class VCPU:
                     timeout=self.config.llm_call_timeout,
                     return_when=asyncio.FIRST_COMPLETED
                 )
-                
+
                 if self._wakeup_event.is_set():
                     if not chat_task.done():
                         chat_task.cancel()
@@ -175,14 +180,15 @@ class VCPU:
                             await chat_task
                         except asyncio.CancelledError:
                             pass
-                    self.mmu.add_system_message("[System] Execution gracefully interrupted by user message.")
+                    # Don't add system message -- the loop will inject the steering
+                    # message as a user message at the top of the next iteration.
                     result.actions = []
                     return result
 
                 if chat_task not in done:
                     chat_task.cancel()
                     raise asyncio.TimeoutError()
-                    
+
                 response = chat_task.result()
             else:
                 response = await asyncio.wait_for(
@@ -253,48 +259,40 @@ class VCPU:
             } for a in tool_actions]
             self.mmu.add_assistant_with_tool_calls(thought_text, tc_dicts)
 
-            # Execute each tool through the Gate
-            for action in tool_actions:
-                if self._wakeup_event and self._wakeup_event.is_set():
-                    self.mmu.add_system_message("[System] Tool execution interrupted by user message.")
+            for idx, action in enumerate(tool_actions):
+                # Check abort
+                if self._interrupted:
+                    # Skip all remaining tools
+                    for remaining in tool_actions[idx:]:
+                        skip = ToolResult(status="CANCELLED", output="Execution interrupted.")
+                        result.results.append(skip)
+                        self.mmu.add_tool_result(remaining.id, remaining.name, skip.output)
                     break
 
-                tool_coro = self.gate.syscall_tool(action)
-                if self._wakeup_event:
-                    tool_task = asyncio.create_task(tool_coro)
-                    wakeup_task = asyncio.create_task(self._wakeup_event.wait())
-                    
-                    done, pending = await asyncio.wait(
-                        [tool_task, wakeup_task],
-                        return_when=asyncio.FIRST_COMPLETED
-                    )
-                    
-                    if self._wakeup_event.is_set():
-                        if not tool_task.done():
-                            tool_task.cancel()
-                            try:
-                                await tool_task
-                            except asyncio.CancelledError:
-                                pass
-                        
-                        tool_result = ToolResult(
-                            status="CANCELLED", 
-                            output="[Tool execution cancelled due to new user instruction]"
-                        )
-                        result.results.append(tool_result)
-                        self.mmu.add_tool_result(action.id, action.name, str(tool_result.output))
-                        break
-                        
-                    tool_result = tool_task.result()
-                else:
-                    tool_result = await tool_coro
-
+                # Execute tool through Gate
+                tool_result = await self.gate.syscall_tool(action)
                 result.results.append(tool_result)
 
                 # ---- OBSERVE (write result to MMU) ----
                 self.mmu.add_tool_result(
                     action.id, action.name, str(tool_result.output),
                 )
+
+                # Pi-style: check for steering messages after each tool
+                if self._get_steering and idx < len(tool_actions) - 1:
+                    steering = self._get_steering()
+                    if steering:
+                        # Skip remaining tool calls (pi-style)
+                        for remaining in tool_actions[idx + 1:]:
+                            skip = ToolResult(
+                                status="SKIPPED",
+                                output="Skipped due to queued user message.",
+                            )
+                            result.results.append(skip)
+                            self.mmu.add_tool_result(remaining.id, remaining.name, skip.output)
+                        # Store steering messages for the loop to inject
+                        result.steering_messages = steering
+                        break
         else:
             # Pure thought — no tool calls
             count = self._exec.on_thought()

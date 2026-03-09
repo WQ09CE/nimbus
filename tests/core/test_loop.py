@@ -1,13 +1,11 @@
 """Tests for nimbus_next.loop — the RuntimeLoop execution driver."""
 
-import asyncio
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import List
 
 import pytest
 
-from nimbus.core.loop import LoopConfig, MessageQueue, RuntimeLoop
-from nimbus.core.mmu import MMU, MMUConfig, PinnedContext
+from nimbus.core.loop import LoopConfig, MessageQueue, RuntimeLoop, SteeringQueue
+from nimbus.core.mmu import MMU, MMUConfig
 from nimbus.core.protocol import ActionIR, Fault, StepResult, ToolResult
 
 
@@ -27,6 +25,10 @@ class MockVCPU:
     @property
     def iteration(self) -> int:
         return self._call_count
+
+    def set_wakeup_event(self, event) -> None:
+        """Accept wakeup event from RuntimeLoop (no-op in mock)."""
+        pass
 
     def request_interruption(self) -> None:
         self._interrupted = True
@@ -257,10 +259,11 @@ class TestRuntimeLoopErrorHandling:
 
 
 class TestMessageQueue:
-    """Tests for pi-style message queuing."""
+    """Tests for pi-style message queuing (backward-compat facade)."""
 
     def test_enqueue_and_drain(self):
-        q = MessageQueue()
+        sq = SteeringQueue()
+        q = MessageQueue(sq)
         q.enqueue("msg1")
         q.enqueue("msg2")
         assert q.pending == 2
@@ -269,7 +272,8 @@ class TestMessageQueue:
         assert q.pending == 0
 
     def test_drain_one(self):
-        q = MessageQueue()
+        sq = SteeringQueue()
+        q = MessageQueue(sq)
         q.enqueue("msg1")
         q.enqueue("msg2")
         assert q.drain_one() == "msg1"
@@ -277,7 +281,8 @@ class TestMessageQueue:
         assert q.drain_one() is None
 
     def test_drain_empty(self):
-        q = MessageQueue()
+        sq = SteeringQueue()
+        q = MessageQueue(sq)
         assert q.drain() == []
         assert q.drain_one() is None
 
