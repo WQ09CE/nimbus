@@ -254,10 +254,32 @@ class SessionManagerV2:
 
         system_prompt = getattr(nimbus_config, "system_prompt", "") or "You are a capable AI coding assistant. Use tools to solve the user's tasks. Always think step by step in Chinese."
 
+        # Real-time gate callback: publish tool events to SSE as they happen
+        def _gate_event_cb(event):
+            if event.type == "TOOL_STARTED":
+                asyncio.create_task(self._sse_hub.publish(
+                    session_id, "tool_call", {
+                        "tool": event.data.get("tool"),
+                        "args": event.data.get("args", {}),
+                        "action_id": event.data.get("call_id"),
+                    }
+                ))
+            elif event.type == "TOOL_FINISHED":
+                asyncio.create_task(self._sse_hub.publish(
+                    session_id, "tool_result", {
+                        "tool": event.data.get("tool"),
+                        "status": event.data.get("status"),
+                        "output": event.data.get("output_preview"),
+                        "action_id": event.data.get("call_id"),
+                        "ui_detail": event.data.get("ui_detail"),
+                    }
+                ))
+
         agent_os = AgentOS(
             config=agent_config,
             adapter=llm_client,
             system_prompt=system_prompt,
+            event_callback=_gate_event_cb,
         )
 
         logger.info(f"Created nimbus-next AgentOS for session {session_id}")
@@ -371,26 +393,9 @@ class SessionManagerV2:
                     await self._sse_hub.publish(
                         session_id, "message", {"content": event.get("content", "")}
                     )
-                elif evt_type == "tool_call_start":
-                    await self._sse_hub.publish(
-                        session_id, "tool_call",
-                        {
-                            "tool": event.get("tool"),
-                            "args": event.get("args_preview", {}),
-                            "action_id": event.get("call_id"),
-                        }
-                    )
-                elif evt_type == "tool_call_done":
-                    await self._sse_hub.publish(
-                        session_id, "tool_result",
-                        {
-                            "tool": event.get("tool"),
-                            "status": event.get("status"),
-                            "output": event.get("output_preview"),
-                            "action_id": event.get("call_id"),
-                            "ui_detail": event.get("ui_detail"),
-                        }
-                    )
+                elif evt_type in ("tool_call_start", "tool_call_done"):
+                    # Already published in real-time via gate callback
+                    continue
                 elif evt_type == "final":
                     result = event.get("result")
                     if result and result.status == "ERROR":

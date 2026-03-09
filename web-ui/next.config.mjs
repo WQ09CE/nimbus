@@ -1,6 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: false,
+  // Disable gzip compression — it buffers entire response, breaking SSE streaming
+  compress: false,
   eslint: {
     ignoreDuringBuilds: true,
   },

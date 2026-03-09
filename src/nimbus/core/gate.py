@@ -128,8 +128,12 @@ class KernelGate:
         tool_name = action.name
         t0 = time.monotonic()
 
-        # 1. Emit start event
-        self._emit("TOOL_STARTED", {"tool": tool_name, "args_keys": list(action.args.keys())})
+        # 1. Emit start event (include full args and call_id for real-time SSE)
+        self._emit("TOOL_STARTED", {
+            "tool": tool_name,
+            "call_id": action.id,
+            "args": {k: str(v)[:100] for k, v in action.args.items()},
+        })
 
         # 2. Normalize args
         action.args = _normalize_args(tool_name, action.args)
@@ -200,7 +204,9 @@ class KernelGate:
         result.timing_ms = {"exec": elapsed}
         event_data: Dict[str, Any] = {
             "tool": action.name, "status": result.status,
+            "call_id": action.id,
             "duration_ms": elapsed,
+            "output_preview": str(result.output)[:200] if result.output else None,
         }
         # Include ui_detail in event for UI subscribers (pi-style split result)
         if result.ui_detail:
