@@ -89,7 +89,7 @@ class TestMMU:
         mmu.set_goal("Fix authentication bug")
         mmu.add_user_message("Start here")
         ctx = mmu.assemble_context()
-        assert any("Goal" in str(m.get("content", "")) for m in ctx)
+        assert any("GOAL" in str(m.get("content", "")) for m in ctx)
 
     def test_tool_call_flow(self):
         mmu = MMU()
