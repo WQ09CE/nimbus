@@ -92,7 +92,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
 
   return (
     <div data-testid={isUser ? "message-user" : "message-assistant"}
-      className={`flex gap-4 mb-8 ${isUser ? "flex-row-reverse" : "flex-row"} group message-enter`}>
+      className={`flex gap-4 ${isUser ? "flex-row-reverse" : "flex-row"} group message-enter`}>
 
       <div className="shrink-0">
         {isUser ? <UserAvatar /> : <AiAvatar />}
@@ -163,17 +163,23 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
                     </div>
                   );
                 } else {
+                  const tcId = part.toolCall.id;
+                  const liveTc = tcId ? message.toolCallsMap?.[tcId] : undefined;
+                  const tcName = liveTc?.name || part.toolCall.name;
+                  const tcArgs = liveTc?.arguments || part.toolCall.arguments;
+                  const resolvedResult = (tcId ? message.toolResultsMap?.[tcId] : undefined) || part.toolResult;
+
                   return (
-                    <div key={`part-${idx}`} className="ml-2">
+                    <div key={`part-${idx}`} className="w-full mt-2">
                       <ToolCard tool={{
-                        id: part.toolCall.id,
-                        name: part.toolCall.name,
-                        args: part.toolCall.arguments,
-                        result: part.toolResult?.result,
-                        error: part.toolResult?.error,
-                        status: part.toolResult ? (part.toolResult.error ? "failed" : "completed") : "running",
-                        duration: part.toolResult?.duration,
-                        ui_detail: (part.toolResult as any)?.ui_detail,
+                        id: tcId,
+                        name: tcName,
+                        args: tcArgs,
+                        result: resolvedResult?.result,
+                        error: resolvedResult?.error,
+                        status: resolvedResult ? (resolvedResult.error ? "failed" : "completed") : "running",
+                        duration: resolvedResult?.duration,
+                        ui_detail: (resolvedResult as any)?.ui_detail,
                       }} />
                     </div>
                   );
@@ -200,6 +206,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
     prevProps.message.id === nextProps.message.id &&
     prevProps.message.content === nextProps.message.content &&
     prevProps.isStreaming === nextProps.isStreaming &&
-    prevProps.message.parts === nextProps.message.parts
+    prevProps.message.parts === nextProps.message.parts &&
+    prevProps.message.toolResultsMap === nextProps.message.toolResultsMap
   );
 });

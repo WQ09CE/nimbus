@@ -214,6 +214,7 @@ class KernelGate:
             "call_id": action.id,
             "duration_ms": elapsed,
             "output_preview": str(result.output)[:200] if result.output else None,
+            "output": str(result.output) if result.output else None,
         }
         # Include ui_detail in event for UI subscribers (pi-style split result)
         if result.ui_detail:

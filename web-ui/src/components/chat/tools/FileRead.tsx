@@ -1,9 +1,10 @@
 import React from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { useTypewriter } from '@/hooks/useTypewriter';
 
 interface FileReadProps {
-  args: { file_path: string; [key: string]: any };
+  args: { file_path: string;[key: string]: any };
   result?: string;
   error?: string;
   status: "running" | "completed" | "failed";
@@ -13,12 +14,15 @@ export function FileRead({ args, result, error, status }: FileReadProps) {
   const safeArgs = args || {};
   // Strict path display
   const filePath = safeArgs.file_path || "unknown";
-  
+
+  const isStreaming = status === "running";
+
   // Format content logic (truncate if too long)
-  const content = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+  const rawContent = typeof result === 'string' ? result : (result ? JSON.stringify(result, null, 2) : "");
+  const content = useTypewriter(rawContent, isStreaming, 10); // file loads can be faster
   const lines = content ? content.split('\n') : [];
   const lineCount = lines.length;
-  
+
   // Simple syntax detection based on extension
   const ext = filePath.split('.').pop();
 
@@ -35,7 +39,7 @@ export function FileRead({ args, result, error, status }: FileReadProps) {
     dockerfile: 'docker', makefile: 'makefile',
   };
   const language = ext ? extToLang[ext.toLowerCase()] : undefined;
-  
+
   return (
     <div className="font-mono text-sm bg-[#0d1117]">
       {/* File Info Bar */}

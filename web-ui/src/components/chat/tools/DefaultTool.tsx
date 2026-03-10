@@ -1,5 +1,6 @@
 import React from 'react';
 import { DataDisplay } from '../MarkdownRenderer';
+import { useTypewriter } from '@/hooks/useTypewriter';
 
 interface DefaultToolProps {
   name: string;
@@ -10,6 +11,10 @@ interface DefaultToolProps {
 }
 
 export function DefaultTool({ name, args, result, error, status }: DefaultToolProps) {
+  const isStreaming = status === "running";
+  const typedResult = useTypewriter(typeof result === "string" ? result : "", isStreaming, 5);
+  const displayResult = typeof result === "string" ? typedResult : result;
+
   return (
     <div className="space-y-3">
       {/* Args */}
@@ -22,7 +27,7 @@ export function DefaultTool({ name, args, result, error, status }: DefaultToolPr
       {/* Result */}
       {result && (
         <DataDisplay
-          data={result}
+          data={displayResult}
           title="Output"
           maxDepth={3}
           className="bg-black/40 p-3 rounded border border-gray-800 text-green-300/90"

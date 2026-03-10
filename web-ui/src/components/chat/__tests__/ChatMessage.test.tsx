@@ -22,7 +22,7 @@ describe("ChatMessage", () => {
     content: "",
     parts: [],
     timestamp: Date.now(),
-    toolCalls: [],
+    toolCallsMap: {},
     toolResults: [],
   };
 
@@ -34,7 +34,7 @@ describe("ChatMessage", () => {
         { type: "text" as const, content: "Hello with tools" },
         { type: "tool" as const, toolCall: { id: "tool-1", name: "Read", arguments: { path: "/tmp/a.txt" } }, toolResult: { id: "tool-1", name: "Read", result: "ok" } },
       ],
-      toolCalls: [{ id: "tool-1", name: "Read", arguments: { path: "/tmp/a.txt" } }],
+      toolCallsMap: { "tool-1": { id: "tool-1", name: "Read", arguments: { path: "/tmp/a.txt" } } },
       toolResults: [{ id: "tool-1", name: "Read", result: "ok" }],
     };
 

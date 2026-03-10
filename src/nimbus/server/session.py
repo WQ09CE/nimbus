@@ -322,40 +322,48 @@ class SessionManagerV2:
             except OSError as e:
                 logger.warning(f"⚠️ Failed to read memory file {memory_path}: {e}")
 
-        # Real-time gate callback: publish tool events to SSE as they happen
+        # Strict Ordering Publisher Task:
+        # Prevents asyncio.create_task race conditions where tool events 
+        # overtake text events due to lock acquisition.
+        event_queue = asyncio.Queue()
+
+        async def _publisher_task():
+            while True:
+                try:
+                    payload = await event_queue.get()
+                    if payload is None: break
+                    await self._sse_hub.publish(session_id, payload[0], payload[1])
+                except Exception as e:
+                    logger.error(f"Event publisher error: {e}")
+
+        pub_task = asyncio.create_task(_publisher_task())
+
+        # Real-time gate callback: queue tool events to SSE as they happen
         def _gate_event_cb(event):
             if event.type == "TOOL_STARTED":
-                asyncio.create_task(self._sse_hub.publish(
-                    session_id, "tool_call", {
-                        "tool": event.data.get("tool"),
-                        "args": event.data.get("args", {}),
-                        "action_id": event.data.get("call_id"),
-                    }
-                ))
+                event_queue.put_nowait(("tool_call", {
+                    "tool": event.data.get("tool"),
+                    "args": event.data.get("args", {}),
+                    "action_id": event.data.get("call_id"),
+                }))
             elif event.type == "TOOL_CALL_DELTA":
-                asyncio.create_task(self._sse_hub.publish(
-                    session_id, "tool_output_chunk", {
-                        "tool": event.data.get("tool"),
-                        "chunk": event.data.get("chunk"),
-                        "action_id": event.data.get("call_id"),
-                    }
-                ))
+                event_queue.put_nowait(("tool_output_chunk", {
+                    "tool": event.data.get("tool"),
+                    "chunk": event.data.get("chunk"),
+                    "action_id": event.data.get("call_id"),
+                }))
             elif event.type == "TOOL_FINISHED":
-                asyncio.create_task(self._sse_hub.publish(
-                    session_id, "tool_result", {
-                        "tool": event.data.get("tool"),
-                        "status": event.data.get("status"),
-                        "output": event.data.get("output_preview"),
-                        "action_id": event.data.get("call_id"),
-                        "ui_detail": event.data.get("ui_detail"),
-                    }
-                ))
+                event_queue.put_nowait(("tool_result", {
+                    "tool": event.data.get("tool"),
+                    "status": event.data.get("status"),
+                    "output": event.data.get("output"),
+                    "action_id": event.data.get("call_id"),
+                    "ui_detail": event.data.get("ui_detail"),
+                }))
 
-        # Token-level text streaming callback: publish each LLM token to SSE as it arrives
+        # Token-level text streaming callback
         def _text_delta_cb(chunk: str):
-            asyncio.create_task(self._sse_hub.publish(
-                session_id, "message", {"content": chunk}
-            ))
+            event_queue.put_nowait(("message", {"content": chunk}))
 
         # Let AgentOS know this session is being instantiated
         # (MMU and VCPU will be rehydrated when stream_with_queue is called)
@@ -367,6 +375,9 @@ class SessionManagerV2:
             event_callback=_gate_event_cb,
             on_text_delta=_text_delta_cb,
         )
+
+        # Attach task reference to agent_os so it isn't garbage collected
+        agent_os._pub_task = pub_task
 
         logger.info(f"Created nimbus-next AgentOS for session {session_id}")
 

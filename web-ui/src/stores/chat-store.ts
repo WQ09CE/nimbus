@@ -22,8 +22,9 @@ export interface Message {
   role: "user" | "assistant" | "system";
   content: string;
   parts: MessagePart[];
-  toolCalls?: ToolCall[];
   toolResults?: ToolResult[];
+  toolCallsMap?: Record<string, ToolCall>;
+  toolResultsMap?: Record<string, ToolResult>;
   attachments?: ChatAttachment[];
   timestamp: number;
   isInjection?: boolean;
@@ -277,7 +278,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             content: textContent,
             parts,
             toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+            toolCallsMap: toolCalls.length > 0 ? toolCalls.reduce((acc, tc) => { if (tc.id) acc[tc.id] = tc; return acc; }, {} as Record<string, ToolCall>) : undefined,
             toolResults: toolResults.length > 0 ? toolResults : undefined,
+            toolResultsMap: toolResults.length > 0 ? toolResults.reduce((acc, tr) => { if (tr.id) acc[tr.id] = tr; return acc; }, {} as Record<string, ToolResult>) : undefined,
             attachments: reloadedAttachments.length > 0 ? reloadedAttachments : undefined,
             timestamp,
           };
@@ -322,8 +325,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       content: "",
       parts: [],
       timestamp: Date.now(),
-      toolCalls: [],
+      toolCallsMap: {},
       toolResults: [],
+      toolResultsMap: {},
     };
 
     set(s => ({
@@ -412,17 +416,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
             case "tool_call": {
               if (data && typeof data === "object") {
                 const d = data as any;
+                const tcId = d.action_id || d.id || `tc-${Date.now()}`;
+
+                const tcMap = targetMsg.toolCallsMap || {};
+                const existingTc = tcMap[tcId];
                 const tc: ToolCall = {
-                  id: d.action_id || d.id || `tc-${Date.now()}`,
-                  name: d.tool || d.name || "unknown",
-                  arguments: d.args || d.arguments || {},
+                  id: tcId,
+                  name: d.tool || d.name || existingTc?.name || "unknown",
+                  arguments: d.args || d.arguments || existingTc?.arguments || {},
                 };
-                targetMsg.toolCalls = [...(targetMsg.toolCalls || []), tc];
+
+                targetMsg.toolCallsMap = { ...tcMap, [tcId]: tc };
+
                 const parts = [...(targetMsg.parts || [])];
-                // If tool_result arrived before tool_call (replay race), attach it now
-                const earlyResult = (targetMsg.toolResults || []).find(r => r.id === tc.id);
-                parts.push({ type: "tool", toolCall: tc, ...(earlyResult ? { toolResult: earlyResult } : {}) } as any);
-                targetMsg.parts = parts;
+                const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
+                if (matchIdx === -1) {
+                  parts.push({ type: "tool", toolCall: { id: tcId, name: tc.name, arguments: {} } } as any);
+                  targetMsg.parts = parts;
+                }
                 updated = true;
               }
               break;
@@ -434,19 +445,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 const chunk = d.chunk || "";
                 if (!chunk) break;
 
-                const parts = [...(targetMsg.parts || [])];
-                const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
-                if (matchIdx !== -1) {
-                  const toolPart = parts[matchIdx] as { type: "tool"; toolCall: ToolCall; toolResult?: ToolResult };
-                  if (!toolPart.toolResult) {
-                    toolPart.toolResult = { id: tcId, name: d.tool || "unknown", result: chunk };
-                  } else {
-                    toolPart.toolResult.result = (toolPart.toolResult.result || "") + chunk;
-                  }
-                  parts[matchIdx] = { ...toolPart };
-                  targetMsg.parts = parts;
-                  updated = true;
+                // 1. Always write to Map
+                const map = targetMsg.toolResultsMap || {};
+                if (map[tcId]) {
+                  map[tcId] = { ...map[tcId], result: (map[tcId].result || "") + chunk };
+                } else {
+                  map[tcId] = { id: tcId, name: d.tool || "unknown", result: chunk };
                 }
+                targetMsg.toolResultsMap = map;
+                updated = true;
               }
               break;
             }
@@ -454,23 +461,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
               if (data && typeof data === "object") {
                 const d = data as any;
                 const tcId = d.action_id || d.id;
+                // Merge with any streaming chunks already buffered
+                const existing = targetMsg.toolResultsMap?.[tcId];
                 const tr: ToolResult = {
                   id: tcId || "",
                   name: d.tool || d.name || "unknown",
-                  result: d.output !== undefined ? d.output : d.result,
+                  result: d.output !== undefined ? d.output : (d.result !== undefined ? d.result : existing?.result),
                   error: d.status === "ERROR" ? (d.fault?.message || "Error") : undefined,
                   ui_detail: d.ui_detail,
                 };
                 targetMsg.toolResults = [...(targetMsg.toolResults || []), tr];
+                // Always write to Map
+                const map = targetMsg.toolResultsMap || {};
+                map[tcId] = tr;
+                targetMsg.toolResultsMap = map;
+
+                // Also ensure a part placeholder exists in case tool_result beat tool_call
                 const parts = [...(targetMsg.parts || [])];
                 const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
-                if (matchIdx !== -1) {
-                  // tool_call already in parts — attach result
-                  parts[matchIdx] = { ...(parts[matchIdx] as any), toolResult: tr };
+                if (matchIdx === -1) {
+                  parts.push({ type: "tool", toolCall: { id: tcId, name: tr.name, arguments: {} } } as any);
+                  targetMsg.parts = parts;
                 }
-                // if matchIdx === -1, tool_call hasn't arrived yet (replay race);
-                // toolResults array already has tr, so tool_call handler will pick it up
-                targetMsg.parts = parts;
                 updated = true;
               }
               break;
@@ -552,10 +564,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Standard send
     const userMessage: Message = { id: `user-${Date.now()}`, role: "user", content, parts: [{ type: "text", content }], attachments, timestamp: Date.now() };
     const abortController = new AbortController();
+    let receivedDone = false;
+    let lastEventTime = Date.now();
+
+    // Watchdog: if no SSE event (including heartbeats) for 30s, connection is dead
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastEventTime > 30000) {
+        clearInterval(watchdog);
+        console.warn("[Store] SSE watchdog: no event for 30s, aborting stream");
+        abortController.abort();
+      }
+    }, 5000);
 
     // Start streaming: prepare an empty assistant message
     const STREAMING_ID = "streaming-assistant";
-    const initialAssistantMsg: Message = { id: STREAMING_ID, role: "assistant", content: "", parts: [], timestamp: Date.now(), toolCalls: [], toolResults: [] };
+    const initialAssistantMsg: Message = { id: STREAMING_ID, role: "assistant", content: "", parts: [], timestamp: Date.now(), toolCallsMap: {}, toolResults: [], toolResultsMap: {} };
 
     set({
       messages: [...get().messages, userMessage, initialAssistantMsg],
@@ -566,6 +589,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     try {
       for await (const event of streamChat(session.id, content, attachments, abortController.signal)) {
+        lastEventTime = Date.now(); // Reset watchdog on ANY event (including heartbeats)
+
         if (get().session?.id !== session.id) {
           abortController.abort();
           break;
@@ -607,17 +632,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
           case "tool_call": {
             if (data && typeof data === "object") {
               const d = data as any;
+              const tcId = d.action_id || d.id || `tc-${Date.now()}`;
+
+              const tcMap = targetMsg.toolCallsMap || {};
+              const existingTc = tcMap[tcId];
               const tc: ToolCall = {
-                id: d.action_id || d.id || `tc-${Date.now()}`,
-                name: d.tool || d.name || "unknown",
-                arguments: d.args || d.arguments || {},
+                id: tcId,
+                name: d.tool || d.name || existingTc?.name || "unknown",
+                arguments: d.args || d.arguments || existingTc?.arguments || {},
               };
-              targetMsg.toolCalls = [...(targetMsg.toolCalls || []), tc];
+
+              targetMsg.toolCallsMap = { ...tcMap, [tcId]: tc };
+
               const parts = [...(targetMsg.parts || [])];
-              // If tool_result arrived before tool_call (replay race), attach it now
-              const earlyResult = (targetMsg.toolResults || []).find(r => r.id === tc.id);
-              parts.push({ type: "tool", toolCall: tc, ...(earlyResult ? { toolResult: earlyResult } : {}) } as any);
-              targetMsg.parts = parts;
+              const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
+              if (matchIdx === -1) {
+                parts.push({ type: "tool", toolCall: { id: tcId, name: tc.name, arguments: {} } } as any);
+                targetMsg.parts = parts;
+              }
               updated = true;
             }
             break;
@@ -629,25 +661,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
               const chunk = d.chunk || "";
               if (!chunk) break;
 
-              const parts = [...(targetMsg.parts || [])];
-              const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
-              if (matchIdx !== -1) {
-                const toolPart = parts[matchIdx] as { type: "tool"; toolCall: ToolCall; toolResult?: ToolResult };
-                // If we don't have a toolResult yet, create a partial one
-                if (!toolPart.toolResult) {
-                  toolPart.toolResult = {
-                    id: tcId,
-                    name: d.tool || "unknown",
-                    result: chunk,
-                  };
-                } else {
-                  // Append to existing result
-                  toolPart.toolResult.result = (toolPart.toolResult.result || "") + chunk;
-                }
-                parts[matchIdx] = { ...toolPart };
-                targetMsg.parts = parts;
-                updated = true;
+              // 1. Always write to Map — never lose data regardless of parts state
+              const map = targetMsg.toolResultsMap || {};
+              if (map[tcId]) {
+                map[tcId] = { ...map[tcId], result: (map[tcId].result || "") + chunk };
+              } else {
+                map[tcId] = { id: tcId, name: d.tool || "unknown", result: chunk };
               }
+              targetMsg.toolResultsMap = map;
+              updated = true;
             }
             break;
           }
@@ -655,28 +677,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
             if (data && typeof data === "object") {
               const d = data as any;
               const tcId = d.action_id || d.id;
+              // Merge with any streaming chunks already buffered in the Map
+              const existing = targetMsg.toolResultsMap?.[tcId];
               const tr: ToolResult = {
                 id: tcId || "",
                 name: d.tool || d.name || "unknown",
-                result: d.output !== undefined ? d.output : d.result,
+                result: d.output !== undefined ? d.output : (d.result !== undefined ? d.result : existing?.result),
                 error: d.status === "ERROR" ? (d.fault?.message || "Error") : undefined,
                 ui_detail: d.ui_detail,
               };
               targetMsg.toolResults = [...(targetMsg.toolResults || []), tr];
-              // Find matching tool part and attach result
+              // Always write to Map
+              const map = targetMsg.toolResultsMap || {};
+              map[tcId] = tr;
+              targetMsg.toolResultsMap = map;
+
+              // Also ensure a part placeholder exists in case tool_result beat tool_call
               const parts = [...(targetMsg.parts || [])];
-              const matchIdx = parts.findIndex(p => p.type === "tool" && p.toolCall?.id === tcId);
-              if (matchIdx !== -1) {
-                const toolPart = parts[matchIdx] as { type: "tool"; toolCall: ToolCall; toolResult?: ToolResult };
-                parts[matchIdx] = { ...toolPart, toolResult: tr };
+              const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
+              if (matchIdx === -1) {
+                parts.push({ type: "tool", toolCall: { id: tcId, name: tr.name, arguments: {} } } as any);
+                targetMsg.parts = parts;
               }
-              targetMsg.parts = parts;
               updated = true;
             }
             break;
           }
           case "done":
-            // Stream completed — break out of for-await loop
+            receivedDone = true;
             break;
           case "error":
             throw new Error(typeof data === "string" ? data : (data as any)?.message || "Stream error");
@@ -692,23 +720,63 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       // Flush any buffered rAF update before finalization
       flushPendingSync(set, get, STREAMING_ID);
-
-      // Stream Finished — close the SSE connection and finalize message
       abortController.abort();
-      const finalMsgs = [...get().messages];
-      const streamingIdx = finalMsgs.findIndex(m => m.id === STREAMING_ID);
-      if (streamingIdx !== -1) {
-        finalMsgs[streamingIdx].id = `assistant-${Date.now()}`; // Lock the ID
+
+      if (receivedDone) {
+        // Clean completion — finalize message
+        const finalMsgs = [...get().messages];
+        const streamingIdx = finalMsgs.findIndex(m => m.id === STREAMING_ID);
+        if (streamingIdx !== -1) {
+          finalMsgs[streamingIdx].id = `assistant-${Date.now()}`;
+        }
+        set({ messages: finalMsgs, isStreaming: false, streamAbortController: null });
+      } else {
+        // Stream dropped without done — check if agent is still running
+        console.warn("[Store] Stream ended without done event, checking agent status...");
+        try {
+          const status = await getSessionStatus(session.id);
+          if (status.running && get().session?.id === session.id) {
+            // Agent still running — reload will pick up when it finishes
+            console.info("[Store] Agent still running, reloading session to recover...");
+            await get().switchSession(session);
+            return;
+          }
+        } catch { /* status check failed */ }
+        // Agent done or can't check — reload full results from server
+        try {
+          await get().switchSession(session);
+        } catch {
+          // Fallback: just finalize with what we have
+          const finalMsgs = [...get().messages];
+          const streamingIdx = finalMsgs.findIndex(m => m.id === STREAMING_ID);
+          if (streamingIdx !== -1) {
+            finalMsgs[streamingIdx].id = `assistant-${Date.now()}`;
+          }
+          set({ messages: finalMsgs, isStreaming: false, streamAbortController: null });
+        }
       }
-      set({ messages: finalMsgs, isStreaming: false, streamAbortController: null });
 
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
-        // Graceful cancel
+        // Could be user interrupt or watchdog timeout — try to recover
+        console.warn("[Store] Stream aborted, checking agent status for recovery...");
+        try {
+          const status = await getSessionStatus(session.id);
+          if (status.running && get().session?.id === session.id) {
+            // Agent still running — reload session (switchSession checks status and re-attaches)
+            await get().switchSession(session);
+            return;
+          }
+          // Agent done — reload to get complete results
+          await get().switchSession(session);
+          return;
+        } catch { /* status check or reload failed */ }
       } else {
         set({ error: err instanceof Error ? err.message : "Stream failed" });
       }
       set({ isStreaming: false, streamAbortController: null });
+    } finally {
+      clearInterval(watchdog);
     }
   },
 

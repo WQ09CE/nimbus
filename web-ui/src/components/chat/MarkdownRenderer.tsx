@@ -338,23 +338,38 @@ export function DataDisplay({ data, title, maxDepth = 2, currentDepth = 0, class
   if (!isObject) {
     let content = String(data);
     let typeClass = "text-gray-300";
+    let innerContent: React.ReactNode = null;
 
     if (typeof data === 'boolean') {
       content = data ? 'true' : 'false';
       typeClass = "text-yellow-400";
+      innerContent = <span className={typeClass}>{content}</span>;
     } else if (typeof data === 'number') {
       typeClass = "text-blue-400";
+      innerContent = <span className={typeClass}>{content}</span>;
     } else if (typeof data === 'string') {
       // 检查是否是 URL
       if (data.startsWith('http')) {
-        return <a href={data} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline flex items-center gap-1">🔗 {data}</a>;
+        innerContent = <a href={data} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline flex items-center gap-1">🔗 {data}</a>;
+      } else {
+        typeClass = "text-green-300/90";
+        innerContent = <StringDisplay content={content} typeClass={typeClass} />;
       }
-      typeClass = "text-green-300/90";
-
-      return <StringDisplay content={content} typeClass={typeClass} />;
+    } else {
+      innerContent = <span className={typeClass}>{content}</span>;
     }
 
-    return <span className={typeClass}>{content}</span>;
+    if (title || className) {
+      return (
+        <div className={`font-mono text-xs ${className}`}>
+          {title && <div className="text-gray-500 mb-1 font-semibold">{title}:</div>}
+          <div className="pl-2 border-l border-gray-700/50">
+            {innerContent}
+          </div>
+        </div>
+      );
+    }
+    return innerContent;
   }
 
   // 递归深度限制

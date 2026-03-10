@@ -1,7 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { stripAnsiAndCarriageReturns } from '@/lib/stringUtils';
+import { useTypewriter } from '@/hooks/useTypewriter';
 
 interface BashProps {
-  args: { command: string; [key: string]: any };
+  args: { command: string;[key: string]: any };
   result?: string;
   error?: string;
   status: "running" | "completed" | "failed";
@@ -11,10 +13,14 @@ interface BashProps {
 export function Bash({ args, result, error, status, ui_detail }: BashProps) {
   const [isExpanded, setIsExpanded] = useState(true);
   const outputRef = useRef<HTMLDivElement>(null);
-  
+
   const exitCode = ui_detail?.exit_code ?? (error ? 1 : 0);
   const isNonZero = exitCode !== 0;
   const hasOutput = !!result || !!error;
+  const isStreaming = status === "running";
+
+  const typedResult = useTypewriter(stripAnsiAndCarriageReturns(result || ""), isStreaming, 5);
+  const typedError = useTypewriter(stripAnsiAndCarriageReturns(error || ""), isStreaming, 5);
 
   // 如果处于展开状态且正在运行（流式输出），自动滚动到底部
   useEffect(() => {
@@ -26,7 +32,7 @@ export function Bash({ args, result, error, status, ui_detail }: BashProps) {
   return (
     <div className="font-mono text-sm bg-[#0d1117] rounded-md border border-gray-800 overflow-hidden flex flex-col my-2">
       {/* Header: Command & Status (始终显示，保持最小高度) */}
-      <div 
+      <div
         className="flex items-center justify-between p-2.5 bg-[#161b22] cursor-pointer hover:bg-[#1f242e] transition-colors select-none"
         onClick={() => setIsExpanded(!isExpanded)}
       >
@@ -34,7 +40,7 @@ export function Bash({ args, result, error, status, ui_detail }: BashProps) {
           <span className="text-green-400 shrink-0">$</span>
           <span className="truncate" title={args.command}>{args.command}</span>
         </div>
-        
+
         <div className="flex items-center gap-4 text-xs shrink-0">
           {status === "running" ? (
             <span className="flex items-center gap-1.5 text-blue-400">
@@ -53,7 +59,7 @@ export function Bash({ args, result, error, status, ui_detail }: BashProps) {
               exit {exitCode}
             </span>
           )}
-          
+
           <span className="text-gray-500 w-4 text-center">
             {isExpanded ? (
               <svg fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4">
@@ -70,7 +76,7 @@ export function Bash({ args, result, error, status, ui_detail }: BashProps) {
 
       {/* Body: Output & Error (仅在展开时显示) */}
       {isExpanded && (
-        <div 
+        <div
           ref={outputRef}
           className="p-3 max-h-[400px] overflow-y-auto custom-scrollbar text-[13px] border-t border-gray-800"
         >
@@ -83,10 +89,10 @@ export function Bash({ args, result, error, status, ui_detail }: BashProps) {
             <div className="text-gray-600 italic">(no output)</div>
           )}
           {error && (
-            <div className="text-red-400 whitespace-pre-wrap break-words leading-relaxed">{error}</div>
+            <div className="text-red-400 whitespace-pre-wrap break-words leading-relaxed">{typedError}</div>
           )}
           {result && !error && (
-            <div className="text-gray-300 whitespace-pre-wrap break-words leading-relaxed">{result}</div>
+            <div className="text-gray-300 whitespace-pre-wrap break-words leading-relaxed">{typedResult}</div>
           )}
         </div>
       )}

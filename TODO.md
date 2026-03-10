@@ -1,6 +1,6 @@
 # TODO
 
-## 🐛 虚拟滚动 scroll-to-bottom 到不了最底端
+## ✅ [已修复] 虚拟滚动 scroll-to-bottom 到不了最底端
 
 **文件**: `web-ui/src/components/chat/ChatList.tsx`
 
@@ -58,7 +58,7 @@ useEffect(() => {
 
 ---
 
-## 🐛 SSE 流式渲染时 tool card 显示不完整
+## ✅ [已修复] SSE 流式渲染时 tool card 显示不完整
 
 **文件**: `web-ui/src/stores/chat-store.ts`
 

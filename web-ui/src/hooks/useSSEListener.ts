@@ -20,7 +20,7 @@ export const reconnectToSession = async (sessionId: string, attempt: number = 0)
         content: "",
         parts: [],
         timestamp: Date.now(),
-        toolCalls: [],
+        toolCallsMap: {},
         toolResults: []
     };
 
@@ -89,7 +89,8 @@ export const reconnectToSession = async (sessionId: string, attempt: number = 0)
                             name: d.tool || d.name || "unknown",
                             arguments: d.args || d.arguments || {},
                         };
-                        targetMsg.toolCalls = [...(targetMsg.toolCalls || []), tc];
+                        const tcMap = targetMsg.toolCallsMap || {};
+                        targetMsg.toolCallsMap = { ...tcMap, [tc.id as string]: tc };
                         const parts = [...(targetMsg.parts || [])];
                         parts.push({ type: "tool", toolCall: tc });
                         targetMsg.parts = parts;

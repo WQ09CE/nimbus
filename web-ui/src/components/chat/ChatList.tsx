@@ -14,51 +14,92 @@ export function ChatList({ messages }: ChatListProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const isStreaming = useChatStore(s => s.isStreaming);
   const [showNewMessagesPill, setShowNewMessagesPill] = useState(false);
+  const shouldStick = useRef(true);
+  const lastCount = useRef(messages.length);
 
   const virtualizer = useVirtualizer({
     count: messages.length,
     getScrollElement: () => parentRef.current,
     estimateSize: () => 200,
     overscan: 5,
-    gap: 32, // equivalent to mb-8 (2rem = 32px) between messages
+    gap: 32,
     paddingEnd: 48,
+    onChange: (instance) => {
+      // After any measurement change, if we should stick to bottom, scroll there
+      if (shouldStick.current && messages.length > 0) {
+        instance.scrollToIndex(messages.length - 1, { align: 'end' });
+      }
+    },
   });
 
   const virtualItems = virtualizer.getVirtualItems();
+  const totalSize = virtualizer.getTotalSize();
+  const prevTotalSize = useRef(totalSize);
 
-  const scrollToBottom = useCallback((smooth = false) => {
-    const el = parentRef.current;
-    if (!el) return;
-    if (smooth) {
-      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-    } else {
-      el.scrollTop = el.scrollHeight;
+  useEffect(() => {
+    if (shouldStick.current && totalSize !== prevTotalSize.current) {
+      prevTotalSize.current = totalSize;
+      if (parentRef.current) {
+        parentRef.current.scrollTop = parentRef.current.scrollHeight;
+      }
     }
-  }, []);
+  }, [totalSize]);
 
-  // Auto-scroll when messages change or streaming is active
+  const scrollToBottom = useCallback(() => {
+    if (messages.length > 0) {
+      shouldStick.current = true;
+      virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
+      requestAnimationFrame(() => {
+        if (parentRef.current) {
+          parentRef.current.scrollTop = parentRef.current.scrollHeight;
+        }
+      });
+    }
+  }, [messages.length, virtualizer]);
+
+  // When new messages arrive or streaming, stick to bottom
+  useEffect(() => {
+    if (messages.length > lastCount.current) {
+      // New message added
+      if (shouldStick.current || isStreaming) {
+        virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
+      } else {
+        setShowNewMessagesPill(true);
+      }
+    }
+    lastCount.current = messages.length;
+  }, [messages.length, isStreaming, virtualizer]);
+
+  // During streaming, keep sticking
+  useEffect(() => {
+    if (isStreaming && shouldStick.current && messages.length > 0) {
+      virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
+    }
+  }, [messages, isStreaming, virtualizer]);
+
+  // Immediately disable shouldStick on upward scroll (fires before onChange)
   useEffect(() => {
     const el = parentRef.current;
     if (!el) return;
-    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distFromBottom < 300 || isStreaming) {
-      scrollToBottom(false);
-      setShowNewMessagesPill(false);
-      // Second pass: virtualizer may update measurements after first paint
-      const t = setTimeout(() => scrollToBottom(false), 80);
-      return () => clearTimeout(t);
-    } else if (messages.length > 0) {
-      setShowNewMessagesPill(true);
-    }
-  }, [messages, isStreaming, scrollToBottom]);
+    const handleWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) shouldStick.current = false;
+    };
+    el.addEventListener('wheel', handleWheel, { passive: true });
+    return () => el.removeEventListener('wheel', handleWheel);
+  }, []);
 
-  // Track user scroll to hide/show new-messages pill
+  // Track scroll position to update shouldStick and pill visibility
   useEffect(() => {
     const el = parentRef.current;
     if (!el) return;
     const handleScroll = () => {
       const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      if (distFromBottom < 100) setShowNewMessagesPill(false);
+      if (distFromBottom < 100) {
+        shouldStick.current = true;
+        setShowNewMessagesPill(false);
+      } else if (distFromBottom > 300) {
+        shouldStick.current = false;
+      }
     };
     el.addEventListener('scroll', handleScroll, { passive: true });
     return () => el.removeEventListener('scroll', handleScroll);
@@ -66,8 +107,13 @@ export function ChatList({ messages }: ChatListProps) {
 
   // Initial scroll to bottom on mount
   useEffect(() => {
-    const t = setTimeout(() => scrollToBottom(false), 100);
-    return () => clearTimeout(t);
+    if (messages.length > 0) {
+      // Delay slightly to let virtualizer measure
+      const t = setTimeout(() => {
+        virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
+      }, 50);
+      return () => clearTimeout(t);
+    }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
@@ -107,7 +153,7 @@ export function ChatList({ messages }: ChatListProps) {
       {showNewMessagesPill && (
         <button
           onClick={() => {
-            scrollToBottom(true);
+            scrollToBottom();
             setShowNewMessagesPill(false);
           }}
           className="new-messages-pill fixed bottom-28 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-sky-500/90 hover:bg-sky-400/90 text-white text-sm font-medium shadow-lg shadow-sky-500/20 backdrop-blur-sm transition-colors cursor-pointer flex items-center gap-1.5"

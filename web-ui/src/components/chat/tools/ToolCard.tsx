@@ -10,9 +10,6 @@ import type { ToolCall, ToolResult } from '@/lib/api';
 // as a plain ToolCard if unrolling failed.
 const META_TOOLS = new Set(["Dispatch", "Explore", "Implement", "Design", "Test", "ParallelDispatch"]);
 
-// Tools that render their own fully-styled cards (don't need the generic wrapper)
-const SELF_RENDERING_TOOLS = new Set(["Bash", "Edit", "Write"]);
-
 interface ToolCardProps {
   tool: {
     id?: string;
@@ -48,11 +45,6 @@ export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: To
   // Meta-tools (Dispatch/Explore/Implement/Design/Test) get the dedicated sub-agent card
   if (META_TOOLS.has(tool.name)) {
     return <DispatchCard tool={tool} defaultState={defaultState} isParallel={isParallel} />;
-  }
-
-  // If the tool renders its own card (like Bash or Edit), just pass it through
-  if (SELF_RENDERING_TOOLS.has(tool.name)) {
-    return <ToolDisplay tool={tool} isExpanded={true} />;
   }
 
   // Status Colors & Icons for generic tools
@@ -93,7 +85,7 @@ export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: To
     // Try to find a command argument
     const cmdArg = tool.args.command || tool.args.cmd || tool.args.CommandLine || tool.args.command_line;
 
-    if (["Read", "view_file"].some(n => tool.name.toLowerCase().includes(n.toLowerCase()))) {
+    if (["Read", "view_file", "Edit", "Write", "multi_replace_file_content", "replace_file_content"].some(n => tool.name.toLowerCase().includes(n.toLowerCase()))) {
       if (typeof pathArg === 'string') {
         const parts = pathArg.split('/');
         const fileName = parts.pop() || pathArg;
@@ -112,6 +104,10 @@ export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: To
             summary += ` :1-${limit}`;
           }
         }
+      }
+    } else if (["Bash", "run_command"].some(n => tool.name.toLowerCase().includes(n.toLowerCase()))) {
+      if (typeof cmdArg === 'string') {
+        summary = cmdArg.length > 50 ? cmdArg.substring(0, 47) + "..." : cmdArg;
       }
     } else if (tool.name === "Grep") {
       summary = tool.args.pattern || '';
@@ -198,7 +194,7 @@ export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: To
 
       {/* Body */}
       {isExpanded && (
-        <div className="border-t border-gray-800/50 bg-[#0d1117]/50 overflow-x-auto p-3">
+        <div className="border-t border-gray-800/50 bg-[#0d1117] overflow-x-auto">
           <ToolDisplay tool={tool} isExpanded={true} />
         </div>
       )}

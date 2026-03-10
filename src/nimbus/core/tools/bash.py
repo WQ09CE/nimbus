@@ -106,22 +106,19 @@ async def bash_command(
                     timeout=timeout,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
-                if _abort_event.is_set():
-                    aborted = True
-                    read_task.cancel()
+                # Cancel pending tasks to prevent orphan task leaks
+                for t in pending:
+                    t.cancel()
                     try:
-                        await read_task
+                        await t
                     except asyncio.CancelledError:
                         pass
+                if _abort_event.is_set():
+                    aborted = True
                     await _kill_process_tree(process)
                 elif read_task not in done:
                     # Timeout
                     timed_out = True
-                    read_task.cancel()
-                    try:
-                        await read_task
-                    except asyncio.CancelledError:
-                        pass
                     await _kill_process_tree(process)
                 else:
                     # Normal completion
@@ -147,22 +144,19 @@ async def bash_command(
                     timeout=timeout,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
-                if _abort_event.is_set():
-                    aborted = True
-                    comm_task.cancel()
+                # Cancel pending tasks to prevent orphan task leaks
+                for t in pending:
+                    t.cancel()
                     try:
-                        await comm_task
+                        await t
                     except asyncio.CancelledError:
                         pass
+                if _abort_event.is_set():
+                    aborted = True
                     await _kill_process_tree(process)
                 elif comm_task not in done:
                     # Timeout
                     timed_out = True
-                    comm_task.cancel()
-                    try:
-                        await comm_task
-                    except asyncio.CancelledError:
-                        pass
                     await _kill_process_tree(process)
                 else:
                     # Normal completion

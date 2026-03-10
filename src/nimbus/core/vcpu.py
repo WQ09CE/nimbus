@@ -195,6 +195,14 @@ class VCPU:
                     return_when=asyncio.FIRST_COMPLETED
                 )
 
+                # Always cancel pending tasks to prevent orphan task leaks
+                for t in pending:
+                    t.cancel()
+                    try:
+                        await t
+                    except asyncio.CancelledError:
+                        pass
+
                 if self._wakeup_event.is_set():
                     if not chat_task.done():
                         chat_task.cancel()

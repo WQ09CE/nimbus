@@ -16,7 +16,7 @@ describe('useChatStore', () => {
 
   it('creates a new session', async () => {
     const { result } = renderHook(() => useChatStore())
-    
+
     await act(async () => {
       await result.current.createNewSession()
     })
@@ -28,7 +28,7 @@ describe('useChatStore', () => {
 
   it('handles chat streaming flow', async () => {
     const { result } = renderHook(() => useChatStore())
-    
+
     // Setup session
     await act(async () => {
       await result.current.createNewSession()
@@ -48,39 +48,39 @@ describe('useChatStore', () => {
     const assistantMsg = result.current.messages[1]
     expect(assistantMsg.role).toBe('assistant')
     expect(assistantMsg.content).toContain('I executed the command')
-    
+
     // Check tool usage in final message
-    expect(assistantMsg.toolCalls).toHaveLength(1)
-    expect(assistantMsg.toolCalls![0].name).toBe('Bash')
+    expect(Object.keys(assistantMsg.toolCallsMap || {})).toHaveLength(1)
+    expect(Object.values(assistantMsg.toolCallsMap || {})[0].name).toBe('Bash')
   })
 
   it('injects message during streaming (Intervention)', async () => {
     const { result } = renderHook(() => useChatStore())
-    
+
     // Setup a long-running stream mock
     server.use(
-        http.post(`${API_BASE}/api/v1/sessions/:id/chat`, ({ request }) => {
-            const stream = new ReadableStream({
-              start(controller) {
-                const encoder = new TextEncoder()
-                const send = (data: any) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`))
-                
-                send({ type: 'connected' })
-                // Keep stream open
-              }
-            })
-            return new HttpResponse(stream, { headers: { 'Content-Type': 'text/event-stream' } })
+      http.post(`${API_BASE}/api/v1/sessions/:id/chat`, ({ request }) => {
+        const stream = new ReadableStream({
+          start(controller) {
+            const encoder = new TextEncoder()
+            const send = (data: any) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`))
+
+            send({ type: 'connected' })
+            // Keep stream open
+          }
         })
+        return new HttpResponse(stream, { headers: { 'Content-Type': 'text/event-stream' } })
+      })
     )
-    
+
     // Setup injection spy
     const injectSpy = vi.fn()
     server.use(
-        http.post(`${API_BASE}/api/v1/sessions/:id/inject`, async ({ request }) => {
-            const body = await request.json()
-            injectSpy(body)
-            return HttpResponse.json({ status: 'injected' })
-        })
+      http.post(`${API_BASE}/api/v1/sessions/:id/inject`, async ({ request }) => {
+        const body = await request.json()
+        injectSpy(body)
+        return HttpResponse.json({ status: 'injected' })
+      })
     )
 
     await act(async () => {
@@ -91,12 +91,12 @@ describe('useChatStore', () => {
     act(() => {
       result.current.sendMessage('Long task')
     })
-    
+
     expect(result.current.isStreaming).toBe(true)
 
     // 2. Inject message while streaming
     await act(async () => {
-        await result.current.sendMessage('Stop!')
+      await result.current.sendMessage('Stop!')
     })
 
     // 3. Verify injection behavior
@@ -104,10 +104,10 @@ describe('useChatStore', () => {
     // In current impl, we optimistically add user message
     expect(result.current.messages).toHaveLength(2) // User 1 + User 2 (Inject)
     expect(result.current.messages[1].content).toContain('[追加指令] Stop!')
-    
+
     // Streaming should STILL be active (don't break the flow)
     expect(result.current.isStreaming).toBe(true)
-    
+
     // Verify API call
     expect(injectSpy).toHaveBeenCalledWith({ content: 'Stop!' })
   })
