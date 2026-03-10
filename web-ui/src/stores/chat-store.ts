@@ -772,7 +772,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
           return;
         } catch { /* status check or reload failed */ }
       } else {
-        set({ error: err instanceof Error ? err.message : "Stream failed" });
+        // Find and clean up or finalize the STREAMING_ID message
+        const finalMsgs = [...get().messages];
+        const streamingIdx = finalMsgs.findIndex(m => m.id === STREAMING_ID);
+        if (streamingIdx !== -1) {
+          const msg = finalMsgs[streamingIdx];
+          if (!msg.content && (!msg.parts || msg.parts.length === 0)) {
+            // Remove empty placeholder to prevent identical React Keys on retry
+            finalMsgs.splice(streamingIdx, 1);
+          } else {
+            // Lock ID to prevent collision if it partially generated
+            finalMsgs[streamingIdx].id = `assistant-${Date.now()}`;
+          }
+        }
+        set({
+          messages: finalMsgs,
+          error: err instanceof Error ? err.message : "Stream failed"
+        });
       }
       set({ isStreaming: false, streamAbortController: null });
     } finally {

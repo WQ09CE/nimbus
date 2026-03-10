@@ -177,13 +177,21 @@ class KernelGate:
             )
 
             # Handle split tool results (pi-style: output + ui_detail)
+            ui_detail = {}
             if isinstance(raw_output, dict) and "output" in raw_output:
-                output = _truncate_output(raw_output["output"])
-                ui_detail = raw_output.get("ui_detail")
-                result = ToolResult(status="OK", output=output, ui_detail=ui_detail)
+                raw_text = raw_output["output"]
+                ui_detail = raw_output.get("ui_detail", {})
             else:
-                output = _truncate_output(raw_output)
-                result = ToolResult(status="OK", output=output)
+                raw_text = raw_output
+            
+            output = _truncate_output(raw_text)
+            
+            # If truncation occurred (string lengths differ), store the full raw text in ui_detail 
+            # so the frontend SSE stream still renders the massive payload cleanly.
+            if len(output) != len(raw_text) and isinstance(raw_text, str):
+                ui_detail["raw_text_output"] = raw_text
+                
+            result = ToolResult(status="OK", output=output, ui_detail=ui_detail if ui_detail else None)
 
             # Append doom loop guidance if first warning
             if doom_msg:
@@ -209,17 +217,31 @@ class KernelGate:
     def _finish(self, action: ActionIR, t0: float, result: ToolResult) -> ToolResult:
         elapsed = int((time.monotonic() - t0) * 1000)
         result.timing_ms = {"exec": elapsed}
+        
+        # The event emitted here goes straight to the SSE stream. 
+        # We check if `raw_text_output` was stashed in ui_detail (meaning LLM context was truncated).
+        # Prioritize sending the raw unfettered output to the UI, otherwise default to context output.
+        full_output = (result.ui_detail or {}).get("raw_text_output", result.output)
+        
         event_data: Dict[str, Any] = {
             "tool": action.name, "status": result.status,
             "call_id": action.id,
             "duration_ms": elapsed,
-            "output_preview": str(result.output)[:200] if result.output else None,
-            "output": str(result.output) if result.output else None,
+            "output_preview": str(full_output)[:200] if full_output else None,
+            "output": str(full_output) if full_output else None,
         }
         # Include ui_detail in event for UI subscribers (pi-style split result)
         if result.ui_detail:
-            event_data["ui_detail"] = result.ui_detail
+            # Drop the raw_text_output from ui_detail payload itself to avoid duplicate fat JSON
+            safe_ui_detail = {k: v for k, v in result.ui_detail.items() if k != "raw_text_output"}
+            event_data["ui_detail"] = safe_ui_detail
+            
         self._emit("TOOL_FINISHED", event_data)
+        
+        # Now remove raw_text_output entirely from the returned Result so the LLM doesn't see it
+        if result.ui_detail and "raw_text_output" in result.ui_detail:
+            del result.ui_detail["raw_text_output"]
+            
         return result
 
     def _emit(self, event_type: str, data: Dict) -> None:
