@@ -63,6 +63,7 @@ export type ChatEventType =
   | "message_start"
   | "message"
   | "tool_call"
+  | "tool_output_chunk"
   | "tool_result"
   | "done"
   | "error"
