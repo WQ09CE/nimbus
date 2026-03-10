@@ -55,3 +55,41 @@ useEffect(() => {
 - `fb89bf4` — 引入虚拟滚动
 - `890649b` — 改用 scrollToIndex
 - `0f9decc` — 改回 scrollTop + 二次滚动 + paddingEnd（仍未解决）
+
+---
+
+## 🐛 SSE 流式渲染时 tool card 显示不完整
+
+**文件**: `web-ui/src/stores/chat-store.ts`
+
+### 问题描述
+
+流式渲染过程中，tool call card 有时显示不完整（result 丢失、args 缺失等）。
+刷新页面后从服务端拉取完整历史，tool card 渲染正常。
+
+### 已尝试的方案（均无效）
+
+1. rAF buffer（`_pendingStreamMsg`）— 解决了同帧内 `message` chunk 互相覆盖的问题，但 tool card 仍有问题
+2. `tool_call` 处理时检查 `toolResults` 数组提前 attach result — 解决了部分 replay race，但仍不稳定
+
+### 根因分析
+
+`tool_call` 和 `tool_result` 事件的到达顺序在流式场景下不保证：
+- rAF buffer 的批处理机制让同一帧内的事件可以叠加，但跨帧的顺序问题仍存在
+- `_attachToRunningSession`（reconnect path）replay 历史事件时，高速连续的事件流
+  可能导致 `tool_result` 在 `tool_call` 的 rAF 还未 flush 时就已经处理完毕
+- `parts` 数组的 find-by-id 逻辑在事件乱序时容易 `matchIdx === -1`
+
+### 建议解决方向
+
+**方案 A（推荐）**: 将 tool card 的状态管理从 `parts` 数组移到独立的 `Map<tcId, ToolCardState>`
+不再依赖 `parts` 数组的顺序和 find 逻辑，tool_call 和 tool_result 各自写入 Map，
+渲染时再合并，天然解决乱序问题。
+
+**方案 B**: 服务端保证 `tool_call` 和 `tool_result` 合并成单个 SSE 事件推送
+在 `tool_result` 时同时携带对应的 `tool_call` 信息，前端只需处理一个事件。
+
+### 相关 commit
+
+- `4a4ed17` — rAF buffer 修复（解决 message chunk 覆盖）
+- `48b8cf4` — tool_call 处理时提前 attach result（部分修复，仍不稳定）
