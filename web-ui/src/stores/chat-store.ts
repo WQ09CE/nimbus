@@ -332,6 +332,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: [...s.messages, initialAssistantMsg],
     }));
 
+    // Safety net: poll status every 5s. If task finished but "done" event was
+    // never received (e.g. replay race or proxy buffering issue), force-finalize
+    // so the spinner never gets stuck forever.
+    const pollTimer = setInterval(async () => {
+      if (get().session?.id !== sessionId || !get().isStreaming) {
+        clearInterval(pollTimer);
+        return;
+      }
+      try {
+        const status = await getSessionStatus(sessionId);
+        if (!status.running) {
+          clearInterval(pollTimer);
+          abortController.abort(); // triggers finally → isStreaming: false
+        }
+      } catch { /* ignore poll errors */ }
+    }, 5000);
+
     (async () => {
       try {
         for await (const event of subscribeToEvents(sessionId, abortController.signal)) {
@@ -472,6 +489,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       } catch {
         // stream ended or aborted
       } finally {
+        clearInterval(pollTimer);
         // Flush any buffered rAF update before finalization
         flushPendingSync(set, get, STREAMING_ID);
         if (get().session?.id === sessionId) {
