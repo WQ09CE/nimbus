@@ -15,7 +15,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-CONFIG_PATH = Path.home() / ".nimbus" / "config.json"
+NIMBUS_HOME = Path.home() / ".nimbus"
+CONFIG_PATH = NIMBUS_HOME / "config.json"
+DEFAULT_MEMORY_PATH = NIMBUS_HOME / "memory.md"
+DEFAULT_OAUTH_PATH = Path.home() / ".pi" / "agent" / "auth.json"
 
 
 @dataclass
@@ -32,21 +35,21 @@ class NimbusConfig:
     max_tokens: int = 8192
     timeout: float = 300.0
     temperature: Optional[float] = None
-    
+
     # Provider Keys
     gemini_api_key: Optional[str] = None
 
     # Anthropic OAuth
-    anthropic_oauth_path: str = "~/.pi/agent/auth.json"
-    anthropic_use_oauth: bool = True  # 默认启用（有 auth.json 就用）
+    anthropic_oauth_path: str = str(DEFAULT_OAUTH_PATH)
+    anthropic_use_oauth: bool = True
 
     # OpenAI Codex OAuth
-    codex_use_oauth: bool = True  # 默认启用
+    codex_use_oauth: bool = True
 
     ollama_base_url: str = "http://localhost:11434"
 
     # User memory file (Pinned into MMU at session start, human-editable)
-    memory_path: str = "~/.nimbus/memory.md"
+    memory_path: str = str(DEFAULT_MEMORY_PATH)
 
     # Nimbus Server
     server_port: int = 4096

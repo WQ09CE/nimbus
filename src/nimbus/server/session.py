@@ -312,7 +312,8 @@ class SessionManagerV2:
         system_prompt = "You are a capable AI assistant. Use tools to solve the user's tasks. Think step by step."
 
         # Load user memory file and append to system prompt as pinned context
-        memory_path = Path(os.path.expanduser(getattr(nimbus_config, "memory_path", "~/.nimbus/memory.md")))
+        from nimbus.config import DEFAULT_MEMORY_PATH
+        memory_path = Path(os.path.expanduser(getattr(nimbus_config, "memory_path", str(DEFAULT_MEMORY_PATH))))
         memory_content = ""
         if memory_path.exists():
             try:
