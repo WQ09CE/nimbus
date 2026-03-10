@@ -27,13 +27,20 @@ Nimbus 是一款受操作系统内核设计启发的 AI Agent 运行时框架。
 基于有限状态机（FSM）驱动 Think-Act-Observe 循环：
 
 ```
-                       ┌─────────────────────────────┐
-                       ↓                             │
-IDLE → THINKING → ACTING → OBSERVING → COMPRESSING ─┘
-         ↑                     │             │
-         └─────────────────────┘             │ 超过 max_compactions
-                                             ↓
-                              ERROR ──────► DEAD
+IDLE ──→ THINKING ──→ ACTING ──→ OBSERVING
+             ↑                       │
+             │         (token正常)   │ (token > 85%)
+             └───────────────────────┘
+                                     │
+                                     ↓
+                               COMPRESSING
+                                /         \
+                   (压缩成功)  /           \ (超过 max_compactions)
+                              ↓             ↓
+                           THINKING        DEAD
+
+THINKING/ACTING ──→ ERROR ──→ (retryable?) ──→ THINKING
+                                    └─────────→ DEAD
 ```
 
 **COMPRESSING 触发时机（三种）：**
