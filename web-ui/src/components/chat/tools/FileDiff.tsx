@@ -86,7 +86,7 @@ export function FileDiff({ name, args, result, error, status }: FileDiffProps) {
                 </table>
               </div>
             </div>
-          ) : name === 'Edit' && (safeArgs.old_text || safeArgs.new_text) ? (
+          ) : name === 'Edit' && (safeArgs.old_text || safeArgs.new_text || safeArgs.old_string || safeArgs.new_string) ? (
             // Edit: Show Diff with line numbers
             <div className="font-mono text-xs overflow-x-auto">
               <div className="overflow-x-auto max-h-[400px] overflow-y-auto custom-scrollbar">

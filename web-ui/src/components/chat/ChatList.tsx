@@ -21,7 +21,7 @@ export function ChatList({ messages }: ChatListProps) {
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     if (distFromBottom < 300 || isStreaming) {
       requestAnimationFrame(() => {
-        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+        el.scrollTo({ top: el.scrollHeight, behavior: isStreaming ? 'auto' : 'smooth' });
       });
       setShowNewMessagesPill(false);
     } else if (messages.length > 0) {

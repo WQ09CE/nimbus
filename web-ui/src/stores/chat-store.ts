@@ -74,6 +74,54 @@ const initialState = {
   errorInfo: null,
 };
 
+// --- rAF batching for streaming updates ---
+// Instead of calling set() on every SSE chunk, buffer the latest message
+// and flush at most once per animation frame (~60fps).
+let _pendingStreamMsg: Message | null = null;
+let _rafHandle: number = 0;
+
+type SetFn = (partial: Partial<ChatState> | ((state: ChatState) => Partial<ChatState>)) => void;
+type GetFn = () => ChatState;
+
+function flushStreamUpdate(set: SetFn, get: GetFn, streamingId: string) {
+  _rafHandle = 0;
+  const msg = _pendingStreamMsg;
+  if (!msg) return;
+  _pendingStreamMsg = null;
+  const currentMsgs = get().messages;
+  const idx = currentMsgs.findIndex((m: Message) => m.id === streamingId);
+  if (idx === -1) return;
+  const next = [...currentMsgs];
+  next[idx] = msg;
+  set({ messages: next });
+}
+
+function scheduleStreamUpdate(set: SetFn, get: GetFn, streamingId: string, msg: Message) {
+  _pendingStreamMsg = msg;
+  if (!_rafHandle) {
+    _rafHandle = requestAnimationFrame(() => flushStreamUpdate(set, get, streamingId));
+  }
+}
+
+function flushPendingSync(set: SetFn, get: GetFn, streamingId: string) {
+  // Force-flush any pending buffered update (used before finalization)
+  if (_rafHandle) {
+    cancelAnimationFrame(_rafHandle);
+    _rafHandle = 0;
+  }
+  if (_pendingStreamMsg) {
+    const msg = _pendingStreamMsg;
+    _pendingStreamMsg = null;
+    const currentMsgs = get().messages;
+    const idx = currentMsgs.findIndex((m: Message) => m.id === streamingId);
+    if (idx !== -1) {
+      const next = [...currentMsgs];
+      next[idx] = msg;
+      set({ messages: next });
+    }
+  }
+}
+
 export const useChatStore = create<ChatState>((set, get) => ({
   ...initialState,
 
@@ -414,14 +462,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
 
           if (updated) {
-            const nextMsgs = [...currentMsgs];
-            nextMsgs[targetIdx] = targetMsg;
-            set({ messages: nextMsgs });
+            scheduleStreamUpdate(set, get, STREAMING_ID, targetMsg);
           }
         }
       } catch {
         // stream ended or aborted
       } finally {
+        // Flush any buffered rAF update before finalization
+        flushPendingSync(set, get, STREAMING_ID);
         if (get().session?.id === sessionId) {
           const finalMsgs = [...get().messages];
           const idx = finalMsgs.findIndex(m => m.id === STREAMING_ID);
@@ -612,11 +660,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (type === "done") break;
 
         if (updated) {
-          const nextMsgs = [...currentMsgs];
-          nextMsgs[targetIdx] = targetMsg;
-          set({ messages: nextMsgs });
+          scheduleStreamUpdate(set, get, STREAMING_ID, targetMsg);
         }
       }
+
+      // Flush any buffered rAF update before finalization
+      flushPendingSync(set, get, STREAMING_ID);
 
       // Stream Finished — close the SSE connection and finalize message
       abortController.abort();
