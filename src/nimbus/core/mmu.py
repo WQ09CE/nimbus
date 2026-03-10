@@ -37,10 +37,34 @@ logger = logging.getLogger("nimbus.mmu")
 MESSAGE_OVERHEAD = 4  # role marker, separators
 
 
-def estimate_text_tokens(text: str) -> int:
-    """Estimate token count with CJK awareness."""
+def estimate_text_tokens(text) -> int:
+    """Estimate token count with CJK awareness.
+
+    Accepts str, list (multimodal content blocks), or dict.
+    """
     if not text:
         return 0
+    # Multimodal content: list of blocks e.g. [{'type':'text','text':'...'}, {'type':'image',...}]
+    if isinstance(text, list):
+        total = 0
+        for block in text:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    total += estimate_text_tokens(block.get("text", ""))
+                elif block.get("type") == "image":
+                    total += 256  # rough token cost for an image
+            elif isinstance(block, str):
+                total += estimate_text_tokens(block)
+        return total
+    if isinstance(text, dict):
+        # Single content block
+        if text.get("type") == "text":
+            return estimate_text_tokens(text.get("text", ""))
+        if text.get("type") == "image":
+            return 256
+        return 0
+    # Plain string
+    text = str(text)
     cjk = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
     other = len(text) - cjk
     return int(cjk / 1.5) + (other // 4)
