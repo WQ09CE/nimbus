@@ -35,7 +35,7 @@ logger = logging.getLogger("nimbus.vcpu")
 
 @dataclass
 class VCPUConfig:
-    max_iterations: int = 50
+    max_iterations: int = 200
     max_consecutive_thoughts: int = 8
     max_consecutive_errors: int = 3
     llm_call_timeout: float = 300.0
@@ -152,15 +152,29 @@ class VCPU:
         # Check iteration limit
         self._exec.iteration += 1
         if self._exec.iteration > self.config.max_iterations:
+            # Soft limit: signal the loop to attempt compaction, not a hard error
+            logger.warning(
+                "Iteration %d exceeds max_iterations (%d), signaling compaction",
+                self._exec.iteration, self.config.max_iterations,
+            )
             result.is_final = True
+            result.fault = Fault(
+                domain="RESOURCE", code="BUDGET_EXCEEDED",
+                message=f"Max iterations ({self.config.max_iterations}) reached.",
+                retryable=True,  # Changed: let loop try compaction
+            )
             result.final_result = ToolResult(
                 status="ERROR",
-                output=f"Max iterations ({self.config.max_iterations}) reached.",
-                fault=Fault(domain="RESOURCE", code="BUDGET_EXCEEDED",
-                            message="Max iterations", retryable=False),
+                output=f"Max iterations ({self.config.max_iterations}) reached. Attempting recovery...",
+                fault=result.fault,
                 is_final=True,
             )
             return result
+        elif self._exec.iteration == int(self.config.max_iterations * 0.8):
+            logger.warning(
+                "Approaching iteration limit: %d / %d",
+                self._exec.iteration, self.config.max_iterations,
+            )
 
         # ---- THINK (Reasoning) ----
         try:

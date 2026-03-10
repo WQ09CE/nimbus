@@ -63,7 +63,7 @@ class AgentConfig:
     max_tokens: int = 4096
 
     # VCPU
-    max_iterations: int = 50
+    max_iterations: int = 200  # Relaxed from 50; compaction is the real resource limit
     max_consecutive_thoughts: int = 8
     llm_call_timeout: float = 300.0
 
@@ -93,12 +93,14 @@ def _register_default_tools(registry: ToolRegistry) -> None:
     from .tools.edit import edit_file
     from .tools.bash import bash_command
     from .tools.grep import grep_search
+    from .tools.spawn_agent import spawn_agent
 
     registry.register_decorated(read_file)
     registry.register_decorated(write_file)
     registry.register_decorated(edit_file)
     registry.register_decorated(bash_command)
     registry.register_decorated(grep_search)
+    registry.register_decorated(spawn_agent)
 
 
 # =============================================================================
@@ -133,6 +135,18 @@ class AgentOS:
             self._adapter = adapter
         else:
             self._adapter = self._create_adapter()
+
+        # Resolve model context window from registry
+        self._context_window = self.config.max_context_tokens  # default fallback
+        if adapter and hasattr(adapter, '_model'):
+            from nimbus.core.models.registry import ModelRegistry
+            model_key = getattr(adapter, '_model', '')
+            # Strip provider prefix (e.g. "google/gemini-3.1-pro-preview" -> "gemini-3.1-pro-preview")
+            if '/' in model_key:
+                model_key = model_key.split('/', 1)[1]
+            info = ModelRegistry.get(model_key)
+            if info:
+                self._context_window = info.context_window
 
         # 2. Tool Registry
         self._registry = tools or ToolRegistry()
@@ -240,10 +254,11 @@ class AgentOS:
         # MMU Stateful Retrieval
         if session_id not in self._mmus:
             mmu_config = MMUConfig(
-                max_context_tokens=self.config.max_context_tokens,
+                max_context_tokens=self._context_window,
                 compress_threshold=self.config.compress_threshold,
             )
             mmu = MMU(mmu_config)
+            logger.info(f"MMU context budget: {self._context_window:,} tokens (model: {getattr(self._adapter, '_model', 'unknown')})")
             mmu.set_pinned(PinnedContext(
                 system_rules=self._system_prompt,
                 workspace_info=f"Working directory: {os.getcwd()}",
@@ -299,10 +314,10 @@ class AgentOS:
 
         mmu = self._mmus[session_id]
 
-        # In a long conversation, the very first user message sets the anchor goal
+        # Always update goal to the CURRENT user message so compaction
+        # preserves the active task, not a stale initial greeting.
         if goal:
-            if not getattr(mmu, "_goal", ""):
-                mmu.set_goal(goal)
+            mmu.set_goal(goal)
             mmu.add_user_message(goal)
 
         # Create steering/followup queues and abort event first

@@ -92,7 +92,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
 
   return (
     <div data-testid={isUser ? "message-user" : "message-assistant"}
-      className={`flex gap-4 mb-8 ${isUser ? "flex-row-reverse" : "flex-row"} group`}>
+      className={`flex gap-4 mb-8 ${isUser ? "flex-row-reverse" : "flex-row"} group message-enter`}>
 
       <div className="shrink-0">
         {isUser ? <UserAvatar /> : <AiAvatar />}
@@ -154,7 +154,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
                 if (part.type === "text") {
                   const isLastPart = idx === parts.length - 1;
                   return (
-                    <div key={`part-${idx}`} className="relative px-4 md:px-5 py-3 md:py-4 shadow-xl bg-nimbus-surface backdrop-blur-xl border border-nimbus-border text-gray-100 rounded-2xl rounded-tl-sm w-full">
+                    <div key={`part-${idx}`} className={`relative px-4 md:px-5 py-3 md:py-4 shadow-xl bg-nimbus-surface backdrop-blur-xl border border-nimbus-border text-gray-100 rounded-2xl rounded-tl-sm w-full ${isStreaming && isLastPart ? 'streaming-message' : ''}`}>
                       <div className="text-[15px] leading-relaxed w-full">
                         <div className="flex flex-col gap-1 w-full overflow-hidden">
                           <TextPart content={part.content} isStreaming={isStreaming && isLastPart} />
@@ -181,8 +181,12 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
               })
             ) : (
               isStreaming && (
-                <div className="relative px-4 md:px-5 py-3 md:py-4 shadow-xl bg-nimbus-surface backdrop-blur-xl border border-nimbus-border text-gray-100 rounded-2xl rounded-tl-sm w-full">
-                  <span className="animate-pulse text-gray-400 text-sm">Thinking...</span>
+                <div className="relative px-4 md:px-5 py-3 md:py-4 shadow-xl bg-nimbus-surface backdrop-blur-xl border border-nimbus-border text-gray-100 rounded-2xl rounded-tl-sm w-full streaming-message">
+                  <div className="reading-indicator">
+                    <span className="dot"></span>
+                    <span className="dot"></span>
+                    <span className="dot"></span>
+                  </div>
                 </div>
               )
             )}

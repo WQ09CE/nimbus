@@ -10,6 +10,9 @@ import type { ToolCall, ToolResult } from '@/lib/api';
 // as a plain ToolCard if unrolling failed.
 const META_TOOLS = new Set(["Dispatch", "Explore", "Implement", "Design", "Test", "ParallelDispatch"]);
 
+// Tools that render their own fully-styled cards (don't need the generic wrapper)
+const SELF_RENDERING_TOOLS = new Set(["Bash", "Edit", "Write"]);
+
 interface ToolCardProps {
   tool: {
     id?: string;
@@ -40,14 +43,19 @@ interface ToolCardProps {
 
 export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: ToolCardProps) {
   // Hook must be called unconditionally (React Rules of Hooks)
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? false);
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? true);
 
   // Meta-tools (Dispatch/Explore/Implement/Design/Test) get the dedicated sub-agent card
   if (META_TOOLS.has(tool.name)) {
     return <DispatchCard tool={tool} defaultState={defaultState} isParallel={isParallel} />;
   }
 
-  // Status Colors & Icons
+  // If the tool renders its own card (like Bash or Edit), just pass it through
+  if (SELF_RENDERING_TOOLS.has(tool.name)) {
+    return <ToolDisplay tool={tool} isExpanded={true} />;
+  }
+
+  // Status Colors & Icons for generic tools
   const getStatusStyle = () => {
     switch (tool.status) {
       case "running":
@@ -85,7 +93,7 @@ export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: To
     // Try to find a command argument
     const cmdArg = tool.args.command || tool.args.cmd || tool.args.CommandLine || tool.args.command_line;
 
-    if (["Read", "Write", "Edit", "view_file", "replace_file_content", "write_to_file", "edit_file"].some(n => tool.name.toLowerCase().includes(n.toLowerCase()))) {
+    if (["Read", "view_file"].some(n => tool.name.toLowerCase().includes(n.toLowerCase()))) {
       if (typeof pathArg === 'string') {
         const parts = pathArg.split('/');
         const fileName = parts.pop() || pathArg;
@@ -104,19 +112,6 @@ export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: To
             summary += ` :1-${limit}`;
           }
         }
-
-        // For Edit, add a brief summary of what changed
-        if (tool.name === "Edit" && typeof tool.args?.old_string === 'string') {
-          const oldLines = tool.args.old_string.split('\n').length;
-          const newLines = (tool.args.new_string || '').split('\n').length;
-          if (oldLines !== newLines) {
-            summary += ` (${oldLines}\u2192${newLines} lines)`;
-          }
-        }
-      }
-    } else if (["Bash", "RunCommand", "run_command", "execute"].some(n => tool.name.toLowerCase().includes(n.toLowerCase()))) {
-      if (typeof cmdArg === 'string') {
-        summary = cmdArg;
       }
     } else if (tool.name === "Grep") {
       summary = tool.args.pattern || '';
@@ -131,6 +126,7 @@ export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: To
     }
   }
 
+  // Generic card wrapper for all other tools
   return (
     <div data-testid="tool-card" className={`
       group/card overflow-hidden max-w-full rounded-lg border transition-all duration-200 relative
@@ -202,7 +198,7 @@ export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: To
 
       {/* Body */}
       {isExpanded && (
-        <div className="border-t border-gray-800/50 bg-[#0d1117]/50 overflow-x-auto">
+        <div className="border-t border-gray-800/50 bg-[#0d1117]/50 overflow-x-auto p-3">
           <ToolDisplay tool={tool} isExpanded={true} />
         </div>
       )}

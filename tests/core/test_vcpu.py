@@ -128,7 +128,7 @@ class TestVCPUBasicFlow:
 class TestVCPULimits:
     @pytest.mark.asyncio
     async def test_max_iterations(self):
-        """Hits iteration limit → final result with error."""
+        """Hits iteration limit → final result with retryable error (soft limit)."""
         vcpu, _ = make_vcpu(
             [MockResponse(content="thinking...") for _ in range(5)],
             max_iter=2,
@@ -142,6 +142,9 @@ class TestVCPULimits:
         r3 = await vcpu.step()
         assert r3.is_final
         assert "Max iterations" in r3.final_result.output
+        assert r3.fault is not None
+        assert r3.fault.retryable is True
+        assert r3.fault.code == "BUDGET_EXCEEDED"
 
     @pytest.mark.asyncio
     async def test_max_consecutive_thoughts(self):

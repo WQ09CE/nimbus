@@ -38,7 +38,7 @@ class TestAgentConfig:
         c = AgentConfig()
         assert c.model == "gpt-4o"
         assert c.provider == "openai"
-        assert c.max_iterations == 50
+        assert c.max_iterations == 200
 
     def test_anthropic_config(self):
         c = AgentConfig(provider="anthropic", model="claude-sonnet-4-20250514")

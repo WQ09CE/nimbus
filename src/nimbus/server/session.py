@@ -321,6 +321,14 @@ class SessionManagerV2:
                         "action_id": event.data.get("call_id"),
                     }
                 ))
+            elif event.type == "TOOL_CALL_DELTA":
+                asyncio.create_task(self._sse_hub.publish(
+                    session_id, "tool_output_chunk", {
+                        "tool": event.data.get("tool"),
+                        "chunk": event.data.get("chunk"),
+                        "action_id": event.data.get("call_id"),
+                    }
+                ))
             elif event.type == "TOOL_FINISHED":
                 asyncio.create_task(self._sse_hub.publish(
                     session_id, "tool_result", {

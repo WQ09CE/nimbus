@@ -331,6 +331,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
               }
               break;
             }
+            case "tool_output_chunk": {
+              if (data && typeof data === "object") {
+                const d = data as any;
+                const tcId = d.action_id || d.id;
+                const chunk = d.chunk || "";
+                if (!chunk) break;
+
+                const parts = [...(targetMsg.parts || [])];
+                const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
+                if (matchIdx !== -1) {
+                  const toolPart = parts[matchIdx] as { type: "tool"; toolCall: ToolCall; toolResult?: ToolResult };
+                  // If we don't have a toolResult yet, create a partial one
+                  if (!toolPart.toolResult) {
+                    toolPart.toolResult = {
+                      id: tcId,
+                      name: d.tool || "unknown",
+                      result: chunk,
+                    };
+                  } else {
+                    // Append to existing result
+                    toolPart.toolResult.result = (toolPart.toolResult.result || "") + chunk;
+                  }
+                  parts[matchIdx] = { ...toolPart };
+                  targetMsg.parts = parts;
+                  updated = true;
+                }
+              }
+              break;
+            }
             case "tool_result": {
               if (data && typeof data === "object") {
                 const d = data as any;
@@ -491,6 +520,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
             break;
           }
+          case "tool_output_chunk": {
+            if (data && typeof data === "object") {
+              const d = data as any;
+              const tcId = d.action_id || d.id;
+              const chunk = d.chunk || "";
+              if (!chunk) break;
+
+              const parts = [...(targetMsg.parts || [])];
+              const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
+              if (matchIdx !== -1) {
+                const toolPart = parts[matchIdx] as { type: "tool"; toolCall: ToolCall; toolResult?: ToolResult };
+                // If we don't have a toolResult yet, create a partial one
+                if (!toolPart.toolResult) {
+                  toolPart.toolResult = {
+                    id: tcId,
+                    name: d.tool || "unknown",
+                    result: chunk,
+                  };
+                } else {
+                  // Append to existing result
+                  toolPart.toolResult.result = (toolPart.toolResult.result || "") + chunk;
+                }
+                parts[matchIdx] = { ...toolPart };
+                targetMsg.parts = parts;
+                updated = true;
+              }
+            }
+            break;
+          }
           case "tool_result": {
             if (data && typeof data === "object") {
               const d = data as any;
@@ -515,9 +573,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
             break;
           }
+          case "done":
+            // Stream completed — break out of for-await loop
+            break;
           case "error":
             throw new Error(typeof data === "string" ? data : (data as any)?.message || "Stream error");
         }
+
+        // Exit the for-await loop when stream is done
+        if (type === "done") break;
 
         if (updated) {
           const nextMsgs = [...currentMsgs];
@@ -526,7 +590,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
       }
 
-      // Stream Finished
+      // Stream Finished — close the SSE connection and finalize message
+      abortController.abort();
       const finalMsgs = [...get().messages];
       const streamingIdx = finalMsgs.findIndex(m => m.id === STREAMING_ID);
       if (streamingIdx !== -1) {

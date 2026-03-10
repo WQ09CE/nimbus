@@ -461,3 +461,81 @@ body::before {
     font-size: 16px !important;
   }
 }
+
+/* ========== Pi-inspired UI Enhancements ========== */
+
+/* Streaming message left-border pulse animation */
+@keyframes streaming-pulse {
+  0%, 100% { border-left-color: rgba(125, 211, 252, 0.3); }
+  50% { border-left-color: rgba(125, 211, 252, 0.8); }
+}
+
+.streaming-message {
+  border-left: 3px solid rgba(125, 211, 252, 0.3);
+  animation: streaming-pulse 2s ease-in-out infinite;
+}
+
+/* Message fade-in entrance animation */
+@keyframes message-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.message-enter {
+  animation: message-fade-in 250ms ease-out;
+}
+
+/* Reading indicator - three dot pulse */
+@keyframes reading-dot-pulse {
+  0%, 80%, 100% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.reading-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.reading-indicator .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: #7dd3fc;
+  animation: reading-dot-pulse 1.4s ease-in-out infinite;
+}
+
+.reading-indicator .dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.reading-indicator .dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+/* Hide scrollbar utility */
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* New messages floating pill */
+.new-messages-pill {
+  animation: message-fade-in 200ms ease-out;
+}

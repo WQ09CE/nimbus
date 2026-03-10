@@ -27,6 +27,7 @@ Design notes (pi-coding-agent influence):
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
@@ -36,6 +37,24 @@ from .protocol import Event, Fault, StepResult, ToolResult
 from .storage import SessionStorage
 
 logger = logging.getLogger("nimbus.loop")
+
+# Pi-style retryable error classification (cross-provider)
+_RETRYABLE_ERROR_RE = re.compile(
+    r"overloaded|rate.?limit|too many requests|429|500|502|503|504|"
+    r"service.?unavailable|server error|internal error|connection.?error|"
+    r"connection.?refused|other side closed|fetch failed|upstream.?connect|"
+    r"reset before headers|terminated|retry delay",
+    re.IGNORECASE,
+)
+
+# Context overflow detection (should trigger compaction, NOT retry)
+_OVERFLOW_ERROR_RE = re.compile(
+    r"context.*(length|limit|window|too long|exceeded)|"
+    r"maximum.*(context|token)|token.*(limit|exceeded|maximum)|"
+    r"too.?long|prompt.*(too|exceeds)|input.*(too|exceeds)|"
+    r"request too large|content_too_large|string_above_max_length",
+    re.IGNORECASE,
+)
 
 
 # =============================================================================
@@ -228,6 +247,9 @@ class RuntimeLoop:
         self._compaction_count = 0
         self._steps_since_compaction = 0
         self._interrupted = False
+        self._retry_count = 0
+        self._max_retries = 3
+        self._base_retry_delay = 2.0  # seconds
 
         # Pi-style steering + wakeup for LLM call interruption
         self._wakeup_event = asyncio.Event()
@@ -378,6 +400,8 @@ class RuntimeLoop:
 
                 elapsed_ms = int((time.monotonic() - t0) * 1000)
                 self._steps_since_compaction += 1
+                if not step_result.fault:
+                    self._retry_count = 0  # Reset on success
 
                 # Track partial results (pi-style abort recovery)
                 for r in step_result.results:
@@ -403,6 +427,44 @@ class RuntimeLoop:
                     else:
                         yield {"type": "final", "result": step_result.final_result}
                         return
+
+                # Handle iteration budget exceeded (retry after compaction + counter reset)
+                if step_result.fault and step_result.fault.code == "BUDGET_EXCEEDED":
+                    summary = await self._try_compaction()
+                    if summary:
+                        # Reset VCPU iteration counter after successful compaction
+                        if hasattr(self.vcpu, '_exec'):
+                            self.vcpu._exec.iteration = 0
+                            self.vcpu._exec.consecutive_thoughts = 0
+                        yield {"type": "context_compacted", "compaction_count": self._compaction_count, "summary": summary}
+                        step_result.is_final = False
+                        continue
+                    else:
+                        # Compaction failed -- hard stop
+                        yield {"type": "final", "result": step_result.final_result}
+                        return
+
+                # Handle retryable faults with exponential backoff (pi-style)
+                if step_result.fault and step_result.fault.retryable and step_result.fault.code != "BUDGET_EXCEEDED":
+                    if self._retry_count < self._max_retries:
+                        self._retry_count += 1
+                        delay = min(self._base_retry_delay * (2 ** (self._retry_count - 1)), 60.0)
+                        logger.warning(
+                            "Retryable error (attempt %d/%d), backing off %.1fs: %s",
+                            self._retry_count, self._max_retries, delay, step_result.fault.message,
+                        )
+                        # Remove error assistant message from MMU to avoid confusing LLM on retry
+                        if hasattr(self.mmu, '_messages') and self.mmu._messages:
+                            last = self.mmu._messages[-1]
+                            if hasattr(last, 'role') and last.role == 'assistant':
+                                self.mmu._messages.pop()
+                                logger.debug("Removed error assistant message before retry")
+                        await asyncio.sleep(delay)
+                        step_result.is_final = False
+                        yield {"type": "retry", "attempt": self._retry_count, "delay": delay}
+                        continue
+                    else:
+                        logger.error("Max retries (%d) exhausted: %s", self._max_retries, step_result.fault.message)
 
                 # Check if done (inner loop)
                 if step_result.is_final:
@@ -446,7 +508,7 @@ class RuntimeLoop:
         if hasattr(self.vcpu, "config"):
             cfg = self.vcpu.config
             vcpu_config = {
-                "max_iterations": getattr(cfg, "max_iterations", 50),
+                "max_iterations": getattr(cfg, "max_iterations", 200),
                 "max_consecutive_thoughts": getattr(cfg, "max_consecutive_thoughts", 8),
                 "max_consecutive_errors": getattr(cfg, "max_consecutive_errors", 3),
             }
