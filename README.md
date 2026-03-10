@@ -27,12 +27,21 @@ Nimbus 是一款受操作系统内核设计启发的 AI Agent 运行时框架。
 基于有限状态机（FSM）驱动 Think-Act-Observe 循环：
 
 ```
-IDLE → THINKING → ACTING → OBSERVING → THINKING
-                     ↓                     ↓
-                   ERROR            COMPRESSING
-                     ↓
-                   DEAD
+                       ┌─────────────────────────────┐
+                       ↓                             │
+IDLE → THINKING → ACTING → OBSERVING → COMPRESSING ─┘
+         ↑                     │             │
+         └─────────────────────┘             │ 超过 max_compactions
+                                             ↓
+                              ERROR ──────► DEAD
 ```
+
+**COMPRESSING 触发时机（三种）：**
+1. 每轮循环开始前主动检测：`token 使用率 > 85%`
+2. LLM 调用返回 `CTX_OVERFLOW` 错误时被动触发
+3. VCPU 迭代次数超过上限（`BUDGET_EXCEEDED`）时触发，同时重置迭代计数器
+
+**保险机制：** 最多压缩 `3` 次（`max_compactions`），且两次压缩之间必须间隔 `5` 步（`compaction_cooldown`），防止死循环。超出限制直接进入 `DEAD`。
 
 - 最大迭代次数：200（上下文压缩是真正的资源边界）
 - 支持实时 Steering 注入（用户可在 Agent 运行中途插入新指令）
