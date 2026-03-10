@@ -1,95 +1,30 @@
 # TODO
 
-## ✅ [已修复] 虚拟滚动 scroll-to-bottom 到不了最底端
+## 🔧 Tool Result 超长截断治理
 
-**文件**: `web-ui/src/components/chat/ChatList.tsx`
-
-### 问题描述
-
-引入 `@tanstack/react-virtual` 虚拟滚动后，点击 "New messages" 按钮或自动滚动到底部时，
-无法滚动到最后一条消息的真实底端，总是差一段距离。
-
-### 已尝试的方案（均无效）
-
-1. `el.scrollTo({ top: el.scrollHeight })` — `scrollHeight` 基于 `getTotalSize()` 估算，偏小
-2. `virtualizer.scrollToIndex(lastIndex, { align: 'end' })` — 在动态高度场景下，高度未测量完时位置不准
-3. 两次滚动（立即 + 80ms 延迟二次） — 仍然不够，高度测量是异步的，时机难以把控
-4. `paddingEnd: 48` + `estimateSize: 300` + `mb-8` 纳入测量 — 部分改善但根本问题未解决
-
-### 根因分析
-
-`@tanstack/react-virtual` 的动态高度测量（`measureElement`）是异步的：
-- item 渲染 → `ResizeObserver` 回调 → 更新 virtualizer 内部高度 → `getTotalSize()` 变化
-- 在这个过程完成之前调用任何滚动方法，目标位置都是基于旧的估算高度，必然偏小
-- 消息高度差异极大（纯文字 ~100px，带多个 tool card 的消息可能 >1000px），估算误差大
-
-### 建议解决方向
-
-**方案 A（推荐）**: 监听 `virtualizer.getTotalSize()` 变化，在其稳定后再执行滚动
-
-```tsx
-const totalSize = virtualizer.getTotalSize();
-const prevTotalSize = useRef(totalSize);
-useEffect(() => {
-  if (shouldScrollToBottom.current && totalSize !== prevTotalSize.current) {
-    prevTotalSize.current = totalSize;
-    el.scrollTop = el.scrollHeight;
-  }
-}, [totalSize]);
-```
-
-**方案 B**: 不用虚拟滚动，改用 `content-visibility: auto` CSS 属性
-浏览器原生跳过不在视口内元素的渲染，不改变 DOM 结构，scroll 行为完全正常。
-```css
-.chat-message {
-  content-visibility: auto;
-  contain-intrinsic-size: 0 300px; /* 估算高度 */
-}
-```
-
-**方案 C**: 用 `react-window` 或 `react-virtuoso` 替换 `@tanstack/react-virtual`
-`react-virtuoso` 对动态高度 + 自动滚动到底部有开箱即用的支持（`followOutput` prop）。
-
-### 相关 commit
-
-- `fb89bf4` — 引入虚拟滚动
-- `890649b` — 改用 scrollToIndex
-- `0f9decc` — 改回 scrollTop + 二次滚动 + paddingEnd（仍未解决）
-
----
-
-## ✅ [已修复] SSE 流式渲染时 tool card 显示不完整
-
-**文件**: `web-ui/src/stores/chat-store.ts`
+**涉及**: `src/nimbus/core/gate.py`, `web-ui/src/components/chat/tools/`
 
 ### 问题描述
 
-流式渲染过程中，tool call card 有时显示不完整（result 丢失、args 缺失等）。
-刷新页面后从服务端拉取完整历史，tool card 渲染正常。
+Tool result（Read/Grep/Bash 等）可能返回非常长的输出（Read 最大 100KB，Bash 无硬上限）。
+当前直接把完整 output 塞进 LLM context，浪费 token 且可能触发 context overflow。
 
-### 已尝试的方案（均无效）
+### 预期方案
 
-1. rAF buffer（`_pendingStreamMsg`）— 解决了同帧内 `message` chunk 互相覆盖的问题，但 tool card 仍有问题
-2. `tool_call` 处理时检查 `toolResults` 数组提前 attach result — 解决了部分 replay race，但仍不稳定
+**LLM 侧（gate.py）**：
+- 对超长 tool result 做强制截断（保留头部 + 尾部关键内容）
+- 截断后在 tool result 中**显式告知 LLM**："[输出已截断，共 N 行，显示前 100 行和后 20 行]"
+- 让 LLM 知道数据不完整，可以决定是否需要分段读取
 
-### 根因分析
+**Web-UI 侧（SSE event + 前端组件）**：
+- SSE `tool_result` 事件继续传输完整（或接近完整）的 output，供 UI 展示
+- 前端组件（FileRead/Bash/DefaultTool）自行实现 UI 层截断：
+  - 折叠 + "Show all (N lines)" 展开按钮
+  - 语法高亮只渲染可见部分
+- 实现 LLM context 省 token 与 UI 展示完整性的解耦
 
-`tool_call` 和 `tool_result` 事件的到达顺序在流式场景下不保证：
-- rAF buffer 的批处理机制让同一帧内的事件可以叠加，但跨帧的顺序问题仍存在
-- `_attachToRunningSession`（reconnect path）replay 历史事件时，高速连续的事件流
-  可能导致 `tool_result` 在 `tool_call` 的 rAF 还未 flush 时就已经处理完毕
-- `parts` 数组的 find-by-id 逻辑在事件乱序时容易 `matchIdx === -1`
+### 关键设计点
 
-### 建议解决方向
-
-**方案 A（推荐）**: 将 tool card 的状态管理从 `parts` 数组移到独立的 `Map<tcId, ToolCardState>`
-不再依赖 `parts` 数组的顺序和 find 逻辑，tool_call 和 tool_result 各自写入 Map，
-渲染时再合并，天然解决乱序问题。
-
-**方案 B**: 服务端保证 `tool_call` 和 `tool_result` 合并成单个 SSE 事件推送
-在 `tool_result` 时同时携带对应的 `tool_call` 信息，前端只需处理一个事件。
-
-### 相关 commit
-
-- `4a4ed17` — rAF buffer 修复（解决 message chunk 覆盖）
-- `48b8cf4` — tool_call 处理时提前 attach result（部分修复，仍不稳定）
+- `gate.py:_truncate_output()` 已有 200K 硬截断，需改为更精细的分层策略
+- `gate.py:_finish()` 的 `"output"` 字段（给 SSE/UI）和 `result.output`（给 LLM context）应分离
+- 截断阈值可配置（默认建议 LLM 侧 ~4000 chars，UI 侧 ~50000 chars）
