@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { diffLines } from 'diff';
 
 interface FileDiffProps {
@@ -13,41 +13,104 @@ export function FileDiff({ name, args, result, error, status }: FileDiffProps) {
   const [isExpanded, setIsExpanded] = useState(true);
   const safeArgs = args || {};
   const filePath = safeArgs.file_path || safeArgs.path || safeArgs.filename || safeArgs.file || "unknown";
-  
-  // 判断是否有输出需要显示
-  const hasContent = !!safeArgs.content || !!safeArgs.new_text || !!safeArgs.old_text || !!safeArgs.new_string || !!safeArgs.old_string;
+
+  // File name (last segment) + parent dir for display
+  const pathParts = filePath.split('/');
+  const fileName = pathParts.pop() || filePath;
+  const parentDir = pathParts.slice(-2).join('/'); // last 2 dirs for context
+
+  // Stats for Write: line count + byte size
+  const writeContent: string = safeArgs.content || '';
+  const writeLineCount = writeContent ? writeContent.split('\n').length : 0;
+  const writeByteCount = writeContent ? new TextEncoder().encode(writeContent).length : 0;
+  const writeSizeLabel = writeByteCount > 1024
+    ? `${(writeByteCount / 1024).toFixed(1)} KB`
+    : `${writeByteCount} B`;
+
+  // Stats for Edit: +added / -removed lines
+  const editStats = useMemo(() => {
+    if (name !== 'Edit') return null;
+    const oldText = safeArgs.old_string || safeArgs.old_text || '';
+    const newText = safeArgs.new_string || safeArgs.new_text || '';
+    if (!oldText && !newText) return null;
+    try {
+      const diffs = diffLines(oldText, newText);
+      let added = 0, removed = 0;
+      diffs.forEach(p => {
+        const lines = p.value.split('\n').filter((l, i, arr) => !(i === arr.length - 1 && l === '')).length;
+        if (p.added) added += lines;
+        else if (p.removed) removed += lines;
+      });
+      return { added, removed };
+    } catch { return null; }
+  }, [name, safeArgs.old_string, safeArgs.old_text, safeArgs.new_string, safeArgs.new_text]);
 
   return (
     <div className="font-mono text-sm bg-[#0d1117] rounded-md border border-gray-800 overflow-hidden flex flex-col my-2">
-      {/* Header: Title & Status (始终显示，保持最小高度) */}
-      <div 
+      {/* Header */}
+      <div
         className="flex items-center justify-between p-2.5 bg-[#161b22] cursor-pointer hover:bg-[#1f242e] transition-colors select-none"
         onClick={() => setIsExpanded(!isExpanded)}
       >
-        <div className="flex gap-3 text-gray-300 truncate font-semibold items-center max-w-[70%]">
-          <span className="text-purple-400 shrink-0">
-            {name === 'Edit' ? '📝' : '📄'}
+        {/* Left: icon + file path */}
+        <div className="flex gap-2 items-center min-w-0 flex-1">
+          <span className="text-purple-400 shrink-0 text-base">
+            {name === 'Edit' ? '✏️' : '📄'}
           </span>
-          <span className="truncate" title={`${name} ${filePath}`}>
-            {name} <span className="text-gray-400 font-normal">{filePath}</span>
-          </span>
-        </div>
-        
-        <div className="flex items-center gap-4 text-xs shrink-0">
-          {status === "running" ? (
-            <span className="flex items-center gap-1.5 text-blue-400">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+          <div className="flex flex-col min-w-0">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="text-[11px] font-bold text-gray-200 truncate" title={filePath}>
+                {fileName}
               </span>
-              Writing
+              {parentDir && (
+                <span className="text-[10px] text-gray-500 truncate hidden sm:block" title={filePath}>
+                  {parentDir}
+                </span>
+              )}
+            </div>
+            {/* Full path on second line for context */}
+            <span className="text-[10px] text-gray-600 truncate" title={filePath}>
+              {filePath}
+            </span>
+          </div>
+        </div>
+
+        {/* Right: stats + status + chevron */}
+        <div className="flex items-center gap-3 text-xs shrink-0 ml-2">
+          {/* Edit stats: +N -N */}
+          {name === 'Edit' && editStats && status !== 'running' && (
+            <div className="flex items-center gap-1.5 font-mono">
+              <span className="text-emerald-400 text-[11px]">+{editStats.added}</span>
+              <span className="text-red-400 text-[11px]">-{editStats.removed}</span>
+            </div>
+          )}
+          {/* Write stats: N lines, X KB */}
+          {name === 'Write' && writeContent && status !== 'running' && (
+            <div className="flex items-center gap-1.5 font-mono text-[10px] text-gray-500">
+              <span>{writeLineCount} lines</span>
+              <span className="text-gray-700">·</span>
+              <span>{writeSizeLabel}</span>
+            </div>
+          )}
+
+          {/* Status badge */}
+          {status === "running" ? (
+            <span className="flex items-center gap-1.5 text-blue-400 text-[11px]">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+              </span>
+              {name === 'Write'
+                ? writeLineCount > 0 ? `Writing ${writeLineCount} lines` : 'Writing…'
+                : 'Editing…'}
             </span>
           ) : error ? (
             <span className="px-2 py-0.5 rounded font-bold text-red-400 bg-red-500/10 border border-red-500/20">Failed</span>
           ) : (
-            <span className="px-2 py-0.5 rounded font-bold text-green-400 bg-green-500/10 border border-green-500/20">Success</span>
+            <span className="px-2 py-0.5 rounded font-bold text-green-400 bg-green-500/10 border border-green-500/20">Done</span>
           )}
-          
+
+          {/* Chevron */}
           <span className="text-gray-500 w-4 text-center">
             {isExpanded ? (
               <svg fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4">
