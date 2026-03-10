@@ -20,7 +20,7 @@ class MockAdapter:
         self._responses = list(responses)
         self._idx = 0
 
-    async def chat(self, messages, tools):
+    async def chat(self, messages, tools, on_chunk=None):
         if self._idx >= len(self._responses):
             return LLMResponse(content="Done.")
         r = self._responses[self._idx]

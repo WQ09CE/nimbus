@@ -48,7 +48,7 @@ class VCPUConfig:
 
 class ALUProtocol(Protocol):
     """The LLM adapter (Arithmetic Logic Unit)."""
-    async def chat(self, messages: List[Dict], tools: List[Dict]) -> Any: ...
+    async def chat(self, messages: List[Dict], tools: List[Dict], on_chunk: Optional[Callable[[str], None]] = None) -> Any: ...
 
 
 class GateProtocol(Protocol):
@@ -104,6 +104,7 @@ class VCPU:
         text_is_final: bool = True,
         get_steering: Optional[Callable[[], List[str]]] = None,
         initial_state: Optional[Dict[str, int]] = None,
+        on_text_delta: Optional[Callable[[str], None]] = None,
     ):
         self.alu = alu
         self.decoder = decoder
@@ -118,10 +119,11 @@ class VCPU:
             self._exec.iteration = initial_state.get("iteration", 0)
             self._exec.consecutive_thoughts = initial_state.get("consecutive_thoughts", 0)
             self._exec.consecutive_errors = initial_state.get("consecutive_errors", 0)
-            
+
         self._interrupted = False
         self._wakeup_event: Optional[asyncio.Event] = None
         self._get_steering = get_steering
+        self._on_text_delta = on_text_delta
 
     def set_wakeup_event(self, event: asyncio.Event) -> None:
         """Receive a wakeup event from the RuntimeLoop to enable graceful steering."""
@@ -179,7 +181,7 @@ class VCPU:
         # ---- THINK (Reasoning) ----
         try:
             messages = self.mmu.assemble_context()
-            chat_coro = self.alu.chat(messages, self.tools)
+            chat_coro = self.alu.chat(messages, self.tools, on_chunk=self._on_text_delta)
 
             if self._wakeup_event:
                 # Race LLM call against wakeup event (steering message arrived).

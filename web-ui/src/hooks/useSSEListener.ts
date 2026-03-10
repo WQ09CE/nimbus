@@ -42,6 +42,29 @@ export const reconnectToSession = async (sessionId: string, attempt: number = 0)
             let updated = false;
 
             switch (type) {
+                case "user_message": {
+                    if (data && typeof data === "object") {
+                        const content = (data as any)?.content || "";
+                        if (content) {
+                            const userMsg: Message = {
+                                id: `user-remote-${Date.now()}`,
+                                role: "user",
+                                content,
+                                parts: [{ type: "text", content }],
+                                timestamp: Date.now(),
+                            };
+                            const msgs = [...useChatStore.getState().messages];
+                            const streamIdx = msgs.findIndex(m => m.id === STREAMING_ID);
+                            if (streamIdx !== -1) {
+                                msgs.splice(streamIdx, 0, userMsg);
+                            } else {
+                                msgs.push(userMsg);
+                            }
+                            useChatStore.setState({ messages: msgs });
+                        }
+                    }
+                    break;
+                }
                 case "message": {
                     const chunk = typeof data === "string" ? data : (data as any)?.content || (data as any)?.chunk || "";
                     if (chunk) {

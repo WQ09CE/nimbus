@@ -299,6 +299,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
           let updated = false;
 
           switch (type) {
+            case "user_message": {
+              if (data && typeof data === "object") {
+                const content = (data as any)?.content || "";
+                if (content) {
+                  // Add user message that was sent by another client
+                  const userMsg: Message = {
+                    id: `user-remote-${Date.now()}`,
+                    role: "user",
+                    content,
+                    parts: [{ type: "text", content }],
+                    timestamp: Date.now(),
+                  };
+                  // Insert BEFORE the streaming assistant message
+                  const msgs = [...get().messages];
+                  const streamIdx = msgs.findIndex(m => m.id === STREAMING_ID);
+                  if (streamIdx !== -1) {
+                    msgs.splice(streamIdx, 0, userMsg);
+                  } else {
+                    msgs.push(userMsg);
+                  }
+                  set({ messages: msgs });
+                }
+              }
+              break;
+            }
             case "message": {
               const chunk = typeof data === "string" ? data : (data as any)?.content || (data as any)?.chunk || "";
               if (chunk) {
@@ -486,6 +511,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         let updated = false;
 
         switch (type) {
+          case "user_message":
+            // Sender already has the user message — skip
+            break;
           case "message": {
             const chunk = typeof data === "string" ? data : (data as any)?.content || (data as any)?.chunk || "";
             if (chunk) {

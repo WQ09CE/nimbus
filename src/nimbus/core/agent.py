@@ -124,11 +124,14 @@ class AgentOS:
         system_prompt: str = "",
         event_callback: Optional[Callable[[Event], None]] = None,
         on_tool_output: Optional[Callable[[str, str], None]] = None,
+        on_text_delta: Optional[Callable[[str], None]] = None,
     ):
         self.config = config or AgentConfig()
         self._event_cb = event_callback
         # Pi-style: callback for streaming tool output (tool_name, chunk)
         self._on_tool_output = on_tool_output
+        # Token-level text streaming callback (chunk)
+        self._on_text_delta = on_text_delta
 
         # 1. Adapter (ALU)
         if adapter:
@@ -368,6 +371,7 @@ class AgentOS:
             text_is_final=final,
             get_steering=drain_steering,
             initial_state=initial_vcpu_state,
+            on_text_delta=self._on_text_delta,
         )
 
         # Loop (with both queues and abort event)

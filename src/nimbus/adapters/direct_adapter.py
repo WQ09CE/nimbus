@@ -1425,6 +1425,7 @@ class DirectAdapter:
             tool_call_chunks = {}
             reasoning_chunks = []
             text_buffer = []
+            text_streamed = False  # Track if we've yielded text chunks in real-time
 
             async for chunk in response:
                 chunk_count += 1
@@ -1436,8 +1437,15 @@ class DirectAdapter:
                 delta = chunk.choices[0].delta
 
                 if delta.content:
-                    # Buffer text chunks to check for JSON tool calls at the end
                     text_buffer.append(delta.content)
+                    # Yield text chunks immediately for real-time streaming.
+                    # Heuristic: if first text chunk looks like JSON, buffer it
+                    # for JSON tool call extraction (small model fallback).
+                    if text_streamed:
+                        yield LLMStreamEvent(type="text", text=delta.content)
+                    elif not delta.content.lstrip().startswith(("{", "[")):
+                        text_streamed = True
+                        yield LLMStreamEvent(type="text", text=delta.content)
 
                 # Capture reasoning_content as fallback (qwen3.5/deepseek thinking mode)
                 reasoning = getattr(delta, 'reasoning_content', None)
@@ -1481,54 +1489,56 @@ class DirectAdapter:
 
             # 1. Yield extracted JSON tool calls or the raw text
             full_text = "".join(text_buffer)
-            # Only try json parsing if it looks like json or if it's an ollama model emitting codeblocks
             if full_text.strip():
-                content_to_check = full_text.strip()
-                extracted_tcs = None
-                
-                # Check for markdown json or code blocks
-                m = re.search(r'```(?:json)?\s*\n(.*?)\n\s*```', content_to_check, re.DOTALL)
-                if m:
-                    extracted_tcs = _extract_tool_calls_from_json(m.group(1).strip())
-                
-                if not extracted_tcs:
-                    # Look for raw json blocks `{ ... }` or `[ ... ]`
-                    # Simple heuristic: find first { or [ and last } or ]
-                    m_raw = re.search(r'(\{.*\}|\[.*\])', content_to_check, re.DOTALL)
-                    if m_raw:
-                        extracted_tcs = _extract_tool_calls_from_json(m_raw.group(1).strip())
-
-                if extracted_tcs:
-                    logger.info("[LiteLLM] Intercepted %d JSON tool call(s) from text stream.", len(extracted_tcs))
-                    for i, tc in enumerate(extracted_tcs):
-                        yield LLMStreamEvent(
-                            type="tool_call",
-                            tool_call={
-                                "id": f"json_extract_txt_{i}",
-                                "name": tc["name"],
-                                "arguments": tc["arguments"]
-                            }
-                        )
+                if text_streamed:
+                    # Text was already yielded chunk-by-chunk during streaming.
+                    # Only check for JSON tool calls if text was NOT streamed
+                    # (i.e., it looked like JSON from the first chunk).
+                    pass
                 else:
-                    # Guard: small models sometimes output {"error": "..."} as text
-                    # instead of retrying with a proper tool call. Suppress these so
-                    # VCPU sees an empty response and triggers continuation poke.
-                    handled_error = False
-                    if content_to_check.startswith('{') or content_to_check.startswith('['):
-                        try:
-                            parsed_obj = json.loads(content_to_check)
-                            if isinstance(parsed_obj, dict) and "error" in parsed_obj and len(parsed_obj) <= 3:
-                                logger.warning(
-                                    "[LiteLLM] Suppressed JSON error text (small model retry signal): %s",
-                                    content_to_check[:200],
-                                )
-                                handled_error = True
-                                # Don't yield — empty response triggers VCPU retry
-                        except (json.JSONDecodeError, ValueError):
-                            pass
-                            
-                    if not handled_error:
-                        yield LLMStreamEvent(type="text", text=full_text)
+                    # Text was buffered (first chunk looked like JSON) — check for tool calls
+                    content_to_check = full_text.strip()
+                    extracted_tcs = None
+
+                    # Check for markdown json or code blocks
+                    m = re.search(r'```(?:json)?\s*\n(.*?)\n\s*```', content_to_check, re.DOTALL)
+                    if m:
+                        extracted_tcs = _extract_tool_calls_from_json(m.group(1).strip())
+
+                    if not extracted_tcs:
+                        # Look for raw json blocks `{ ... }` or `[ ... ]`
+                        m_raw = re.search(r'(\{.*\}|\[.*\])', content_to_check, re.DOTALL)
+                        if m_raw:
+                            extracted_tcs = _extract_tool_calls_from_json(m_raw.group(1).strip())
+
+                    if extracted_tcs:
+                        logger.info("[LiteLLM] Intercepted %d JSON tool call(s) from text stream.", len(extracted_tcs))
+                        for i, tc in enumerate(extracted_tcs):
+                            yield LLMStreamEvent(
+                                type="tool_call",
+                                tool_call={
+                                    "id": f"json_extract_txt_{i}",
+                                    "name": tc["name"],
+                                    "arguments": tc["arguments"]
+                                }
+                            )
+                    else:
+                        # Guard: small models sometimes output {"error": "..."} as text
+                        handled_error = False
+                        if content_to_check.startswith('{') or content_to_check.startswith('['):
+                            try:
+                                parsed_obj = json.loads(content_to_check)
+                                if isinstance(parsed_obj, dict) and "error" in parsed_obj and len(parsed_obj) <= 3:
+                                    logger.warning(
+                                        "[LiteLLM] Suppressed JSON error text (small model retry signal): %s",
+                                        content_to_check[:200],
+                                    )
+                                    handled_error = True
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+
+                        if not handled_error:
+                            yield LLMStreamEvent(type="text", text=full_text)
 
             # 2. Fallback: if no text or tool_calls, but we got reasoning_content
             if not full_text and not tool_call_chunks and reasoning_chunks:

@@ -80,12 +80,13 @@ class OpenAIAdapter:
             self._client = openai.AsyncOpenAI(**kwargs)
         return self._client
 
-    async def chat(self, messages: List[Dict], tools: List[Dict]) -> LLMResponse:
+    async def chat(self, messages: List[Dict], tools: List[Dict], on_chunk=None) -> LLMResponse:
         """Send messages to the LLM and return a normalized response.
 
         Args:
             messages: List of message dicts (role, content, tool_calls, etc.)
             tools: List of tool schemas in OpenAI format.
+            on_chunk: Optional callback for token-level text streaming.
 
         Returns:
             LLMResponse with content and/or tool_calls.
@@ -173,7 +174,7 @@ class AnthropicAdapter:
             self._client = anthropic.AsyncAnthropic(api_key=api_key)
         return self._client
 
-    async def chat(self, messages: List[Dict], tools: List[Dict]) -> LLMResponse:
+    async def chat(self, messages: List[Dict], tools: List[Dict], on_chunk=None) -> LLMResponse:
         """Send messages using Anthropic's native format."""
         client = self._get_client()
 

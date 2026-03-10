@@ -40,7 +40,7 @@ class MockALU:
         self._responses = list(responses)
         self._call_count = 0
 
-    async def chat(self, messages, tools):
+    async def chat(self, messages, tools, on_chunk=None):
         if self._call_count >= len(self._responses):
             return MockResponse(content="Done.")
         resp = self._responses[self._call_count]

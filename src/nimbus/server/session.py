@@ -340,6 +340,12 @@ class SessionManagerV2:
                     }
                 ))
 
+        # Token-level text streaming callback: publish each LLM token to SSE as it arrives
+        def _text_delta_cb(chunk: str):
+            asyncio.create_task(self._sse_hub.publish(
+                session_id, "message", {"content": chunk}
+            ))
+
         # Let AgentOS know this session is being instantiated
         # (MMU and VCPU will be rehydrated when stream_with_queue is called)
         agent_os = AgentOS(
@@ -347,6 +353,7 @@ class SessionManagerV2:
             adapter=llm_client,
             system_prompt=system_prompt,
             event_callback=_gate_event_cb,
+            on_text_delta=_text_delta_cb,
         )
 
         logger.info(f"Created nimbus-next AgentOS for session {session_id}")
@@ -419,6 +426,14 @@ class SessionManagerV2:
         logger.info(f"[stream_chat] Starting for session {session_id}")
         agent_os = await self.get_or_create_agent(session_id)
 
+        # Publish user message so multi-client subscribers can see it
+        user_content = message if isinstance(message, str) else "[multimodal message]"
+        if isinstance(message, list):
+            # Extract text from multimodal content parts
+            text_parts = [p.get("text", "") for p in message if isinstance(p, dict) and p.get("type") == "text"]
+            user_content = " ".join(text_parts) if text_parts else "[multimodal message]"
+        await self._sse_hub.publish(session_id, "user_message", {"content": user_content})
+
         # message_start signals a new assistant turn (connected is sent by SSEHub.subscribe automatically)
         await self._sse_hub.publish(session_id, "message_start", {"role": "assistant"})
 
@@ -478,9 +493,9 @@ class SessionManagerV2:
                     continue
 
                 if evt_type == "text_delta":
-                    await self._sse_hub.publish(
-                        session_id, "message", {"content": event.get("content", "")}
-                    )
+                    # Text already published token-by-token via on_text_delta callback.
+                    # Skip re-publishing the aggregated text to avoid duplicate content.
+                    continue
                 elif evt_type in ("tool_call_start", "tool_call_done"):
                     # Already published in real-time via gate callback
                     continue
