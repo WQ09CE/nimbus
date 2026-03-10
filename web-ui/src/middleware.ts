@@ -16,8 +16,8 @@ import { NextRequest, NextResponse } from "next/server";
 
 const TOKEN = process.env.NIMBUS_ACCESS_TOKEN || "nimbus-666";
 
-// Paths that must always be accessible (Next.js internals)
-const ALWAYS_ALLOW = ["/_next/", "/favicon.ico", "/fonts/"];
+// Paths that must always be accessible (Next.js internals + health check)
+const ALWAYS_ALLOW = ["/_next/", "/favicon.ico", "/fonts/", "/_health"];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
