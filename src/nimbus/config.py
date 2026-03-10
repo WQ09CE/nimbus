@@ -45,6 +45,9 @@ class NimbusConfig:
 
     ollama_base_url: str = "http://localhost:11434"
 
+    # User memory file (Pinned into MMU at session start, human-editable)
+    memory_path: str = "~/.nimbus/memory.md"
+
     # Nimbus Server
     server_port: int = 4096
 

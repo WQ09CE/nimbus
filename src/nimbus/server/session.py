@@ -309,7 +309,17 @@ class SessionManagerV2:
         agent_config.text_is_final = True  # Chat mode: pure text = final response, don't poke
         agent_config.max_consecutive_thoughts = 2  # Safety net: stop after 2 thoughts max
 
-        system_prompt = getattr(nimbus_config, "system_prompt", "") or "You are a capable AI coding assistant. Use tools to solve the user's tasks. Always think step by step in Chinese."
+        system_prompt = "You are a capable AI assistant. Use tools to solve the user's tasks. Think step by step."
+
+        # Load user memory file and append to system prompt as pinned context
+        memory_path = Path(os.path.expanduser(getattr(nimbus_config, "memory_path", "~/.nimbus/memory.md")))
+        memory_content = ""
+        if memory_path.exists():
+            try:
+                memory_content = memory_path.read_text(encoding="utf-8").strip()
+                logger.info(f"📖 Loaded memory from {memory_path} ({len(memory_content)} chars)")
+            except OSError as e:
+                logger.warning(f"⚠️ Failed to read memory file {memory_path}: {e}")
 
         # Real-time gate callback: publish tool events to SSE as they happen
         def _gate_event_cb(event):
@@ -352,6 +362,7 @@ class SessionManagerV2:
             config=agent_config,
             adapter=llm_client,
             system_prompt=system_prompt,
+            memory=memory_content,
             event_callback=_gate_event_cb,
             on_text_delta=_text_delta_cb,
         )

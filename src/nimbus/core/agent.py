@@ -122,6 +122,7 @@ class AgentOS:
         adapter: Any = None,
         tools: Optional[ToolRegistry] = None,
         system_prompt: str = "",
+        memory: str = "",
         event_callback: Optional[Callable[[Event], None]] = None,
         on_tool_output: Optional[Callable[[str, str], None]] = None,
         on_text_delta: Optional[Callable[[str], None]] = None,
@@ -158,8 +159,11 @@ class AgentOS:
 
         # 3. System prompt
         self._system_prompt = system_prompt or self._default_system_prompt()
-        
-        # 4. Session State (MMUs)
+
+        # 4. User memory (from memory.md, pinned into MMU alongside system rules)
+        self._memory = memory
+
+        # 5. Session State (MMUs)
         self._mmus: Dict[str, MMU] = {}
 
     def _create_adapter(self) -> Any:
@@ -265,6 +269,7 @@ class AgentOS:
             mmu.set_pinned(PinnedContext(
                 system_rules=self._system_prompt,
                 workspace_info=f"Working directory: {os.getcwd()}",
+                user_memory=self._memory,
             ))
             
             # Rehydrate initial messages directly into MMU from Dict cache

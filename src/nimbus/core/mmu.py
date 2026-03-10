@@ -263,6 +263,7 @@ class PinnedContext:
     """
     system_rules: str = ""
     workspace_info: str = ""
+    user_memory: str = ""  # Contents of ~/.nimbus/memory.md
 
     def to_system_message(self) -> Message:
         parts = []
@@ -270,10 +271,16 @@ class PinnedContext:
             parts.append(f"# System Rules\n{self.system_rules}")
         if self.workspace_info:
             parts.append(f"# Workspace\n{self.workspace_info}")
+        if self.user_memory:
+            parts.append(f"# User Memory\n{self.user_memory}")
         return Message(role="system", content="\n\n".join(parts))
 
     def token_estimate(self) -> int:
-        return estimate_text_tokens(self.system_rules) + estimate_text_tokens(self.workspace_info)
+        return (
+            estimate_text_tokens(self.system_rules)
+            + estimate_text_tokens(self.workspace_info)
+            + estimate_text_tokens(self.user_memory)
+        )
 
 
 # =============================================================================
