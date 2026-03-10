@@ -10,9 +10,6 @@ interface ChatListProps {
   messages: Message[];
 }
 
-// Bottom padding below the last message (px), must match the spacer div below
-const BOTTOM_PADDING = 48;
-
 export function ChatList({ messages }: ChatListProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const isStreaming = useChatStore(s => s.isStreaming);
@@ -21,16 +18,14 @@ export function ChatList({ messages }: ChatListProps) {
   const virtualizer = useVirtualizer({
     count: messages.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 300,
-    overscan: 3,
-    // paddingEnd so getTotalSize() includes bottom padding
-    paddingEnd: BOTTOM_PADDING,
+    estimateSize: () => 200,
+    overscan: 5,
+    gap: 32, // equivalent to mb-8 (2rem = 32px) between messages
+    paddingEnd: 48,
   });
 
   const virtualItems = virtualizer.getVirtualItems();
 
-  // Always scroll by setting scrollTop directly — reliable regardless of
-  // whether virtualizer has finished measuring all item heights.
   const scrollToBottom = useCallback((smooth = false) => {
     const el = parentRef.current;
     if (!el) return;
@@ -47,10 +42,9 @@ export function ChatList({ messages }: ChatListProps) {
     if (!el) return;
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     if (distFromBottom < 300 || isStreaming) {
-      // First pass: scroll with current (possibly estimated) heights
       scrollToBottom(false);
       setShowNewMessagesPill(false);
-      // Second pass after a tick: virtualizer may have updated measurements
+      // Second pass: virtualizer may update measurements after first paint
       const t = setTimeout(() => scrollToBottom(false), 80);
       return () => clearTimeout(t);
     } else if (messages.length > 0) {
@@ -100,8 +94,6 @@ export function ChatList({ messages }: ChatListProps) {
                 right: 0,
                 transform: `translateY(${vItem.start}px)`,
               }}
-              // mb-8 is measured by virtualizer via measureElement
-              className="mb-8"
             >
               <ChatMessage
                 message={msg}

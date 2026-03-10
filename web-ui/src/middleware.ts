@@ -34,7 +34,21 @@ export function middleware(request: NextRequest) {
     const realPath = pathname.slice(tokenPrefix.length) || "/";
     const url = request.nextUrl.clone();
     url.pathname = realPath;
-    return NextResponse.rewrite(url);
+    const response = NextResponse.rewrite(url);
+    // Set auth cookie so subsequent requests (API calls, SSE streams)
+    // from this browser are allowed without the token prefix.
+    response.cookies.set("nimbus_auth", TOKEN, {
+      httpOnly: true,
+      sameSite: "strict",
+      path: "/",
+    });
+    return response;
+  }
+
+  // Allow requests with valid auth cookie (API calls from authenticated pages)
+  const authCookie = request.cookies.get("nimbus_auth")?.value;
+  if (authCookie === TOKEN) {
+    return NextResponse.next();
   }
 
   // Everything else → 404
