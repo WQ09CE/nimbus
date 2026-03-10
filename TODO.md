@@ -1,30 +1,31 @@
 # TODO
 
-## 🔧 Tool Result 超长截断治理
+## 🚀 Web-UI Rendering & Architecture Review (Post-Implementation)
 
-**涉及**: `src/nimbus/core/gate.py`, `web-ui/src/components/chat/tools/`
+The Web-UI has achieved significant stability and features a highly functional streaming architecture. However, as session logs grow larger (especially with Bash and Grep tools dumping massive outputs), the following architectural bottlenecks should be addressed to maintain a butter-smooth 60fps experience:
 
-### 问题描述
+### 1. React Virtualization Limits in `ChatList.tsx`
+**Current State:** `@tanstack/react-virtual` is implemented correctly for *messages*, assigning an `estimateSize: 200` to each chat bubble.
+**The Problem:** While the chat *messages* are virtualized, the *content inside* a single message is not. If `Bash` outputs 50,000 lines, the *entire* 50,000-line DOM block is rendered if that specific `ChatMessage` enters the viewport, causing catastrophic layout thrashing and scrolling lag.
+**Proposed Fix:** 
+- Implement **Nested Virtualization** or **Windowing** specifically inside `Bash.tsx` and `FileRead.tsx`. 
+- Only render the visible 100 lines of the terminal buffer at any given scroll position, or implement a hard UI truncation with a "View Full Raw Output" pagination/modal.
 
-Tool result（Read/Grep/Bash 等）可能返回非常长的输出（Read 最大 100KB，Bash 无硬上限）。
-当前直接把完整 output 塞进 LLM context，浪费 token 且可能触发 context overflow。
+### 2. Markdown Parser Thrashing (`MarkdownRenderer.tsx`)
+**Current State:** We correctly use `useDeferredValue(content)` and `React.memo` to throttle React updates during fast SSE token streaming.
+**The Problem:** `ReactMarkdown` creates a massive AST (Abstract Syntax Tree) on every render cycle. When an Assistant response reaches thousands of tokens, the AST parsing overhead dominates the JS Main Thread, causing typing latency. 
+**Proposed Fix:** 
+- Migrate from `react-markdown` to a faster streaming-first parser (like `marked` + custom React wrapper), or implement **Incremental Rendering** where only the *newly added* chunks are parsed, rather than re-parsing the entire huge string from index 0 on every delta received.
 
-### 预期方案
+### 3. Zustand Global State Over-subscription (`page.tsx` & `ChatInput.tsx`)
+**Current State:** Components like `ChatInput` subscribe to global primitives (`isStreaming`, `session`).
+**The Problem:** When `chat-store.ts` receives highly frequent SSE updates (e.g. updating `messages` array 20 times a second), any component that lacks strictly shallow equality checks or selects too broad a state slice might unintentionally re-render on every token chunk.
+**Proposed Fix:** 
+- Implement strict atomic selectors: `const isStreaming = useChatStore(useShallow(state => state.isStreaming))`.
+- Extract the heavily-mutated `messages` array out of the main Zustand store entirely, using a secondary fast-track pub/sub store specifically for streaming deltas to isolate Re-Renders strictly to the `ChatMessage` component itself.
 
-**LLM 侧（gate.py）**：
-- 对超长 tool result 做强制截断（保留头部 + 尾部关键内容）
-- 截断后在 tool result 中**显式告知 LLM**："[输出已截断，共 N 行，显示前 100 行和后 20 行]"
-- 让 LLM 知道数据不完整，可以决定是否需要分段读取
-
-**Web-UI 侧（SSE event + 前端组件）**：
-- SSE `tool_result` 事件继续传输完整（或接近完整）的 output，供 UI 展示
-- 前端组件（FileRead/Bash/DefaultTool）自行实现 UI 层截断：
-  - 折叠 + "Show all (N lines)" 展开按钮
-  - 语法高亮只渲染可见部分
-- 实现 LLM context 省 token 与 UI 展示完整性的解耦
-
-### 关键设计点
-
-- `gate.py:_truncate_output()` 已有 200K 硬截断，需改为更精细的分层策略
-- `gate.py:_finish()` 的 `"output"` 字段（给 SSE/UI）和 `result.output`（给 LLM context）应分离
-- 截断阈值可配置（默认建议 LLM 侧 ~4000 chars，UI 侧 ~50000 chars）
+### 4. DOM Bloat in Tool Blocks (`ToolCard.tsx`)
+**Current State:** Tools render multiple layers of nested UI (Card > Header > Toggle > Status > Pre > Code).
+**The Problem:** An agent iterating quickly (e.g. 20 consecutive Git modifications or Python runs) generates an enormous total DOM node count, triggering the browser's "Max DOM Nodes" memory constraints over long-running continuous chats.
+**Proposed Fix:**
+- Implement aggressive "History Condensation". When an agent task finishes, automatically collapse all intermediate `ToolCard`s and perhaps aggressively GC (garbage collect) their raw DOM node trees until the user explicitly expands them again.
