@@ -343,7 +343,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
           const targetIdx = currentMsgs.findIndex(m => m.id === STREAMING_ID);
           if (targetIdx === -1) continue;
 
-          const targetMsg = { ...currentMsgs[targetIdx] };
+          // Use pending rAF buffer if available, so consecutive events
+          // within the same frame build on each other instead of overwriting.
+          const targetMsg = _pendingStreamMsg
+            ? { ..._pendingStreamMsg }
+            : { ...currentMsgs[targetIdx] };
           let updated = false;
 
           switch (type) {
@@ -555,7 +559,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const targetIdx = currentMsgs.findIndex(m => m.id === STREAMING_ID);
         if (targetIdx === -1) continue;
 
-        const targetMsg = { ...currentMsgs[targetIdx] };
+        // Use pending rAF buffer if available, so consecutive events
+        // within the same frame build on each other instead of overwriting.
+        const targetMsg = _pendingStreamMsg
+          ? { ..._pendingStreamMsg }
+          : { ...currentMsgs[targetIdx] };
         let updated = false;
 
         switch (type) {
