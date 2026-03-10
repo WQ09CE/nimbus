@@ -335,7 +335,8 @@ cmd_deploy_ui() {
     # Step 4: 健康检查 - curl 检查 200
     log_info "Running health check on http://localhost:$WEBUI_STAGING_PORT ..."
     local http_code
-    http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$WEBUI_STAGING_PORT/_health" 2>/dev/null)
+    ACCESS_TOKEN="${NIMBUS_ACCESS_TOKEN:-nimbus-666}"
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$WEBUI_STAGING_PORT/${ACCESS_TOKEN}" 2>/dev/null)
 
     if [ "$http_code" = "200" ]; then
         log_ok "Health check passed (HTTP $http_code)"
