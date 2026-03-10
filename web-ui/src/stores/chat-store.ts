@@ -419,7 +419,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 };
                 targetMsg.toolCalls = [...(targetMsg.toolCalls || []), tc];
                 const parts = [...(targetMsg.parts || [])];
-                parts.push({ type: "tool", toolCall: tc });
+                // If tool_result arrived before tool_call (replay race), attach it now
+                const earlyResult = (targetMsg.toolResults || []).find(r => r.id === tc.id);
+                parts.push({ type: "tool", toolCall: tc, ...(earlyResult ? { toolResult: earlyResult } : {}) } as any);
                 targetMsg.parts = parts;
                 updated = true;
               }
@@ -436,15 +438,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
                 if (matchIdx !== -1) {
                   const toolPart = parts[matchIdx] as { type: "tool"; toolCall: ToolCall; toolResult?: ToolResult };
-                  // If we don't have a toolResult yet, create a partial one
                   if (!toolPart.toolResult) {
-                    toolPart.toolResult = {
-                      id: tcId,
-                      name: d.tool || "unknown",
-                      result: chunk,
-                    };
+                    toolPart.toolResult = { id: tcId, name: d.tool || "unknown", result: chunk };
                   } else {
-                    // Append to existing result
                     toolPart.toolResult.result = (toolPart.toolResult.result || "") + chunk;
                   }
                   parts[matchIdx] = { ...toolPart };
@@ -469,8 +465,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 const parts = [...(targetMsg.parts || [])];
                 const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
                 if (matchIdx !== -1) {
+                  // tool_call already in parts — attach result
                   parts[matchIdx] = { ...(parts[matchIdx] as any), toolResult: tr };
                 }
+                // if matchIdx === -1, tool_call hasn't arrived yet (replay race);
+                // toolResults array already has tr, so tool_call handler will pick it up
                 targetMsg.parts = parts;
                 updated = true;
               }
@@ -614,9 +613,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 arguments: d.args || d.arguments || {},
               };
               targetMsg.toolCalls = [...(targetMsg.toolCalls || []), tc];
-              // Append tool part in order
               const parts = [...(targetMsg.parts || [])];
-              parts.push({ type: "tool", toolCall: tc });
+              // If tool_result arrived before tool_call (replay race), attach it now
+              const earlyResult = (targetMsg.toolResults || []).find(r => r.id === tc.id);
+              parts.push({ type: "tool", toolCall: tc, ...(earlyResult ? { toolResult: earlyResult } : {}) } as any);
               targetMsg.parts = parts;
               updated = true;
             }
