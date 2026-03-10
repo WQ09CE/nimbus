@@ -26,12 +26,14 @@ export function ChatList({ messages }: ChatListProps) {
 
   const virtualItems = virtualizer.getVirtualItems();
 
-  // Auto-scroll to bottom while streaming or when new messages arrive
+  // Scroll to the last item using virtualizer (works correctly with estimated heights)
   const scrollToBottom = useCallback((smooth = false) => {
-    const el = parentRef.current;
-    if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
-  }, []);
+    if (messages.length === 0) return;
+    virtualizer.scrollToIndex(messages.length - 1, {
+      align: 'end',
+      behavior: smooth ? 'smooth' : 'auto',
+    });
+  }, [virtualizer, messages.length]);
 
   useEffect(() => {
     const el = parentRef.current;
@@ -59,9 +61,10 @@ export function ChatList({ messages }: ChatListProps) {
 
   // Initial scroll to bottom on mount
   useEffect(() => {
-    const el = parentRef.current;
-    if (el) setTimeout(() => { el.scrollTop = el.scrollHeight; }, 100);
-  }, []);
+    if (messages.length > 0) {
+      setTimeout(() => scrollToBottom(false), 100);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div
