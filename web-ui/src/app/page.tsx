@@ -284,6 +284,9 @@ function Home() {
 
           {/* Input Area */}
           <div className="flex-shrink-0 p-3 md:p-6 pt-0 bg-transparent">
+            <div className="max-w-4xl mx-auto px-2 md:px-4">
+              <TokenFooter />
+            </div>
             <ChatInput
               onSend={sendMessage}
               onInterrupt={interruptMessage}
@@ -292,7 +295,6 @@ function Home() {
               isInterrupting={false}
               placeholder={placeholder}
             />
-            <TokenFooter />
           </div>
 
         </main>

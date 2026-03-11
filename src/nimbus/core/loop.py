@@ -669,7 +669,7 @@ class RuntimeLoop:
                 events.append({
                     "type": "tool_call_start",
                     "tool": action.name,
-                    "args_preview": {k: str(v)[:100] for k, v in action.args.items()},
+                    "args": {k: str(v) for k, v in action.args.items()},
                     "call_id": action.id,
                 })
                 # Immediately pair with tool_call_done (result)

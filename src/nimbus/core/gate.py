@@ -29,7 +29,7 @@ DOOM_GUIDANCE = {
     "Edit": "Read the file first to get current content, then retry with exact text.",
     "Read": "File may not exist. Use Bash to find the correct path.",
     "Bash": "Same command keeps failing. Try a different approach.",
-    "spawn_agent": "Same sub-agent task keeps repeating. Revise your approach or handle the task directly.",
+    "spawn_agent": "Same sub-agent goal keeps repeating. Revise your approach or handle the goal directly.",
 }
 
 
@@ -70,7 +70,7 @@ _ARG_ALIASES: Dict[str, Dict[str, str]] = {
               "new": "new_text", "newText": "new_text"},
     "Bash":  {"cmd": "command", "script": "command"},
     "Grep":  {"query": "pattern", "search": "pattern", "dir": "path"},
-    "spawn_agent": {"timeout": "timeout_seconds"},
+    "spawn_agent": {"timeout": "timeout_seconds", "task": "goal"},
 }
 
 
@@ -137,7 +137,7 @@ class KernelGate:
         self._emit("TOOL_STARTED", {
             "tool": tool_name,
             "call_id": action.id,
-            "args": {k: str(v)[:100] for k, v in action.args.items()},
+            "args": {k: str(v) for k, v in action.args.items()},
         })
 
         # 2. Normalize args

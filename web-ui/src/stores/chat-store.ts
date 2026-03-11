@@ -314,7 +314,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // Do NOT keep "user-*" messages — they are already in server history.
         // Merging them causes duplicates when reloading the same session.
         const streaming = get().messages.filter(m => m.id === "streaming-assistant");
-        set({ messages: [...parsedMessages, ...streaming], isLoading: false });
+        // Restore persisted tokenUsage for this session
+        let savedUsage: TokenUsageData | null = null;
+        try {
+          const raw = sessionStorage.getItem(`nimbus_token_usage_${session.id}`);
+          if (raw) savedUsage = JSON.parse(raw);
+        } catch { /* ignore */ }
+        set({ messages: [...parsedMessages, ...streaming], isLoading: false, tokenUsage: savedUsage });
       }
 
       // Check if the session has a running task — if so, attach to the SSE stream
@@ -514,7 +520,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
               if (data && typeof data === "object") {
                 const d = data as any;
                 console.debug("[SSE] Usage Update received:", d);
-                set({ tokenUsage: d.cumulative_usage || null });
+                const usage = d.cumulative_usage || null;
+                set({ tokenUsage: usage });
+                // Persist to sessionStorage for refresh survival
+                const sid = get().session?.id;
+                if (sid && usage) {
+                  try { sessionStorage.setItem(`nimbus_token_usage_${sid}`, JSON.stringify(usage)); } catch { /* ignore */ }
+                }
               }
               break;
             }
@@ -748,7 +760,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
           case "usage_update": {
             if (data && typeof data === "object") {
               const d = data as any;
-              set({ tokenUsage: d.cumulative_usage || null });
+              const usage = d.cumulative_usage || null;
+              set({ tokenUsage: usage });
+              // Persist to sessionStorage for refresh survival
+              const sid = get().session?.id;
+              if (sid && usage) {
+                try { sessionStorage.setItem(`nimbus_token_usage_${sid}`, JSON.stringify(usage)); } catch { /* ignore */ }
+              }
             }
             break;
           }
