@@ -1695,9 +1695,8 @@ class DirectAdapter:
                     }
                 )
 
-            yield LLMStreamEvent(type="stop", reason="stop")
-
-            # Emit usage event at end of stream (pi-style)
+            # Emit usage event BEFORE stop (pi-style, must be before stop
+            # so chat() consumer sees it before ending iteration)
             if last_usage:
                 logger.info("[LiteLLM] last_usage found: %s", last_usage)
                 cached = 0
@@ -1713,6 +1712,8 @@ class DirectAdapter:
                 }
                 if usage_dict["total"] > 0:
                     yield LLMStreamEvent(type="usage", usage=usage_dict)
+
+            yield LLMStreamEvent(type="stop", reason="stop")
 
         except asyncio.CancelledError:
             logger.info("LiteLLM streaming task cancelled by user")

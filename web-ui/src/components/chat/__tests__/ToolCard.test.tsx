@@ -106,9 +106,9 @@ describe("ToolCard", () => {
     // Expand / Collapse
     // ----------------------------------------------------------
 
-    it("starts collapsed for completed tools", () => {
+    it("starts expanded for completed tools (observability default)", () => {
         render(<ToolCard tool={baseTool} />);
-        expect(screen.queryByTestId("tool-display")).toBeNull();
+        expect(screen.getByTestId("tool-display")).toBeInTheDocument();
     });
 
     it("starts expanded for running tools", () => {
@@ -119,16 +119,16 @@ describe("ToolCard", () => {
 
     it("toggles expanded state on header click", () => {
         render(<ToolCard tool={baseTool} />);
-        // Initially collapsed
-        expect(screen.queryByTestId("tool-display")).toBeNull();
-
-        // Click to expand
-        fireEvent.click(screen.getByText("Bash"));
+        // Initially expanded (observability default)
         expect(screen.getByTestId("tool-display")).toBeInTheDocument();
 
         // Click to collapse
         fireEvent.click(screen.getByText("Bash"));
         expect(screen.queryByTestId("tool-display")).toBeNull();
+
+        // Click to expand again
+        fireEvent.click(screen.getByText("Bash"));
+        expect(screen.getByTestId("tool-display")).toBeInTheDocument();
     });
 
     it("respects defaultExpanded=true", () => {

@@ -79,7 +79,9 @@ class TokenUsage:
         self.output += other.output
         self.cache_read += other.cache_read
         self.cache_write += other.cache_write
-        self.total += other.total
+        # Recompute total from sub-fields to avoid drift when API total_tokens
+        # doesn't match input+output+cache_read+cache_write
+        self.total = self.input + self.output + self.cache_read + self.cache_write
         self.cost_input += other.cost_input
         self.cost_output += other.cost_output
         self.cost_cache_read += other.cost_cache_read
