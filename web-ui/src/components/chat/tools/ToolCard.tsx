@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { ToolDisplay } from './ToolDisplay';
 import { DispatchCard } from './DispatchCard';
 import { LiveTimer } from './LiveTimer';
@@ -40,7 +40,17 @@ interface ToolCardProps {
 
 export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: ToolCardProps) {
   // Hook must be called unconditionally (React Rules of Hooks)
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? true);
+  // Default: running tools start expanded, completed/failed start collapsed
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? (tool.status === "running"));
+
+  // Auto-expand when tool starts running (but don't auto-collapse on complete)
+  const prevStatus = useRef(tool.status);
+  useEffect(() => {
+    if (prevStatus.current !== "running" && tool.status === "running") {
+      setIsExpanded(true);
+    }
+    prevStatus.current = tool.status;
+  }, [tool.status]);
 
   // Meta-tools (Dispatch/Explore/Implement/Design/Test) get the dedicated sub-agent card
   if (META_TOOLS.has(tool.name)) {

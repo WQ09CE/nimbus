@@ -132,7 +132,7 @@ export function FileDiff({ name, args, result, error, status }: FileDiffProps) {
             // Write: Show content being written with line numbers
             <div className="bg-green-500/5">
               <div className="text-xs text-green-500 mb-1 font-bold px-3 pt-3">WRITING CONTENT:</div>
-              <div className="overflow-x-auto max-h-[400px] overflow-y-auto custom-scrollbar pb-2">
+              <div className="overflow-x-auto max-h-[200px] overflow-y-auto custom-scrollbar pb-2">
                 <table className="w-full text-left border-collapse">
                   <tbody>
                     {(safeArgs.content || '').split('\n').map((line: string, i: number) => (
@@ -152,7 +152,7 @@ export function FileDiff({ name, args, result, error, status }: FileDiffProps) {
           ) : name === 'Edit' && (safeArgs.old_text || safeArgs.new_text || safeArgs.old_string || safeArgs.new_string) ? (
             // Edit: Show Diff with line numbers
             <div className="font-mono text-xs overflow-x-auto">
-              <div className="overflow-x-auto max-h-[400px] overflow-y-auto custom-scrollbar">
+              <div className="overflow-x-auto max-h-[200px] overflow-y-auto custom-scrollbar">
                 <table className="w-full text-left border-collapse">
                   <tbody>
                     {(() => {

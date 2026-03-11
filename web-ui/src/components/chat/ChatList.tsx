@@ -24,12 +24,8 @@ export function ChatList({ messages }: ChatListProps) {
     overscan: 5,
     gap: 32,
     paddingEnd: 48,
-    onChange: (instance) => {
-      // After any measurement change, if we should stick to bottom, scroll there
-      if (shouldStick.current && messages.length > 0) {
-        instance.scrollToIndex(messages.length - 1, { align: 'end' });
-      }
-    },
+    // Removed onChange scrollToIndex — it fights user scroll on every measurement.
+    // The totalSize effect below handles auto-stick correctly.
   });
 
   const virtualItems = virtualizer.getVirtualItems();
@@ -57,10 +53,9 @@ export function ChatList({ messages }: ChatListProps) {
     }
   }, [messages.length, virtualizer]);
 
-  // When new messages arrive or streaming, stick to bottom
+  // When new messages arrive, stick to bottom or show pill
   useEffect(() => {
     if (messages.length > lastCount.current) {
-      // New message added
       if (shouldStick.current || isStreaming) {
         virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
       } else {
@@ -70,22 +65,45 @@ export function ChatList({ messages }: ChatListProps) {
     lastCount.current = messages.length;
   }, [messages.length, isStreaming, virtualizer]);
 
-  // During streaming, keep sticking
+  // During streaming, keep sticking (only when shouldStick is true)
   useEffect(() => {
     if (isStreaming && shouldStick.current && messages.length > 0) {
       virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
     }
-  }, [messages, isStreaming, virtualizer]);
+  }, [messages.length, isStreaming, virtualizer]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Immediately disable shouldStick on upward scroll (fires before onChange)
+  // Detect upward scroll intent — wheel (desktop) + touch (mobile)
   useEffect(() => {
     const el = parentRef.current;
     if (!el) return;
+
+    // Desktop: wheel up
     const handleWheel = (e: WheelEvent) => {
       if (e.deltaY < 0) shouldStick.current = false;
     };
+
+    // Mobile: touch swipe detection
+    let touchStartY = 0;
+    const handleTouchStart = (e: TouchEvent) => {
+      touchStartY = e.touches[0].clientY;
+    };
+    const handleTouchMove = (e: TouchEvent) => {
+      const currentY = e.touches[0].clientY;
+      // Finger moves down on screen → content scrolls up → user wants to read history
+      if (currentY - touchStartY > 10) {
+        shouldStick.current = false;
+      }
+      touchStartY = currentY;
+    };
+
     el.addEventListener('wheel', handleWheel, { passive: true });
-    return () => el.removeEventListener('wheel', handleWheel);
+    el.addEventListener('touchstart', handleTouchStart, { passive: true });
+    el.addEventListener('touchmove', handleTouchMove, { passive: true });
+    return () => {
+      el.removeEventListener('wheel', handleWheel);
+      el.removeEventListener('touchstart', handleTouchStart);
+      el.removeEventListener('touchmove', handleTouchMove);
+    };
   }, []);
 
   // Track scroll position to update shouldStick and pill visibility
@@ -108,7 +126,6 @@ export function ChatList({ messages }: ChatListProps) {
   // Initial scroll to bottom on mount
   useEffect(() => {
     if (messages.length > 0) {
-      // Delay slightly to let virtualizer measure
       const t = setTimeout(() => {
         virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
       }, 50);

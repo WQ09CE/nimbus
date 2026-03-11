@@ -78,7 +78,7 @@ export function Bash({ args, result, error, status, ui_detail }: BashProps) {
       {isExpanded && (
         <div
           ref={outputRef}
-          className="p-3 max-h-[400px] overflow-y-auto custom-scrollbar text-[13px] border-t border-gray-800"
+          className="p-3 max-h-[200px] overflow-y-auto custom-scrollbar text-[13px] border-t border-gray-800"
         >
           {!hasOutput && status === "running" && (
             <div className="text-gray-500 italic flex items-center gap-2">

@@ -59,7 +59,7 @@ export function FileRead({ args, result, error, status }: FileReadProps) {
       )}
 
       {/* Content Area */}
-      <div className="overflow-x-auto max-h-[400px] overflow-y-auto custom-scrollbar">
+      <div className="overflow-x-auto max-h-[200px] overflow-y-auto custom-scrollbar">
         {status === "running" ? (
           <div className="p-4 text-gray-500 italic flex items-center gap-2">
             <span className="animate-spin">⟳</span> Reading file...
