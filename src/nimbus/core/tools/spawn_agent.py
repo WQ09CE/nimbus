@@ -1,4 +1,4 @@
-"""Spawn Agent Tool — Delegate a task to a dedicated sub-agent.
+"""Spawn Agent Tool — Delegate a goal to a dedicated sub-agent.
 
 Instantiates a real sub-agent (AgentOS) with role-based model selection
 and restricted tool sets. The sub-agent runs in the same process with
@@ -111,7 +111,7 @@ def _collect_partial(loop: Any, scratchpad_path: str) -> str:
 
 async def _run_sub_agent(
     role: str,
-    task: str,
+    goal: str,
     sub_session_id: str,
     timeout_seconds: int,
     on_update: Optional[Callable[[str], None]] = None,
@@ -139,7 +139,7 @@ async def _run_sub_agent(
     # 4. System prompt for sub-agent
     system_prompt = (
         f"You are a sub-agent with the role of '{role}'. "
-        "Complete the task given to you using ONLY the tools available. "
+        "Complete the goal given to you using ONLY the tools available. "
         "Think step by step. Be concise and precise.\n\n"
         f"# Scratchpad\n"
         f"Write your progress and findings to `{scratchpad_path}`.\n\n"
@@ -165,7 +165,7 @@ async def _run_sub_agent(
     )
 
     # 6. Run with timeout, using stream_with_queue to capture partial_results
-    loop = agent_os.stream_with_queue(task, session_id=sub_session_id)
+    loop = agent_os.stream_with_queue(goal, session_id=sub_session_id)
 
     # Propagate parent abort event to sub-agent loop so bash processes get killed
     if _abort_event is not None:
@@ -239,7 +239,7 @@ async def _run_sub_agent(
 
 @tool(
     name="spawn_agent",
-    description="Spawn a dedicated sub-agent to handle a complex or isolated task.",
+    description="Spawn a dedicated sub-agent to handle a complex or isolated goal.",
     parameters=[
         ToolParameter(
             name="role",
@@ -249,9 +249,9 @@ async def _run_sub_agent(
             enum=["reader", "worker"],
         ),
         ToolParameter(
-            name="task",
+            name="goal",
             type="string",
-            description="The specific task the sub-agent needs to accomplish, including any context.",
+            description="The specific goal the sub-agent needs to accomplish, including any context.",
             required=True,
         ),
         ToolParameter(
@@ -264,13 +264,21 @@ async def _run_sub_agent(
 )
 async def spawn_agent(
     role: str,
-    task: str,
+    goal: str = "",
     timeout_seconds: int = DEFAULT_TIMEOUT,
     on_update: Optional[Callable[[str], None]] = None,
     _abort_event: Optional[asyncio.Event] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Spawn a sub-agent with role-based model and tool restrictions."""
+
+    # Robustness: support both 'goal' and 'task'
+    goal = goal or kwargs.get("task")
+    if not goal:
+        return {
+            "output": "Missing required parameter 'goal'.",
+            "ui_detail": {"status": "ERROR", "error": "Missing goal"},
+        }
 
     # Validate role
     if role not in _ROLE_TOOLS:
@@ -294,7 +302,7 @@ async def spawn_agent(
 
     return await _run_sub_agent(
         role=role,
-        task=task,
+        goal=goal,
         sub_session_id=sub_session_id,
         timeout_seconds=timeout_seconds,
         on_update=on_update,

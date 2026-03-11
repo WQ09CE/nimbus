@@ -30,7 +30,7 @@ class InstructionDecoder:
         "<function_call>",
     ]
 
-    # Patterns indicating the LLM considers its task complete
+    # Patterns indicating the LLM considers its goal complete
     _DONE_PATTERNS = re.compile(
         r"""
         (?:^|\W)

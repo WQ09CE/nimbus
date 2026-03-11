@@ -29,7 +29,7 @@ ActionKind = Literal[
     "TOOL_CALL",  # Execute external tool (syscall)
     "REPLY",      # User-facing response
     "THOUGHT",    # Internal chain-of-thought
-    "RETURN",     # Signal task completion
+    "RETURN",     # Signal goal completion
     "CANCEL",     # Cancel current operation
 ]
 

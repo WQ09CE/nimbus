@@ -79,7 +79,7 @@ class AgentConfig:
     tool_timeout: float = 60.0
 
     # Behavior
-    text_is_final: bool = False  # In task mode, pure text != done
+    text_is_final: bool = False  # In goal mode, pure text != done
 
 
 # =============================================================================
@@ -182,8 +182,8 @@ class AgentOS:
     def _default_system_prompt(self) -> str:
         return (
             "You are a capable AI coding assistant. "
-            "Use the available tools to accomplish the user's task. "
-            "Think step by step. When the task is complete, provide a concise summary."
+            "Use the available tools to accomplish the user's goal. "
+            "Think step by step. When the goal is complete, provide a concise summary."
         )
         
     def get_mmu(self, session_id: str = "default") -> Optional[MMU]:
@@ -323,7 +323,7 @@ class AgentOS:
         mmu = self._mmus[session_id]
 
         # Always update goal to the CURRENT user message so compaction
-        # preserves the active task, not a stale initial greeting.
+        # preserves the active goal, not a stale initial greeting.
         if goal:
             mmu.set_goal(goal)
             mmu.add_user_message(goal)
