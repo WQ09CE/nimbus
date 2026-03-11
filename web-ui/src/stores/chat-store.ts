@@ -810,15 +810,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
   clearError: () => set({ error: null }),
 
   interruptMessage: async () => {
-    const { streamAbortController, session } = get();
+    const { streamAbortController, session, isStreaming } = get();
+
+    // Abort the local stream first (unblocks the UI immediately)
     if (streamAbortController) {
-      if (session) {
-        try {
-          const { interruptSession } = await import("@/lib/api/sessions");
-          await interruptSession(session.id);
-        } catch { }
-      }
       streamAbortController.abort();
+    }
+
+    // Then tell the backend to stop the agent
+    if (session) {
+      try {
+        const { interruptSession } = await import("@/lib/api/sessions");
+        await interruptSession(session.id);
+      } catch (err) {
+        console.warn("[Store] interruptSession API call failed:", err);
+      }
+    }
+
+    // Safety net: if isStreaming is still true after abort (e.g. dead connection),
+    // force-finalize so the UI is never stuck in streaming state.
+    if (get().isStreaming) {
+      const finalMsgs = [...get().messages];
+      const streamingIdx = finalMsgs.findIndex(m => m.id === "streaming-assistant");
+      if (streamingIdx !== -1) {
+        const msg = finalMsgs[streamingIdx];
+        if (!msg.content && (!msg.parts || msg.parts.length === 0)) {
+          finalMsgs.splice(streamingIdx, 1);
+        } else {
+          finalMsgs[streamingIdx] = { ...msg, id: `assistant-interrupted-${Date.now()}` };
+        }
+      }
+      set({ messages: finalMsgs, isStreaming: false, streamAbortController: null });
     }
   },
 

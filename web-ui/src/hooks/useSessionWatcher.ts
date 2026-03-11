@@ -8,13 +8,14 @@
  *   1. Reloads session messages to pick up the user message sent by the remote client
  *   2. Attaches to the live SSE stream via _attachToRunningSession
  *
- * Includes automatic reconnect with exponential backoff so NAT/proxy timeouts
- * (e.g. OpenWrt connection tracking) don't permanently break the watcher.
+ * Includes:
+ * - Automatic reconnect with exponential backoff (NAT/proxy timeout recovery)
+ * - Page visibility change detection (mobile app-switch / tab-switch recovery)
  */
 
 import { useEffect, useRef, useCallback } from "react";
 import { useChatStore } from "@/stores/chat-store";
-import { subscribeToEvents, getSessionMessages } from "@/lib/api";
+import { subscribeToEvents, getSessionMessages, getSessionStatus } from "@/lib/api";
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
@@ -54,11 +55,8 @@ export function useSessionWatcher() {
                     if (event.type === "message_start" && !state.isStreaming) {
                         // Remote client started a task on this session.
                         // Step 1: reload history to capture the user message they sent.
-                        // We cannot use switchSession() here because isSameSession=true
-                        // would skip the message reload. Fetch directly and merge instead.
                         try {
                             const serverMessages = await getSessionMessages(sid);
-                            // Find user messages not yet in local state
                             const localIds = new Set(useChatStore.getState().messages.map(m => m.id));
                             const newUserMsgs = serverMessages
                                 .filter(m => m.role === "user" && !localIds.has(m.id))
@@ -90,14 +88,12 @@ export function useSessionWatcher() {
                         }
 
                         // Watcher is superseded by _attachToRunningSession — stop here.
-                        // It will be restarted by the isStreaming→false effect when done.
                         controller.abort();
                         return;
                     }
                 }
 
-                // Stream ended cleanly (done event / server closed connection).
-                // This is normal — reconnect immediately.
+                // Stream ended cleanly — reconnect immediately.
                 scheduleReconnect(sid, 0);
 
             } catch (err: any) {
@@ -110,19 +106,102 @@ export function useSessionWatcher() {
     }, [clearReconnectTimer]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const scheduleReconnect = useCallback((sid: string, attempt: number) => {
-        // Don't reconnect if session changed or we started streaming
         const state = useChatStore.getState();
         if (state.session?.id !== sid || state.isStreaming) return;
 
         const delay = Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS);
         reconnectTimerRef.current = setTimeout(() => {
-            // Re-check conditions after delay
             const fresh = useChatStore.getState();
             if (fresh.session?.id === sid && !fresh.isStreaming) {
                 startWatcher(sid, attempt + 1);
             }
         }, delay);
     }, [startWatcher]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // ─── Visibility change recovery (mobile app-switch / tab-switch) ───
+    // When the user switches away from the browser on mobile, iOS/Android freeze
+    // JS execution and kill TCP connections. The SSE stream silently dies.
+    // When they return, we need to:
+    //   1. If we were streaming: check backend status and re-attach or reload
+    //   2. If we weren't streaming: restart the watcher (it probably died too)
+    useEffect(() => {
+        const handleVisibilityChange = async () => {
+            if (document.visibilityState !== "visible") return;
+
+            const state = useChatStore.getState();
+            const sid = state.session?.id;
+            if (!sid) return;
+
+            console.info("[SessionWatcher] Page became visible, checking session status...");
+
+            try {
+                const status = await getSessionStatus(sid);
+
+                if (status.running) {
+                    if (state.isStreaming) {
+                        // We think we're streaming but the connection is probably dead.
+                        // Abort the dead stream and re-attach.
+                        console.info("[SessionWatcher] Session still running, re-attaching to stream...");
+                        state.streamAbortController?.abort();
+                        // Small delay to let abort handlers clean up
+                        await new Promise(r => setTimeout(r, 200));
+                        const fresh = useChatStore.getState();
+                        if (fresh.session?.id === sid) {
+                            // Force isStreaming false so _attachToRunningSession can start cleanly
+                            if (fresh.isStreaming) {
+                                // Finalize the stale streaming message
+                                const finalMsgs = [...fresh.messages];
+                                const streamIdx = finalMsgs.findIndex(m => m.id === "streaming-assistant");
+                                if (streamIdx !== -1) {
+                                    finalMsgs[streamIdx] = { ...finalMsgs[streamIdx], id: `assistant-stale-${Date.now()}` };
+                                }
+                                useChatStore.setState({
+                                    messages: finalMsgs,
+                                    isStreaming: false,
+                                    streamAbortController: null,
+                                });
+                            }
+                            // Reload session to get any events we missed, then re-attach
+                            await useChatStore.getState().switchSession(state.session!);
+                        }
+                    } else {
+                        // Not streaming but agent is running — we missed the start.
+                        // switchSession will detect running status and call _attachToRunningSession.
+                        console.info("[SessionWatcher] Agent running but not streaming, attaching...");
+                        await useChatStore.getState().switchSession(state.session!);
+                    }
+                } else {
+                    // Agent not running
+                    if (state.isStreaming) {
+                        // We think we're streaming but agent is done — reload to get final results.
+                        console.info("[SessionWatcher] Agent finished while away, reloading results...");
+                        state.streamAbortController?.abort();
+                        await new Promise(r => setTimeout(r, 200));
+                        const fresh = useChatStore.getState();
+                        if (fresh.session?.id === sid) {
+                            if (fresh.isStreaming) {
+                                useChatStore.setState({ isStreaming: false, streamAbortController: null });
+                            }
+                            await useChatStore.getState().switchSession(state.session!);
+                        }
+                    } else {
+                        // Normal idle state — just restart the watcher (it probably died)
+                        startWatcher(sid, 0);
+                    }
+                }
+            } catch (err) {
+                console.warn("[SessionWatcher] Visibility recovery failed, restarting watcher:", err);
+                // Fallback: just restart the watcher
+                if (!useChatStore.getState().isStreaming) {
+                    startWatcher(sid, 0);
+                }
+            }
+        };
+
+        document.addEventListener("visibilitychange", handleVisibilityChange);
+        return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // Start watcher when session changes
     useEffect(() => {
@@ -138,7 +217,6 @@ export function useSessionWatcher() {
     // Restart watcher after our own streaming ends
     useEffect(() => {
         if (!isStreaming && sessionId) {
-            // Small delay to let the done event settle before re-subscribing
             const t = setTimeout(() => startWatcher(sessionId, 0), 600);
             return () => clearTimeout(t);
         }
