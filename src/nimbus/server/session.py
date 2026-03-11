@@ -509,6 +509,7 @@ class SessionManagerV2:
 
                 if evt_type == "steering_injected":
                     logger.info(f"[stream_chat] Steering injected: {str(event.get('content'))[:50]}...")
+                    await self._sse_hub.publish(session_id, "user_message", {"content": event.get("content", ""), "injected": True})
                     continue
 
                 if evt_type == "followup_injected":

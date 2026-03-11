@@ -552,7 +552,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
         timestamp: Date.now(),
         isInjection: true,
       };
-      set({ messages: [...get().messages, userMessage] });
+      // Insert BEFORE the streaming-assistant message so it doesn't float
+      // on top of tool cards. The streaming message should always be last.
+      const msgs = [...get().messages];
+      const streamIdx = msgs.findIndex(m => m.id === "streaming-assistant");
+      if (streamIdx !== -1) {
+        msgs.splice(streamIdx, 0, userMessage);
+      } else {
+        msgs.push(userMessage);
+      }
+      set({ messages: msgs });
       try {
         await injectMessage(session.id, content, attachments);
       } catch (err) {
