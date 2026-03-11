@@ -308,40 +308,35 @@ class VCPU:
             } for a in tool_actions]
             self.mmu.add_assistant_with_tool_calls(thought_text, tc_dicts)
 
-            for idx, action in enumerate(tool_actions):
-                # Check abort
-                if self._interrupted:
-                    # Skip all remaining tools
-                    for remaining in tool_actions[idx:]:
-                        skip = ToolResult(status="CANCELLED", output="Execution interrupted.")
-                        result.results.append(skip)
-                        self.mmu.add_tool_result(remaining.id, remaining.name, skip.output)
-                    break
+            # Concurrent execution: run all tool calls in parallel via gather,
+            # then write results back to MMU in original order.
+            if self._interrupted:
+                for action in tool_actions:
+                    skip = ToolResult(status="CANCELLED", output="Execution interrupted.")
+                    result.results.append(skip)
+                    self.mmu.add_tool_result(action.id, action.name, skip.output)
+            else:
+                async def _exec_one(action: ActionIR) -> ToolResult:
+                    if self._interrupted:
+                        return ToolResult(status="CANCELLED", output="Execution interrupted.")
+                    return await self.gate.syscall_tool(action)
 
-                # Execute tool through Gate
-                tool_result = await self.gate.syscall_tool(action)
-                result.results.append(tool_result)
-
-                # ---- OBSERVE (write result to MMU) ----
-                self.mmu.add_tool_result(
-                    action.id, action.name, str(tool_result.output),
+                tool_results = await asyncio.gather(
+                    *[_exec_one(a) for a in tool_actions]
                 )
 
-                # Pi-style: check for steering messages after each tool
-                if self._get_steering and idx < len(tool_actions) - 1:
+                # Write results back to MMU in order (preserves conversation sequence)
+                for action, tool_result in zip(tool_actions, tool_results):
+                    result.results.append(tool_result)
+                    self.mmu.add_tool_result(
+                        action.id, action.name, str(tool_result.output),
+                    )
+
+                # Check for steering messages after all tools complete
+                if self._get_steering:
                     steering = self._get_steering()
                     if steering:
-                        # Skip remaining tool calls (pi-style)
-                        for remaining in tool_actions[idx + 1:]:
-                            skip = ToolResult(
-                                status="SKIPPED",
-                                output="Skipped due to queued user message.",
-                            )
-                            result.results.append(skip)
-                            self.mmu.add_tool_result(remaining.id, remaining.name, skip.output)
-                        # Store steering messages for the loop to inject
                         result.steering_messages = steering
-                        break
         else:
             # Pure thought — no tool calls
             count = self._exec.on_thought()

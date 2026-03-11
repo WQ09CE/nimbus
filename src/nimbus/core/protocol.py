@@ -84,6 +84,7 @@ class StepResult:
     fault: Optional["Fault"] = None
     timing_ms: Dict[str, int] = field(default_factory=dict)
     steering_messages: List[str] = field(default_factory=list)
+    usage: Optional[Any] = None  # TokenUsage from LLM response
 
 
 # =============================================================================

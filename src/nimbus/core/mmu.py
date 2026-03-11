@@ -67,7 +67,7 @@ def estimate_text_tokens(text) -> int:
     text = str(text)
     cjk = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
     other = len(text) - cjk
-    return int(cjk / 1.5) + (other // 4)
+    return int(cjk * 1.2) + (other // 3)
 
 
 # =============================================================================
@@ -527,6 +527,8 @@ class MMU:
         self._messages: List[Message] = []
         self._global_summary: str = ""  # merged summary (NOT a list — prevents growth)
         self._goal: str = ""
+        self._last_usage = None  # TokenUsage from last LLM response (for hybrid estimation)
+        self._message_count_at_usage: int = 0  # message count when _last_usage was recorded
 
     # --- Pinned Context (Anchor) ---
 
@@ -600,7 +602,19 @@ class MMU:
 
     # --- Token Estimation ---
 
+    def set_last_usage(self, usage) -> None:
+        """Update with real usage data from LLM response (pi-style hybrid estimation)."""
+        self._last_usage = usage
+        self._message_count_at_usage = len(self._messages)
+
     def estimate_tokens(self) -> int:
+        """Hybrid context token estimation (pi-style estimateContextTokens).
+
+        Strategy:
+        - If we have real usage data from the LLM: use usage.total as baseline,
+          then estimate only the new messages added since that LLM call.
+        - If no real usage: fall back to pure chars/4 estimation.
+        """
         total = 0
         if self._pinned:
             total += self._pinned.token_estimate()
@@ -608,6 +622,19 @@ class MMU:
             total += estimate_text_tokens(self._goal) + MESSAGE_OVERHEAD
         if self._global_summary:
             total += estimate_text_tokens(self._global_summary) + MESSAGE_OVERHEAD
+
+        # Hybrid: use real LLM usage when available
+        if self._last_usage is not None and hasattr(self._last_usage, 'total'):
+            usage_total = self._last_usage.total
+            # Estimate only trailing messages added after the LLM response
+            trailing_estimate = 0
+            for msg in self._messages[self._message_count_at_usage:]:
+                trailing_estimate += msg.token_estimate()
+            # Real usage already includes pinned/summary tokens (system prompt),
+            # so use it directly plus the trailing estimate
+            return usage_total + trailing_estimate
+
+        # Fallback: pure estimation
         for msg in self._messages:
             total += msg.token_estimate()
         return total
@@ -773,3 +800,5 @@ class MMU:
         self._messages.clear()
         self._global_summary = ""
         self._goal = ""
+        self._last_usage = None
+        self._message_count_at_usage = 0

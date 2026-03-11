@@ -13,7 +13,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 NIMBUS_HOME = Path.home() / ".nimbus"
 CONFIG_PATH = NIMBUS_HOME / "config.json"
@@ -60,6 +60,12 @@ class NimbusConfig:
         "openai-codex/gpt-5.3-codex",
         "google/gemini-3.1-pro-preview",
     ])
+
+    # Sub-agent role → model mapping (spawn_agent)
+    agent_roles: Dict[str, str] = field(default_factory=lambda: {
+        "reader": "gemini-3-flash-preview",
+        "worker": "gemini-3-flash-preview",
+    })
 
     @classmethod
     def load(cls, config_path: Optional[Path] = None) -> "NimbusConfig":
@@ -117,6 +123,10 @@ def _apply_json(config: NimbusConfig, data: dict) -> None:
     rc = data.get("review_committee", {})
     if models := rc.get("models"):
         config.review_models = list(models)
+
+    if roles := data.get("agent_roles"):
+        if isinstance(roles, dict):
+            config.agent_roles = dict(roles)
 
     _VALID_PROFILES = {"orchestrator", "standard", "executor"}
     # Agent profile (top-level or under "agent" section)

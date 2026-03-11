@@ -23,6 +23,9 @@ class ModelInfo:
     manifest: ModelManifest # Features and behaviors
     context_window: int = 200_000  # Context window in tokens (default 200K)
     basic_tools_only: bool = False  # If True, only register kernel tools (Bash/Read/Write/Edit)
+    cost_per_million: Dict[str, float] = field(default_factory=lambda: {
+        "input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0,
+    })  # $/million tokens (pi-style Model.cost)
 
     @property
     def full_name(self) -> str:
@@ -224,7 +227,8 @@ ModelRegistry.register(ModelInfo(
         "claude-3-5-sonnet-20241022",
     ],
     manifest=ModelManifest("claude-sonnet-4-6", CLAUDE_FEATURES),
-    context_window=1_000_000,  # Sonnet 4.6 supports up to 1M tokens
+    context_window=1_000_000,
+    cost_per_million={"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
 ))
 
 # Claude Haiku — lightweight / fast tier
@@ -235,6 +239,7 @@ ModelRegistry.register(ModelInfo(
     aliases=["haiku", "claude-haiku", "claude-haiku-4"],
     manifest=ModelManifest("claude-haiku-4", CLAUDE_FEATURES),
     context_window=200_000,
+    cost_per_million={"input": 0.80, "output": 4.0, "cache_read": 0.08, "cache_write": 1.0},
 ))
 
 # Claude Opus — ultra/flagship tier
@@ -250,6 +255,7 @@ ModelRegistry.register(ModelInfo(
     ],
     manifest=ModelManifest("claude-opus-4-6", CLAUDE_FEATURES),
     context_window=1_000_000,
+    cost_per_million={"input": 15.0, "output": 75.0, "cache_read": 1.50, "cache_write": 18.75},
 ))
 
 # ---------------------------------------------------------------------------
@@ -263,6 +269,7 @@ ModelRegistry.register(ModelInfo(
     aliases=["gpt", "gpt-4o", "4o"],
     manifest=ModelManifest("gpt-4o", GPT_FEATURES),
     context_window=128_000,
+    cost_per_million={"input": 2.50, "output": 10.0, "cache_read": 1.25, "cache_write": 0.0},
 ))
 
 ModelRegistry.register(ModelInfo(
@@ -272,6 +279,7 @@ ModelRegistry.register(ModelInfo(
     aliases=["gpt-mini", "mini"],
     manifest=ModelManifest("gpt-4o-mini", GPT_FEATURES),
     context_window=128_000,
+    cost_per_million={"input": 0.15, "output": 0.60, "cache_read": 0.075, "cache_write": 0.0},
 ))
 
 ModelRegistry.register(ModelInfo(
@@ -281,6 +289,7 @@ ModelRegistry.register(ModelInfo(
     aliases=["gpt-4.5", "gpt-5"],
     manifest=ModelManifest("gpt-4.5", GPT_FEATURES),
     context_window=128_000,
+    cost_per_million={"input": 75.0, "output": 150.0, "cache_read": 37.5, "cache_write": 0.0},
 ))
 
 # ---------------------------------------------------------------------------
