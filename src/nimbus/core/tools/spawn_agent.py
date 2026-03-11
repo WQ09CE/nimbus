@@ -142,7 +142,11 @@ async def _run_sub_agent(
         "Complete the goal given to you using ONLY the tools available. "
         "Think step by step. Be concise and precise.\n\n"
         f"# Scratchpad\n"
-        f"Write your progress and findings to `{scratchpad_path}`.\n\n"
+        f"You have a dedicated scratchpad at `{scratchpad_path}`.\n"
+        "**Write progress incrementally** — after each meaningful step, "
+        "append your findings and checked-off TODOs to the scratchpad immediately. "
+        "Do NOT wait until the end. If you are interrupted at any point, "
+        "the scratchpad should already contain all progress so far.\n\n"
         f"# Working Directory\n"
         f"{os.getcwd()}"
     )
