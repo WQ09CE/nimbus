@@ -361,7 +361,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       isStreaming: true,
       streamAbortController: abortController,
       messages: [...s.messages, initialAssistantMsg],
-      tokenUsage: null,
     }));
 
     // Safety net: poll status every 5s. If task finished but "done" event was
@@ -638,7 +637,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       isStreaming: true,
       streamAbortController: abortController,
       error: null,
-      tokenUsage: null,
     });
 
     try {
