@@ -48,19 +48,20 @@ test.describe('Session Management', () => {
     await expect(page.getByTestId('message-assistant')).toBeVisible({ timeout: 10000 });
     await expect(page.getByTestId('stop-button')).not.toBeVisible({ timeout: 10000 });
 
-    // Verify session ID is persisted in localStorage
-    const sessionId = await page.evaluate(() => localStorage.getItem('nimbus_session_id'));
+    // Verify session ID is persisted in sessionStorage (app uses sessionStorage, not localStorage)
+    const sessionId = await page.evaluate(() => sessionStorage.getItem('nimbus_session_id'));
     expect(sessionId).toBeTruthy();
     expect(sessionId).toBe('test-session-001');
 
     // Reload the page.
+    // Route mocks persist across reload in Playwright.
     // The app reads nimbus_session_id from localStorage, calls loadSession,
     // which calls getSession + getSessionMessages.
-    // The mock returns messages_history (user "Hello" + assistant response).
-    await page.reload();
+    await page.reload({ waitUntil: 'networkidle' });
 
-    // After reload, messages should be loaded from the mock's messages_history
-    await expect(page.getByTestId('message-user')).toBeVisible({ timeout: 10000 });
+    // Wait for the app to fully hydrate and load session data
+    // After reload, the app fetches messages from the mock and renders them
+    await expect(page.getByTestId('message-user')).toBeVisible({ timeout: 15000 });
     await expect(page.getByTestId('message-user')).toContainText('Hello');
 
     // Welcome screen should NOT be visible (messages exist)

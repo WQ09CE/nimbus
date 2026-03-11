@@ -369,7 +369,7 @@ export async function setupSSEMock(page: Page, fixture: SSEFixture): Promise<voi
  * for session-level routes (create, get, etc.).
  *
  * Once all fixtures are consumed, subsequent chat requests receive
- * an empty SSE stream with a single `dag_complete` event.
+ * an empty SSE stream with a single `done` event.
  */
 export async function setupMultiTurnMock(
   page: Page,
@@ -450,7 +450,7 @@ export async function setupMultiTurnMock(
         },
         {
           delay_ms: 10,
-          event: 'dag_complete',
+          event: 'done',
           data: { status: 'completed' },
         },
       ];

@@ -202,11 +202,9 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
     </div>
   );
 }, (prevProps, nextProps) => {
+  // Simple version-counter comparison — _rev is incremented on every SSE update
   return (
-    prevProps.message.id === nextProps.message.id &&
-    prevProps.message.content === nextProps.message.content &&
-    prevProps.isStreaming === nextProps.isStreaming &&
-    prevProps.message.parts === nextProps.message.parts &&
-    prevProps.message.toolResultsMap === nextProps.message.toolResultsMap
+    prevProps.message._rev === nextProps.message._rev &&
+    prevProps.isStreaming === nextProps.isStreaming
   );
 });

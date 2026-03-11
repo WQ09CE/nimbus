@@ -72,6 +72,7 @@ export function useSessionWatcher() {
                                         content: textContent,
                                         parts: textContent ? [{ type: "text" as const, content: textContent }] : [],
                                         timestamp: ts,
+                                        _rev: 0,
                                     };
                                 });
                             if (newUserMsgs.length > 0) {
@@ -200,7 +201,7 @@ export function useSessionWatcher() {
 
         document.addEventListener("visibilitychange", handleVisibilityChange);
         return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     // Start watcher when session changes
@@ -211,7 +212,7 @@ export function useSessionWatcher() {
             watcherAbortRef.current?.abort();
             clearReconnectTimer();
         };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [sessionId]);
 
     // Restart watcher after our own streaming ends
@@ -220,6 +221,6 @@ export function useSessionWatcher() {
             const t = setTimeout(() => startWatcher(sessionId, 0), 600);
             return () => clearTimeout(t);
         }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isStreaming]);
 }

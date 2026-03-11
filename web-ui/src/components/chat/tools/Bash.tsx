@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { stripAnsiAndCarriageReturns } from '@/lib/stringUtils';
-import { useTypewriter } from '@/hooks/useTypewriter';
 
 interface BashProps {
   args: { command: string;[key: string]: any };
@@ -17,17 +16,15 @@ export function Bash({ args, result, error, status, ui_detail }: BashProps) {
   const exitCode = ui_detail?.exit_code ?? (error ? 1 : 0);
   const isNonZero = exitCode !== 0;
   const hasOutput = !!result || !!error;
-  const isStreaming = status === "running";
-
-  const typedResult = useTypewriter(stripAnsiAndCarriageReturns(result || ""), isStreaming, 5);
-  const typedError = useTypewriter(stripAnsiAndCarriageReturns(error || ""), isStreaming, 5);
+  const cleanResult = stripAnsiAndCarriageReturns(result || "");
+  const cleanError = stripAnsiAndCarriageReturns(error || "");
 
   // 如果处于展开状态且正在运行（流式输出），自动滚动到底部
   useEffect(() => {
     if (status === "running" && isExpanded && outputRef.current) {
       outputRef.current.scrollTop = outputRef.current.scrollHeight;
     }
-  }, [result, status, isExpanded]);
+  }, [cleanResult, status, isExpanded]);
 
   return (
     <div className="font-mono text-sm bg-[#0d1117] rounded-md border border-gray-800 overflow-hidden flex flex-col my-2">
@@ -78,7 +75,7 @@ export function Bash({ args, result, error, status, ui_detail }: BashProps) {
       {isExpanded && (
         <div
           ref={outputRef}
-          className="p-3 max-h-[200px] overflow-y-auto custom-scrollbar text-[13px] border-t border-gray-800"
+          className="p-3 max-h-[500px] overflow-y-auto custom-scrollbar text-[13px] border-t border-gray-800"
         >
           {!hasOutput && status === "running" && (
             <div className="text-gray-500 italic flex items-center gap-2">
@@ -89,10 +86,10 @@ export function Bash({ args, result, error, status, ui_detail }: BashProps) {
             <div className="text-gray-600 italic">(no output)</div>
           )}
           {error && (
-            <div className="text-red-400 whitespace-pre-wrap break-words leading-relaxed">{typedError}</div>
+            <div className="text-red-400 whitespace-pre-wrap break-words leading-relaxed">{cleanError}</div>
           )}
           {result && !error && (
-            <div className="text-gray-300 whitespace-pre-wrap break-words leading-relaxed">{typedResult}</div>
+            <div className="text-gray-300 whitespace-pre-wrap break-words leading-relaxed">{cleanResult}</div>
           )}
         </div>
       )}

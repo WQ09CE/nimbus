@@ -1,7 +1,6 @@
 import React from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { useTypewriter } from '@/hooks/useTypewriter';
 
 interface FileReadProps {
   args: { file_path: string;[key: string]: any };
@@ -15,11 +14,8 @@ export function FileRead({ args, result, error, status }: FileReadProps) {
   // Strict path display
   const filePath = safeArgs.file_path || "unknown";
 
-  const isStreaming = status === "running";
-
-  // Format content logic (truncate if too long)
-  const rawContent = typeof result === 'string' ? result : (result ? JSON.stringify(result, null, 2) : "");
-  const content = useTypewriter(rawContent, isStreaming, 10); // file loads can be faster
+  // Format content — render directly, no typewriter animation delay
+  const content = typeof result === 'string' ? result : (result ? JSON.stringify(result, null, 2) : "");
   const lines = content ? content.split('\n') : [];
   const lineCount = lines.length;
 
@@ -59,7 +55,7 @@ export function FileRead({ args, result, error, status }: FileReadProps) {
       )}
 
       {/* Content Area */}
-      <div className="overflow-x-auto max-h-[200px] overflow-y-auto custom-scrollbar">
+      <div className="overflow-x-auto max-h-[500px] overflow-y-auto custom-scrollbar">
         {status === "running" ? (
           <div className="p-4 text-gray-500 italic flex items-center gap-2">
             <span className="animate-spin">⟳</span> Reading file...

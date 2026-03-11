@@ -1,17 +1,18 @@
 import React from "react";
 import { render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom";
+import { vi } from "vitest";
 import { ChatMessage } from "../ChatMessage";
 
-jest.mock("../MarkdownRenderer", () => ({
+vi.mock("../MarkdownRenderer", () => ({
   MarkdownRenderer: ({ content }: { content: string }) => <div data-testid="markdown-content">{content}</div>,
 }));
 
-jest.mock("../tools/ToolCard", () => ({
+vi.mock("../tools/ToolCard", () => ({
   ToolCard: ({ tool }: { tool: any }) => <div data-testid="tool-card">{tool.name}</div>,
 }));
 
-jest.mock("../../../hooks/useTypewriter", () => ({
+vi.mock("../../../hooks/useTypewriter", () => ({
   useTypewriter: (text: string) => text,
 }));
 

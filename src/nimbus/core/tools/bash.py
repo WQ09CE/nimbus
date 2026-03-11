@@ -38,7 +38,7 @@ async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
 
 @tool(
     name="Bash",
-    description="Execute a bash command. Output truncated to last 2000 lines or 100KB.",
+    description="Execute a bash command. Output truncated to first+last 2000 lines or 100KB.",
     parameters=[
         ToolParameter("command", "string", "The bash command to execute", required=True),
         ToolParameter("timeout", "number", "Timeout in seconds (default: 60)", required=False),
@@ -211,13 +211,16 @@ async def bash_command(
         output = "[...truncated...]\n" + output
         truncated = True
 
-    # Truncate by lines (keep tail)
+    # Truncate by lines (keep head + tail for context)
     lines = output.split("\n")
     if len(lines) > MAX_OUTPUT_LINES:
         total = len(lines)
-        lines = lines[-MAX_OUTPUT_LINES:]
-        output = "\n".join(lines)
-        output = f"[Showing last {MAX_OUTPUT_LINES} of {total} lines]\n" + output
+        head_lines = MAX_OUTPUT_LINES // 4   # 500 lines from start
+        tail_lines = MAX_OUTPUT_LINES - head_lines  # 1500 lines from end
+        head = lines[:head_lines]
+        tail = lines[-tail_lines:]
+        omitted = total - head_lines - tail_lines
+        output = "\n".join(head) + f"\n\n[... {omitted} lines omitted (total {total} lines) ...]\n\n" + "\n".join(tail)
         truncated = True
 
     if not output.strip():

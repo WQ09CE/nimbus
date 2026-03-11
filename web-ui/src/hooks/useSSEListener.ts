@@ -21,7 +21,9 @@ export const reconnectToSession = async (sessionId: string, attempt: number = 0)
         parts: [],
         timestamp: Date.now(),
         toolCallsMap: {},
-        toolResults: []
+        toolResults: [],
+        toolResultsMap: {},
+        _rev: 0,
     };
 
     useChatStore.setState(s => ({
@@ -52,6 +54,7 @@ export const reconnectToSession = async (sessionId: string, attempt: number = 0)
                                 content,
                                 parts: [{ type: "text", content }],
                                 timestamp: Date.now(),
+                                _rev: 0,
                             };
                             const msgs = [...useChatStore.getState().messages];
                             const streamIdx = msgs.findIndex(m => m.id === STREAMING_ID);
@@ -130,6 +133,7 @@ export const reconnectToSession = async (sessionId: string, attempt: number = 0)
             }
 
             if (updated) {
+                targetMsg._rev = (targetMsg._rev || 0) + 1;
                 const nextMsgs = [...currentMsgs];
                 nextMsgs[targetIdx] = targetMsg;
                 useChatStore.setState({ messages: nextMsgs });

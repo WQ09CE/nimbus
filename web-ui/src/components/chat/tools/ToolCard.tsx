@@ -40,8 +40,8 @@ interface ToolCardProps {
 
 export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: ToolCardProps) {
   // Hook must be called unconditionally (React Rules of Hooks)
-  // Default: running tools start expanded, completed/failed start collapsed
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? (tool.status === "running"));
+  // Default: always expanded for observability
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? true);
 
   // Auto-expand when tool starts running (but don't auto-collapse on complete)
   const prevStatus = useRef(tool.status);

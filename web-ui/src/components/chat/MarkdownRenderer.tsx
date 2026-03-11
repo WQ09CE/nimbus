@@ -277,7 +277,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, classN
 
 // StringDisplay: handles long text expand/collapse (extracted to fix conditional useState)
 export function StringDisplay({ content, typeClass }: { content: string; typeClass: string }) {
-  const MAX_PREVIEW_LENGTH = 500;
+  const MAX_PREVIEW_LENGTH = 5000;
   const [expanded, setExpanded] = useState(false);
   const isLong = content.length > MAX_PREVIEW_LENGTH;
   const isTruncatedWarning = content.includes("\u26A0\uFE0F [Output Truncated]");

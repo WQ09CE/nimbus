@@ -28,6 +28,8 @@ export interface Message {
   attachments?: ChatAttachment[];
   timestamp: number;
   isInjection?: boolean;
+  /** Monotonic revision counter — incremented on every SSE update to force React re-render. */
+  _rev: number;
 }
 
 export interface TokenUsageData {
@@ -300,6 +302,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             toolResultsMap: toolResults.length > 0 ? toolResults.reduce((acc, tr) => { if (tr.id) acc[tr.id] = tr; return acc; }, {} as Record<string, ToolResult>) : undefined,
             attachments: reloadedAttachments.length > 0 ? reloadedAttachments : undefined,
             timestamp,
+            _rev: 0,
           };
         });
 
@@ -345,6 +348,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       toolCallsMap: {},
       toolResults: [],
       toolResultsMap: {},
+      _rev: 0,
     };
 
     set(s => ({
@@ -400,6 +404,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     content,
                     parts: [{ type: "text", content }],
                     timestamp: Date.now(),
+                    _rev: 0,
                   };
                   // Insert BEFORE the streaming assistant message
                   const msgs = [...get().messages];
@@ -576,6 +581,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         attachments,
         timestamp: Date.now(),
         isInjection: true,
+        _rev: 0,
       };
       // Insert BEFORE the streaming-assistant message so it doesn't float
       // on top of tool cards. The streaming message should always be last.
@@ -596,7 +602,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
 
     // Standard send
-    const userMessage: Message = { id: `user-${Date.now()}`, role: "user", content, parts: [{ type: "text", content }], attachments, timestamp: Date.now() };
+    const userMessage: Message = { id: `user-${Date.now()}`, role: "user", content, parts: [{ type: "text", content }], attachments, timestamp: Date.now(), _rev: 0 };
     const abortController = new AbortController();
     let receivedDone = false;
     let lastEventTime = Date.now();
@@ -612,7 +618,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     // Start streaming: prepare an empty assistant message
     const STREAMING_ID = "streaming-assistant";
-    const initialAssistantMsg: Message = { id: STREAMING_ID, role: "assistant", content: "", parts: [], timestamp: Date.now(), toolCallsMap: {}, toolResults: [], toolResultsMap: {} };
+    const initialAssistantMsg: Message = { id: STREAMING_ID, role: "assistant", content: "", parts: [], timestamp: Date.now(), toolCallsMap: {}, toolResults: [], toolResultsMap: {}, _rev: 0 };
 
     set({
       messages: [...get().messages, userMessage, initialAssistantMsg],
@@ -696,13 +702,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
               if (!chunk) break;
 
               // 1. Always write to Map — never lose data regardless of parts state
-              const map = targetMsg.toolResultsMap || {};
-              if (map[tcId]) {
-                map[tcId] = { ...map[tcId], result: (map[tcId].result || "") + chunk };
-              } else {
-                map[tcId] = { id: tcId, name: d.tool || "unknown", result: chunk };
-              }
-              targetMsg.toolResultsMap = map;
+              // IMPORTANT: Create a new Map reference so React.memo detects the change
+              const existing = targetMsg.toolResultsMap?.[tcId];
+              const updatedEntry = existing
+                ? { ...existing, result: (existing.result || "") + chunk }
+                : { id: tcId, name: d.tool || "unknown", result: chunk };
+              targetMsg.toolResultsMap = { ...(targetMsg.toolResultsMap || {}), [tcId]: updatedEntry };
               updated = true;
             }
             break;
@@ -721,10 +726,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 ui_detail: d.ui_detail,
               };
               targetMsg.toolResults = [...(targetMsg.toolResults || []), tr];
-              // Always write to Map
-              const map = targetMsg.toolResultsMap || {};
-              map[tcId] = tr;
-              targetMsg.toolResultsMap = map;
+              // IMPORTANT: Create a new Map reference so React.memo detects the change
+              targetMsg.toolResultsMap = { ...(targetMsg.toolResultsMap || {}), [tcId]: tr };
 
               // Also ensure a part placeholder exists in case tool_result beat tool_call
               const parts = [...(targetMsg.parts || [])];
@@ -755,6 +758,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (type === "done") break;
 
         if (updated) {
+          targetMsg._rev = (targetMsg._rev || 0) + 1;
           scheduleStreamUpdate(set, get, STREAMING_ID, targetMsg);
         }
       }
@@ -772,28 +776,38 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
         set({ messages: finalMsgs, isStreaming: false, streamAbortController: null });
       } else {
-        // Stream dropped without done — check if agent is still running
-        console.warn("[Store] Stream ended without done event, checking agent status...");
+        // Stream dropped without done — try recovery
+        console.warn("[Store] Stream ended without done event, attempting recovery...");
+        let recovered = false;
         try {
           const status = await getSessionStatus(session.id);
           if (status.running && get().session?.id === session.id) {
-            // Agent still running — reload will pick up when it finishes
-            console.info("[Store] Agent still running, reloading session to recover...");
+            console.info("[Store] Agent still running, re-attaching to session...");
             await get().switchSession(session);
-            return;
+            recovered = true;
+          } else {
+            // Agent done — reload full results
+            await get().switchSession(session);
+            recovered = true;
           }
-        } catch { /* status check failed */ }
-        // Agent done or can't check — reload full results from server
-        try {
-          await get().switchSession(session);
-        } catch {
-          // Fallback: just finalize with what we have
+        } catch (recoveryErr) {
+          console.warn("[Store] Recovery via switchSession failed:", recoveryErr);
+        }
+
+        if (!recovered) {
+          // Fallback: finalize with what we have + show hint to user
+          console.warn("[Store] Recovery failed, finalizing with partial content");
           const finalMsgs = [...get().messages];
           const streamingIdx = finalMsgs.findIndex(m => m.id === STREAMING_ID);
           if (streamingIdx !== -1) {
             finalMsgs[streamingIdx].id = `assistant-${Date.now()}`;
           }
-          set({ messages: finalMsgs, isStreaming: false, streamAbortController: null });
+          set({
+            messages: finalMsgs,
+            isStreaming: false,
+            streamAbortController: null,
+            error: "连接中断，已保留部分内容。刷新页面可加载完整结果。",
+          });
         }
       }
 
@@ -801,17 +815,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (err instanceof Error && err.name === 'AbortError') {
         // Could be user interrupt or watchdog timeout — try to recover
         console.warn("[Store] Stream aborted, checking agent status for recovery...");
+        let recovered = false;
         try {
           const status = await getSessionStatus(session.id);
-          if (status.running && get().session?.id === session.id) {
-            // Agent still running — reload session (switchSession checks status and re-attaches)
+          if (get().session?.id === session.id) {
             await get().switchSession(session);
-            return;
+            recovered = true;
           }
-          // Agent done — reload to get complete results
-          await get().switchSession(session);
-          return;
-        } catch { /* status check or reload failed */ }
+        } catch (recoveryErr) {
+          console.warn("[Store] Recovery after abort failed:", recoveryErr);
+        }
+
+        if (!recovered) {
+          // Finalize with whatever we have
+          const finalMsgs = [...get().messages];
+          const streamingIdx = finalMsgs.findIndex(m => m.id === STREAMING_ID);
+          if (streamingIdx !== -1) {
+            const msg = finalMsgs[streamingIdx];
+            if (!msg.content && (!msg.parts || msg.parts.length === 0)) {
+              finalMsgs.splice(streamingIdx, 1);
+            } else {
+              finalMsgs[streamingIdx].id = `assistant-${Date.now()}`;
+            }
+          }
+          set({
+            messages: finalMsgs,
+            isStreaming: false,
+            streamAbortController: null,
+          });
+        }
       } else {
         // Find and clean up or finalize the STREAMING_ID message
         const finalMsgs = [...get().messages];
