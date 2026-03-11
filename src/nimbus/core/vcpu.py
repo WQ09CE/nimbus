@@ -230,17 +230,36 @@ class VCPU:
         except asyncio.CancelledError:
             raise
         except Fault as f:
-            self.mmu.add_system_message(f"[LLM Error] {f.message}")
             errs = self._exec.on_error()
-            if errs >= self.config.max_consecutive_errors:
-                return self._error_step(result, f"Too many LLM stream errors: {f.message}")
-            return result  # non-final, will retry
+            if f.retryable:
+                # Silent retry: don't pollute LLM context with transient errors
+                # (server disconnects, rate limits, etc.)
+                delay = min(2 ** errs, 30)  # exponential backoff, max 30s
+                logger.warning(
+                    "[VCPU] Retryable LLM error (attempt %d): %s — retrying in %.0fs",
+                    errs, f.message, delay,
+                )
+                await asyncio.sleep(delay)
+                if errs >= self.config.max_consecutive_errors:
+                    # Too many retries — surface the error
+                    self.mmu.add_system_message(f"[LLM Error] {f.message} (after {errs} retries)")
+                    return self._error_step(result, f"Too many LLM stream errors: {f.message}")
+                return result  # non-final, will retry silently
+            else:
+                # Non-retryable: inform the LLM so it can adapt
+                self.mmu.add_system_message(f"[LLM Error] {f.message}")
+                if errs >= self.config.max_consecutive_errors:
+                    return self._error_step(result, f"Too many LLM stream errors: {f.message}")
+                return result  # non-final, will retry
         except Exception as e:
             return self._error_step(result, f"LLM error: {e}")
 
         # ---- DECODE ----
         content = getattr(response, "content", None)
         tool_calls = getattr(response, "tool_calls", None)
+
+        # Forward LLM token usage to the loop (pi-style)
+        result.usage = getattr(response, "usage", None)
 
         try:
             actions = self.decoder.decode(content, tool_calls, text_is_final=self.text_is_final)

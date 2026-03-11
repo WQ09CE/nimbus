@@ -34,6 +34,7 @@ from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 import uuid
 
 from .protocol import Event, Fault, StepResult, ToolResult
+from nimbus.adapters.types import TokenUsage
 from .storage import SessionStorage
 
 logger = logging.getLogger("nimbus.loop")
@@ -47,12 +48,42 @@ _RETRYABLE_ERROR_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Context overflow detection (should trigger compaction, NOT retry)
+# Context overflow detection (pi-style comprehensive patterns)
+# Should trigger compaction, NOT retry.
+#
+# Provider-specific patterns (from pi-coding-agent overflow.ts):
+# - Anthropic: "prompt is too long: 213462 tokens > 200000 maximum"
+# - OpenAI: "Your input exceeds the context window of this model"
+# - Google: "The input token count (1196265) exceeds the maximum number of tokens allowed (1048575)"
+# - xAI: "This model's maximum prompt length is 131072 but the request contains 537812 tokens"
+# - Groq: "Please reduce the length of the messages or completion"
+# - OpenRouter: "This endpoint's maximum context length is X tokens. However, you requested about Y tokens"
+# - llama.cpp: "the request exceeds the available context size, try increasing it"
+# - LM Studio: "tokens to keep from the initial prompt is greater than the context length"
+# - GitHub Copilot: "prompt token count of X exceeds the limit of Y"
+# - MiniMax: "invalid params, context window exceeds limit"
+# - Kimi: "Your request exceeded model token limit: X (requested: Y)"
+# - Cerebras/Mistral: Returns "400/413 status code (no body)" - handled below
 _OVERFLOW_ERROR_RE = re.compile(
+    r"prompt is too long|"                       # Anthropic
+    r"input is too long for requested model|"     # Amazon Bedrock
+    r"exceeds the context window|"               # OpenAI (Completions & Responses API)
+    r"input token count.*exceeds the maximum|"   # Google (Gemini)
+    r"maximum prompt length is \d+|"             # xAI (Grok)
+    r"reduce the length of the messages|"        # Groq
+    r"maximum context length is \d+ tokens|"     # OpenRouter (all backends)
+    r"exceeds the limit of \d+|"                 # GitHub Copilot
+    r"exceeds the available context size|"       # llama.cpp server
+    r"greater than the context length|"          # LM Studio
+    r"context window exceeds limit|"             # MiniMax
+    r"exceeded model token limit|"               # Kimi For Coding
     r"context.*(length|limit|window|too long|exceeded)|"
     r"maximum.*(context|token)|token.*(limit|exceeded|maximum)|"
     r"too.?long|prompt.*(too|exceeds)|input.*(too|exceeds)|"
-    r"request too large|content_too_large|string_above_max_length",
+    r"request too large|content_too_large|string_above_max_length|"
+    r"context[_ ]length[_ ]exceeded|"            # Generic fallback
+    r"too many tokens|"                          # Generic fallback
+    r"token limit exceeded",                     # Generic fallback
     re.IGNORECASE,
 )
 
@@ -277,6 +308,9 @@ class RuntimeLoop:
         # Pending steering messages to inject at top of next loop iteration
         self._pending_steering: List[str] = []
 
+        # Cumulative token usage across all LLM calls in this loop run (pi-style)
+        self._cumulative_usage = TokenUsage()
+
     def request_interruption(self) -> None:
         """Signal the loop to stop after the current step."""
         self._interrupted = True
@@ -402,6 +436,18 @@ class RuntimeLoop:
                 self._steps_since_compaction += 1
                 if not step_result.fault:
                     self._retry_count = 0  # Reset on success
+
+                # Accumulate token usage (pi-style)
+                if step_result.usage is not None:
+                    self._cumulative_usage += step_result.usage
+                    # Update MMU with real usage for hybrid estimation
+                    if hasattr(self.mmu, 'set_last_usage'):
+                        self.mmu.set_last_usage(step_result.usage)
+                    yield {
+                        "type": "usage_update",
+                        "step_usage": step_result.usage.to_dict(),
+                        "cumulative_usage": self._cumulative_usage.to_dict(),
+                    }
 
                 # Track partial results (pi-style abort recovery)
                 for r in step_result.results:

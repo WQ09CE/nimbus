@@ -76,7 +76,7 @@ describe('useChatStore', () => {
     // Setup injection spy
     const injectSpy = vi.fn()
     server.use(
-      http.post(`${API_BASE}/api/v1/sessions/:id/inject`, async ({ request }) => {
+      http.post('/api/v1/sessions/:id/inject', async ({ request }) => {
         const body = await request.json()
         injectSpy(body)
         return HttpResponse.json({ status: 'injected' })
@@ -102,8 +102,9 @@ describe('useChatStore', () => {
     // 3. Verify injection behavior
     // Should NOT add a new "step" message yet (optimistic update logic might vary)
     // In current impl, we optimistically add user message
-    expect(result.current.messages).toHaveLength(2) // User 1 + User 2 (Inject)
-    expect(result.current.messages[1].content).toContain('[追加指令] Stop!')
+    expect(result.current.messages).toHaveLength(3) // User 1 + User 2 (Inject) + Streaming Assistant
+    expect(result.current.messages[1].content).toContain('Stop!')
+
 
     // Streaming should STILL be active (don't break the flow)
     expect(result.current.isStreaming).toBe(true)

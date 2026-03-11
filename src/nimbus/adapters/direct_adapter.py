@@ -35,7 +35,7 @@ from litellm import acompletion
 from litellm.utils import ModelResponse
 
 from nimbus.config import get_config
-from nimbus.adapters.types import LLMConfig, VcpuLLMResponse, LLMStreamEvent
+from nimbus.adapters.types import LLMConfig, VcpuLLMResponse, LLMStreamEvent, TokenUsage
 from nimbus.core.models.registry import ModelRegistry
 
 logger = logging.getLogger(__name__)
@@ -192,6 +192,20 @@ def _classify_llm_exception(exc: Exception) -> Fault:
             domain = "NETWORK"
         else:
             domain = "LLM"
+
+    # LiteLLM-specific transient errors (server disconnect, mid-stream fallback, etc.)
+    # These are NOT subclasses of standard network exceptions but are still retryable.
+    _LITELLM_RETRYABLE_RE = re.compile(
+        r"server.?disconnect|MidStreamFallback|ServiceUnavailable|"
+        r"APIConnectionError|overloaded|rate.?limit|too many requests|"
+        r"429|500|502|503|504|service.?unavailable|connection.?error|"
+        r"connection.?refused|other side closed|fetch failed|upstream|"
+        r"reset before headers|terminated|retry delay",
+        re.IGNORECASE,
+    )
+    if not retryable and _LITELLM_RETRYABLE_RE.search(msg):
+        retryable = True
+        domain = "NETWORK"
 
     return Fault(
         domain=domain,
@@ -451,6 +465,7 @@ class DirectAdapter:
         """
         full_content = []
         collected_tool_calls = []
+        collected_usage = None  # TokenUsage from stream
 
         try:
             async for event in self.stream(mmu, tools):
@@ -461,6 +476,24 @@ class DirectAdapter:
                         on_chunk(text)
                 elif event.type == "tool_call" and event.tool_call:
                     collected_tool_calls.append(event.tool_call)
+                elif event.type == "usage" and event.usage:
+                    logger.info("[chat] Received usage event: %s", event.usage)
+                    # Build TokenUsage from stream usage data (pi-style)
+                    u = event.usage
+                    collected_usage = TokenUsage(
+                        input=u.get("input", 0),
+                        output=u.get("output", 0),
+                        cache_read=u.get("cache_read", 0),
+                        cache_write=u.get("cache_write", 0),
+                        total=u.get("total", 0),
+                    )
+                    # Compute cost if model pricing is available
+                    model_key = self._model
+                    if '/' in model_key:
+                        model_key = model_key.split('/', 1)[1]
+                    info = ModelRegistry.get(model_key)
+                    if info and hasattr(info, 'cost_per_million'):
+                        collected_usage.compute_cost(info.cost_per_million)
                 elif event.type == "error":
                      logger.error(f"Stream error: {event.error}")
                      # Classify it properly so VCPU can catch and retry it via StateErrorRecovery
@@ -488,11 +521,14 @@ class DirectAdapter:
                  }
              })
 
-        logger.debug("chat() returning: content_len=%d tool_calls=%d", len(content), len(tool_calls))
+        logger.debug("chat() returning: content_len=%d tool_calls=%d usage=%s",
+                     len(content), len(tool_calls),
+                     collected_usage.to_dict() if collected_usage else None)
 
         return VcpuLLMResponse(
             content=content if content else None,
             tool_calls=tool_calls if tool_calls else None,
+            usage=collected_usage,
         )
 
     # ------------------------------------------------------------------
@@ -855,6 +891,11 @@ class DirectAdapter:
             t_start = time.monotonic()
             ttfb_logged = False
             chunk_count = 0
+            # Usage accumulator (pi-style: message_start + message_delta)
+            usage_data: dict = {
+                "input": 0, "output": 0,
+                "cache_read": 0, "cache_write": 0, "total": 0,
+            }
 
             async with client.messages.stream(**kwargs) as stream:
                 async for event in stream:
@@ -867,7 +908,17 @@ class DirectAdapter:
                         )
                         ttfb_logged = True
 
-                    if event.type == "content_block_start":
+                    # Pi-style usage parsing from message_start
+                    if event.type == "message_start":
+                        msg_usage = getattr(event, 'message', None)
+                        if msg_usage:
+                            msg_usage = getattr(msg_usage, 'usage', None)
+                        if msg_usage:
+                            usage_data["input"] = getattr(msg_usage, 'input_tokens', 0) or 0
+                            usage_data["output"] = getattr(msg_usage, 'output_tokens', 0) or 0
+                            usage_data["cache_read"] = getattr(msg_usage, 'cache_read_input_tokens', 0) or 0
+                            usage_data["cache_write"] = getattr(msg_usage, 'cache_creation_input_tokens', 0) or 0
+                    elif event.type == "content_block_start":
                         if event.content_block.type == "tool_use":
                             current_tool = {
                                 "id": event.content_block.id,
@@ -901,13 +952,37 @@ class DirectAdapter:
                                 },
                             )
                             current_tool = None
+                    # Pi-style usage parsing from message_delta (final output count)
+                    elif event.type == "message_delta":
+                        delta_usage = getattr(event, 'usage', None)
+                        if delta_usage:
+                            out = getattr(delta_usage, 'output_tokens', None)
+                            if out is not None:
+                                usage_data["output"] = out
+                            inp = getattr(delta_usage, 'input_tokens', None)
+                            if inp is not None:
+                                usage_data["input"] = inp
+                            cr = getattr(delta_usage, 'cache_read_input_tokens', None)
+                            if cr is not None:
+                                usage_data["cache_read"] = cr
+                            cw = getattr(delta_usage, 'cache_creation_input_tokens', None)
+                            if cw is not None:
+                                usage_data["cache_write"] = cw
                     elif event.type == "message_stop":
+                        # Emit usage event before stop (pi-style)
+                        usage_data["total"] = (
+                            usage_data["input"] + usage_data["output"]
+                            + usage_data["cache_read"] + usage_data["cache_write"]
+                        )
+                        if usage_data["total"] > 0:
+                            yield LLMStreamEvent(type="usage", usage=usage_data)
                         yield LLMStreamEvent(type="stop", reason="stop")
 
             total = time.monotonic() - t_start
             logger.info(
-                "[Anthropic] model=%s TTFB=%.1fs total=%.1fs chunks=%d",
+                "[Anthropic] model=%s TTFB=%.1fs total=%.1fs chunks=%d usage=%s",
                 model_id, ttfb if ttfb_logged else total, total, chunk_count,
+                usage_data if usage_data["total"] > 0 else "N/A",
             )
 
         except Exception as e:
@@ -1245,6 +1320,23 @@ class DirectAdapter:
                                     )
 
                         elif event_type == "response.completed":
+                            # Pi-style usage parsing from response.completed
+                            resp_data = data.get("response", data)
+                            resp_usage = resp_data.get("usage", {})
+                            if resp_usage:
+                                cached = 0
+                                details = resp_usage.get("input_tokens_details", {})
+                                if details:
+                                    cached = details.get("cached_tokens", 0) or 0
+                                usage_dict = {
+                                    "input": (resp_usage.get("input_tokens", 0) or 0) - cached,
+                                    "output": resp_usage.get("output_tokens", 0) or 0,
+                                    "cache_read": cached,
+                                    "cache_write": 0,
+                                    "total": resp_usage.get("total_tokens", 0) or 0,
+                                }
+                                if usage_dict["total"] > 0:
+                                    yield LLMStreamEvent(type="usage", usage=usage_dict)
                             yield LLMStreamEvent(type="stop", reason="stop")
 
                         elif event_type in ("error", "response.failed"):
@@ -1363,6 +1455,7 @@ class DirectAdapter:
                     temperature=self.config.temperature,
                     max_tokens=self.config.max_tokens,
                     stream=True,
+                    stream_options={"include_usage": True},
                 )
                 if self.config.base_url:
                     acompletion_kwargs["api_base"] = self.config.base_url
@@ -1408,6 +1501,7 @@ class DirectAdapter:
                             temperature=self.config.temperature,
                             max_tokens=self.config.max_tokens,
                             stream=True,
+                            stream_options={"include_usage": True},
                         )
                         if self.config.base_url:
                             acompletion_kwargs["api_base"] = self.config.base_url
@@ -1426,6 +1520,7 @@ class DirectAdapter:
             reasoning_chunks = []
             text_buffer = []
             text_streamed = False  # Track if we've yielded text chunks in real-time
+            last_usage = None  # Last chunk's usage data (LiteLLM/OpenAI)
 
             async for chunk in response:
                 chunk_count += 1
@@ -1435,6 +1530,16 @@ class DirectAdapter:
                     ttfb_logged = True
 
                 delta = chunk.choices[0].delta
+
+                # Track usage from streaming chunks
+                # LiteLLM with stream_options={"include_usage": True} sends
+                # a final chunk with usage data; also check model_extra (pydantic v2)
+                chunk_usage = getattr(chunk, 'usage', None)
+                if not chunk_usage and hasattr(chunk, 'model_extra'):
+                    chunk_usage = (chunk.model_extra or {}).get('usage', None)
+                if chunk_usage:
+                    last_usage = chunk_usage
+                    logger.info("[LiteLLM] chunk#%d has usage: %s", chunk_count, chunk_usage)
 
                 if delta.content:
                     text_buffer.append(delta.content)
@@ -1591,6 +1696,23 @@ class DirectAdapter:
                 )
 
             yield LLMStreamEvent(type="stop", reason="stop")
+
+            # Emit usage event at end of stream (pi-style)
+            if last_usage:
+                logger.info("[LiteLLM] last_usage found: %s", last_usage)
+                cached = 0
+                prompt_details = getattr(last_usage, 'prompt_tokens_details', None)
+                if prompt_details:
+                    cached = getattr(prompt_details, 'cached_tokens', 0) or 0
+                usage_dict = {
+                    "input": (getattr(last_usage, 'prompt_tokens', 0) or 0) - cached,
+                    "output": getattr(last_usage, 'completion_tokens', 0) or 0,
+                    "cache_read": cached,
+                    "cache_write": 0,
+                    "total": getattr(last_usage, 'total_tokens', 0) or 0,
+                }
+                if usage_dict["total"] > 0:
+                    yield LLMStreamEvent(type="usage", usage=usage_dict)
 
         except asyncio.CancelledError:
             logger.info("LiteLLM streaming task cancelled by user")

@@ -309,7 +309,16 @@ class SessionManagerV2:
         agent_config.text_is_final = True  # Chat mode: pure text = final response, don't poke
         agent_config.max_consecutive_thoughts = 2  # Safety net: stop after 2 thoughts max
 
-        system_prompt = "You are a capable AI assistant. Use tools to solve the user's tasks. Think step by step."
+        scratchpad_path = f".nimbus/sessions/{session_id}/scratchpad.md"
+        system_prompt = (
+            "You are a capable AI assistant. Use tools to solve the user's tasks. Think step by step.\n\n"
+            "# Task Management & Scratchpad\n"
+            f"You have a dedicated scratchpad at `{scratchpad_path}`.\n"
+            "For any task requiring multiple steps, you MUST use the `Write`, `Edit`, and `Read` tools to maintain this file.\n"
+            "1. **Plan First**: Write a TODO list in the scratchpad before executing complex actions.\n"
+            "2. **Update Frequently**: Append intermediate findings, error logs, and checked-off TODOs.\n"
+            "3. **State Recovery**: If you lose track of your progress, `Read` your scratchpad to recover your state."
+        )
 
         # Load user memory file and append to system prompt as pinned context
         from nimbus.config import DEFAULT_MEMORY_PATH
@@ -514,6 +523,13 @@ class SessionManagerV2:
 
                 if evt_type == "followup_injected":
                     logger.info(f"[stream_chat] Follow-up injected: {str(event.get('content'))[:50]}...")
+                    continue
+
+                if evt_type == "usage_update":
+                    await self._sse_hub.publish(session_id, "usage_update", {
+                        "step_usage": event.get("step_usage", {}),
+                        "cumulative_usage": event.get("cumulative_usage", {}),
+                    })
                     continue
 
                 if evt_type == "text_delta":

@@ -34,7 +34,6 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
-from .adapter import AdapterConfig, AnthropicAdapter, OpenAIAdapter
 from .decoder import InstructionDecoder
 from .gate import KernelGate
 from .loop import FollowUpQueue, LoopConfig, RuntimeLoop, SteeringQueue
@@ -53,22 +52,24 @@ logger = logging.getLogger("nimbus.agent")
 
 @dataclass
 class AgentConfig:
-    """Top-level configuration for the agent."""
+    """Configuration for the agent."""
+
     # LLM
-    model: str = "gpt-4o"
-    provider: str = "openai"  # "openai" or "anthropic"
-    api_key: Optional[str] = None
-    base_url: Optional[str] = None
+    model: str = "anthropic/claude-sonnet-4-20250514"
+    provider: str = "anthropic"  # "anthropic" | "openai" | "google" | "ollama"
+    api_key: str = ""
+    base_url: str = ""
     temperature: float = 0.0
-    max_tokens: int = 4096
+    max_tokens: int = 8192
 
     # VCPU
     max_iterations: int = 200  # Relaxed from 50; compaction is the real resource limit
     max_consecutive_thoughts: int = 8
     llm_call_timeout: float = 300.0
+    max_consecutive_errors: int = 3
 
     # MMU
-    max_context_tokens: int = 100_000
+    max_context_tokens: int = 200_000
     compress_threshold: float = 0.85
 
     # Loop
@@ -82,12 +83,12 @@ class AgentConfig:
 
 
 # =============================================================================
-# Default Tools
+# Agent Context Manager
 # =============================================================================
 
 
-def _register_default_tools(registry: ToolRegistry) -> None:
-    """Register the built-in tool set."""
+def _register_default_tools(registry: ToolRegistry):
+    """Register the default tool set."""
     from .tools.read import read_file
     from .tools.write import write_file
     from .tools.edit import edit_file
@@ -104,16 +105,16 @@ def _register_default_tools(registry: ToolRegistry) -> None:
 
 
 # =============================================================================
-# AgentOS — The Facade
+# AgentOS — The Top-Level Orchestrator
 # =============================================================================
 
 
 class AgentOS:
-    """Minimal agent OS that wires all components together.
+    """
+    AgentOS — The top-level orchestrator.
 
-    Example:
-        agent = AgentOS()
-        result = await agent.run("Read the file config.py and explain it")
+    Accepts an external LLM client (created via llm_factory) and wires up
+    VCPU, MMU, Loop, and Tool Registry into a running agent.
     """
 
     def __init__(
@@ -145,12 +146,11 @@ class AgentOS:
         if adapter and hasattr(adapter, '_model'):
             from nimbus.core.models.registry import ModelRegistry
             model_key = getattr(adapter, '_model', '')
-            # Strip provider prefix (e.g. "google/gemini-3.1-pro-preview" -> "gemini-3.1-pro-preview")
             if '/' in model_key:
                 model_key = model_key.split('/', 1)[1]
             info = ModelRegistry.get(model_key)
             if info:
-                self._context_window = info.context_window
+                self._context_window = min(info.context_window, self.config.max_context_tokens)
 
         # 2. Tool Registry
         self._registry = tools or ToolRegistry()
@@ -167,17 +167,17 @@ class AgentOS:
         self._mmus: Dict[str, MMU] = {}
 
     def _create_adapter(self) -> Any:
-        """Create the appropriate LLM adapter based on config."""
-        adapter_config = AdapterConfig(
+        """Create a DirectAdapter via llm_factory (unified adapter path)."""
+        from nimbus.adapters.direct_adapter import DirectAdapter
+        from nimbus.adapters.types import LLMConfig
+
+        config = LLMConfig(
             model=self.config.model,
-            api_key=self.config.api_key,
             base_url=self.config.base_url,
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens,
         )
-        if self.config.provider == "anthropic":
-            return AnthropicAdapter(adapter_config)
-        return OpenAIAdapter(adapter_config)
+        return DirectAdapter(config)
 
     def _default_system_prompt(self) -> str:
         return (

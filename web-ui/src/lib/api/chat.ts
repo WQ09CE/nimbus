@@ -66,6 +66,7 @@ export type ChatEventType =
   | "tool_call"
   | "tool_output_chunk"
   | "tool_result"
+  | "usage_update"
   | "done"
   | "error"
   | "heartbeat";

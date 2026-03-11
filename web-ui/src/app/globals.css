@@ -539,3 +539,47 @@ body::before {
 .new-messages-pill {
   animation: message-fade-in 200ms ease-out;
 }
+
+/* ========== Token Usage Footer ========== */
+.token-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: rgba(148, 163, 184, 0.6);
+  user-select: none;
+}
+
+.token-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.06);
+  transition: color 0.2s;
+}
+
+.token-stat:hover {
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.token-cache {
+  color: rgba(250, 204, 21, 0.5);
+}
+
+.token-cache:hover {
+  color: rgba(250, 204, 21, 0.8);
+}
+
+.token-cost {
+  color: rgba(74, 222, 128, 0.5);
+  font-weight: 500;
+}
+
+.token-cost:hover {
+  color: rgba(74, 222, 128, 0.8);
+}

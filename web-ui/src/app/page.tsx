@@ -9,6 +9,7 @@ import { ModelSelector } from "@/components/chat/ModelSelector";
 import { FileExplorer } from "@/components/chat/FileExplorer";
 import { WorkingIndicator } from "@/components/chat/WorkingIndicator";
 import { ArtifactViewer } from "@/components/chat/ArtifactViewer";
+import { TokenFooter } from "@/components/chat/TokenFooter";
 
 import { SessionPanel } from "@/components/session/SessionPanel";
 import { useSessionWatcher } from "@/hooks/useSessionWatcher";
@@ -291,6 +292,7 @@ function Home() {
               isInterrupting={false}
               placeholder={placeholder}
             />
+            <TokenFooter />
           </div>
 
         </main>

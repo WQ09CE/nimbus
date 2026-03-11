@@ -30,6 +30,21 @@ export interface Message {
   isInjection?: boolean;
 }
 
+export interface TokenUsageData {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+  total: number;
+  cost: {
+    input: number;
+    output: number;
+    cache_read: number;
+    cache_write: number;
+    total: number;
+  };
+}
+
 interface ChatState {
   session: Session | null;
   messages: Message[];
@@ -39,6 +54,7 @@ interface ChatState {
   error: string | null;
   isCreatingSession: boolean;
   streamAbortController: AbortController | null;
+  tokenUsage: TokenUsageData | null;
 
   fsmState: string | null;
   activeArtifact: any | null;
@@ -69,6 +85,7 @@ const initialState = {
   error: null,
   isCreatingSession: false,
   streamAbortController: null,
+  tokenUsage: null,
   fsmState: null,
   activeArtifact: null,
   isReconnecting: false,
@@ -487,6 +504,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
               }
               break;
             }
+            case "usage_update": {
+              if (data && typeof data === "object") {
+                const d = data as any;
+                console.debug("[SSE] Usage Update received:", d);
+                set({ tokenUsage: d.cumulative_usage || null });
+              }
+              break;
+            }
             case "done":
             case "error":
               abortController.abort();
@@ -715,6 +740,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
           case "done":
             receivedDone = true;
             break;
+          case "usage_update": {
+            if (data && typeof data === "object") {
+              const d = data as any;
+              set({ tokenUsage: d.cumulative_usage || null });
+            }
+            break;
+          }
           case "error":
             throw new Error(typeof data === "string" ? data : (data as any)?.message || "Stream error");
         }
