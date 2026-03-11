@@ -29,6 +29,7 @@ DOOM_GUIDANCE = {
     "Edit": "Read the file first to get current content, then retry with exact text.",
     "Read": "File may not exist. Use Bash to find the correct path.",
     "Bash": "Same command keeps failing. Try a different approach.",
+    "spawn_agent": "Same sub-agent task keeps repeating. Revise your approach or handle the task directly.",
 }
 
 
@@ -69,6 +70,7 @@ _ARG_ALIASES: Dict[str, Dict[str, str]] = {
               "new": "new_text", "newText": "new_text"},
     "Bash":  {"cmd": "command", "script": "command"},
     "Grep":  {"query": "pattern", "search": "pattern", "dir": "path"},
+    "spawn_agent": {"timeout": "timeout_seconds"},
 }
 
 
@@ -155,11 +157,15 @@ class KernelGate:
             # (first trip gives the agent a chance to self-correct)
 
         # 4. Execute with timeout
-        effective_timeout = timeout or self._default_timeout
+        # spawn_agent manages its own timeout internally; don't double-wrap it.
+        if tool_name == "spawn_agent":
+            effective_timeout = None
+        else:
+            effective_timeout = timeout or self._default_timeout
 
         # Inject streaming callback for tools that support it (pi-style)
         exec_args = dict(action.args)
-        if self._on_tool_output and tool_name == "Bash":
+        if self._on_tool_output and tool_name in ("Bash", "spawn_agent"):
             def _on_update(chunk: str) -> None:
                 assert self._on_tool_output is not None
                 self._on_tool_output(tool_name, chunk)
@@ -171,10 +177,11 @@ class KernelGate:
             exec_args["_abort_event"] = self._abort_event
 
         try:
-            raw_output = await asyncio.wait_for(
-                self._executor(tool_name, exec_args),
-                timeout=effective_timeout,
-            )
+            coro = self._executor(tool_name, exec_args)
+            if effective_timeout is not None:
+                raw_output = await asyncio.wait_for(coro, timeout=effective_timeout)
+            else:
+                raw_output = await coro
 
             # Handle split tool results (pi-style: output + ui_detail)
             ui_detail = {}

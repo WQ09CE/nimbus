@@ -317,7 +317,17 @@ class SessionManagerV2:
             "For any task requiring multiple steps, you MUST use the `Write`, `Edit`, and `Read` tools to maintain this file.\n"
             "1. **Plan First**: Write a TODO list in the scratchpad before executing complex actions.\n"
             "2. **Update Frequently**: Append intermediate findings, error logs, and checked-off TODOs.\n"
-            "3. **State Recovery**: If you lose track of your progress, `Read` your scratchpad to recover your state."
+            "3. **State Recovery**: If you lose track of your progress, `Read` your scratchpad to recover your state.\n\n"
+            "# Agent Collaboration\n"
+            "You are an **orchestrator**. Prefer delegating execution to sub-agents; "
+            "reserve direct tool use for trivial one-shot actions (single Read, quick Bash).\n\n"
+            "Spawn rules:\n"
+            "1. **Parallel by default** — independent sub-tasks MUST be spawned in the same function_calls block.\n"
+            "2. **Right role** — `reader` (Read/Grep only) for scanning/analysis, `worker` (Write/Edit/Bash) for mutations and commands.\n"
+            "3. **No nesting** — sub-agents MUST NOT spawn further sub-agents.\n"
+            "4. **Rich context** — every spawn task must include: goal, relevant file paths, and expected output format.\n"
+            "5. **Verify after delegate** — after a worker completes, always validate the result (read file, run test).\n\n"
+            "If a sub-agent times out, read its scratchpad to recover partial progress."
         )
 
         # Load user memory file and append to system prompt as pinned context
