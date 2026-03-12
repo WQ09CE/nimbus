@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ToolDisplay } from './ToolDisplay';
 import { DispatchCard } from './DispatchCard';
+import { SpawnAgentCard } from './SpawnAgentCard';
 import { LiveTimer } from './LiveTimer';
 import type { ToolCall, ToolResult } from '@/lib/api';
 
@@ -23,6 +24,7 @@ interface ToolCardProps {
     subCalls?: ToolCall[];
     subResults?: ToolResult[];
     ui_detail?: Record<string, any>;
+    sub_events?: Record<string, any>[];
   };
   defaultExpanded?: boolean;
   /**
@@ -55,6 +57,11 @@ export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: To
   // Meta-tools (Dispatch/Explore/Implement/Design/Test) get the dedicated sub-agent card
   if (META_TOOLS.has(tool.name)) {
     return <DispatchCard tool={tool} defaultState={defaultState} isParallel={isParallel} />;
+  }
+
+  // Next-Gen Spawn Agent gets the SpawnAgentCard
+  if (tool.name === "spawn_agent") {
+    return <SpawnAgentCard tool={tool} defaultState={defaultState} />;
   }
 
   // Status Colors & Icons for generic tools

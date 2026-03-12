@@ -26,7 +26,7 @@ class DummyVCPU:
 @pytest.mark.asyncio
 async def test_infinite_context_compaction():
     # Very small context token limit to force frequent compactions
-    mmu_config = MMUConfig(max_context_tokens=100, compress_threshold=0.5, keep_recent_messages=2)
+    mmu_config = MMUConfig(max_context_tokens=100, compress_threshold=0.5, keep_recent_tokens=50)
     mmu = MMU(mmu_config)
     mmu.set_pinned(PinnedContext(system_rules="I am a testing bot."))
     

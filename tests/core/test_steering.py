@@ -273,19 +273,17 @@ class TestVCPUSteering:
 
         result = await vcpu.step()
 
-        # First tool executed, second and third skipped
+        # All tools execute in parallel (gather), steering checked after all complete
         assert len(result.results) == 3
         assert result.results[0].status == "OK"
-        assert result.results[1].status == "SKIPPED"
-        assert result.results[2].status == "SKIPPED"
-        assert result.results[1].output == "Skipped due to queued user message."
+        assert result.results[1].status == "OK"
+        assert result.results[2].status == "OK"
 
-        # Steering messages stored in result
+        # Steering messages collected after all tools complete
         assert result.steering_messages == ["Change approach please"]
 
-        # Gate only called once (first tool)
-        assert len(gate.calls) == 1
-        assert gate.calls[0].name == "Read"
+        # Gate called for all tools (parallel execution)
+        assert len(gate.calls) == 3
 
     @pytest.mark.asyncio
     async def test_no_steering_normal_flow(self):
@@ -309,8 +307,8 @@ class TestVCPUSteering:
         assert result.steering_messages == []
 
     @pytest.mark.asyncio
-    async def test_steering_not_checked_after_last_tool(self):
-        """Steering is not checked after the last tool (no point)."""
+    async def test_steering_checked_once_after_all_tools(self):
+        """Steering is checked once after all tools complete (parallel gather)."""
         call_count = 0
 
         def counting_steering():
@@ -329,13 +327,13 @@ class TestVCPUSteering:
 
         await vcpu.step()
 
-        # Should only check once (after first tool, not after second)
+        # Checked once after all tools complete
         assert call_count == 1
         assert len(gate.calls) == 2
 
     @pytest.mark.asyncio
-    async def test_steering_with_single_tool_no_check(self):
-        """With only one tool call, steering is never checked."""
+    async def test_steering_checked_once_even_single_tool(self):
+        """Even with one tool call, steering is checked once after completion."""
         call_count = 0
 
         def counting_steering():
@@ -353,8 +351,8 @@ class TestVCPUSteering:
 
         await vcpu.step()
 
-        # No steering check for single tool
-        assert call_count == 0
+        # Steering checked once after tool complete
+        assert call_count == 1
         assert len(gate.calls) == 1
 
 

@@ -23,11 +23,14 @@ class ToolParameter:
     description: str
     required: bool = True
     enum: Optional[List[str]] = None
+    items: Optional[Dict[str, str]] = None
 
     def to_json_schema(self) -> Dict[str, Any]:
         schema: Dict[str, Any] = {"type": self.type, "description": self.description}
         if self.enum:
             schema["enum"] = self.enum
+        if self.items:
+            schema["items"] = self.items
         return schema
 
 

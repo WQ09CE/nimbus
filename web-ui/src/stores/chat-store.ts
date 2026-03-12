@@ -471,14 +471,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 const d = data as any;
                 const tcId = d.action_id || d.id;
                 const chunk = d.chunk || "";
-                if (!chunk) break;
+                const uiDetail = d.ui_detail;
+                if (!chunk && !uiDetail) break;
 
                 // 1. Always write to Map
                 const map = targetMsg.toolResultsMap || {};
-                if (map[tcId]) {
-                  map[tcId] = { ...map[tcId], result: (map[tcId].result || "") + chunk };
+                const existing = map[tcId];
+                if (existing) {
+                  map[tcId] = { 
+                    ...existing, 
+                    result: (existing.result || "") + chunk,
+                    sub_events: uiDetail ? [...(existing.sub_events || []), uiDetail] : existing.sub_events
+                  };
                 } else {
-                  map[tcId] = { id: tcId, name: d.tool || "unknown", result: chunk };
+                  map[tcId] = { 
+                    id: tcId, 
+                    name: d.tool || "unknown", 
+                    result: chunk,
+                    sub_events: uiDetail ? [uiDetail] : undefined
+                  };
                 }
                 targetMsg.toolResultsMap = map;
                 updated = true;
@@ -497,6 +508,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   result: d.output !== undefined ? d.output : (d.result !== undefined ? d.result : existing?.result),
                   error: d.status === "ERROR" ? (d.fault?.message || "Error") : undefined,
                   ui_detail: d.ui_detail,
+                  sub_events: existing?.sub_events,
                 };
                 targetMsg.toolResults = [...(targetMsg.toolResults || []), tr];
                 // Always write to Map
@@ -711,14 +723,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
               const d = data as any;
               const tcId = d.action_id || d.id;
               const chunk = d.chunk || "";
-              if (!chunk) break;
+              const uiDetail = d.ui_detail;
+              if (!chunk && !uiDetail) break;
 
               // 1. Always write to Map — never lose data regardless of parts state
               // IMPORTANT: Create a new Map reference so React.memo detects the change
               const existing = targetMsg.toolResultsMap?.[tcId];
               const updatedEntry = existing
-                ? { ...existing, result: (existing.result || "") + chunk }
-                : { id: tcId, name: d.tool || "unknown", result: chunk };
+                ? { 
+                    ...existing, 
+                    result: (existing.result || "") + chunk,
+                    sub_events: uiDetail ? [...(existing.sub_events || []), uiDetail] : existing.sub_events
+                  }
+                : { 
+                    id: tcId, 
+                    name: d.tool || "unknown", 
+                    result: chunk,
+                    sub_events: uiDetail ? [uiDetail] : undefined
+                  };
               targetMsg.toolResultsMap = { ...(targetMsg.toolResultsMap || {}), [tcId]: updatedEntry };
               updated = true;
             }
@@ -736,6 +758,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 result: d.output !== undefined ? d.output : (d.result !== undefined ? d.result : existing?.result),
                 error: d.status === "ERROR" ? (d.fault?.message || "Error") : undefined,
                 ui_detail: d.ui_detail,
+                sub_events: existing?.sub_events,
               };
               targetMsg.toolResults = [...(targetMsg.toolResults || []), tr];
               // IMPORTANT: Create a new Map reference so React.memo detects the change

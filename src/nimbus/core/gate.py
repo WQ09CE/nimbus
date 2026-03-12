@@ -164,12 +164,20 @@ class KernelGate:
             effective_timeout = timeout or self._default_timeout
 
         # Inject streaming callback for tools that support it (pi-style)
+        # Dual-channel: chunk (for agent context) + ui_detail (for frontend SSE)
         exec_args = dict(action.args)
         if self._on_tool_output and tool_name in ("Bash", "spawn_agent"):
-            def _on_update(chunk: str) -> None:
+            def _on_update(chunk: str, ui_detail: Optional[Dict] = None) -> None:
                 assert self._on_tool_output is not None
                 self._on_tool_output(tool_name, chunk)
-                self._emit("TOOL_CALL_DELTA", {"tool": tool_name, "chunk": chunk})
+                delta_data: Dict[str, Any] = {
+                    "tool": tool_name,
+                    "chunk": chunk,
+                    "call_id": action.id,
+                }
+                if ui_detail:
+                    delta_data["ui_detail"] = ui_detail
+                self._emit("TOOL_CALL_DELTA", delta_data)
             exec_args["on_update"] = _on_update
 
         # Propagate abort event to tools that support it (pi-style process group kill)

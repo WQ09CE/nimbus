@@ -53,6 +53,7 @@ export interface ToolResult {
   error?: string;
   duration?: number;
   ui_detail?: Record<string, any>;
+  sub_events?: Record<string, any>[]; // Structured progress events from sub-agents
 }
 
 /**

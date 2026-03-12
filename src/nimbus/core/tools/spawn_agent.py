@@ -33,6 +33,7 @@ def _build_sub_agent_tools(role: str) -> ToolRegistry:
     from nimbus.core.tools.edit import edit_file
     from nimbus.core.tools.bash import bash_command
     from nimbus.core.tools.grep import grep_search
+    from nimbus.core.tools.submit_result import submit_result
 
     allowed = _ROLE_TOOLS.get(role, [])
     registry = ToolRegistry()
@@ -49,6 +50,9 @@ def _build_sub_agent_tools(role: str) -> ToolRegistry:
         func = tool_map.get(name)
         if func:
             registry.register_decorated(func)
+
+    # All sub-agents get submit_result — it's their only exit in contract_mode
+    registry.register_decorated(submit_result)
 
     return registry
 
@@ -114,7 +118,7 @@ async def _run_sub_agent(
     goal: str,
     sub_session_id: str,
     timeout_seconds: int,
-    on_update: Optional[Callable[[str], None]] = None,
+    on_update: Optional[Callable] = None,  # (chunk: str, ui_detail?: dict) -> None
     _abort_event: Optional[asyncio.Event] = None,
 ) -> Dict[str, Any]:
     """Instantiate and run a sub-agent AgentOS."""
@@ -147,6 +151,9 @@ async def _run_sub_agent(
         "append your findings and checked-off TODOs to the scratchpad immediately. "
         "Do NOT wait until the end. If you are interrupted at any point, "
         "the scratchpad should already contain all progress so far.\n\n"
+        "# Delivering Results\n"
+        "When your work is complete, you MUST call `submit_result` to deliver structured results. "
+        "Do NOT just say 'done' in text — call the tool.\n\n"
         f"# Working Directory\n"
         f"{os.getcwd()}"
     )
@@ -158,7 +165,8 @@ async def _run_sub_agent(
         max_iterations=50,
         max_consecutive_thoughts=3,
         llm_call_timeout=120.0,
-        text_is_final=False,  # Task mode: text != done, must use tools or RETURN
+        text_is_final=False,
+        contract_mode=True,  # Must exit via submit_result, not text
     )
 
     agent_os = AgentOS(
@@ -186,12 +194,76 @@ async def _run_sub_agent(
         abort_watcher = asyncio.create_task(_watch_parent_abort())
 
     async def _drain_loop():
-        """Drive the loop to completion, return final ToolResult."""
+        """Drive the loop to completion, return final ToolResult.
+        
+        Emits dual-channel progress updates:
+        - chunk: concise one-liner for parent agent context (low token cost)
+        - ui_detail: rich structured data for frontend rendering
+        """
         from nimbus.core.protocol import ToolResult
         final = None
+        tool_count = 0
         async for event in loop.stream():
-            if event.get("type") == "final":
+            etype = event.get("type")
+            if etype == "final":
                 final = event["result"]
+            elif etype == "tool_call_done" and on_update:
+                # Emit progress: one line per tool call completed
+                tool_count += 1
+                data = event.get("data", event)
+                tool_name = data.get("tool", "?")
+                status = data.get("status", "OK")
+                # tool_call_done uses "output_preview" not "output"
+                output_preview = str(data.get("output_preview") or data.get("output") or "")[:200]
+                
+                # Channel 1 (agent): concise one-liner
+                chunk = f"[{role}] 🔧 {tool_name}: {status}\n"
+                
+                # Channel 2 (UI): structured detail with args from preceding tool_call_start
+                ui_detail = {
+                    "sub_session_id": sub_session_id,
+                    "role": role,
+                    "tool": tool_name,
+                    "status": status,
+                    "step": tool_count,
+                    "output_preview": output_preview,
+                    "call_id": data.get("call_id"),
+                }
+                on_update(chunk, ui_detail)
+            elif etype == "tool_call_start" and on_update:
+                # Capture tool args for richer UI display
+                data = event.get("data", event)
+                tool_name = data.get("tool", "?")
+                args = data.get("args", {})
+                # Build a concise args summary
+                args_summary = ""
+                for k, v in args.items():
+                    v_str = str(v)
+                    if len(v_str) > 100:
+                        v_str = v_str[:97] + "..."
+                    args_summary += f"{k}={v_str} "
+                args_summary = args_summary.strip()[:200]
+                
+                ui_detail = {
+                    "sub_session_id": sub_session_id,
+                    "role": role,
+                    "type": "tool_start",
+                    "tool": tool_name,
+                    "args_summary": args_summary,
+                    "args": {k: str(v)[:200] for k, v in args.items()},
+                }
+                on_update(f"[{role}] 🔧 {tool_name} starting...\n", ui_detail)
+            elif etype == "thinking" and on_update:
+                # Sub-agent is reasoning
+                thought = str(event.get("data", {}).get("text", ""))[:60]
+                chunk = f"[{role}] 💭 {thought}...\n"
+                ui_detail = {
+                    "sub_session_id": sub_session_id,
+                    "role": role,
+                    "type": "thinking",
+                    "thought_preview": thought,
+                }
+                on_update(chunk, ui_detail)
         return final or ToolResult(status="ERROR", output="Loop ended without result.")
 
     try:
@@ -200,6 +272,43 @@ async def _run_sub_agent(
         if on_update:
             on_update(f"[spawn] Sub-agent [{role}] completed.\n")
 
+        # Try to read structured deliverable first
+        deliverable_path = f".nimbus/sessions/{sub_session_id}/deliverable.json"
+        deliverable = None
+        try:
+            import json as _json
+            if os.path.exists(deliverable_path):
+                with open(deliverable_path, "r", encoding="utf-8") as f:
+                    deliverable = _json.load(f)
+                logger.info(f"Read structured deliverable from {deliverable_path}")
+        except Exception as e:
+            logger.warning(f"Failed to read deliverable.json: {e}")
+
+        if deliverable:
+            # Structured path: return parsed JSON to parent agent
+            summary = deliverable.get("summary", "")
+            findings = deliverable.get("findings", [])
+            artifacts = deliverable.get("artifacts", [])
+            findings_text = "\n".join(f"  - {f}" for f in findings) if findings else "  (none)"
+            return {
+                "output": (
+                    f"Sub-agent [{role}] delivered structured results.\n\n"
+                    f"**Summary:** {summary}\n\n"
+                    f"**Findings:**\n{findings_text}\n\n"
+                    f"**Artifacts:** {artifacts}\n"
+                    f"**Scratchpad:** `{scratchpad_path}`"
+                ),
+                "ui_detail": {
+                    "role": role,
+                    "model": full_model,
+                    "status": "completed",
+                    "sub_session_id": sub_session_id,
+                    "scratchpad": scratchpad_path,
+                    "deliverable": deliverable,
+                },
+            }
+
+        # Fallback: no deliverable.json, use raw text output
         output_text = str(result.output) if result.output else "(no output)"
 
         # Prevent massive sub-agent outputs from blowing up parent context
@@ -212,7 +321,7 @@ async def _run_sub_agent(
 
         return {
             "output": (
-                f"Sub-agent [{role}] completed successfully.\n\n"
+                f"Sub-agent [{role}] completed (no structured deliverable).\n\n"
                 f"**Result:**\n{output_text}\n\n"
                 f"**Scratchpad:** `{scratchpad_path}`"
             ),
@@ -296,7 +405,7 @@ async def spawn_agent(
     role: str,
     goal: str = "",
     timeout_seconds: int = DEFAULT_TIMEOUT,
-    on_update: Optional[Callable[[str], None]] = None,
+    on_update: Optional[Callable] = None,  # (chunk: str, ui_detail?: dict) -> None
     _abort_event: Optional[asyncio.Event] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:

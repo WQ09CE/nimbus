@@ -55,6 +55,7 @@ class InstructionDecoder:
         content: Optional[str],
         tool_calls: Optional[List[Any]],
         text_is_final: bool = True,
+        contract_mode: bool = False,
     ) -> List[ActionIR]:
         """Decode LLM output into a list of ActionIR instructions.
 
@@ -62,6 +63,9 @@ class InstructionDecoder:
             content: Text content from LLM response.
             tool_calls: Native tool call objects from the API.
             text_is_final: If True, pure text → REPLY; if False, use heuristics.
+            contract_mode: If True, pure text is ALWAYS THOUGHT, never RETURN.
+                Used by sub-agents to prevent premature exit from _is_done() heuristics.
+                Sub-agent can only exit via submit_result tool or max_iterations.
         """
         actions: List[ActionIR] = []
 
@@ -88,6 +92,10 @@ class InstructionDecoder:
             if text_is_final:
                 # Interactive mode: text is always a reply
                 actions.append(ActionIR(kind="REPLY", args={"text": text}))
+            elif contract_mode:
+                # Contract mode: pure text is ALWAYS a thought, never a return.
+                # Sub-agent must exit via submit_result tool, not by speaking.
+                actions.append(ActionIR(kind="THOUGHT", args={"text": text}))
             elif self._is_done(text):
                 # Agent thinks it's done
                 actions.append(ActionIR(kind="RETURN", args={"text": text}))

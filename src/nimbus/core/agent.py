@@ -80,6 +80,7 @@ class AgentConfig:
 
     # Behavior
     text_is_final: bool = False  # In goal mode, pure text != done
+    contract_mode: bool = False  # Sub-agent only: must exit via submit_result, not text
 
 
 # =============================================================================
@@ -340,7 +341,16 @@ class AgentOS:
             return [msg] if msg else []
 
         # Gate (with abort event for process group kill)
+        # vcpu_ref: mutable container so submit_result can request interruption
+        # (VCPU is created after tool_executor, so we bind via reference)
+        vcpu_ref: List[Any] = [None]
+
         async def tool_executor(name: str, args: Dict) -> Any:
+            # Inject internal params for submit_result in contract_mode (sub-agents)
+            if name == "submit_result" and self.config.contract_mode:
+                args.setdefault("_sub_session_id", session_id)
+                if vcpu_ref[0] is not None:
+                    args.setdefault("_vcpu", vcpu_ref[0])
             return await self._registry.execute(name, args)
 
         gate = KernelGate(
@@ -364,6 +374,7 @@ class AgentOS:
             max_iterations=self.config.max_iterations,
             max_consecutive_thoughts=self.config.max_consecutive_thoughts,
             llm_call_timeout=self.config.llm_call_timeout,
+            contract_mode=self.config.contract_mode,
         )
         final = text_is_final if text_is_final is not None else self.config.text_is_final
         vcpu = VCPU(
@@ -378,6 +389,9 @@ class AgentOS:
             initial_state=initial_vcpu_state,
             on_text_delta=self._on_text_delta,
         )
+
+        # Bind VCPU to the mutable ref so tool_executor can inject it
+        vcpu_ref[0] = vcpu
 
         # Loop (with both queues and abort event)
         loop_config = LoopConfig(max_compactions=self.config.max_compactions)

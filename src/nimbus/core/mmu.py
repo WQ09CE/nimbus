@@ -219,7 +219,13 @@ class Message:
     tool_calls: Optional[List[Dict[str, Any]]] = None
     meta: Dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self, include_meta: bool = True) -> Dict[str, Any]:
+        """Serialize message to dict.
+        
+        Args:
+            include_meta: If True, include meta (ui_detail etc.) for persistence.
+                         If False, omit meta for LLM API calls (providers reject unknown fields).
+        """
         d: Dict[str, Any] = {"role": self.role, "content": self.content}
         if self.name:
             d["name"] = self.name
@@ -227,6 +233,8 @@ class Message:
             d["tool_call_id"] = self.tool_call_id
         if self.tool_calls:
             d["tool_calls"] = self.tool_calls
+        if include_meta and self.meta:
+            d["meta"] = self.meta
         return d
 
     def token_estimate(self) -> int:
@@ -588,9 +596,14 @@ class MMU:
     def add_assistant_with_tool_calls(self, content: Optional[str], tool_calls: List[Dict]) -> None:
         self._messages.append(Message(role="assistant", content=content, tool_calls=tool_calls))
 
-    def add_tool_result(self, tool_call_id: str, name: str, content: str) -> None:
+    def add_tool_result(
+        self, tool_call_id: str, name: str, content: str,
+        ui_detail: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        meta = {"ui_detail": ui_detail} if ui_detail else {}
         self._messages.append(Message(
             role="tool", content=content, name=name, tool_call_id=tool_call_id,
+            meta=meta,
         ))
 
     def add_system_message(self, content: str) -> None:
@@ -677,7 +690,7 @@ class MMU:
                 })
 
             for msg in included:
-                messages.append(msg.to_dict())
+                messages.append(msg.to_dict(include_meta=False))  # LLM API: no meta
         
         return messages
 

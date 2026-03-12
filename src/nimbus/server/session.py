@@ -366,11 +366,14 @@ class SessionManagerV2:
                     "action_id": event.data.get("call_id"),
                 }))
             elif event.type == "TOOL_CALL_DELTA":
-                event_queue.put_nowait(("tool_output_chunk", {
+                delta_payload = {
                     "tool": event.data.get("tool"),
                     "chunk": event.data.get("chunk"),
                     "action_id": event.data.get("call_id"),
-                }))
+                }
+                if event.data.get("ui_detail"):
+                    delta_payload["ui_detail"] = event.data["ui_detail"]
+                event_queue.put_nowait(("tool_output_chunk", delta_payload))
             elif event.type == "TOOL_FINISHED":
                 event_queue.put_nowait(("tool_result", {
                     "tool": event.data.get("tool"),
@@ -384,6 +387,10 @@ class SessionManagerV2:
         def _text_delta_cb(chunk: str):
             event_queue.put_nowait(("message", {"content": chunk}))
 
+        # Tool output streaming callback (enables on_update injection for spawn_agent)
+        def _tool_output_cb(tool_name: str, chunk: str):
+            pass  # Actual SSE emission is handled by gate's TOOL_CALL_DELTA event
+
         # Let AgentOS know this session is being instantiated
         # (MMU and VCPU will be rehydrated when stream_with_queue is called)
         agent_os = AgentOS(
@@ -393,6 +400,7 @@ class SessionManagerV2:
             memory=memory_content,
             event_callback=_gate_event_cb,
             on_text_delta=_text_delta_cb,
+            on_tool_output=_tool_output_cb,
         )
 
         # Attach task reference to agent_os so it isn't garbage collected

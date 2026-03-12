@@ -39,6 +39,7 @@ class VCPUConfig:
     max_consecutive_thoughts: int = 8
     max_consecutive_errors: int = 3
     llm_call_timeout: float = 300.0
+    contract_mode: bool = False  # Sub-agent only: pure text → THOUGHT, must exit via submit_result
 
 
 # =============================================================================
@@ -124,6 +125,7 @@ class VCPU:
         self._wakeup_event: Optional[asyncio.Event] = None
         self._get_steering = get_steering
         self._on_text_delta = on_text_delta
+        self._countdown_warning_sent = False
 
     def set_wakeup_event(self, event: asyncio.Event) -> None:
         """Receive a wakeup event from the RuntimeLoop to enable graceful steering."""
@@ -177,6 +179,19 @@ class VCPU:
                 "Approaching iteration limit: %d / %d",
                 self._exec.iteration, self.config.max_iterations,
             )
+
+        # Countdown steering: inject one-time warning near iteration limit
+        if (
+            self.config.contract_mode
+            and not self._countdown_warning_sent
+            and self._exec.iteration >= int(self.config.max_iterations * 0.85)
+        ):
+            remaining = self.config.max_iterations - self._exec.iteration
+            self.mmu.add_system_message(
+                f"⚠️ You only have {remaining} steps left. "
+                "Immediately write all findings to Scratchpad and call submit_result to deliver your results."
+            )
+            self._countdown_warning_sent = True
 
         # ---- THINK (Reasoning) ----
         try:
@@ -262,7 +277,11 @@ class VCPU:
         result.usage = getattr(response, "usage", None)
 
         try:
-            actions = self.decoder.decode(content, tool_calls, text_is_final=self.text_is_final)
+            actions = self.decoder.decode(
+                content, tool_calls,
+                text_is_final=self.text_is_final,
+                contract_mode=self.config.contract_mode,
+            )
         except Fault as f:
             # Hallucination or parse error — inject feedback and retry
             self.mmu.add_system_message(f"[Decoder Error] {f.message}")
@@ -330,11 +349,23 @@ class VCPU:
                 )
 
                 # Write results back to MMU in order (preserves conversation sequence)
+                # Pi-style dual result: output → LLM context, ui_detail → UI rendering
                 for action, tool_result in zip(tool_actions, tool_results):
                     result.results.append(tool_result)
                     self.mmu.add_tool_result(
                         action.id, action.name, str(tool_result.output),
+                        ui_detail=tool_result.ui_detail,
                     )
+                    
+                    # Intercept submit_result: Immediately terminate VCPU loop
+                    if action.name == "submit_result" and tool_result.status == "OK":
+                        result.is_final = True
+                        result.final_result = ToolResult(
+                            status="OK",
+                            output=tool_result.output,
+                            ui_detail=tool_result.ui_detail,
+                            is_final=True,
+                        )
 
                 # Check for steering messages after all tools complete
                 if self._get_steering:
