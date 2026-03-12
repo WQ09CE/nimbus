@@ -20,15 +20,13 @@ For legacy modules, see nimbus.legacy
 """
 
 # 主要导出
-from .agentos import (
+from .core.agent import (
     AgentOS,
-    AgentOSConfig,
-    create_agent_os,
+    AgentConfig as AgentOSConfig,
 )
 
 __version__ = "0.5.0"
 __all__ = [
     "AgentOS",
     "AgentOSConfig",
-    "create_agent_os",
 ]

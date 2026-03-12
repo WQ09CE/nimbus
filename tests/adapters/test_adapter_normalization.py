@@ -51,6 +51,7 @@ class MockDelta:
 class MockChoice:
     def __init__(self, delta):
         self.delta = delta
+        self.finish_reason = None
 
 class MockChunk:
     def __init__(self, delta):

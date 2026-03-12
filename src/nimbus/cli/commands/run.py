@@ -79,7 +79,7 @@ def run_command(
         typer.echo(f"Error: Workspace does not exist: {work_dir}", err=True)
         raise typer.Exit(1)
 
-    typer.echo("🚀 Nimbus Run Mode", err=True)
+    typer.echo("Nimbus Run Mode", err=True)
     typer.echo(f"   Model: {model}", err=True)
     typer.echo(f"   Workspace: {work_dir}", err=True)
     typer.echo(f"   Max iterations: {max_iterations}", err=True)
@@ -108,12 +108,12 @@ def run_command(
         typer.echo(json.dumps(output, indent=2))
     else:
         if result["status"] == "OK":
-            typer.echo("✅ Task completed successfully", err=True)
+            typer.echo("Task completed successfully", err=True)
             if result.get("output"):
                 typer.echo("\n--- Result ---")
                 typer.echo(result["output"])
         else:
-            typer.echo(f"❌ Task failed: {result.get('error', 'Unknown error')}", err=True)
+            typer.echo(f"Task failed: {result.get('error', 'Unknown error')}", err=True)
             raise typer.Exit(1)
 
 
@@ -133,10 +133,10 @@ async def _run_task(
 
     try:
         # Import here to avoid circular imports
-        from nimbus.agentos import AgentOS, AgentOSConfig
-        from nimbus.core.runtime.vcpu import VCPUConfig
+        from nimbus import AgentOS
+        from nimbus.core.agent import AgentConfig
 
-        # Create LLM adapter using factory (LiteLLM)
+        # Create LLM adapter using factory
         from nimbus.adapters.llm_factory import create_llm_client
 
         # Create LLM client
@@ -147,17 +147,10 @@ async def _run_task(
 
         try:
             # Create AgentOS config with max_iterations
-            vcpu_config = VCPUConfig(max_iterations=max_iterations)
-            config = AgentOSConfig(
-                vcpu_config=vcpu_config,
-                workspace_info=f"Workspace: {workspace}",
-            )
+            config = AgentConfig(max_iterations=max_iterations)
 
-            # Create agent with default tools
-            from nimbus.tools import register_default_tools
-
-            agent = AgentOS(llm_client=llm, config=config)
-            register_default_tools(agent, workspace=workspace)
+            # Create agent with the LLM adapter
+            agent = AgentOS(config=config, adapter=llm)
 
             # Run the task
             result = await agent.run(instruction)

@@ -4,9 +4,9 @@
 
 :root {
   --nimbus-bg: #0c1220;
-  --nimbus-surface: rgba(148,163,184,0.06);
+  --nimbus-surface: rgba(148, 163, 184, 0.06);
   --nimbus-accent: #7dd3fc;
-  --nimbus-border: rgba(148,163,184,0.12);
+  --nimbus-border: rgba(148, 163, 184, 0.12);
 }
 
 * {
@@ -26,9 +26,9 @@ body {
   color: #e2e8f0;
   background-color: #0c1220;
   background-image:
-    radial-gradient(ellipse 80% 50% at 20% 40%, rgba(125,211,252,0.08), transparent),
-    radial-gradient(ellipse 60% 80% at 80% 20%, rgba(196,181,253,0.06), transparent),
-    radial-gradient(ellipse 100% 60% at 50% 100%, rgba(125,211,252,0.04), transparent);
+    radial-gradient(ellipse 80% 50% at 20% 40%, rgba(125, 211, 252, 0.08), transparent),
+    radial-gradient(ellipse 60% 80% at 80% 20%, rgba(196, 181, 253, 0.06), transparent),
+    radial-gradient(ellipse 100% 60% at 50% 100%, rgba(125, 211, 252, 0.04), transparent);
   background-attachment: fixed;
 }
 
@@ -41,7 +41,7 @@ body::before {
   width: 100%;
   height: 100%;
   background-image:
-    radial-gradient(circle at 50% 50%, rgba(148,163,184,0.03) 0%, transparent 50%);
+    radial-gradient(circle at 50% 50%, rgba(148, 163, 184, 0.03) 0%, transparent 50%);
   pointer-events: none;
   z-index: -1;
   opacity: 0.5;
@@ -58,17 +58,17 @@ body::before {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(148,163,184,0.15);
+  background: rgba(148, 163, 184, 0.15);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(148,163,184,0.25);
+  background: rgba(148, 163, 184, 0.25);
 }
 
 /* Selection */
 ::selection {
-  background: rgba(125,211,252,0.3);
+  background: rgba(125, 211, 252, 0.3);
   color: white;
 }
 
@@ -183,16 +183,19 @@ body::before {
 
 .markdown-content .code-block {
   @apply p-4 overflow-x-auto text-sm font-mono text-gray-300 bg-[#0d1117] m-0;
-  line-height: 1.5; /* Readable height for code */
+  line-height: 1.5;
+  /* Readable height for code */
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
 /* Specialized styling for ASCII diagrams */
 .is-diagram .code-block {
-  line-height: 1.15 !important; /* Tight height for connected lines */
+  line-height: 1.15 !important;
+  /* Tight height for connected lines */
   /* Optimized stack for CJK alignment */
   font-family: "Menlo", "Consolas", "Monaco", "Liberation Mono", "Noto Sans Mono CJK SC", "Microsoft YaHei Mono", "WenQuanYi Zen Hei Mono", "Courier New", monospace !important;
-  white-space: pre !important; /* No wrapping */
+  white-space: pre !important;
+  /* No wrapping */
 }
 
 /* ============================================
@@ -239,55 +242,57 @@ body::before {
    * 添加了 Noto Sans Mono CJK SC 等中文等宽字体
    */
   font-family: "Cascadia Code", "Fira Code", "SF Mono", Menlo, Monaco, "Noto Sans Mono CJK SC", "Source Han Sans CN", "Microsoft YaHei Mono", Consolas, "Liberation Mono", "Courier New", monospace !important;
-  
+
   /* 
    * 精确的字体设置 - 防止字符断裂，优化中文显示
    */
-  font-size: 13px !important; /* 稍微缩小以改善对齐 */
-  line-height: 1.2 !important; /* 稍微增加行高以改善可读性 */
+  font-size: 13px !important;
+  /* 稍微缩小以改善对齐 */
+  line-height: 1.2 !important;
+  /* 稍微增加行高以改善可读性 */
   font-weight: 400 !important;
-  
+
   /* 严格的间距控制 */
   letter-spacing: 0 !important;
   word-spacing: 0 !important;
   white-space: pre !important;
   tab-size: 4 !important;
-  
+
   /* 禁用所有字体特性，确保字符不合并 */
   font-variant: normal !important;
   font-variant-ligatures: none !important;
   font-feature-settings: "liga" 0, "calt" 0, "clig" 0, "dlig" 0, "hlig" 0 !important;
-  
+
   /* 优化渲染 - 改为 optimizeSpeed 以避免字符变形 */
   -webkit-font-smoothing: antialiased !important;
   -moz-osx-font-smoothing: grayscale !important;
   text-rendering: optimizeSpeed !important;
-  
+
   /* 布局控制 */
   overflow: visible !important;
   width: fit-content !important;
   min-width: fit-content !important;
   max-width: none !important;
-  
+
   /* 清除间距 */
   margin: 0 !important;
   padding: 0 !important;
-  
+
   /* 视觉效果 */
   color: #38bdf8 !important;
   background: transparent !important;
-  
+
   /* 防止文本换行和压缩 */
   word-break: keep-all !important;
   overflow-wrap: normal !important;
   hyphens: none !important;
-  
+
   /* 确保统一的字符宽度和方向性 */
   unicode-bidi: normal !important;
   direction: ltr !important;
   font-stretch: normal !important;
   font-style: normal !important;
-  
+
   /* 确保块级显示 */
   display: inline-block !important;
 }
@@ -339,6 +344,7 @@ body::before {
 
 /* 为不同操作系统优化字体选择 */
 @media screen and (-webkit-min-device-pixel-ratio: 2) {
+
   /* 高DPI屏幕优化 */
   .ascii-diagram-enhanced {
     -webkit-font-smoothing: subpixel-antialiased !important;
@@ -446,18 +452,175 @@ body::before {
 
 /* Mobile touch optimization */
 @media (max-width: 767px) {
+
   /* Prevent double-tap zoom */
   * {
     touch-action: manipulation;
   }
 
   /* Ensure minimum touch target size */
-  button, a, [role="button"] {
+  button,
+  a,
+  [role="button"] {
     min-height: 36px;
   }
 
   /* Prevent iOS auto-zoom on focus */
-  input, textarea, select {
+  input,
+  textarea,
+  select {
     font-size: 16px !important;
   }
+}
+
+/* ========== Pi-inspired UI Enhancements ========== */
+
+/* Streaming message left-border pulse animation */
+@keyframes streaming-pulse {
+
+  0%,
+  100% {
+    border-left-color: rgba(125, 211, 252, 0.3);
+  }
+
+  50% {
+    border-left-color: rgba(125, 211, 252, 0.8);
+  }
+}
+
+.streaming-message {
+  border-left: 3px solid rgba(125, 211, 252, 0.3);
+  animation: streaming-pulse 2s ease-in-out infinite;
+}
+
+/* Message fade-in entrance animation */
+@keyframes message-fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+.message-enter {
+  animation: message-fade-in 250ms ease-out;
+}
+
+/* Reading indicator - three dot pulse */
+@keyframes reading-dot-pulse {
+
+  0%,
+  80%,
+  100% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.reading-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.reading-indicator .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: #7dd3fc;
+  animation: reading-dot-pulse 1.4s ease-in-out infinite;
+}
+
+.reading-indicator .dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.reading-indicator .dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+/* Hide scrollbar utility */
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* New messages floating pill */
+.new-messages-pill {
+  animation: message-fade-in 200ms ease-out;
+}
+/* ========== Token Usage Footer ========== */
+.token-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 4px 0;
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: rgba(148, 163, 184, 0.6);
+  user-select: none;
+}
+
+.token-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.06);
+  transition: color 0.2s;
+}
+
+.token-stat:hover {
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.token-cache {
+  color: rgba(250, 204, 21, 0.5);
+}
+
+.token-cache:hover {
+  color: rgba(250, 204, 21, 0.8);
+}
+
+.token-cost {
+  color: rgba(74, 222, 128, 0.5);
+  font-weight: 500;
+}
+
+.token-cost:hover {
+  color: rgba(74, 222, 128, 0.8);
+}
+
+/* Streaming text fade-in effect */
+.streaming-fade-in {
+  mask-image: linear-gradient(to bottom, black calc(100% - 20px), transparent 100%);
+  transition: mask-image 0.3s_ease-out;
+}
+
+@keyframes content-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.new-content-segment {
+  animation: content-fade-in 0.3s ease-out forwards;
 }

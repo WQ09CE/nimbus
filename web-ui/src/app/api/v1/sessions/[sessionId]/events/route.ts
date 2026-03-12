@@ -32,6 +32,7 @@ export async function GET(
     });
   }
 
+  // Pass SSE stream through — requires compress: false in next.config.mjs
   return new Response(upstreamRes.body, {
     status: 200,
     headers: {

@@ -1,8 +1,0 @@
-# Hello World - Basic file creation task
-instruction: |
-  Create a file called hello.txt in the current workspace.
-  Write exactly "Hello, world!" to it (without quotes).
-
-difficulty: easy
-category: file_operations
-timeout_sec: 60.0

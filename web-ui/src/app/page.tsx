@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { useChatStore } from "@/stores";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { ChatList } from "@/components/chat/ChatList";
@@ -8,10 +9,12 @@ import { ModelSelector } from "@/components/chat/ModelSelector";
 import { FileExplorer } from "@/components/chat/FileExplorer";
 import { WorkingIndicator } from "@/components/chat/WorkingIndicator";
 import { ArtifactViewer } from "@/components/chat/ArtifactViewer";
+import { TokenFooter } from "@/components/chat/TokenFooter";
 
 import { SessionPanel } from "@/components/session/SessionPanel";
+import { useSessionWatcher } from "@/hooks/useSessionWatcher";
 
-export default function Home() {
+function Home() {
   // Fine-grained selectors — only subscribe to what Home actually needs
   const session = useChatStore(s => s.session);
   const messages = useChatStore(s => s.messages);
@@ -29,6 +32,10 @@ export default function Home() {
   const interruptMessage = useChatStore(s => s.interruptMessage);
   const clearError = useChatStore(s => s.clearError);
 
+  // Background watcher: detects when a remote client starts a task on this session
+  useSessionWatcher();
+
+  const searchParams = useSearchParams();
   const [mounted, setMounted] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
   const [showSessionPanel, setShowSessionPanel] = useState(false);
@@ -44,9 +51,13 @@ export default function Home() {
   useEffect(() => {
     setMounted(true);
     const init = async () => {
-      const savedSessionId = localStorage.getItem("nimbus_session_id");
-      if (savedSessionId && !session) {
-        await loadSession(savedSessionId);
+      // URL param takes highest priority: ?session=<id> for multi-client sharing
+      const urlSessionId = searchParams.get("session");
+      const savedSessionId = sessionStorage.getItem("nimbus_session_id");
+      const targetSessionId = urlSessionId || savedSessionId;
+
+      if (targetSessionId && !session) {
+        await loadSession(targetSessionId);
       } else if (!session) {
         await createNewSession();
       }
@@ -273,6 +284,9 @@ export default function Home() {
 
           {/* Input Area */}
           <div className="flex-shrink-0 p-3 md:p-6 pt-0 bg-transparent">
+            <div className="max-w-4xl mx-auto px-2 md:px-4">
+              <TokenFooter />
+            </div>
             <ChatInput
               onSend={sendMessage}
               onInterrupt={interruptMessage}
@@ -321,5 +335,17 @@ export default function Home() {
         onClose={() => setShowSessionPanel(false)}
       />
     </div>
+  );
+}
+
+export default function Page() {
+  return (
+    <Suspense fallback={
+      <div className="h-screen bg-nimbus-bg flex items-center justify-center">
+        <div className="text-gray-500 font-mono">Loading...</div>
+      </div>
+    }>
+      <Home />
+    </Suspense>
   );
 }

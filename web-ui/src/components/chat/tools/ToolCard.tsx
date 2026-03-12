@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { ToolDisplay } from './ToolDisplay';
 import { DispatchCard } from './DispatchCard';
+import { SpawnAgentCard } from './SpawnAgentCard';
 import { LiveTimer } from './LiveTimer';
 import type { ToolCall, ToolResult } from '@/lib/api';
 
@@ -22,6 +23,8 @@ interface ToolCardProps {
     agentType?: "core" | "dispatch";
     subCalls?: ToolCall[];
     subResults?: ToolResult[];
+    ui_detail?: Record<string, any>;
+    sub_events?: Record<string, any>[];
   };
   defaultExpanded?: boolean;
   /**
@@ -39,14 +42,29 @@ interface ToolCardProps {
 
 export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: ToolCardProps) {
   // Hook must be called unconditionally (React Rules of Hooks)
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? false);
+  // Default: always expanded for observability
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? true);
+
+  // Auto-expand when tool starts running (but don't auto-collapse on complete)
+  const prevStatus = useRef(tool.status);
+  useEffect(() => {
+    if (prevStatus.current !== "running" && tool.status === "running") {
+      setIsExpanded(true);
+    }
+    prevStatus.current = tool.status;
+  }, [tool.status]);
 
   // Meta-tools (Dispatch/Explore/Implement/Design/Test) get the dedicated sub-agent card
   if (META_TOOLS.has(tool.name)) {
     return <DispatchCard tool={tool} defaultState={defaultState} isParallel={isParallel} />;
   }
 
-  // Status Colors & Icons
+  // Next-Gen Spawn Agent gets the SpawnAgentCard
+  if (tool.name === "spawn_agent") {
+    return <SpawnAgentCard tool={tool} defaultState={defaultState} />;
+  }
+
+  // Status Colors & Icons for generic tools
   const getStatusStyle = () => {
     switch (tool.status) {
       case "running":
@@ -84,7 +102,7 @@ export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: To
     // Try to find a command argument
     const cmdArg = tool.args.command || tool.args.cmd || tool.args.CommandLine || tool.args.command_line;
 
-    if (["Read", "Write", "Edit", "view_file", "replace_file_content", "write_to_file", "edit_file"].some(n => tool.name.toLowerCase().includes(n.toLowerCase()))) {
+    if (["Read", "view_file", "Edit", "Write", "multi_replace_file_content", "replace_file_content"].some(n => tool.name.toLowerCase().includes(n.toLowerCase()))) {
       if (typeof pathArg === 'string') {
         const parts = pathArg.split('/');
         const fileName = parts.pop() || pathArg;
@@ -104,15 +122,24 @@ export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: To
           }
         }
       }
-    } else if (["Bash", "RunCommand", "run_command", "execute"].some(n => tool.name.toLowerCase().includes(n.toLowerCase()))) {
+    } else if (["Bash", "run_command"].some(n => tool.name.toLowerCase().includes(n.toLowerCase()))) {
       if (typeof cmdArg === 'string') {
-        summary = cmdArg;
+        summary = cmdArg.length > 50 ? cmdArg.substring(0, 47) + "..." : cmdArg;
       }
+    } else if (tool.name === "Grep") {
+      summary = tool.args.pattern || '';
+      if (tool.args.path) {
+        const parts = String(tool.args.path).split('/');
+        summary += ` in ${parts.pop()}`;
+      }
+    } else if (tool.name === "Glob") {
+      summary = tool.args.pattern || '';
     } else if (tool.name.toLowerCase().includes("search") && (tool.args.query || tool.args.Query)) {
       summary = (tool.args.query || tool.args.Query) as string;
     }
   }
 
+  // Generic card wrapper for all other tools
   return (
     <div data-testid="tool-card" className={`
       group/card overflow-hidden max-w-full rounded-lg border transition-all duration-200 relative
@@ -184,7 +211,7 @@ export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: To
 
       {/* Body */}
       {isExpanded && (
-        <div className="border-t border-gray-800/50 bg-[#0d1117]/50 overflow-x-auto">
+        <div className="border-t border-gray-800/50 bg-[#0d1117] overflow-x-auto">
           <ToolDisplay tool={tool} isExpanded={true} />
         </div>
       )}

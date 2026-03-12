@@ -203,7 +203,7 @@
     },
     {
       "delay_ms": 50,
-      "event": "dag_complete",
+      "event": "done",
       "data": {
         "status": "OK"
       }

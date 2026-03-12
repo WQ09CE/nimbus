@@ -1,0 +1,6 @@
+This is a sample video processing pipeline description.
+- Input: RAW YUV
+- Step 1: Resizing to 720p
+- Step 2: H.264 Encoding
+- Step 3: MP4 Muxing
+- Output: MP4 file

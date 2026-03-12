@@ -43,9 +43,12 @@ async def test_direct_adapter_fallback_on_429():
     # Second call returns a valid async generator
     
     mock_response_chunk = MagicMock()
-    mock_response_chunk.choices = [MagicMock()]
-    mock_response_chunk.choices[0].delta.content = "Fallback success"
-    mock_response_chunk.choices[0].delta.tool_calls = None
+    mock_choice = MagicMock()
+    mock_choice.delta.content = "Fallback success"
+    mock_choice.delta.tool_calls = None
+    mock_choice.delta.reasoning_content = None
+    mock_choice.finish_reason = "stop"
+    mock_response_chunk.choices = [mock_choice]
 
     async def async_gen():
         yield mock_response_chunk

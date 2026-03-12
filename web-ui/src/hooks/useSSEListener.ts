@@ -1,339 +1,153 @@
-import { useEffect } from 'react';
 import { useChatStore } from '../stores/chat-store';
-import { useWorkflowStore } from '../stores/workflow-store';
 import { subscribeToEvents, ToolCall, ToolResult } from '@/lib/api';
-import { Message } from '@/types';
-import { routeSubToolCall, routeSubToolResult, routeExecutorStart, routeExecutorDone } from '../stores/MessageDemuxer';
+import type { Message } from '@/stores/chat-store';
 
 export const reconnectToSession = async (sessionId: string, attempt: number = 0) => {
     const state = useChatStore.getState();
     const { session, isStreaming, streamAbortController } = state;
     if (!session || session.id !== sessionId) return;
 
-    // Prevent re-entry: abort existing stream if it is running
     if (isStreaming && streamAbortController) {
-        console.log("[useSSEListener] Aborting existing stream before reconnect");
         streamAbortController.abort();
     }
 
     const abortController = new AbortController();
 
-    useChatStore.setState({
+    const STREAMING_ID = "streaming-assistant";
+    const initialAssistantMsg: Message = {
+        id: STREAMING_ID,
+        role: "assistant",
+        content: "",
+        parts: [],
+        timestamp: Date.now(),
+        toolCallsMap: {},
+        toolResults: [],
+        toolResultsMap: {},
+        _rev: 0,
+    };
+
+    useChatStore.setState(s => ({
         isStreaming: true,
-        isReconnecting: false,
-        streamingContent: "",
-        streamingToolCalls: [],
-        streamingToolResults: [],
-        lastHeartbeat: Date.now(),
+        messages: [...s.messages, initialAssistantMsg],
         streamAbortController: abortController,
-    });
+        error: null,
+    }));
 
     try {
-        let assistantContent = "";
-        const toolCalls: ToolCall[] = [];
-        const toolResults: ToolResult[] = [];
-
         for await (const event of subscribeToEvents(sessionId, abortController.signal)) {
             const { type, data } = event;
+            const currentMsgs = useChatStore.getState().messages;
+            const targetIdx = currentMsgs.findIndex(m => m.id === STREAMING_ID);
+            if (targetIdx === -1) continue;
+
+            const targetMsg = { ...currentMsgs[targetIdx] };
+            let updated = false;
 
             switch (type) {
-                case "connected":
+                case "user_message": {
+                    if (data && typeof data === "object") {
+                        const content = (data as any)?.content || "";
+                        if (content) {
+                            const userMsg: Message = {
+                                id: `user-remote-${Date.now()}`,
+                                role: "user",
+                                content,
+                                parts: [{ type: "text", content }],
+                                timestamp: Date.now(),
+                                _rev: 0,
+                            };
+                            const msgs = [...useChatStore.getState().messages];
+                            const streamIdx = msgs.findIndex(m => m.id === STREAMING_ID);
+                            if (streamIdx !== -1) {
+                                msgs.splice(streamIdx, 0, userMsg);
+                            } else {
+                                msgs.push(userMsg);
+                            }
+                            useChatStore.setState({ messages: msgs });
+                        }
+                    }
                     break;
-
-                case "thinking":
+                }
                 case "message": {
-                    let newContent = "";
-                    if (typeof data === "string") {
-                        newContent = data;
-                    } else if (typeof data === "object" && data) {
-                        const d = data as { content?: unknown; chunk?: unknown };
-                        if ("content" in d && typeof d.content === "string") {
-                            newContent = d.content;
-                        } else if ("chunk" in d && typeof d.chunk === "string") {
-                            newContent = d.chunk;
+                    const chunk = typeof data === "string" ? data : (data as any)?.content || (data as any)?.chunk || "";
+                    if (chunk) {
+                        targetMsg.content += chunk;
+                        const parts = [...(targetMsg.parts || [])];
+                        const lastPart = parts[parts.length - 1];
+                        if (lastPart && lastPart.type === "text") {
+                            parts[parts.length - 1] = { ...lastPart, content: lastPart.content + chunk };
+                        } else {
+                            parts.push({ type: "text", content: chunk });
                         }
-                    }
-                    if (newContent) {
-                        assistantContent += newContent;
-                        useChatStore.setState({
-                            streamingContent: assistantContent,
-                            lastHeartbeat: Date.now(),
-                        });
+                        targetMsg.parts = parts;
+                        updated = true;
                     }
                     break;
                 }
-
-                case "tool_call":
+                case "tool_call": {
                     if (data && typeof data === "object") {
-                        const d = data as Record<string, unknown>;
-                        toolCalls.push({
-                            id: (d.action_id || d.id || "") as string,
-                            name: (d.tool || d.name || "unknown") as string,
-                            arguments: (d.args || d.arguments || {}) as Record<string, unknown>,
-                            agentType: "core",
-                        });
-                        useChatStore.setState({
-                            streamingContent: assistantContent,
-                            streamingToolCalls: [...toolCalls],
-                            lastHeartbeat: Date.now(),
-                        });
+                        const d = data as any;
+                        const tc: ToolCall = {
+                            id: d.action_id || d.id || `tc-${Date.now()}`,
+                            name: d.tool || d.name || "unknown",
+                            arguments: d.args || d.arguments || {},
+                        };
+                        const tcMap = targetMsg.toolCallsMap || {};
+                        targetMsg.toolCallsMap = { ...tcMap, [tc.id as string]: tc };
+                        const parts = [...(targetMsg.parts || [])];
+                        parts.push({ type: "tool", toolCall: tc });
+                        targetMsg.parts = parts;
+                        updated = true;
                     }
                     break;
-
-                case "session_updated":
+                }
+                case "tool_result": {
                     if (data && typeof data === "object") {
-                        const d = data as Record<string, unknown>;
-                        if (d.name && d.session_id) {
-                            useChatStore.setState(state => {
-                                if (state.session && state.session.id === d.session_id) {
-                                    return { session: { ...state.session, name: d.name as string } };
-                                }
-                                return state;
-                            });
-                        }
-                    }
-                    break;
-
-                case "tool_result":
-                    if (data && typeof data === "object") {
-                        const d = data as Record<string, unknown>;
-                        const fault = d.fault as { message: string } | undefined;
-                        toolResults.push({
-                            id: (d.action_id || d.id || "") as string,
-                            name: (d.tool || d.name || "unknown") as string,
+                        const d = data as any;
+                        const tcId = d.action_id || d.id;
+                        const tr: ToolResult = {
+                            id: tcId || "",
+                            name: d.tool || d.name || "unknown",
                             result: d.output !== undefined ? d.output : d.result,
-                            error: d.status === "ERROR" ? (fault ? fault.message : "Error") : undefined,
-                            duration: d.duration_ms as number | undefined,
-                        });
-                        useChatStore.setState({
-                            streamingToolResults: [...toolResults],
-                            lastHeartbeat: Date.now(),
-                        });
-                    }
-                    break;
-
-                case "sub_tool_call":
-                    if (data && typeof data === "object") {
-                        const d = data as Record<string, unknown>;
-                        const subTool: ToolCall = {
-                            id: (d.action_id || d.id || "") as string,
-                            name: (d.tool || d.name || "unknown") as string,
-                            arguments: (d.args || d.arguments || {}) as Record<string, unknown>,
-                            agentType: "dispatch",
+                            error: d.status === "ERROR" ? (d.fault?.message || "Error") : undefined,
                         };
-                        routeSubToolCall(subTool, d, toolCalls, (args) => useWorkflowStore.getState().upsertCall(args));
-                        useChatStore.setState({
-                            streamingToolCalls: [...toolCalls],
-                            lastHeartbeat: Date.now(),
-                        });
-                    }
-                    break;
-
-                case "sub_tool_result":
-                    if (data && typeof data === "object") {
-                        const d = data as Record<string, unknown>;
-                        const fault = d.fault as { message: string } | undefined;
-                        const subResult: ToolResult = {
-                            id: (d.action_id || d.id || "") as string,
-                            name: (d.tool || d.name || "unknown") as string,
-                            result: d.output !== undefined ? d.output : d.result,
-                            error: d.status === "ERROR" ? (fault ? fault.message : "Error") : undefined,
-                            duration: d.duration_ms as number | undefined,
-                        };
-                        routeSubToolResult(subResult, d, toolCalls, (args) => useWorkflowStore.getState().upsertCall(args));
-                        useChatStore.setState({
-                            streamingToolCalls: [...toolCalls],
-                            lastHeartbeat: Date.now(),
-                        });
-                    }
-                    break;
-
-                case "executor_start": {
-                    const esd = data as Record<string, any>;
-                    routeExecutorStart(esd, toolCalls, (args) => useWorkflowStore.getState().upsertCall(args));
-                    useChatStore.setState({
-                        streamingToolCalls: [...toolCalls],
-                        lastHeartbeat: Date.now(),
-                    });
-                    break;
-                }
-
-                case "executor_done": {
-                    const edd = data as Record<string, any>;
-                    routeExecutorDone(edd, toolCalls, (args) => useWorkflowStore.getState().upsertCall(args));
-                    useChatStore.setState({
-                        streamingToolCalls: [...toolCalls],
-                        lastHeartbeat: Date.now(),
-                    });
-                    break;
-                }
-
-                case "step_start":
-                    if (assistantContent || toolCalls.length > 0) {
-                        const stepMsg: Message = {
-                            id: `assistant-reconnect-${Date.now()}`,
-                            role: "assistant",
-                            content: assistantContent,
-                            toolCalls: toolCalls.length > 0 ? [...toolCalls] : undefined,
-                            toolResults: toolResults.length > 0 ? [...toolResults] : undefined,
-                            timestamp: Date.now(),
-                        };
-                        useChatStore.setState(s => ({
-                            messages: [...s.messages, stepMsg],
-                            streamingContent: "",
-                            streamingToolCalls: [],
-                            streamingToolResults: [],
-                        }));
-                        assistantContent = "";
-                        toolCalls.length = 0;
-                        toolResults.length = 0;
-                    }
-                    break;
-
-                case "heartbeat": {
-                    const hbData = event.data as Record<string, unknown>;
-                    useChatStore.setState({
-                        lastHeartbeat: Date.now(),
-                        ...(hbData?.fsm_state ? { fsmState: hbData.fsm_state as 'THINKING' | 'ACTING' | 'STREAMING' | 'IDLE' } : {}),
-                    });
-                    break;
-                }
-
-                case "dag_complete":
-                    try {
-                        const { getSessionMessages } = await import("@/lib/api/sessions");
-                        const serverMessages = await getSessionMessages(sessionId);
-                        const currentSessionForDag = useChatStore.getState().session;
-                        if (serverMessages.length > 0 && currentSessionForDag && currentSessionForDag.id === sessionId) {
-                            await useChatStore.getState().switchSession(currentSessionForDag);
-                            return; // State fully synced with server, exit loop
+                        targetMsg.toolResults = [...(targetMsg.toolResults || []), tr];
+                        const parts = [...(targetMsg.parts || [])];
+                        const matchIdx = parts.findIndex(p => p.type === "tool" && p.toolCall?.id === tcId);
+                        if (matchIdx !== -1) {
+                            const toolPart = parts[matchIdx] as { type: "tool"; toolCall: ToolCall; toolResult?: ToolResult };
+                            parts[matchIdx] = { ...toolPart, toolResult: tr };
                         }
-                    } catch {
-                        // Fallback: just let the loop end and commit manually
+                        targetMsg.parts = parts;
+                        updated = true;
                     }
-                    break; // Allow loop to end so finalizer block runs
-
+                    break;
+                }
                 case "error":
-                    useChatStore.setState({
-                        isStreaming: false,
-                        streamingContent: "",
-                        streamingToolCalls: [],
-                        streamingToolResults: [],
-                        error: typeof data === "string" ? data : "Stream error",
-                        streamAbortController: null,
-                    });
-                    return;
+                    useChatStore.setState({ error: typeof data === "string" ? data : (data as any)?.message || "Stream error" });
+                    abortController.abort();
+                    break;
+                case "done":
+                    abortController.abort();
+                    break;
+            }
+
+            if (updated) {
+                targetMsg._rev = (targetMsg._rev || 0) + 1;
+                const nextMsgs = [...currentMsgs];
+                nextMsgs[targetIdx] = targetMsg;
+                useChatStore.setState({ messages: nextMsgs });
             }
         }
 
-        // Stream finished, finalize state without forcing a history wipe
-        useChatStore.setState(state => {
-            const nextMessages = [...state.messages];
-            if (assistantContent || toolCalls.length > 0) {
-                nextMessages.push({
-                    id: `assistant-${Date.now()}`,
-                    role: "assistant",
-                    content: assistantContent,
-                    toolCalls: toolCalls.length > 0 ? [...toolCalls] : undefined,
-                    toolResults: toolResults.length > 0 ? [...toolResults] : undefined,
-                    timestamp: Date.now(),
-                });
-            }
-            return {
-                messages: nextMessages,
-                isStreaming: false,
-                streamingContent: "",
-                streamingToolCalls: [],
-                streamingToolResults: [],
-                streamAbortController: null,
-                fsmState: "IDLE", // Reset FSM to idle when stream ends gracefully
-            };
-        });
+        const finalMsgs = [...useChatStore.getState().messages];
+        const streamingIdx = finalMsgs.findIndex(m => m.id === STREAMING_ID);
+        if (streamingIdx !== -1) {
+            finalMsgs[streamingIdx].id = `assistant-${Date.now()}`;
+        }
+        useChatStore.setState({ messages: finalMsgs, isStreaming: false, streamAbortController: null });
+
     } catch (err) {
-        if (err instanceof Error && err.name === "AbortError") {
-            useChatStore.setState({
-                isStreaming: false,
-                isReconnecting: false,
-                streamAbortController: null,
-            });
-        } else {
-            console.warn(`[useSSEListener] Reconnect failed (attempt ${attempt}):`, err);
-
-            // Exponential backoff
-            const maxRetries = 5;
-            if (attempt < maxRetries) {
-                const backoffMs = Math.min(1000 * Math.pow(2, attempt), 10000);
-                console.log(`[useSSEListener] Retrying in ${backoffMs}ms...`);
-                useChatStore.setState({ isReconnecting: true });
-
-                setTimeout(() => {
-                    const currentStore = useChatStore.getState();
-                    if (currentStore.session?.id === sessionId && !currentStore.isStreaming) {
-                        reconnectToSession(sessionId, attempt + 1);
-                    } else {
-                        useChatStore.setState({ isReconnecting: false });
-                    }
-                }, backoffMs);
-            } else {
-                console.error("[useSSEListener] Max reconnect retries reached.");
-                useChatStore.setState({
-                    isStreaming: false,
-                    isReconnecting: false,
-                    streamAbortController: null,
-                    error: "Connection lost. Please refresh or try again.",
-                });
-            }
-        }
+        useChatStore.setState({ isStreaming: false, streamAbortController: null });
     }
 };
-
-export function useSSEListener() {
-    useEffect(() => {
-        let visibilityTimer: ReturnType<typeof setTimeout> | null = null;
-
-        const handleVisibilityChange = () => {
-            if (document.visibilityState === 'visible') {
-                if (visibilityTimer) clearTimeout(visibilityTimer);
-                visibilityTimer = setTimeout(() => {
-                    const state = useChatStore.getState();
-                    const currentSession = state.session;
-                    if (currentSession && !state.isStreaming && !state.isLoading) {
-                        console.log('[useSSEListener] Visibility restored, checking if session needs to be reloaded...');
-                        state.loadSession(currentSession.id);
-                    }
-                }, 300);
-            }
-        };
-
-        document.addEventListener('visibilitychange', handleVisibilityChange);
-
-        // Heartbeat timeout watchdog: if no heartbeat received for 45s during streaming,
-        // attempt automatic reconnection
-        const HEARTBEAT_TIMEOUT_MS = 45_000;
-        const heartbeatWatchdog = setInterval(() => {
-            const state = useChatStore.getState();
-            if (!state.isStreaming || !state.session) return;
-            const lastHb = state.lastHeartbeat;
-            if (lastHb && Date.now() - lastHb > HEARTBEAT_TIMEOUT_MS) {
-                console.warn(
-                    "[SSE] Heartbeat timeout — no event received for",
-                    Math.round((Date.now() - lastHb) / 1000),
-                    "s. Attempting reconnection..."
-                );
-                // Reset lastHeartbeat to prevent repeated triggers
-                useChatStore.setState({ lastHeartbeat: Date.now() });
-                reconnectToSession(state.session.id);
-            }
-        }, 10_000); // Check every 10 seconds
-
-        return () => {
-            document.removeEventListener('visibilitychange', handleVisibilityChange);
-            if (visibilityTimer) clearTimeout(visibilityTimer);
-            clearInterval(heartbeatWatchdog);
-        };
-    }, []);
-
-    return {
-        reconnectToSession
-    };
-}

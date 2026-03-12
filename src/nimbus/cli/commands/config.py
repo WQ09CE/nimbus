@@ -7,9 +7,11 @@ Usage:
     nimbus config set <key> <value>
     nimbus config get <key>
     nimbus config reset
+
+Note: SQLite-based persistent storage has been removed in nimbus-next.
+Configuration is managed via ~/.nimbus/config.json and environment variables.
 """
 
-import asyncio
 import os
 from typing import Optional
 
@@ -20,198 +22,70 @@ from rich.table import Table
 app = typer.Typer()
 console = Console()
 
-# Configuration keys and their defaults
-CONFIG_DEFAULTS = {
-    "default_memory_type": "tiered",
-    "default_planner_type": "dag",
-    "max_concurrent_sessions": "10",
-    "default_host": "127.0.0.1",
-    "default_port": "8080",
-}
-
-# Valid values for each config key
-CONFIG_VALID_VALUES = {
-    "default_memory_type": ["simple", "tiered"],
-    "default_planner_type": ["simple", "dag"],
-}
-
-
-def _get_db_path() -> str:
-    """Get database path from environment or default."""
-    return os.environ.get("NIMBUS_DB", ".nimbus/nimbus.db")
-
-
-async def _show_config_async(db_path: str) -> None:
-    """Show all configuration."""
-    from nimbus.storage.sqlite import SQLiteStorage
-
-    storage = SQLiteStorage(db_path)
-    try:
-        await storage.initialize()
-
-        # Get all config from kv_store
-        async with storage._get_connection() as db:
-            cursor = await db.execute("SELECT key, value FROM kv_store WHERE key LIKE 'config.%'")
-            rows = await cursor.fetchall()
-            stored_config = {row["key"].replace("config.", ""): row["value"] for row in rows}
-
-        # Merge with defaults
-        config = {**CONFIG_DEFAULTS, **stored_config}
-
-        # Create table
-        table = Table(title="Nimbus Configuration")
-        table.add_column("Key", style="cyan", no_wrap=True)
-        table.add_column("Value", style="green")
-        table.add_column("Source", style="dim")
-
-        for key, default in CONFIG_DEFAULTS.items():
-            value = config.get(key, default)
-            source = "stored" if key in stored_config else "default"
-            table.add_row(key, value, source)
-
-        console.print(table)
-
-        # Also show environment variables
-        console.print("\n[bold]Environment Variables[/bold]")
-        env_vars = [
-            ("NIMBUS_HOST", os.environ.get("NIMBUS_HOST", "[dim]not set[/dim]")),
-            ("NIMBUS_PORT", os.environ.get("NIMBUS_PORT", "[dim]not set[/dim]")),
-            ("NIMBUS_DB", os.environ.get("NIMBUS_DB", "[dim]not set[/dim]")),
-        ]
-        for name, value in env_vars:
-            console.print(f"  {name}: {value}")
-    finally:
-        await storage.close()
-
-
-async def _get_config_async(db_path: str, key: str) -> None:
-    """Get a specific configuration value."""
-    from nimbus.storage.sqlite import SQLiteStorage
-
-    if key not in CONFIG_DEFAULTS:
-        console.print(f"[red]Unknown config key: {key}[/red]")
-        console.print(f"Valid keys: {', '.join(CONFIG_DEFAULTS.keys())}")
-        raise typer.Exit(code=1)
-
-    storage = SQLiteStorage(db_path)
-    try:
-        await storage.initialize()
-
-        async with storage._get_connection() as db:
-            cursor = await db.execute(
-                "SELECT value FROM kv_store WHERE key = ?", (f"config.{key}",)
-            )
-            row = await cursor.fetchone()
-
-        value = row["value"] if row else CONFIG_DEFAULTS[key]
-        console.print(value)
-    finally:
-        await storage.close()
-
-
-async def _set_config_async(db_path: str, key: str, value: str) -> None:
-    """Set a configuration value."""
-    from nimbus.storage.sqlite import SQLiteStorage
-
-    if key not in CONFIG_DEFAULTS:
-        console.print(f"[red]Unknown config key: {key}[/red]")
-        console.print(f"Valid keys: {', '.join(CONFIG_DEFAULTS.keys())}")
-        raise typer.Exit(code=1)
-
-    # Validate value if there are constraints
-    if key in CONFIG_VALID_VALUES:
-        if value not in CONFIG_VALID_VALUES[key]:
-            console.print(f"[red]Invalid value for {key}: {value}[/red]")
-            console.print(f"Valid values: {', '.join(CONFIG_VALID_VALUES[key])}")
-            raise typer.Exit(code=1)
-
-    # Validate numeric values
-    if key in ["max_concurrent_sessions", "default_port"]:
-        try:
-            int(value)
-        except ValueError:
-            console.print(f"[red]Value must be a number: {value}[/red]")
-            raise typer.Exit(code=1)
-
-    storage = SQLiteStorage(db_path)
-    try:
-        await storage.initialize()
-
-        async with storage._get_connection() as db:
-            await db.execute(
-                """
-                INSERT OR REPLACE INTO kv_store (key, value, updated_at)
-                VALUES (?, ?, CURRENT_TIMESTAMP)
-                """,
-                (f"config.{key}", value),
-            )
-            await db.commit()
-
-        console.print(f"[green]Set {key} = {value}[/green]")
-    finally:
-        await storage.close()
-
-
-async def _reset_config_async(db_path: str) -> None:
-    """Reset all configuration to defaults."""
-    from nimbus.storage.sqlite import SQLiteStorage
-
-    storage = SQLiteStorage(db_path)
-    try:
-        await storage.initialize()
-
-        async with storage._get_connection() as db:
-            await db.execute("DELETE FROM kv_store WHERE key LIKE 'config.%'")
-            await db.commit()
-
-        console.print("[green]Configuration reset to defaults.[/green]")
-    finally:
-        await storage.close()
-
 
 @app.command("show")
-def show_config(
-    db: Optional[str] = typer.Option(
-        None,
-        "--db",
-        "-d",
-        help="Database file path",
-        envvar="NIMBUS_DB",
-    ),
-) -> None:
-    """Show all configuration.
+def show_config() -> None:
+    """Show current configuration.
 
-    Displays both stored configuration and environment variables.
+    Displays environment variables and config file settings.
 
     Examples:
         nimbus config show
     """
-    db_path = db if db else _get_db_path()
-    asyncio.run(_show_config_async(db_path))
+    from nimbus.config import get_config
+
+    config = get_config(_force_reload=True)
+
+    table = Table(title="Nimbus Configuration")
+    table.add_column("Key", style="cyan", no_wrap=True)
+    table.add_column("Value", style="green")
+    table.add_column("Source", style="dim")
+
+    table.add_row("default_model", config.default_model, "config")
+    table.add_row("agent_profile", config.agent_profile, "config")
+    table.add_row("max_tokens", str(config.max_tokens), "config")
+    table.add_row("timeout", str(config.timeout), "config")
+    table.add_row("server_port", str(config.server_port), "config")
+    table.add_row("anthropic_use_oauth", str(config.anthropic_use_oauth), "config")
+    table.add_row("codex_use_oauth", str(config.codex_use_oauth), "config")
+
+    console.print(table)
+
+    # Also show environment variables
+    console.print("\n[bold]Environment Variables[/bold]")
+    env_vars = [
+        ("NIMBUS_MODEL", os.environ.get("NIMBUS_MODEL", "[dim]not set[/dim]")),
+        ("NIMBUS_MAX_TOKENS", os.environ.get("NIMBUS_MAX_TOKENS", "[dim]not set[/dim]")),
+        ("NIMBUS_SERVER_PORT", os.environ.get("NIMBUS_SERVER_PORT", "[dim]not set[/dim]")),
+        ("NIMBUS_AGENT_PROFILE", os.environ.get("NIMBUS_AGENT_PROFILE", "[dim]not set[/dim]")),
+        ("GEMINI_API_KEY", "[dim]set[/dim]" if os.environ.get("GEMINI_API_KEY") else "[dim]not set[/dim]"),
+    ]
+    for name, value in env_vars:
+        console.print(f"  {name}: {value}")
 
 
 @app.command("get")
-def get_config(
+def get_config_cmd(
     key: str = typer.Argument(
         ...,
         help="Configuration key to get",
-    ),
-    db: Optional[str] = typer.Option(
-        None,
-        "--db",
-        "-d",
-        help="Database file path",
-        envvar="NIMBUS_DB",
     ),
 ) -> None:
     """Get a specific configuration value.
 
     Examples:
-        nimbus config get default_memory_type
-        nimbus config get max_concurrent_sessions
+        nimbus config get default_model
+        nimbus config get server_port
     """
-    db_path = db if db else _get_db_path()
-    asyncio.run(_get_config_async(db_path, key))
+    from nimbus.config import get_config
+
+    config = get_config(_force_reload=True)
+
+    if not hasattr(config, key):
+        console.print(f"[red]Unknown config key: {key}[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(str(getattr(config, key)))
 
 
 @app.command("set")
@@ -224,29 +98,23 @@ def set_config(
         ...,
         help="Value to set",
     ),
-    db: Optional[str] = typer.Option(
-        None,
-        "--db",
-        "-d",
-        help="Database file path",
-        envvar="NIMBUS_DB",
-    ),
 ) -> None:
     """Set a configuration value.
 
-    Valid keys:
-        - default_memory_type: simple | tiered
-        - default_planner_type: simple | dag
-        - max_concurrent_sessions: number
-        - default_host: hostname
-        - default_port: port number
+    Note: Persistent storage (SQLite) has been removed.
+    Use environment variables or edit ~/.nimbus/config.json directly.
 
     Examples:
-        nimbus config set default_memory_type tiered
-        nimbus config set max_concurrent_sessions 20
+        export NIMBUS_MODEL=anthropic/claude-sonnet-4
+        export NIMBUS_MAX_TOKENS=8192
     """
-    db_path = db if db else _get_db_path()
-    asyncio.run(_set_config_async(db_path, key, value))
+    console.print(
+        "[yellow]Persistent config storage is not available in this version.[/yellow]\n"
+        "Please set configuration via environment variables or edit ~/.nimbus/config.json.\n\n"
+        "Examples:\n"
+        f"  export NIMBUS_MODEL={value}\n"
+        "  Edit ~/.nimbus/config.json"
+    )
 
 
 @app.command("reset")
@@ -257,28 +125,19 @@ def reset_config(
         "-f",
         help="Skip confirmation prompt",
     ),
-    db: Optional[str] = typer.Option(
-        None,
-        "--db",
-        "-d",
-        help="Database file path",
-        envvar="NIMBUS_DB",
-    ),
 ) -> None:
-    """Reset all configuration to defaults.
+    """Reset configuration.
+
+    Note: Persistent storage (SQLite) has been removed.
+    Delete ~/.nimbus/config.json to reset to defaults.
 
     Examples:
         nimbus config reset
-        nimbus config reset --force
     """
-    if not force:
-        confirm = typer.confirm("Are you sure you want to reset all configuration?")
-        if not confirm:
-            console.print("[dim]Cancelled.[/dim]")
-            return
-
-    db_path = db if db else _get_db_path()
-    asyncio.run(_reset_config_async(db_path))
+    console.print(
+        "[yellow]Persistent config storage is not available in this version.[/yellow]\n"
+        "To reset, delete ~/.nimbus/config.json"
+    )
 
 
 if __name__ == "__main__":

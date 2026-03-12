@@ -8,7 +8,6 @@ This module provides:
 """
 
 import logging
-import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -17,7 +16,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .log_hub import log_hub, setup_log_hub_handler
-from .message_cache import MessageCache
 from .permission import PermissionManager
 from .sse import SSEHub
 
@@ -30,114 +28,42 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     Manage application lifespan.
 
     On startup:
-    - Initialize storage
     - Start SSE hub
     - Initialize session manager
+    - Set up log hub
 
     On shutdown:
     - Close all sessions
     - Stop SSE hub
-    - Close storage connections
+    - Remove loguru handlers
     """
-    # Get configuration from environment
-    db_path = os.environ.get("NIMBUS_DB", ".nimbus/nimbus.db")
-
-    # Import here to avoid circular imports
-    from nimbus.storage.sqlite import SQLiteStorage
-
-    # Initialize components
-    storage = SQLiteStorage(db_path)
-    await storage.initialize()
-
     sse_hub = SSEHub()
     await sse_hub.start()
 
     permission_manager = PermissionManager()
 
     # Use v2 session manager (AgentOS-based)
-    from .session_v2 import SessionManagerV2
+    from .session import SessionManagerV2
 
-    session_manager = SessionManagerV2(storage, sse_hub, permission_manager)
-
-    # Initialize message cache for conversation history
-    message_cache = MessageCache(
-        storage=storage,
-        max_messages=50,
-        cache_ttl_minutes=30,
+    session_manager = SessionManagerV2(
+        sse_hub=sse_hub,
+        permission_manager=permission_manager,
     )
 
     # Set up log hub for real-time log streaming
     setup_log_hub_handler(log_hub)
 
-    # Initialize default AgentOS for /api/chat endpoint
-    from pathlib import Path
-
-    from nimbus.agentos import AgentOS, AgentOSConfig
-    from nimbus.core.runtime.vcpu import VCPUConfig
-
-    if os.environ.get("NIMBUS_LLM") == "mock":
-        # Deterministic mock adapter for integration testing (no external LLM)
-        from nimbus.testing.mock_llm import MockLLMAdapter
-
-        llm = MockLLMAdapter()
-        await llm.start()
-        model = "mock/deterministic"
-        logger.info("Using MockLLMAdapter (NIMBUS_LLM=mock)")
-    else:
-        from nimbus.adapters.llm_factory import create_llm_client
-        from nimbus.config import get_config
-
-        cfg = get_config()
-        model = cfg.default_model
-
-        # Use factory to create LLM (uses LiteLLM / DirectAdapter)
-        llm = await create_llm_client(model=model)
-
-    # Config skills path
-    skill_paths = [Path("examples/skills")]
-
-    vcpu_config = VCPUConfig(max_iterations=50)
-    agent_config = AgentOSConfig(
-        vcpu_config=vcpu_config,
-        skill_paths=skill_paths
-    )
-
-    agent_os = AgentOS(llm_client=llm, config=agent_config)
-
-    # Register default tools
-    from nimbus.tools import register_default_tools
-
-    workspace = Path.cwd()
-    register_default_tools(agent_os, workspace=workspace)
-
-    logger.info(f"Initialized default AgentOS with model={model}, workspace={workspace}")
-    logger.info(f"Loaded skills from: {skill_paths}")
-
     # Store in app state
-    app.state.storage = storage
     app.state.log_hub = log_hub
     app.state.sse_hub = sse_hub
     app.state.permission_manager = permission_manager
     app.state.session_manager = session_manager
-    app.state.message_cache = message_cache
-    app.state.agent_os = agent_os
-    app.state.default_workspace = workspace
-    app.state.workspace_agents = {}  # Cache for workspace-specific agents
-    app.state.llm = llm  # Keep reference to close on shutdown
-
-    agent_os._ensure_heart_running()
 
     yield
-
-    await agent_os.shutdown()
-
-    # Cleanup LLM adapter
-    await llm.stop()
 
     # Cleanup
     await session_manager.close_all()
     await sse_hub.stop()
-    await storage.close()
 
     # Flush logs and remove handlers to prevent semaphore leaks (resource_tracker warning)
     from nimbus.core.logging import logger as loguru_logger
@@ -206,27 +132,7 @@ def create_app() -> FastAPI:
 
     # OpenCode compatibility layer removed
 
-    # Register AI SDK compatible routes (Vercel AI SDK Data Protocol)
-    from .api_ai_sdk import router as ai_sdk_router
 
-    app.include_router(ai_sdk_router, tags=["AI SDK"])
-
-    # Register frontend logging routes
-    from .api_logs import router as logs_router
-
-    app.include_router(logs_router, tags=["Logs"])
-
-    # Register debug routes (for inspecting agent state)
-    from .api_debug import router as debug_router
-
-    app.include_router(debug_router, tags=["Debug"])
-
-    # Register Vibe Coding IDE compatible routes
-    from .api_vibe import models_router as vibe_models_router
-    from .api_vibe import router as vibe_router
-
-    app.include_router(vibe_router, tags=["Vibe IDE"])
-    app.include_router(vibe_models_router, tags=["Vibe IDE"])
 
     # Serve static chat UI
     from pathlib import Path

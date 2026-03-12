@@ -19,14 +19,20 @@ export function DefaultTool({ name, args, result, error, status }: DefaultToolPr
         className="bg-black/40 p-3 rounded border border-gray-800"
       />
 
-      {/* Result */}
+      {/* Result — render strings directly to avoid DataDisplay's StringDisplay truncation */}
       {result && (
-        <DataDisplay
-          data={result}
-          title="Output"
-          maxDepth={3}
-          className="bg-black/40 p-3 rounded border border-gray-800 text-green-300/90"
-        />
+        typeof result === "string" ? (
+          <pre className="bg-black/40 p-3 rounded border border-gray-800 text-green-300/90 whitespace-pre-wrap break-words text-xs max-h-[500px] overflow-y-auto custom-scrollbar">
+            {result}
+          </pre>
+        ) : (
+          <DataDisplay
+            data={result}
+            title="Output"
+            maxDepth={3}
+            className="bg-black/40 p-3 rounded border border-gray-800 text-green-300/90"
+          />
+        )
       )}
 
       {/* Error */}

@@ -1,10 +1,8 @@
 import { http, HttpResponse } from 'msw'
 
-const API_BASE = 'http://localhost:4096'
-
 export const handlers = [
   // Mock Create Session
-  http.post(`${API_BASE}/api/v1/sessions`, () => {
+  http.post('/api/v1/sessions', () => {
     return HttpResponse.json({
       id: 'test-session-id',
       status: 'active',
@@ -15,7 +13,7 @@ export const handlers = [
   }),
 
   // Mock Get Session Messages
-  http.get(`${API_BASE}/api/v1/sessions/:id/messages`, () => {
+  http.get('/api/v1/sessions/:id/messages', () => {
     return HttpResponse.json({
       items: [
         {
@@ -34,16 +32,13 @@ export const handlers = [
     })
   }),
 
-  // Mock Inject
-  http.post(`${API_BASE}/api/v1/sessions/:id/inject`, () => {
-    return HttpResponse.json({
-      status: 'injected',
-      message: 'Message injected'
-    })
+  // Mock Get Session Status
+  http.get('/api/v1/sessions/:id/status', () => {
+    return HttpResponse.json({ running: false })
   }),
 
   // Mock Chat Stream (SSE)
-  http.post(`${API_BASE}/api/v1/sessions/:id/chat`, ({ request }) => {
+  http.post('/api/v1/sessions/:id/chat', ({ request }) => {
     const stream = new ReadableStream({
       start(controller) {
         const encoder = new TextEncoder()
@@ -80,7 +75,7 @@ export const handlers = [
             send('message', { content: 'I executed the command.' })
             
             // Done
-            send('dag_complete', { status: 'OK' })
+            send('done', { status: 'OK' })
             controller.close()
         }, 10) // Small delay to simulate async
       }

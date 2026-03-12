@@ -32,7 +32,7 @@ export async function POST(
     });
   }
 
-  // Stream SSE response through without buffering
+  // Pass SSE stream through — requires compress: false in next.config.mjs
   return new Response(upstreamRes.body, {
     status: 200,
     headers: {

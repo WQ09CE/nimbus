@@ -1,1144 +1,947 @@
-/**
- * Chat Store - Zustand state management
- */
-
 import { create } from "zustand";
 import {
   type Session,
   type ToolCall,
   type ToolResult,
-  type ServerMessage,
   type ChatAttachment,
-  type ChatEvent,
   createSession,
   streamChat,
   injectMessage,
   getSessionMessages,
   getSession,
+  getSessionStatus,
   subscribeToEvents,
 } from "@/lib/api";
-import { useWorkflowStore } from "./workflow-store";
-import { demuxSubToolEvents, routeSubToolCall, routeSubToolResult, routeExecutorStart, routeExecutorDone } from "./MessageDemuxer";
-import { reconnectToSession } from "../hooks/useSSEListener";
 
-// Use BroadcastChannel for multi-tab event distribution
-const BC_NAME = "nimbus_chat_events";
-let broadcastChannel: BroadcastChannel | null = null;
-if (typeof window !== "undefined") {
-  broadcastChannel = new BroadcastChannel(BC_NAME);
-}
+export type MessagePart =
+  | { type: "text"; content: string }
+  | { type: "tool"; toolCall: ToolCall; toolResult?: ToolResult };
 
 export interface Message {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
-  toolCalls?: ToolCall[];
+  parts: MessagePart[];
   toolResults?: ToolResult[];
+  toolCallsMap?: Record<string, ToolCall>;
+  toolResultsMap?: Record<string, ToolResult>;
   attachments?: ChatAttachment[];
   timestamp: number;
   isInjection?: boolean;
+  /** Monotonic revision counter — incremented on every SSE update to force React re-render. */
+  _rev: number;
 }
 
-// SSE event data types (from server)
-interface HeartbeatData {
-  iteration?: number;
-  [key: string]: unknown;
-}
-
-export interface ArtifactRef {
-  ref: string;
-  type: string;
-  summary?: string;
-  [key: string]: unknown;
-}
-
-interface ToolCallData {
-  action_id?: string;
-  id?: string;
-  tool?: string;
-  name?: string;
-  args?: Record<string, unknown>;
-  arguments?: Record<string, unknown>;
-  parent_action_id?: string;  // For sub_tool_call: routes to the correct ParallelDispatch parent
-  event_id?: string;
-  [key: string]: unknown;
-}
-
-interface ToolResultData {
-  action_id?: string;
-  id?: string;
-  tool?: string;
-  name?: string;
-  output?: unknown;
-  result?: unknown;
-  error?: string;
-  duration_ms?: number;
-  status?: string;
-  fault?: { message: string;[key: string]: unknown };
-  parent_action_id?: string;  // For sub_tool_result: routes to the correct ParallelDispatch parent
-  event_id?: string;
-  [key: string]: unknown;
+export interface TokenUsageData {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+  total: number;
+  cost: {
+    input: number;
+    output: number;
+    cache_read: number;
+    cache_write: number;
+    total: number;
+  };
+  context_window?: {
+    current: number;
+    maximum: number;
+  };
 }
 
 interface ChatState {
-  // Session
   session: Session | null;
-
-  // Messages
   messages: Message[];
-
-  // Streaming state
   isStreaming: boolean;
-  streamingContent: string;
-  streamingToolCalls: ToolCall[];
-  streamingToolResults: ToolResult[];
-  messageQueue: string[]; // Queued user messages
-  lastEventId: string | null;
-
-  // Real-time progress indicators
-  fsmState: 'THINKING' | 'ACTING' | 'STREAMING' | 'IDLE' | null;     // Unified Agent FSM State
-  activeArtifact: ArtifactRef | null; // Currently viewed artifact
-  lastHeartbeat: number | null;       // Timestamp of last heartbeat
-
-  // Interrupt state
-  isInterrupting: boolean;            // Whether interrupt request is being processed
-  streamAbortController: AbortController | null;  // For aborting stream requests
-
-  // UI state
+  messageQueue: string[];
   isLoading: boolean;
   error: string | null;
-  errorInfo: { code: string; message: string; retryable: boolean; errorId?: string } | null;
-  isCreatingSession: boolean;  // Prevent concurrent session creation
-  isReconnecting: boolean;     // Show reconnect indicator
+  isCreatingSession: boolean;
+  streamAbortController: AbortController | null;
+  tokenUsage: TokenUsageData | null;
 
-  // Internal
-  isLeader: boolean;
+  fsmState: string | null;
+  activeArtifact: any | null;
+  isReconnecting: boolean;
+  errorInfo: any | null;
 
-  // Actions
   createNewSession: (
     force?: boolean,
-    options?: {
-      name?: string;
-      workspace_path?: string;
-      agent_mode?: string;
-      llm_config?: Record<string, any>;
-    }
+    options?: Record<string, any>
   ) => Promise<void>;
   switchSession: (session: Session | null) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   sendMessage: (content: string, attachments?: ChatAttachment[]) => Promise<void>;
-  handleServerEvent: (event: ChatEvent, isForwarded?: boolean) => void;
   retryLastMessage: () => void;
   interruptMessage: () => void;
-  closeArtifact: () => void;
   clearError: () => void;
+  closeArtifact: () => void;
   reset: () => void;
+  _attachToRunningSession: (sessionId: string) => void;
 }
 
 const initialState = {
   session: null,
   messages: [],
   isStreaming: false,
-  isReconnecting: false,
-  streamingContent: "",
-  streamingToolCalls: [],
-  streamingToolResults: [],
   messageQueue: [],
-  lastEventId: null,
-  fsmState: null,
-  activeArtifact: null,
-  lastHeartbeat: null,
-  isInterrupting: false,
-  streamAbortController: null,
   isLoading: false,
   error: null,
-  errorInfo: null,
   isCreatingSession: false,
-  isLeader: false,
+  streamAbortController: null,
+  tokenUsage: null,
+  fsmState: null,
+  activeArtifact: null,
+  isReconnecting: false,
+  errorInfo: null,
 };
 
-// Tools that spawn sub-agents and can contain nested sub_tool_call/sub_tool_result
-const META_TOOLS = new Set(["Dispatch", "Explore", "Implement", "Design", "Test", "ParallelDispatch"]);
+// --- rAF batching for streaming updates ---
+// Instead of calling set() on every SSE chunk, buffer the latest message
+// and flush at most once per animation frame (~60fps).
+let _pendingStreamMsg: Message | null = null;
+let _rafHandle: number = 0;
 
-// Human-readable labels for meta-tools in activity status
-const META_TOOL_LABELS: Record<string, string> = {
-  Dispatch: "Executor",
-  Explore: "Explorer",
-  Implement: "Implementer",
-  Design: "Architect",
-  Test: "Tester",
-  ParallelDispatch: "并行调度",
-};
+type SetFn = (partial: Partial<ChatState> | ((state: ChatState) => Partial<ChatState>)) => void;
+type GetFn = () => ChatState;
 
-// Map server-side specialist names to frontend tool names for DispatchCard rendering
-const SPECIALIST_TO_TOOL: Record<string, string> = {
-  Explorer: "Explore",
-  Implementer: "Implement",
-  Architect: "Design",
-  Tester: "Test",
-};
+function flushStreamUpdate(set: SetFn, get: GetFn, streamingId: string) {
+  _rafHandle = 0;
+  const msg = _pendingStreamMsg;
+  if (!msg) return;
+  _pendingStreamMsg = null;
+  const currentMsgs = get().messages;
+  const idx = currentMsgs.findIndex((m: Message) => m.id === streamingId);
+  if (idx === -1) return;
+  const next = [...currentMsgs];
+  next[idx] = msg;
+  set({ messages: next });
+}
+
+function scheduleStreamUpdate(set: SetFn, get: GetFn, streamingId: string, msg: Message) {
+  _pendingStreamMsg = msg;
+  if (!_rafHandle) {
+    _rafHandle = requestAnimationFrame(() => flushStreamUpdate(set, get, streamingId));
+  }
+}
+
+function flushPendingSync(set: SetFn, get: GetFn, streamingId: string) {
+  // Force-flush any pending buffered update (used before finalization)
+  if (_rafHandle) {
+    cancelAnimationFrame(_rafHandle);
+    _rafHandle = 0;
+  }
+  if (_pendingStreamMsg) {
+    const msg = _pendingStreamMsg;
+    _pendingStreamMsg = null;
+    const currentMsgs = get().messages;
+    const idx = currentMsgs.findIndex((m: Message) => m.id === streamingId);
+    if (idx !== -1) {
+      const next = [...currentMsgs];
+      next[idx] = msg;
+      set({ messages: next });
+    }
+  }
+}
 
 export const useChatStore = create<ChatState>((set, get) => ({
   ...initialState,
 
-  createNewSession: async (force = false, options?: {
-    name?: string;
-    workspace_path?: string;
-    agent_mode?: string;
-    llm_config?: Record<string, any>;
-  }) => {
-    // Abort any in-flight stream from previous session
+  closeArtifact: () => set({ activeArtifact: null }),
+
+  createNewSession: async (force = false, options) => {
     const { streamAbortController: prevController } = get();
-    if (prevController) {
-      prevController.abort();
-    }
+    if (prevController) prevController.abort();
 
-    const { isCreatingSession, session } = get();
-
-    // Prevent concurrent session creation
-    if (isCreatingSession) {
-      console.log("[Store] Session creation already in progress, skipping");
-      return;
-    }
-
-    // Don't create if we already have a session (unless force=true from UI button)
-    if (session && !force) {
-      console.log("[Store] Session already exists:", session.id);
-      return;
-    }
+    if (get().isCreatingSession) return;
+    if (get().session && !force) return;
 
     try {
       set({ isLoading: true, isCreatingSession: true, error: null });
-
-      // Inherit model from current session, fall back to server default
       const currentSession = get().session;
-      const inheritedLlmConfig = currentSession?.llm_config && currentSession.llm_config.model_id && currentSession.llm_config.model_id !== "default"
+      const inheritedLlmConfig = currentSession?.llm_config && currentSession.llm_config.model_id !== "default"
         ? { provider: currentSession.llm_config.provider || "", model_id: currentSession.llm_config.model_id }
         : undefined;
 
       const newSession = await createSession({
-        // Default to dual_agent unless specified otherwise
         agent_mode: options?.agent_mode || "dual_agent",
-        llm_config: options?.llm_config || inheritedLlmConfig,
+        ...(options?.llm_config || inheritedLlmConfig ? { llm_config: options?.llm_config || inheritedLlmConfig } : {}),
         ...options,
-      });
-      console.log("[Store] Session created:", newSession.id);
+      } as any);
 
-      // Fix: Persist session ID immediately
       if (typeof window !== "undefined") {
-        localStorage.setItem("nimbus_session_id", newSession.id);
+        sessionStorage.setItem("nimbus_session_id", newSession.id);
       }
 
       set({ session: newSession, messages: [], isLoading: false, isCreatingSession: false });
-
-      // Process queue if any messages arrived during creation
-      const { messageQueue } = get();
-      if (messageQueue.length > 0) {
-        console.log("[Store] Processing queued message after session creation");
-        const next = messageQueue[0];
-        set({ messageQueue: messageQueue.slice(1) });
-        setTimeout(() => get().sendMessage(next), 0);
-      }
     } catch (err) {
-      set({
-        error: err instanceof Error ? err.message : "Failed to create session",
-        isLoading: false,
-        isCreatingSession: false,
-      });
+      set({ error: err instanceof Error ? err.message : "Failed to create session", isLoading: false, isCreatingSession: false });
     }
   },
 
   switchSession: async (session: Session | null) => {
-    // Abort any in-flight stream from previous session
     const { streamAbortController } = get();
-    if (streamAbortController) {
-      streamAbortController.abort();
-    }
-    useWorkflowStore.getState().reset();
+    if (streamAbortController) streamAbortController.abort();
 
-    // Handle null session (e.g., when deleting current session)
     if (!session) {
-      set({
-        session: null,
-        messages: [],
-        isStreaming: false,
-        streamingContent: "",
-        streamingToolCalls: [],
-        streamingToolResults: [],
-        fsmState: null,
-        activeArtifact: null,
-        error: null,
-        isLoading: false,
-      });
-      if (typeof window !== "undefined") {
-        localStorage.removeItem("nimbus_session_id");
-      }
+      set({ ...initialState });
+      if (typeof window !== "undefined") sessionStorage.removeItem("nimbus_session_id");
       return;
     }
 
-    // Switch to an existing session and load its messages
-    const currentSession = get().session;
-    const currentMessages = get().messages;
-    const isSameSession = currentSession?.id === session.id;
-
+    const isSameSession = get().session?.id === session.id;
     set({
-      isLoading: !isSameSession, // ✨ FIX: Don't show loading spinner for background refetches
       session,
-      // Only reset messages if we are actually switching to a different session.
-      // If it's the same session (e.g. background sync), preserve current messages to avoid flicker.
-      messages: isSameSession ? currentMessages : [],
-      // Do not force wipe streaming state here if we are just refetching the SAME session
-      // `sendMessage` manages its own stream state teardown gracefully now.
-      ...(isSameSession ? {} : {
-        isStreaming: false,
-        streamingContent: "",
-        streamingToolCalls: [],
-        streamingToolResults: [],
-      }),
+      isLoading: !isSameSession,
       error: null,
+      messages: isSameSession ? get().messages : [],
     });
 
-    // Persist session ID to localStorage
-    if (typeof window !== "undefined") {
-      localStorage.setItem("nimbus_session_id", session.id);
-    }
+    if (typeof window !== "undefined") sessionStorage.setItem("nimbus_session_id", session.id);
 
-    // Load messages from server
     try {
       const serverMessages = await getSessionMessages(session.id);
-      console.log("[Store] Raw server messages:", serverMessages);
 
-      // First pass: extract all messages and build maps of tool results and sub-tool events
-      const toolResultsMap = new Map<string, ToolResult>();
-      const subEventsMap = new Map<string, { subCalls: ToolCall[]; subResults: ToolResult[] }>();
-
-      for (let m of serverMessages) {
-        // Try to parse JSON-serialized multimodal content (e.g. "[{\"type\":\"image\",...}]")
-        if (typeof m.content === 'string' && m.content.startsWith('[')) {
-          try {
-            const parsed = JSON.parse(m.content);
-            if (Array.isArray(parsed)) {
-              m.content = parsed;  // restore as array for further processing below
-            }
-          } catch {
-            // not JSON, keep as string
-          }
-        }
-
-        // Normalize content if it's an array (e.g. multimodal list of blocks)
-        if (Array.isArray(m.content)) {
-          // Extract image blocks as attachments
-          const imageBlocks = m.content.filter((b: any) => b?.type === 'image' || b?.type === 'image_url');
-          if (imageBlocks.length > 0 && m.role === 'user') {
-            (m as any)._parsedAttachments = imageBlocks.map((b: any) => {
-              // Anthropic format: { type: 'image', source: { type: 'base64', media_type, data } }
-              if (b.source?.type === 'base64') {
-                return {
-                  type: 'image' as const,
-                  url: `data:${b.source.media_type};base64,${b.source.data}`,
-                  name: 'image',
-                };
-              }
-              // URL format
-              if (b.image_url?.url) {
-                return { type: 'image' as const, url: b.image_url.url, name: 'image' };
-              }
-              return null;
-            }).filter(Boolean);
-          }
-          // Extract text content
-          m.content = m.content.map((b: any) => typeof b === 'string' ? b : b?.text || '').join('\n').trim();
-        } else if (typeof m.content === 'object' && m.content !== null) {
-          m.content = JSON.stringify(m.content);
-        } else {
-          m.content = String(m.content || '');
-        }
-
-        if (m.role === 'tool' && m.artifacts) {
-          // First, find the tool_call_id for this tool message
-          let toolCallId: string | null = null;
-
-          for (const artifact of m.artifacts) {
-            if (artifact && typeof artifact === 'object') {
-              const art = artifact as Record<string, unknown>;
-              if (art.type === 'tool_result' && art.tool_call_id) {
-                toolCallId = String(art.tool_call_id);
-                toolResultsMap.set(toolCallId, {
-                  id: toolCallId,
-                  name: String(art.name || ''),
-                  result: m.content,
-                });
-              }
-            }
-          }
-
-          // Then, extract sub_tool_events if present (attached to Dispatch tool results)
-          if (toolCallId) {
-            // Get tool name from the tool_result artifact to determine grouping strategy
-            let toolName = '';
-            for (const artifact of m.artifacts) {
-              if (artifact && typeof artifact === 'object') {
-                const a = artifact as Record<string, unknown>;
-                if (a.type === 'tool_result' && a.name) {
-                  toolName = String(a.name);
-                  break;
-                }
-              }
-            }
-
-            for (const artifact of m.artifacts) {
-              if (artifact && typeof artifact === 'object') {
-                const art = artifact as Record<string, unknown>;
-                if (art.type === 'sub_tool_events' && Array.isArray(art.events)) {
-                  const evts = art.events as Array<{ type: string; data: Record<string, unknown> }>;
-
-                  if (toolName && evts) {
-                    demuxSubToolEvents(toolCallId, toolName, evts, subEventsMap, toolResultsMap);
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-
-      // Second pass: build messages, skipping tool messages and merging results into assistant messages
-      const messages: Message[] = [];
-
+      // Build tool result lookup from role='tool' messages
+      const toolResultMap = new Map<string, { name: string; content: string }>();
       for (const m of serverMessages) {
-        // Skip tool messages - their content is merged into assistant messages
-        if (m.role === 'tool') continue;
+        if (m.role === 'tool' && m.tool_call_id) {
+          const resultContent = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
+          toolResultMap.set(m.tool_call_id, { name: m.name || 'unknown', content: resultContent });
+        }
+      }
 
-        // Skip system messages that are just task completion markers
-        if (m.role === 'system' && m.content?.startsWith('✓ Task completed')) continue;
+      const parsedMessages: Message[] = serverMessages
+        .filter(m => m.role !== 'tool')  // tool results are merged into assistant messages
+        .map(m => {
+          const rawContent = m.content || "";
 
-        let toolCalls: ToolCall[] | undefined;
-        let toolResults: ToolResult[] | undefined;
+          // Extract text and reconstruct image attachments from multimodal content blocks
+          let textContent = "";
+          const reloadedAttachments: ChatAttachment[] = [];
 
-        if (m.artifacts && Array.isArray(m.artifacts)) {
-          for (const artifact of m.artifacts) {
-            if (artifact && typeof artifact === 'object') {
-              const art = artifact as Record<string, unknown>;
-
-              // Handle tool_calls artifact
-              if (art.type === 'tool_calls' && Array.isArray(art.tool_calls)) {
-                const parsedCalls = (art.tool_calls as Array<{
-                  id?: string;
-                  function?: { name?: string; arguments?: string };
-                }>).map(tc => {
-                  const call: ToolCall = {
-                    id: tc.id || '',
-                    name: tc.function?.name || '',
-                    arguments: tc.function?.arguments
-                      ? (typeof tc.function.arguments === 'string'
-                        ? (() => { try { return JSON.parse(tc.function.arguments as string); } catch { return {}; } })()
-                        : tc.function.arguments as Record<string, unknown>)
-                      : {},
-                  };
-
-                  // Restore sub-agent tool calls/results for meta-tools (Dispatch, etc.)
-                  console.log('[DEBUG] checking call.id:', call.id, 'subEventsMap size:', subEventsMap.size, 'has?', subEventsMap.has(call.id || ''));
-                  if (call.id && subEventsMap.has(call.id)) {
-                    console.log('[DEBUG] injecting subCalls for call.id:', call.id);
-                    const sub = subEventsMap.get(call.id)!;
-                    if (sub.subCalls.length > 0) call.subCalls = sub.subCalls;
-                    if (sub.subResults.length > 0) call.subResults = sub.subResults;
-                  }
-
-                  return call;
+          if (Array.isArray(rawContent)) {
+            for (const block of rawContent as any[]) {
+              if (typeof block === 'string') {
+                textContent += block;
+              } else if (block?.type === 'text') {
+                textContent += (textContent ? '\n' : '') + (block.text || '');
+              } else if (block?.type === 'image') {
+                // Reconstruct image attachment from stored content block
+                const mimeType = block.mimeType || block.mime_type || 'image/png';
+                const base64 = block.data || block.content || '';
+                reloadedAttachments.push({
+                  id: `reload-img-${reloadedAttachments.length}-${Date.now()}`,
+                  type: 'image',
+                  name: block.name || 'image.png',
+                  size: base64.length,
+                  content: base64,
+                  mimeType,
+                  // Build a data URL as preview (no blob URL available after reload)
+                  preview: base64 ? `data:${mimeType};base64,${base64}` : undefined,
                 });
-
-                toolCalls = toolCalls ? [...toolCalls, ...parsedCalls] : parsedCalls;
-
-                // Match tool results from the map
-                const parsedResults = parsedCalls
-                  .filter(tc => tc.id)
-                  .map(tc => toolResultsMap.get(tc.id!))
-                  .filter((r): r is ToolResult => r !== undefined);
-
-                toolResults = toolResults ? [...toolResults, ...parsedResults] : parsedResults;
               }
             }
+            textContent = textContent.trim();
+          } else if (typeof rawContent === 'object') {
+            textContent = JSON.stringify(rawContent);
+          } else {
+            textContent = String(rawContent);
           }
-        }
 
-        // Detect injected messages: server stores them with "[Intervention] " prefix
-        const rawContent = m.content || "";
-        const interventionPrefix = "[Intervention] ";
-        const isInjection = m.role === "user" && rawContent.startsWith(interventionPrefix);
-        const content = isInjection ? rawContent.slice(interventionPrefix.length) : rawContent;
+          const timestamp = m.created_at ? new Date(m.created_at.replace(" ", "T") + (m.created_at.includes("Z") ? "" : "Z")).getTime() : Date.now();
 
-        messages.push({
-          id: m.id,
-          role: m.role as 'user' | 'assistant' | 'system',
-          content, // Ensure content is never null
-          toolCalls,
-          toolResults: toolResults && toolResults.length > 0 ? toolResults : undefined,
-          timestamp: (() => {
-            // Defensive UTC parsing: if the server timestamp lacks a timezone
-            // indicator (e.g. "2024-02-24 12:00:00"), treat it as UTC by
-            // appending "Z". Strings already ending with Z, +00:00, etc. are
-            // parsed correctly by Date as-is.
-            let raw = m.created_at || "";
-            if (raw && !/[Zz]$/.test(raw) && !/[+-]\d{2}:\d{2}$/.test(raw)) {
-              raw = raw.replace(" ", "T") + "Z";
+          // Reconstruct tool parts for assistant messages with tool_calls
+          const parts: MessagePart[] = [];
+          const toolCalls: ToolCall[] = [];
+          const toolResults: ToolResult[] = [];
+
+          if (m.role === 'assistant' && m.tool_calls && Array.isArray(m.tool_calls)) {
+            // Add text part first if there's content before tools
+            if (textContent) {
+              parts.push({ type: "text" as const, content: textContent });
             }
-            const ts = new Date(raw).getTime();
-            return !isNaN(ts) ? ts : Date.now();
-          })(),
-          ...(isInjection ? { isInjection: true } : {}),
-          ...((m as any)._parsedAttachments?.length > 0 ? { attachments: (m as any)._parsedAttachments as ChatAttachment[] } : {}),
+            // Add tool parts
+            for (const tc of m.tool_calls) {
+              const fn = tc.function;
+              const tcId = tc.id || `tc-${Date.now()}`;
+              const tcObj: ToolCall = {
+                id: tcId,
+                name: fn?.name || tc.name || 'unknown',
+                arguments: typeof fn?.arguments === 'string' ? JSON.parse(fn.arguments || '{}') : (fn?.arguments || tc.arguments || {}),
+              };
+              toolCalls.push(tcObj);
+
+              // Find matching tool result
+              const result = toolResultMap.get(tcId);
+              const toolPart: MessagePart = { type: "tool" as const, toolCall: tcObj };
+              if (result) {
+                const tr: ToolResult = {
+                  id: tcObj.id,
+                  name: result.name,
+                  result: result.content,
+                };
+                toolResults.push(tr);
+                (toolPart as any).toolResult = tr;
+              }
+              parts.push(toolPart);
+            }
+          } else {
+            // Non-tool-call messages: just text
+            if (textContent) {
+              parts.push({ type: "text" as const, content: textContent });
+            }
+          }
+
+          return {
+            id: m.id,
+            role: m.role as "user" | "assistant" | "system",
+            content: textContent,
+            parts,
+            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+            toolCallsMap: toolCalls.length > 0 ? toolCalls.reduce((acc, tc) => { if (tc.id) acc[tc.id] = tc; return acc; }, {} as Record<string, ToolCall>) : undefined,
+            toolResults: toolResults.length > 0 ? toolResults : undefined,
+            toolResultsMap: toolResults.length > 0 ? toolResults.reduce((acc, tr) => { if (tr.id) acc[tr.id] = tr; return acc; }, {} as Record<string, ToolResult>) : undefined,
+            attachments: reloadedAttachments.length > 0 ? reloadedAttachments : undefined,
+            timestamp,
+            _rev: 0,
+          };
         });
+
+      parsedMessages.sort((a, b) => a.timestamp - b.timestamp);
+
+      // Prevent stale updates
+      if (get().session?.id === session.id) {
+        // Only keep the in-flight streaming message (if any).
+        // Do NOT keep "user-*" messages — they are already in server history.
+        // Merging them causes duplicates when reloading the same session.
+        const streaming = get().messages.filter(m => m.id === "streaming-assistant");
+        // Restore persisted tokenUsage for this session
+        let savedUsage: TokenUsageData | null = null;
+        try {
+          const raw = sessionStorage.getItem(`nimbus_token_usage_${session.id}`);
+          if (raw) savedUsage = JSON.parse(raw);
+        } catch { /* ignore */ }
+        set({ messages: [...parsedMessages, ...streaming], isLoading: false, tokenUsage: savedUsage });
       }
 
-      // Sort messages by timestamp to ensure correct order
-      messages.sort((a, b) => a.timestamp - b.timestamp);
-
-      console.log("[Store] Parsed messages:", messages);
-
-      // Guard against stale fetch: discard result if session has already switched
-      const currentSession = get().session;
-      if (!currentSession || currentSession.id !== session.id) {
-        console.log(`[Store] Session switched during fetch (expected ${session.id}, got ${currentSession?.id}), discarding stale messages`);
-        return;
-      }
-
-      // Merge: 服务器数据为权威，但补全图片 attachments（服务器存储丢失了图片 base64）
-      // 同时过滤掉已被服务器数据覆盖的乐观更新 user 消息（id 以 user- 开头）
-      const existingMessages = get().messages;
-      const optimisticUserMsgs = existingMessages.filter(m =>
-        m.id.startsWith('user-') || m.id.startsWith('user-inject-')
-      );
-
-      // 对服务器返回的每条 user message，尝试从乐观消息里找到对应的 attachments 补进去
-      const mergedMessages: Message[] = messages.map(m => {
-        if (m.role !== 'user' || m.attachments) return m;
-        // 找内容相同的乐观消息
-        const match = optimisticUserMsgs.find(o => {
-          const oText = o.content?.trim() || '';
-          const mText = m.content?.trim() || '';
-          return oText === mText && oText.length > 0;
-        });
-        if (match?.attachments) {
-          return { ...m, attachments: match.attachments };
-        }
-        return m;
-      });
-
-      if (!isSameSession) {
-        set({
-          messages: mergedMessages,
-          isLoading: false,
-          error: null,
-        });
-      } else {
-        // ✨ FIX: For same-session refetches, avoid setting isLoading: false if it was never true,
-        // and just update the messages array gracefully.
-        set({
-          messages: mergedMessages,
-          error: null,
-        });
-      } console.log(`[Store] Loaded ${mergedMessages.length} messages for session ${session.id} (merged from server, dropped ${existingMessages.length - mergedMessages.length < 0 ? 0 : existingMessages.length - mergedMessages.length} optimistic duplicates)`);
-
-      // Check if session has an active task (agent still running)
+      // Check if the session has a running task — if so, attach to the SSE stream
+      // so this client receives real-time events (multi-client observation)
       try {
-        const { getSessionStatus } = await import("@/lib/api/sessions");
         const status = await getSessionStatus(session.id);
-        if (status.running) {
-          console.log("[Store] Session has active task, reconnecting...");
-          // Reconnect in background (use setTimeout to let state settle)
-          setTimeout(() => {
-            const currentState = get();
-            // Double-check: avoid reconnect if sendMessage already started streaming
-            if (!currentState.isStreaming) {
-              reconnectToSession(session.id);
-            } else {
-              console.log("[Store] Already streaming, skip reconnect");
-            }
-          }, 100);
+        if (status.running && get().session?.id === session.id && !get().isStreaming) {
+          get()._attachToRunningSession(session.id);
         }
-      } catch (err) {
-        // Status check failed, not critical
-        console.warn("[Store] Failed to check session status:", err);
+      } catch {
+        // Status check failure is non-fatal
       }
+
     } catch (err) {
-      console.error("[Store] Failed to load messages:", err);
+      console.error("[Store] Load messages failed", err);
       set({ isLoading: false });
     }
   },
 
+  /** Attach to an already-running session's SSE stream (multi-client / reconnect). */
+  _attachToRunningSession: (sessionId: string) => {
+    const STREAMING_ID = "streaming-assistant";
+    const abortController = new AbortController();
+
+    const initialAssistantMsg: Message = {
+      id: STREAMING_ID,
+      role: "assistant",
+      content: "",
+      parts: [],
+      timestamp: Date.now(),
+      toolCallsMap: {},
+      toolResults: [],
+      toolResultsMap: {},
+      _rev: 0,
+    };
+
+    set(s => ({
+      isStreaming: true,
+      streamAbortController: abortController,
+      messages: [...s.messages, initialAssistantMsg],
+    }));
+
+    // Safety net: poll status every 5s. If task finished but "done" event was
+    // never received (e.g. replay race or proxy buffering issue), force-finalize
+    // so the spinner never gets stuck forever.
+    const pollTimer = setInterval(async () => {
+      if (get().session?.id !== sessionId || !get().isStreaming) {
+        clearInterval(pollTimer);
+        return;
+      }
+      try {
+        const status = await getSessionStatus(sessionId);
+        if (!status.running) {
+          clearInterval(pollTimer);
+          abortController.abort(); // triggers finally → isStreaming: false
+        }
+      } catch { /* ignore poll errors */ }
+    }, 5000);
+
+    (async () => {
+      try {
+        for await (const event of subscribeToEvents(sessionId, abortController.signal)) {
+          // Bail out if the session has changed
+          if (get().session?.id !== sessionId) { abortController.abort(); break; }
+
+          const { type, data } = event;
+          const currentMsgs = get().messages;
+          const targetIdx = currentMsgs.findIndex(m => m.id === STREAMING_ID);
+          if (targetIdx === -1) continue;
+
+          // Use pending rAF buffer if available, so consecutive events
+          // within the same frame build on each other instead of overwriting.
+          const targetMsg = _pendingStreamMsg
+            ? { ..._pendingStreamMsg }
+            : { ...currentMsgs[targetIdx] };
+          let updated = false;
+
+          switch (type) {
+            case "user_message": {
+              if (data && typeof data === "object") {
+                const content = (data as any)?.content || "";
+                if (content) {
+                  // Add user message that was sent by another client
+                  const userMsg: Message = {
+                    id: `user-remote-${Date.now()}`,
+                    role: "user",
+                    content,
+                    parts: [{ type: "text", content }],
+                    timestamp: Date.now(),
+                    _rev: 0,
+                  };
+                  // Insert BEFORE the streaming assistant message
+                  const msgs = [...get().messages];
+                  const streamIdx = msgs.findIndex(m => m.id === STREAMING_ID);
+                  if (streamIdx !== -1) {
+                    msgs.splice(streamIdx, 0, userMsg);
+                  } else {
+                    msgs.push(userMsg);
+                  }
+                  set({ messages: msgs });
+                }
+              }
+              break;
+            }
+            case "message": {
+              const chunk = typeof data === "string" ? data : (data as any)?.content || (data as any)?.chunk || "";
+              if (chunk) {
+                targetMsg.content += chunk;
+                const parts = [...(targetMsg.parts || [])];
+                const last = parts[parts.length - 1];
+                if (last?.type === "text") {
+                  parts[parts.length - 1] = { ...last, content: last.content + chunk };
+                } else {
+                  parts.push({ type: "text", content: chunk });
+                }
+                targetMsg.parts = parts;
+                updated = true;
+              }
+              break;
+            }
+            case "tool_call": {
+              if (data && typeof data === "object") {
+                const d = data as any;
+                const tcId = d.action_id || d.id || `tc-${Date.now()}`;
+
+                const tcMap = targetMsg.toolCallsMap || {};
+                const existingTc = tcMap[tcId];
+                const tc: ToolCall = {
+                  id: tcId,
+                  name: d.tool || d.name || existingTc?.name || "unknown",
+                  arguments: d.args || d.arguments || existingTc?.arguments || {},
+                };
+
+                targetMsg.toolCallsMap = { ...tcMap, [tcId]: tc };
+
+                const parts = [...(targetMsg.parts || [])];
+                const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
+                if (matchIdx === -1) {
+                  parts.push({ type: "tool", toolCall: { id: tcId, name: tc.name, arguments: {} } } as any);
+                  targetMsg.parts = parts;
+                }
+                updated = true;
+              }
+              break;
+            }
+            case "tool_output_chunk": {
+              if (data && typeof data === "object") {
+                const d = data as any;
+                const tcId = d.action_id || d.id;
+                const chunk = d.chunk || "";
+                const uiDetail = d.ui_detail;
+                if (!chunk && !uiDetail) break;
+
+                // 1. Always write to Map — mark as streaming (not yet completed)
+                const map = targetMsg.toolResultsMap || {};
+                const existing = map[tcId];
+                if (existing) {
+                  map[tcId] = { 
+                    ...existing, 
+                    result: (existing.result || "") + chunk,
+                    sub_events: uiDetail ? [...(existing.sub_events || []), uiDetail] : existing.sub_events,
+                    _streaming: true,
+                  };
+                } else {
+                  map[tcId] = { 
+                    id: tcId, 
+                    name: d.tool || "unknown", 
+                    result: chunk,
+                    sub_events: uiDetail ? [uiDetail] : undefined,
+                    _streaming: true,
+                  };
+                }
+                targetMsg.toolResultsMap = map;
+                updated = true;
+              }
+              break;
+            }
+            case "tool_result": {
+              if (data && typeof data === "object") {
+                const d = data as any;
+                const tcId = d.action_id || d.id;
+                // Merge with any streaming chunks already buffered
+                const existing = targetMsg.toolResultsMap?.[tcId];
+                const tr: ToolResult = {
+                  id: tcId || "",
+                  name: d.tool || d.name || "unknown",
+                  result: d.output !== undefined ? d.output : (d.result !== undefined ? d.result : existing?.result),
+                  error: d.status === "ERROR" ? (d.fault?.message || "Error") : undefined,
+                  ui_detail: d.ui_detail,
+                  sub_events: existing?.sub_events,
+                  _streaming: false,
+                };
+                targetMsg.toolResults = [...(targetMsg.toolResults || []), tr];
+                // Always write to Map
+                const map = targetMsg.toolResultsMap || {};
+                map[tcId] = tr;
+                targetMsg.toolResultsMap = map;
+
+                // Also ensure a part placeholder exists in case tool_result beat tool_call
+                const parts = [...(targetMsg.parts || [])];
+                const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
+                if (matchIdx === -1) {
+                  parts.push({ type: "tool", toolCall: { id: tcId, name: tr.name, arguments: {} } } as any);
+                  targetMsg.parts = parts;
+                }
+                updated = true;
+              }
+              break;
+            }
+            case "usage_update": {
+              if (data && typeof data === "object") {
+                const d = data as any;
+                console.debug("[SSE] Usage Update received:", d);
+                const usage = d.cumulative_usage || null;
+                if (usage && d.context_window) {
+                  usage.context_window = d.context_window;
+                }
+                set({ tokenUsage: usage });
+                // Persist to sessionStorage for refresh survival
+                const sid = get().session?.id;
+                if (sid && usage) {
+                  try { sessionStorage.setItem(`nimbus_token_usage_${sid}`, JSON.stringify(usage)); } catch { /* ignore */ }
+                }
+              }
+              break;
+            }
+            case "done":
+            case "error":
+              abortController.abort();
+              break;
+          }
+
+          if (updated) {
+            scheduleStreamUpdate(set, get, STREAMING_ID, targetMsg);
+          }
+        }
+      } catch {
+        // stream ended or aborted
+      } finally {
+        clearInterval(pollTimer);
+        // Flush any buffered rAF update before finalization
+        flushPendingSync(set, get, STREAMING_ID);
+        if (get().session?.id === sessionId) {
+          const finalMsgs = [...get().messages];
+          const idx = finalMsgs.findIndex(m => m.id === STREAMING_ID);
+          if (idx !== -1) finalMsgs[idx] = { ...finalMsgs[idx], id: `assistant-${Date.now()}` };
+          set({ messages: finalMsgs, isStreaming: false, streamAbortController: null });
+        }
+      }
+    })();
+  },
+
   loadSession: async (sessionId: string) => {
-    // Load a session by ID (used on page refresh)
     try {
       set({ isLoading: true });
       const session = await getSession(sessionId);
       if (session) {
         await get().switchSession(session);
       } else {
-        // Session not found, clear localStorage
-        if (typeof window !== "undefined") {
-          localStorage.removeItem("nimbus_session_id");
-        }
+        if (typeof window !== "undefined") sessionStorage.removeItem("nimbus_session_id");
         set({ isLoading: false });
       }
-    } catch (err: any) {
-      console.error("[Store] Failed to load session:", err);
-
-      // Only clear session if it's a 404 (Not Found)
-      // For network errors (backend restart), keep the ID so we can retry
-      if (typeof window !== "undefined") {
-        // Check if error has status 404
-        if (err.status === 404) {
-          localStorage.removeItem("nimbus_session_id");
-        }
-      }
+    } catch {
       set({ isLoading: false });
     }
   },
 
   sendMessage: async (content: string, attachments?: ChatAttachment[]) => {
-    const { session, messages, isStreaming, messageQueue, isCreatingSession } = get();
+    const { session, isStreaming, isCreatingSession, messageQueue } = get();
 
-    // Handle streaming case: Inject message instead of queuing
-    if (isStreaming && session) {
-      // Optimistically add to UI (with attachments if present)
-      const userMessage: Message = {
-        id: `user-inject-${Date.now()}`,
-        role: "user",
-        content,
-        attachments: attachments && attachments.length > 0 ? attachments : undefined,
-        timestamp: Date.now(),
-        isInjection: true,
-      };
-
-      set({
-        messages: [...messages, userMessage],
-        // Don't change streaming state, just append message
-      });
-
-      try {
-        // Pass attachments along with the message (multimodal injection support)
-        await injectMessage(session.id, content, attachments);
-        console.log(`[Store] Injected message into session ${session.id}${attachments && attachments.length > 0 ? ` with ${attachments.length} attachment(s)` : ""}`);
-      } catch (err) {
-        console.error("[Store] Failed to inject message:", err);
-      }
-      return;
-    }
-
-    // Wait for session creation if in progress
     if (isCreatingSession) {
-      console.log("[Store] Waiting for session creation...");
       set({ messageQueue: [...messageQueue, content] });
       return;
     }
 
-    // Must have a session to send messages
-    const currentSession = session;
-    if (!currentSession) {
-      console.error("[Store] No session available, cannot send message");
-      set({ error: "请先创建一个 Session" });
+    if (!session) {
+      set({ error: "Session not initialized" });
       return;
     }
 
-    // Add user message
-    const userMessage: Message = {
-      id: `user-${Date.now()}`,
-      role: "user",
-      content,
-      attachments,
-      timestamp: Date.now(),
-    };
+    // In-flight streaming injection or Fast Re-prompt
+    if (isStreaming) {
+      // Stop the current generation completely
+      get().interruptMessage();
+      
+      // Wait for state to settle, then send as a brand new message
+      setTimeout(() => {
+        get().sendMessage(content, attachments);
+      }, 100);
+      return;
+    }
 
-    // Create abort controller for this request
+    // Standard send
+    const userMessage: Message = { id: `user-${Date.now()}`, role: "user", content, parts: [{ type: "text", content }], attachments, timestamp: Date.now(), _rev: 0 };
     const abortController = new AbortController();
+    let receivedDone = false;
+    let lastEventTime = Date.now();
+
+    // Watchdog: if no SSE event (including heartbeats) for 30s, connection is dead
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastEventTime > 30000) {
+        clearInterval(watchdog);
+        console.warn("[Store] SSE watchdog: no event for 30s, aborting stream");
+        abortController.abort();
+      }
+    }, 5000);
+
+    // Start streaming: prepare an empty assistant message
+    const STREAMING_ID = "streaming-assistant";
+    const initialAssistantMsg: Message = { id: STREAMING_ID, role: "assistant", content: "", parts: [], timestamp: Date.now(), toolCallsMap: {}, toolResults: [], toolResultsMap: {}, _rev: 0 };
 
     set({
-      messages: [...messages, userMessage],
+      messages: [...get().messages, userMessage, initialAssistantMsg],
       isStreaming: true,
-      streamingContent: "",
-      streamingToolCalls: [],
-      streamingToolResults: [],
-      lastHeartbeat: Date.now(),
       streamAbortController: abortController,
       error: null,
-      fsmState: "THINKING",
     });
 
     try {
-      let assistantContent = "";
-      const toolCalls: ToolCall[] = [];
-      const toolResults: ToolResult[] = [];
-      let shouldContinue = true;
+      for await (const event of streamChat(session.id, content, attachments, abortController.signal)) {
+        lastEventTime = Date.now(); // Reset watchdog on ANY event (including heartbeats)
 
-      // Throttling state
-      let lastUpdate = 0;
-      const UPDATE_INTERVAL = 50; // ms
-
-      // Stream response
-      for await (const event of streamChat(currentSession.id, content, attachments, abortController.signal)) {
-        const { type, data } = event;
-
-        // Guard: abort if session switched while streaming
-        if (get().session?.id !== currentSession.id) {
-          console.log('[Store] Session switched during streaming, aborting old stream');
+        if (get().session?.id !== session.id) {
           abortController.abort();
           break;
         }
 
+        const { type, data } = event;
+        const currentMsgs = get().messages;
+        const targetIdx = currentMsgs.findIndex(m => m.id === STREAMING_ID);
+        if (targetIdx === -1) continue;
+
+        // Use pending rAF buffer if available, so consecutive events
+        // within the same frame build on each other instead of overwriting.
+        const targetMsg = _pendingStreamMsg
+          ? { ..._pendingStreamMsg }
+          : { ...currentMsgs[targetIdx] };
+        let updated = false;
+
         switch (type) {
-          case "connected":
-            set({
-              lastHeartbeat: Date.now()
-            });
+          case "user_message":
+            // Sender already has the user message — skip
             break;
-
-          case "message_start":
-            set({
-              lastHeartbeat: Date.now()
-            });
+          case "message": {
+            const chunk = typeof data === "string" ? data : (data as any)?.content || (data as any)?.chunk || "";
+            if (chunk) {
+              targetMsg.content += chunk;
+              // Build ordered parts: append to last text part or create new one
+              const parts = [...(targetMsg.parts || [])];
+              const lastPart = parts[parts.length - 1];
+              if (lastPart && lastPart.type === "text") {
+                parts[parts.length - 1] = { ...lastPart, content: lastPart.content + chunk };
+              } else {
+                parts.push({ type: "text", content: chunk });
+              }
+              targetMsg.parts = parts;
+              updated = true;
+            }
             break;
+          }
+          case "tool_call": {
+            if (data && typeof data === "object") {
+              const d = data as any;
+              const tcId = d.action_id || d.id || `tc-${Date.now()}`;
 
-          case "task_start":
-            set({
-              lastHeartbeat: Date.now()
-            });
-            break;
-
-          case "step_start":
-            // New turn detected - commit previous content if any
-            if (assistantContent || toolCalls.length > 0) {
-              const stepMessage: Message = {
-                id: `assistant-${Date.now()}`,
-                role: "assistant",
-                content: assistantContent,
-                toolCalls: toolCalls.length > 0 ? [...toolCalls] : undefined,
-                toolResults: toolResults.length > 0 ? [...toolResults] : undefined,
-                timestamp: Date.now(),
+              const tcMap = targetMsg.toolCallsMap || {};
+              const existingTc = tcMap[tcId];
+              const tc: ToolCall = {
+                id: tcId,
+                name: d.tool || d.name || existingTc?.name || "unknown",
+                arguments: d.args || d.arguments || existingTc?.arguments || {},
               };
 
-              set(state => ({
-                messages: [...state.messages, stepMessage],
-                streamingContent: "",
-                streamingToolCalls: [],
-                streamingToolResults: [],
-              }));
+              targetMsg.toolCallsMap = { ...tcMap, [tcId]: tc };
 
-              // Reset accumulators
-              assistantContent = "";
-              toolCalls.length = 0;
-              toolResults.length = 0;
-              // Reset throttle
-              lastUpdate = 0;
-            }
-
-            // Update iteration info
-            if (data && typeof data === "object" && "iteration" in data) {
-              const iter = (data as any).iteration;
-              set({
-                lastHeartbeat: Date.now()
-              });
+              const parts = [...(targetMsg.parts || [])];
+              const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
+              if (matchIdx === -1) {
+                parts.push({ type: "tool", toolCall: { id: tcId, name: tc.name, arguments: {} } } as any);
+                targetMsg.parts = parts;
+              }
+              updated = true;
             }
             break;
-
-          case "heartbeat":
+          }
+          case "tool_output_chunk": {
             if (data && typeof data === "object") {
-              const hbData = data as HeartbeatData & { fsm_state?: 'THINKING' | 'ACTING' | 'STREAMING' | 'IDLE' };
-              set({
-                fsmState: hbData.fsm_state || "THINKING",
-                lastHeartbeat: Date.now()
-              });
+              const d = data as any;
+              const tcId = d.action_id || d.id;
+              const chunk = d.chunk || "";
+              const uiDetail = d.ui_detail;
+              if (!chunk && !uiDetail) break;
+
+              // 1. Always write to Map — never lose data regardless of parts state
+              // IMPORTANT: Create a new Map reference so React.memo detects the change
+              const existing = targetMsg.toolResultsMap?.[tcId];
+              const updatedEntry = existing
+                ? { 
+                    ...existing, 
+                    result: (existing.result || "") + chunk,
+                    sub_events: uiDetail ? [...(existing.sub_events || []), uiDetail] : existing.sub_events,
+                    _streaming: true,
+                  }
+                : { 
+                    id: tcId, 
+                    name: d.tool || "unknown", 
+                    result: chunk,
+                    sub_events: uiDetail ? [uiDetail] : undefined,
+                    _streaming: true,
+                  };
+              targetMsg.toolResultsMap = { ...(targetMsg.toolResultsMap || {}), [tcId]: updatedEntry };
+              updated = true;
             }
             break;
+          }
+          case "tool_result": {
+            if (data && typeof data === "object") {
+              const d = data as any;
+              const tcId = d.action_id || d.id;
+              // Merge with any streaming chunks already buffered in the Map
+              const existing = targetMsg.toolResultsMap?.[tcId];
+              const tr: ToolResult = {
+                id: tcId || "",
+                name: d.tool || d.name || "unknown",
+                result: d.output !== undefined ? d.output : (d.result !== undefined ? d.result : existing?.result),
+                error: d.status === "ERROR" ? (d.fault?.message || "Error") : undefined,
+                ui_detail: d.ui_detail,
+                sub_events: existing?.sub_events,
+                _streaming: false,
+              };
+              targetMsg.toolResults = [...(targetMsg.toolResults || []), tr];
+              // IMPORTANT: Create a new Map reference so React.memo detects the change
+              targetMsg.toolResultsMap = { ...(targetMsg.toolResultsMap || {}), [tcId]: tr };
 
-          case "thinking":
-          case "message":
-            let newContent = "";
-            if (typeof data === "string") {
-              newContent = data;
-            } else if (typeof data === "object" && data) {
-              const d = data as { content?: unknown; chunk?: unknown };
-              if ("content" in d && typeof d.content === "string") {
-                newContent = d.content;
-              } else if ("chunk" in d && typeof d.chunk === "string") {
-                newContent = d.chunk;
+              // Also ensure a part placeholder exists in case tool_result beat tool_call
+              const parts = [...(targetMsg.parts || [])];
+              const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
+              if (matchIdx === -1) {
+                parts.push({ type: "tool", toolCall: { id: tcId, name: tr.name, arguments: {} } } as any);
+                targetMsg.parts = parts;
+              }
+              updated = true;
+            }
+            break;
+          }
+          case "done":
+            receivedDone = true;
+            break;
+          case "usage_update": {
+            if (data && typeof data === "object") {
+              const d = data as any;
+              const usage = d.cumulative_usage || null;
+              if (usage && d.context_window) {
+                usage.context_window = d.context_window;
+              }
+              set({ tokenUsage: usage });
+              // Persist to sessionStorage for refresh survival
+              const sid = get().session?.id;
+              if (sid && usage) {
+                try { sessionStorage.setItem(`nimbus_token_usage_${sid}`, JSON.stringify(usage)); } catch { /* ignore */ }
               }
             }
-
-            if (newContent) {
-              assistantContent += newContent;
-              const now = Date.now();
-              const d = data as { fsm_state?: 'THINKING' | 'ACTING' | 'STREAMING' | 'IDLE', event_id?: string };
-              // Throttle updates to avoid flickering
-              if (now - lastUpdate > UPDATE_INTERVAL) {
-                set({
-                  streamingContent: assistantContent,
-                  fsmState: d?.fsm_state || "STREAMING",
-                  lastEventId: d?.event_id || null,
-                  lastHeartbeat: now
-                });
-                lastUpdate = now;
-              }
-            }
-            break;
-
-          case "tool_call":
-            if (data && typeof data === "object") {
-              const d = data as ToolCallData & { fsm_state?: 'THINKING' | 'ACTING' | 'STREAMING' | 'IDLE' };
-              // Map server format (action_id, tool, args) to frontend format (id, name, arguments)
-              const tool: ToolCall = {
-                id: d.action_id || d.id || "",
-                name: d.tool || d.name || "unknown",
-                arguments: d.args || d.arguments || {},
-                agentType: "core",
-              };
-              toolCalls.push(tool);
-              // Force sync streamingContent to ensure any thinking content before tool call is visible
-              set({
-                streamingContent: assistantContent,
-                streamingToolCalls: [...toolCalls],
-                fsmState: d.fsm_state || "ACTING",
-                lastEventId: d.event_id || null,
-                lastHeartbeat: Date.now()
-              });
-            }
-            break;
-
-          case "tool_result":
-            if (data && typeof data === "object") {
-              const d = data as ToolResultData & { fsm_state?: 'THINKING' | 'ACTING' | 'STREAMING' | 'IDLE' };
-              const result: ToolResult = {
-                id: d.action_id || d.id || "",
-                name: d.tool || d.name || "unknown",
-                result: d.output !== undefined ? d.output : d.result,
-                error: d.status === "ERROR" ? (d.fault ? d.fault.message : "Error") : undefined,
-                duration: d.duration_ms,
-              };
-              toolResults.push(result);
-              set({
-                streamingToolResults: [...toolResults],
-                fsmState: d.fsm_state || "ACTING",
-                lastEventId: d.event_id || null,
-                lastHeartbeat: Date.now()
-              });
-            }
-            break;
-
-          case "sub_tool_call":
-            if (data && typeof data === "object") {
-              const d = data as ToolCallData & { fsm_state?: 'THINKING' | 'ACTING' | 'STREAMING' | 'IDLE', event_id?: string };
-              const subTool: ToolCall = {
-                id: d.action_id || d.id || "",
-                name: d.tool || d.name || "unknown",
-                arguments: d.args || d.arguments || {},
-                agentType: "dispatch",
-              };
-
-              routeSubToolCall(subTool, d, toolCalls, (args) => useWorkflowStore.getState().upsertCall(args));
-
-              set({
-                streamingToolCalls: [...toolCalls],
-                fsmState: d.fsm_state || "ACTING",
-                lastHeartbeat: Date.now()
-              });
-            }
-            break;
-
-          case "sub_tool_result":
-            if (data && typeof data === "object") {
-              const d = data as ToolResultData & { fsm_state?: 'THINKING' | 'ACTING' | 'STREAMING' | 'IDLE', event_id?: string };
-              const subResult: ToolResult = {
-                id: d.action_id || d.id || "",
-                name: d.tool || d.name || "unknown",
-                result: d.output !== undefined ? d.output : d.result,
-                error: d.status === "ERROR" ? (d.fault ? d.fault.message : "Error") : undefined,
-                duration: d.duration_ms,
-              };
-
-              routeSubToolResult(subResult, d, toolCalls, (args) => useWorkflowStore.getState().upsertCall(args));
-
-              set({
-                streamingToolCalls: [...toolCalls],
-                fsmState: d.fsm_state || "ACTING",
-                lastEventId: d.event_id || null,
-                lastHeartbeat: Date.now()
-              });
-            }
-            break;
-
-          case "executor_start": {
-            const esd = data as Record<string, any>;
-            routeExecutorStart(esd, toolCalls, (args) => useWorkflowStore.getState().upsertCall(args));
-            set({
-              streamingToolCalls: [...toolCalls],
-              fsmState: esd?.fsm_state || "ACTING",
-              lastEventId: esd?.event_id || null,
-              lastHeartbeat: Date.now()
-            });
             break;
           }
-
-          case "executor_done": {
-            const edd = data as Record<string, any>;
-            routeExecutorDone(edd, toolCalls, (args) => useWorkflowStore.getState().upsertCall(args));
-            set({
-              streamingToolCalls: [...toolCalls],
-              fsmState: edd?.fsm_state || "ACTING",
-              lastEventId: edd?.event_id || null,
-              lastHeartbeat: Date.now()
-            });
-            break;
-          }
-
-          case "permission_request": {
-            const permData = data as { action?: string; description?: string; fsm_state?: 'THINKING' | 'ACTING' | 'STREAMING' | 'IDLE'; event_id?: string } | undefined;
-            const desc = permData?.description || permData?.action || "Permission requested";
-            set({
-              fsmState: permData?.fsm_state || "IDLE",
-              lastEventId: permData?.event_id || null
-            });
-            // Add system message to notify user
-            set(state => ({
-              messages: [...state.messages, {
-                id: `perm-${Date.now()}`,
-                role: "system" as const,
-                content: `⚠️ Agent requests permission: ${desc}`,
-                timestamp: Date.now(),
-              }]
-            }));
-            break;
-          }
-
-          case "dag_complete":
-            set({
-              fsmState: "IDLE",
-              lastHeartbeat: Date.now()
-            });
-            // Auto-refresh session to pick up auto-generated title (first 3 rounds)
-            if (messages.length <= 6) {
-              setTimeout(async () => {
-                try {
-                  const { getSession } = await import("@/lib/api/sessions");
-                  const updated = await getSession(currentSession.id);
-                  set({ session: updated });
-                } catch { }
-              }, 5000);
-            }
-            // Stream completed successfully, exit loop
-            shouldContinue = false;
-            break;
-
-          case "error": {
-            const errData = data as { code?: string; message?: string; retryable?: boolean; error_id?: string } | string;
-            const code = typeof errData === "object" ? (errData.code ?? "stream_error") : "stream_error";
-            const message = typeof errData === "object"
-              ? (errData.message ?? "Stream error")
-              : (typeof errData === "string" ? errData : "Stream error");
-            const retryable = typeof errData === "object" ? (errData.retryable ?? false) : false;
-            const errorId = typeof errData === "object" ? errData.error_id : undefined;
-            const typedErr = new Error(message) as Error & { errorCode: string; retryable: boolean; errorId?: string };
-            typedErr.errorCode = code;
-            typedErr.retryable = retryable;
-            if (errorId) typedErr.errorId = errorId;
-            throw typedErr;
-          }
+          case "error":
+            throw new Error(typeof data === "string" ? data : (data as any)?.message || "Stream error");
         }
 
-        // Exit loop if dag_complete received
-        if (!shouldContinue) {
-          break;
+        // Exit the for-await loop when stream is done
+        if (type === "done") break;
+
+        if (updated) {
+          targetMsg._rev = (targetMsg._rev || 0) + 1;
+          scheduleStreamUpdate(set, get, STREAMING_ID, targetMsg);
         }
       }
 
-      // Finalize assistant message
-      const assistantMessage: Message = {
-        id: `assistant-${Date.now()}`,
-        role: "assistant",
-        content: assistantContent,
-        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-        toolResults: toolResults.length > 0 ? toolResults : undefined,
-        timestamp: Date.now(),
-      };
+      // Flush any buffered rAF update before finalization
+      flushPendingSync(set, get, STREAMING_ID);
+      abortController.abort();
 
-      set({
-        messages: [...get().messages, assistantMessage],
-        // ✨ FIX: Do not immediately drop streaming state if we are about to fetch!
-        // We will let the `switchSession` call clear the streaming state later, 
-        // to prevent UI flicker when the "cloud background" shows through the empty ChatList.
-        streamingContent: "",
-        streamingToolCalls: [],
-        streamingToolResults: [],
-        fsmState: null,
-        activeArtifact: null,
-        lastHeartbeat: null,
-        // Wait to clear these until after session refresh:
-        // isStreaming: false, 
-        // streamAbortController: null,
-        isInterrupting: false,
-      });
-
-      // Reload session from server to replace any optimistic injection messages
-      // with the real persisted ones (server strips [Intervention] prefix automatically)
-      const sessionAfterDag = get().session;
-      if (sessionAfterDag) {
-        try {
-          const { getSessionMessages } = await import("@/lib/api/sessions");
-          const serverMsgs = await getSessionMessages(sessionAfterDag.id);
-          if (serverMsgs.length > 0) {
-            await get().switchSession(sessionAfterDag);
-          }
-        } catch {
-          // Non-critical: local state is still usable
+      if (receivedDone) {
+        // Clean completion — finalize message
+        const finalMsgs = [...get().messages];
+        const streamingIdx = finalMsgs.findIndex(m => m.id === STREAMING_ID);
+        if (streamingIdx !== -1) {
+          finalMsgs[streamingIdx].id = `assistant-${Date.now()}`;
         }
-      }
-
-      // Now it's safe to drop the streaming states because the fresh DOM is ready
-      set({
-        isStreaming: false,
-        streamAbortController: null,
-      });
-
-      // Process next message in queue
-      const { messageQueue: queue } = get();
-      if (queue.length > 0) {
-        const next = queue[0];
-        set({ messageQueue: queue.slice(1) });
-        // Use setTimeout to allow state update to propagate
-        setTimeout(() => get().sendMessage(next), 0);
-      }
-    } catch (err) {
-      // Handle user cancellation differently from errors
-      if (err instanceof Error && err.name === 'AbortError') {
-        // User cancelled - add a gentle message instead of error
-        const cancelMessage: Message = {
-          id: `cancel-${Date.now()}`,
-          role: "system",
-          content: "已取消对话",
-          timestamp: Date.now(),
-        };
-
-        set({
-          messages: [...get().messages, cancelMessage],
-          isStreaming: false,
-          streamingContent: "",
-          streamingToolCalls: [],
-          streamingToolResults: [],
-          lastHeartbeat: null,
-          streamAbortController: null,
-          isInterrupting: false,
-          error: null, // Don't set error for user cancellation
-        });
-      } else if (
-        err instanceof TypeError &&
-        (err.message.includes("Load failed") ||
-          err.message.includes("Failed to fetch") ||
-          err.message.includes("network"))
-      ) {
-        // Network error (e.g., iOS Safari kills fetch when switching apps)
-        // Don't show error — visibility change handler will recover
-        console.info("[Store] Network disconnected, agent continues in background");
-        set({
-          isStreaming: false,
-          streamingContent: "",
-          streamingToolCalls: [],
-          streamingToolResults: [],
-          lastHeartbeat: null,
-          streamAbortController: null,
-          isInterrupting: false,
-          error: null,
-        });
+        set({ messages: finalMsgs, isStreaming: false, streamAbortController: null });
       } else {
-        // Real error occurred - extract structured error info if available
-        const errorCode = (err as any).errorCode as string | undefined;
-        const isRetryable = (err as any).retryable as boolean | undefined;
-        const errorId = (err as any).errorId as string | undefined;
-        const rawMessage = err instanceof Error ? err.message : "Failed to send message";
-
-        // Map code to user-friendly display message with icon hint
-        let errorMessage: string;
-        switch (errorCode) {
-          case "llm_rate_limit": errorMessage = rawMessage; break;
-          case "resource_timeout": errorMessage = rawMessage; break;
-          case "llm_ctx_overflow": errorMessage = rawMessage; break;
-          case "auth_error": errorMessage = rawMessage; break;
-          case "agent_error":
-          case "kernel_system_error": errorMessage = rawMessage; break;
-          default: errorMessage = rawMessage;
+        // Stream dropped without done — try recovery
+        console.warn("[Store] Stream ended without done event, attempting recovery...");
+        let recovered = false;
+        try {
+          const status = await getSessionStatus(session.id);
+          if (status.running && get().session?.id === session.id) {
+            console.info("[Store] Agent still running, re-attaching to session...");
+            await get().switchSession(session);
+            recovered = true;
+          } else {
+            // Agent done — reload full results
+            await get().switchSession(session);
+            recovered = true;
+          }
+        } catch (recoveryErr) {
+          console.warn("[Store] Recovery via switchSession failed:", recoveryErr);
         }
 
-        const errorInfo = errorCode
-          ? { code: errorCode, message: rawMessage, retryable: isRetryable ?? false, errorId }
-          : null;
+        if (!recovered) {
+          // Fallback: finalize with what we have + show hint to user
+          console.warn("[Store] Recovery failed, finalizing with partial content");
+          const finalMsgs = [...get().messages];
+          const streamingIdx = finalMsgs.findIndex(m => m.id === STREAMING_ID);
+          if (streamingIdx !== -1) {
+            finalMsgs[streamingIdx].id = `assistant-${Date.now()}`;
+          }
+          set({
+            messages: finalMsgs,
+            isStreaming: false,
+            streamAbortController: null,
+            error: "连接中断，已保留部分内容。刷新页面可加载完整结果。",
+          });
+        }
+      }
 
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        // P3 fix: lightweight recovery — finalize with existing messages
+        // instead of calling switchSession which triggers full UI re-render
+        console.warn("[Store] Stream aborted, finalizing with existing messages...");
+        const finalMsgs = [...get().messages];
+        const streamingIdx = finalMsgs.findIndex(m => m.id === STREAMING_ID);
+        if (streamingIdx !== -1) {
+          const msg = finalMsgs[streamingIdx];
+          if (!msg.content && (!msg.parts || msg.parts.length === 0)) {
+            finalMsgs.splice(streamingIdx, 1);
+          } else {
+            finalMsgs[streamingIdx] = { ...msg, id: `assistant-aborted-${Date.now()}` };
+          }
+        }
         set({
-          error: errorMessage,
-          errorInfo,
+          messages: finalMsgs,
           isStreaming: false,
-          streamingContent: "",
-          streamingToolCalls: [],
-          streamingToolResults: [],
-          lastHeartbeat: null,
           streamAbortController: null,
-          isInterrupting: false,
+        });
+
+
+      } else {
+        // Find and clean up or finalize the STREAMING_ID message
+        const finalMsgs = [...get().messages];
+        const streamingIdx = finalMsgs.findIndex(m => m.id === STREAMING_ID);
+        if (streamingIdx !== -1) {
+          const msg = finalMsgs[streamingIdx];
+          if (!msg.content && (!msg.parts || msg.parts.length === 0)) {
+            // Remove empty placeholder to prevent identical React Keys on retry
+            finalMsgs.splice(streamingIdx, 1);
+          } else {
+            // Lock ID to prevent collision if it partially generated
+            finalMsgs[streamingIdx].id = `assistant-${Date.now()}`;
+          }
+        }
+        set({
+          messages: finalMsgs,
+          error: err instanceof Error ? err.message : "Stream failed"
         });
       }
+      set({ isStreaming: false, streamAbortController: null });
+    } finally {
+      clearInterval(watchdog);
     }
   },
 
   retryLastMessage: () => {
     const state = get();
     if (state.isStreaming) return;
-
-    // Find last user message
-    const lastUserIdx = [...state.messages].reverse().findIndex(m => m.role === 'user');
-    if (lastUserIdx === -1) return;
-
-    const actualIdx = state.messages.length - 1 - lastUserIdx;
-    const lastUserMsg = state.messages[actualIdx];
-
-    // Remove messages after the last user message
+    const reversed = [...state.messages].reverse();
+    const lastUser = reversed.find(m => m.role === 'user');
+    if (!lastUser) return;
+    const actualIdx = state.messages.indexOf(lastUser);
     set({ messages: state.messages.slice(0, actualIdx), error: null });
-
-    // Re-send
-    get().sendMessage(lastUserMsg.content, lastUserMsg.attachments);
+    get().sendMessage(lastUser.content, lastUser.attachments);
   },
 
-  clearError: () => {
-    set({ error: null, errorInfo: null });
-  },
-
-  // UI action for closing artifact viewer
-  closeArtifact: () => {
-    set({ activeArtifact: null });
-  },
+  clearError: () => set({ error: null }),
 
   interruptMessage: async () => {
-    const { streamAbortController, isStreaming, session } = get();
+    const { streamAbortController, session, isStreaming } = get();
 
-    if (isStreaming && streamAbortController) {
-      set({ isInterrupting: true });
+    // 1. Abort SSE immediately — instant UI feedback
+    if (streamAbortController) {
+      streamAbortController.abort();
+    }
 
-      // First, request server-side interrupt and wait for confirmation
-      if (session) {
-        try {
-          const { interruptSession } = await import("@/lib/api/sessions");
-          await interruptSession(session.id);
-        } catch (err) {
-          console.warn("[Store] Server-side interrupt failed:", err);
+    // 2. Fire-and-forget: tell backend to stop (don't await — it blocks up to 10s)
+    if (session) {
+      import("@/lib/api/sessions").then(({ interruptSession }) =>
+        interruptSession(session.id).catch(err =>
+          console.warn("[Store] interruptSession API call failed:", err)
+        )
+      );
+    }
+
+    // 3. Safety net: force-finalize so the UI is never stuck in streaming state
+    if (get().isStreaming) {
+      const finalMsgs = [...get().messages];
+      const streamingIdx = finalMsgs.findIndex(m => m.id === "streaming-assistant");
+      if (streamingIdx !== -1) {
+        const msg = finalMsgs[streamingIdx];
+        if (!msg.content && (!msg.parts || msg.parts.length === 0)) {
+          finalMsgs.splice(streamingIdx, 1);
+        } else {
+          finalMsgs[streamingIdx] = { ...msg, id: `assistant-interrupted-${Date.now()}` };
         }
       }
-
-      // Then abort the client-side SSE stream
-      streamAbortController.abort();
+      set({ messages: finalMsgs, isStreaming: false, streamAbortController: null });
     }
   },
 
-  handleServerEvent: (event: ChatEvent, isForwarded?: boolean) => {
-    // This action can be used to manually inject events into the store's stream logic
-    // or handle events broadcasted from other tabs.
-    // Currently, streamChat handles events internally, but this is required by ChatState.
-    console.debug("[Store] handleServerEvent", event, isForwarded);
-  },
-
-  reset: () => { useWorkflowStore.getState().reset(); set(initialState); },
+  reset: () => set(initialState),
 }));

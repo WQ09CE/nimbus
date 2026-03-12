@@ -13,9 +13,12 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
-CONFIG_PATH = Path.home() / ".nimbus" / "config.json"
+NIMBUS_HOME = Path.home() / ".nimbus"
+CONFIG_PATH = NIMBUS_HOME / "config.json"
+DEFAULT_MEMORY_PATH = NIMBUS_HOME / "memory.md"
+DEFAULT_OAUTH_PATH = Path.home() / ".pi" / "agent" / "auth.json"
 
 
 @dataclass
@@ -32,18 +35,21 @@ class NimbusConfig:
     max_tokens: int = 8192
     timeout: float = 300.0
     temperature: Optional[float] = None
-    
+
     # Provider Keys
     gemini_api_key: Optional[str] = None
 
     # Anthropic OAuth
-    anthropic_oauth_path: str = "~/.pi/agent/auth.json"
-    anthropic_use_oauth: bool = True  # 默认启用（有 auth.json 就用）
+    anthropic_oauth_path: str = str(DEFAULT_OAUTH_PATH)
+    anthropic_use_oauth: bool = True
 
     # OpenAI Codex OAuth
-    codex_use_oauth: bool = True  # 默认启用
+    codex_use_oauth: bool = True
 
     ollama_base_url: str = "http://localhost:11434"
+
+    # User memory file (Pinned into MMU at session start, human-editable)
+    memory_path: str = str(DEFAULT_MEMORY_PATH)
 
     # Nimbus Server
     server_port: int = 4096
@@ -54,6 +60,12 @@ class NimbusConfig:
         "openai-codex/gpt-5.3-codex",
         "google/gemini-3.1-pro-preview",
     ])
+
+    # Sub-agent role → model mapping (spawn_agent)
+    agent_roles: Dict[str, str] = field(default_factory=lambda: {
+        "reader": "gemini-3-flash-preview",
+        "worker": "gemini-3-flash-preview",
+    })
 
     @classmethod
     def load(cls, config_path: Optional[Path] = None) -> "NimbusConfig":
@@ -111,6 +123,10 @@ def _apply_json(config: NimbusConfig, data: dict) -> None:
     rc = data.get("review_committee", {})
     if models := rc.get("models"):
         config.review_models = list(models)
+
+    if roles := data.get("agent_roles"):
+        if isinstance(roles, dict):
+            config.agent_roles = dict(roles)
 
     _VALID_PROFILES = {"orchestrator", "standard", "executor"}
     # Agent profile (top-level or under "agent" section)

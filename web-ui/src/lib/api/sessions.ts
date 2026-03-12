@@ -137,6 +137,9 @@ export interface ServerMessage {
   created_at: string;
   artifacts?: (ToolCallArtifact | ToolResultArtifact | unknown)[];
   dag_id?: string;
+  tool_calls?: Array<{ id: string; function?: { name: string; arguments: string }; name?: string; arguments?: any }>;
+  tool_call_id?: string;
+  name?: string;
 }
 
 export interface MessageListResponse {

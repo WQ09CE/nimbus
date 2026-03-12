@@ -9,8 +9,10 @@ import { useState, useEffect, useRef } from 'react';
  * @param charsPerMs Speed of the typewriter (e.g. 2 char per ms = 2000 chars per sec)
  */
 export function useTypewriter(text: string, isStreaming: boolean, charsPerMs: number = 2) {
-    const [displayedText, setDisplayedText] = useState(text);
-    const indexRef = useRef(text.length);
+    // When streaming, start from empty so the typewriter animation activates.
+    // When not streaming (e.g. history load), show full text immediately.
+    const [displayedText, setDisplayedText] = useState(isStreaming ? "" : text);
+    const indexRef = useRef(isStreaming ? 0 : text.length);
     const lastTimeRef = useRef(performance.now());
     const rafRef = useRef<number | null>(null);
 

@@ -35,7 +35,7 @@ from litellm import acompletion
 from litellm.utils import ModelResponse
 
 from nimbus.config import get_config
-from nimbus.adapters.types import LLMConfig, VcpuLLMResponse, LLMStreamEvent
+from nimbus.adapters.types import LLMConfig, VcpuLLMResponse, LLMStreamEvent, TokenUsage
 from nimbus.core.models.registry import ModelRegistry
 
 logger = logging.getLogger(__name__)
@@ -104,7 +104,42 @@ def _extract_tool_calls_from_json(json_str: str) -> list[dict] | None:
     try:
         parsed = json.loads(json_str)
     except (json.JSONDecodeError, ValueError):
-        return None
+        # Fallback: model might have generated implicit python code blocks like `ls(".")`
+        # Or implicit agent OS tools like `call:ls{"path":"."}`
+        results = []
+        
+        # 1. Match `call:tool_name{...}`
+        call_matches = re.finditer(r'call:\s*([a-zA-Z0-9_-]+)\s*(\{.*?\})', json_str, re.DOTALL)
+        for m in call_matches:
+            name, args_str = m.group(1), m.group(2)
+            try:
+                args = json.loads(args_str)
+                results.append({"name": name, "arguments": args})
+            except:
+                pass
+                
+        # 2. Match python style `tool_name(k="v", k2=v2)` 
+        # Very simple heuristic: word(string)
+        py_matches = re.finditer(r'([a-zA-Z0-9_-]+)\s*\((.*?)\)', json_str, re.DOTALL)
+        for m in py_matches:
+            name, args_str = m.group(1), m.group(2)
+            # If we already found call: matches, skip this to avoid double counting
+            if results: continue
+            
+            # Simple heuristic for argument string e.g., `"."` or `path="."`
+            args = {}
+            if args_str.strip():
+                # Attempt to parse as json string if it's just a single string argument like `"."`
+                try:
+                    val = json.loads(args_str)
+                    if isinstance(val, str):
+                        args["path"] = val
+                except:
+                    # Generic fallback: just dump the raw string
+                    args["raw_args"] = args_str.strip()
+            results.append({"name": name, "arguments": args})
+            
+        return results if results else None
 
     # Unwrap {"tool_calls": [...]} wrapper (qwen/ollama format)
     if isinstance(parsed, dict) and "tool_calls" in parsed and isinstance(parsed["tool_calls"], list):
@@ -157,6 +192,20 @@ def _classify_llm_exception(exc: Exception) -> Fault:
             domain = "NETWORK"
         else:
             domain = "LLM"
+
+    # LiteLLM-specific transient errors (server disconnect, mid-stream fallback, etc.)
+    # These are NOT subclasses of standard network exceptions but are still retryable.
+    _LITELLM_RETRYABLE_RE = re.compile(
+        r"server.?disconnect|MidStreamFallback|ServiceUnavailable|"
+        r"APIConnectionError|overloaded|rate.?limit|too many requests|"
+        r"429|500|502|503|504|service.?unavailable|connection.?error|"
+        r"connection.?refused|other side closed|fetch failed|upstream|"
+        r"reset before headers|terminated|retry delay",
+        re.IGNORECASE,
+    )
+    if not retryable and _LITELLM_RETRYABLE_RE.search(msg):
+        retryable = True
+        domain = "NETWORK"
 
     return Fault(
         domain=domain,
@@ -328,6 +377,14 @@ class DirectAdapter:
         if btype == "image":
             mime = block.get("mimeType", "image/png")
             data = block.get("data", "")
+            
+            # Remove data URL prefix if it exists in the raw base64 data
+            if data.startswith("data:"):
+                # format is usually data:image/jpeg;base64,/9j/4AA...
+                parts = data.split(",", 1)
+                if len(parts) == 2:
+                    data = parts[1]
+            
             if target == "anthropic":
                 return {
                     "type": "image",
@@ -395,6 +452,8 @@ class DirectAdapter:
                         "parameters": t.get("parameters", {}),
                     }
                 })
+        return result
+
     async def chat(
         self,
         mmu: Any,
@@ -406,6 +465,7 @@ class DirectAdapter:
         """
         full_content = []
         collected_tool_calls = []
+        collected_usage = None  # TokenUsage from stream
 
         try:
             async for event in self.stream(mmu, tools):
@@ -416,6 +476,24 @@ class DirectAdapter:
                         on_chunk(text)
                 elif event.type == "tool_call" and event.tool_call:
                     collected_tool_calls.append(event.tool_call)
+                elif event.type == "usage" and event.usage:
+                    logger.info("[chat] Received usage event: %s", event.usage)
+                    # Build TokenUsage from stream usage data (pi-style)
+                    u = event.usage
+                    collected_usage = TokenUsage(
+                        input=u.get("input", 0),
+                        output=u.get("output", 0),
+                        cache_read=u.get("cache_read", 0),
+                        cache_write=u.get("cache_write", 0),
+                        total=u.get("total", 0),
+                    )
+                    # Compute cost if model pricing is available
+                    model_key = self._model
+                    if '/' in model_key:
+                        model_key = model_key.split('/', 1)[1]
+                    info = ModelRegistry.get(model_key)
+                    if info and hasattr(info, 'cost_per_million'):
+                        collected_usage.compute_cost(info.cost_per_million)
                 elif event.type == "error":
                      logger.error(f"Stream error: {event.error}")
                      # Classify it properly so VCPU can catch and retry it via StateErrorRecovery
@@ -443,11 +521,14 @@ class DirectAdapter:
                  }
              })
 
-        logger.debug("chat() returning: content_len=%d tool_calls=%d", len(content), len(tool_calls))
+        logger.debug("chat() returning: content_len=%d tool_calls=%d usage=%s",
+                     len(content), len(tool_calls),
+                     collected_usage.to_dict() if collected_usage else None)
 
         return VcpuLLMResponse(
             content=content if content else None,
             tool_calls=tool_calls if tool_calls else None,
+            usage=collected_usage,
         )
 
     # ------------------------------------------------------------------
@@ -810,6 +891,11 @@ class DirectAdapter:
             t_start = time.monotonic()
             ttfb_logged = False
             chunk_count = 0
+            # Usage accumulator (pi-style: message_start + message_delta)
+            usage_data: dict = {
+                "input": 0, "output": 0,
+                "cache_read": 0, "cache_write": 0, "total": 0,
+            }
 
             async with client.messages.stream(**kwargs) as stream:
                 async for event in stream:
@@ -822,7 +908,17 @@ class DirectAdapter:
                         )
                         ttfb_logged = True
 
-                    if event.type == "content_block_start":
+                    # Pi-style usage parsing from message_start
+                    if event.type == "message_start":
+                        msg_usage = getattr(event, 'message', None)
+                        if msg_usage:
+                            msg_usage = getattr(msg_usage, 'usage', None)
+                        if msg_usage:
+                            usage_data["input"] = getattr(msg_usage, 'input_tokens', 0) or 0
+                            usage_data["output"] = getattr(msg_usage, 'output_tokens', 0) or 0
+                            usage_data["cache_read"] = getattr(msg_usage, 'cache_read_input_tokens', 0) or 0
+                            usage_data["cache_write"] = getattr(msg_usage, 'cache_creation_input_tokens', 0) or 0
+                    elif event.type == "content_block_start":
                         if event.content_block.type == "tool_use":
                             current_tool = {
                                 "id": event.content_block.id,
@@ -856,13 +952,37 @@ class DirectAdapter:
                                 },
                             )
                             current_tool = None
+                    # Pi-style usage parsing from message_delta (final output count)
+                    elif event.type == "message_delta":
+                        delta_usage = getattr(event, 'usage', None)
+                        if delta_usage:
+                            out = getattr(delta_usage, 'output_tokens', None)
+                            if out is not None:
+                                usage_data["output"] = out
+                            inp = getattr(delta_usage, 'input_tokens', None)
+                            if inp is not None:
+                                usage_data["input"] = inp
+                            cr = getattr(delta_usage, 'cache_read_input_tokens', None)
+                            if cr is not None:
+                                usage_data["cache_read"] = cr
+                            cw = getattr(delta_usage, 'cache_creation_input_tokens', None)
+                            if cw is not None:
+                                usage_data["cache_write"] = cw
                     elif event.type == "message_stop":
+                        # Emit usage event before stop (pi-style)
+                        usage_data["total"] = (
+                            usage_data["input"] + usage_data["output"]
+                            + usage_data["cache_read"] + usage_data["cache_write"]
+                        )
+                        if usage_data["total"] > 0:
+                            yield LLMStreamEvent(type="usage", usage=usage_data)
                         yield LLMStreamEvent(type="stop", reason="stop")
 
             total = time.monotonic() - t_start
             logger.info(
-                "[Anthropic] model=%s TTFB=%.1fs total=%.1fs chunks=%d",
+                "[Anthropic] model=%s TTFB=%.1fs total=%.1fs chunks=%d usage=%s",
                 model_id, ttfb if ttfb_logged else total, total, chunk_count,
+                usage_data if usage_data["total"] > 0 else "N/A",
             )
 
         except Exception as e:
@@ -1200,6 +1320,23 @@ class DirectAdapter:
                                     )
 
                         elif event_type == "response.completed":
+                            # Pi-style usage parsing from response.completed
+                            resp_data = data.get("response", data)
+                            resp_usage = resp_data.get("usage", {})
+                            if resp_usage:
+                                cached = 0
+                                details = resp_usage.get("input_tokens_details", {})
+                                if details:
+                                    cached = details.get("cached_tokens", 0) or 0
+                                usage_dict = {
+                                    "input": (resp_usage.get("input_tokens", 0) or 0) - cached,
+                                    "output": resp_usage.get("output_tokens", 0) or 0,
+                                    "cache_read": cached,
+                                    "cache_write": 0,
+                                    "total": resp_usage.get("total_tokens", 0) or 0,
+                                }
+                                if usage_dict["total"] > 0:
+                                    yield LLMStreamEvent(type="usage", usage=usage_dict)
                             yield LLMStreamEvent(type="stop", reason="stop")
 
                         elif event_type in ("error", "response.failed"):
@@ -1318,6 +1455,7 @@ class DirectAdapter:
                     temperature=self.config.temperature,
                     max_tokens=self.config.max_tokens,
                     stream=True,
+                    stream_options={"include_usage": True},
                 )
                 if self.config.base_url:
                     acompletion_kwargs["api_base"] = self.config.base_url
@@ -1363,6 +1501,7 @@ class DirectAdapter:
                             temperature=self.config.temperature,
                             max_tokens=self.config.max_tokens,
                             stream=True,
+                            stream_options={"include_usage": True},
                         )
                         if self.config.base_url:
                             acompletion_kwargs["api_base"] = self.config.base_url
@@ -1380,6 +1519,8 @@ class DirectAdapter:
             tool_call_chunks = {}
             reasoning_chunks = []
             text_buffer = []
+            text_streamed = False  # Track if we've yielded text chunks in real-time
+            last_usage = None  # Last chunk's usage data (LiteLLM/OpenAI)
 
             async for chunk in response:
                 chunk_count += 1
@@ -1390,9 +1531,26 @@ class DirectAdapter:
 
                 delta = chunk.choices[0].delta
 
+                # Track usage from streaming chunks
+                # LiteLLM with stream_options={"include_usage": True} sends
+                # a final chunk with usage data; also check model_extra (pydantic v2)
+                chunk_usage = getattr(chunk, 'usage', None)
+                if not chunk_usage and hasattr(chunk, 'model_extra'):
+                    chunk_usage = (chunk.model_extra or {}).get('usage', None)
+                if chunk_usage:
+                    last_usage = chunk_usage
+                    logger.info("[LiteLLM] chunk#%d has usage: %s", chunk_count, chunk_usage)
+
                 if delta.content:
-                    # Buffer text chunks to check for JSON tool calls at the end
                     text_buffer.append(delta.content)
+                    # Yield text chunks immediately for real-time streaming.
+                    # Heuristic: if first text chunk looks like JSON, buffer it
+                    # for JSON tool call extraction (small model fallback).
+                    if text_streamed:
+                        yield LLMStreamEvent(type="text", text=delta.content)
+                    elif not delta.content.lstrip().startswith(("{", "[")):
+                        text_streamed = True
+                        yield LLMStreamEvent(type="text", text=delta.content)
 
                 # Capture reasoning_content as fallback (qwen3.5/deepseek thinking mode)
                 reasoning = getattr(delta, 'reasoning_content', None)
@@ -1413,6 +1571,21 @@ class DirectAdapter:
                             if tc.function.name: tool_call_chunks[idx]["name"] += tc.function.name
                             if tc.function.arguments: tool_call_chunks[idx]["arguments"] += tc.function.arguments
 
+                reason = chunk.choices[0].finish_reason
+                if reason == "malformed_function_call":
+                    # The LLM tried to call a non-existent tool or bad schema natively. 
+                    # Instead of returning empty (which causes infinite retry loops), yield a fake text response.
+                    error_msg = getattr(chunk.choices[0], 'finishMessage', 'malformed_function_call')
+                    logger.warning(f"[LiteLLM] Intercepted malformed function call: {error_msg}")
+                    yield LLMStreamEvent(type="text", text=f"\n\n[System Error: Native tool call failed ({error_msg}). Please try again using only the exact tool names provided in the schema, such as 'Bash' or 'Read'.]\n")
+                    yield LLMStreamEvent(type="stop", reason="stop")
+                    return
+                    
+                if reason and reason not in ("stop", "length", "tool_calls", "function_call", "max_tokens", "content_filter"):
+                    logger.error(f"[LiteLLM] Abnormal finish reason: {reason} (model={current_model})")
+                    yield LLMStreamEvent(type="error", error=f"LLM stopped abruptly with reason: {reason}")
+                    return
+
             total = time.monotonic() - t_start
             logger.info(
                 "[LiteLLM] model=%s TTFB=%.1fs total=%.1fs chunks=%d",
@@ -1421,54 +1594,56 @@ class DirectAdapter:
 
             # 1. Yield extracted JSON tool calls or the raw text
             full_text = "".join(text_buffer)
-            # Only try json parsing if it looks like json or if it's an ollama model emitting codeblocks
             if full_text.strip():
-                content_to_check = full_text.strip()
-                extracted_tcs = None
-                
-                # Check for markdown json or code blocks
-                m = re.search(r'```(?:json)?\s*\n(.*?)\n\s*```', content_to_check, re.DOTALL)
-                if m:
-                    extracted_tcs = _extract_tool_calls_from_json(m.group(1).strip())
-                
-                if not extracted_tcs:
-                    # Look for raw json blocks `{ ... }` or `[ ... ]`
-                    # Simple heuristic: find first { or [ and last } or ]
-                    m_raw = re.search(r'(\{.*\}|\[.*\])', content_to_check, re.DOTALL)
-                    if m_raw:
-                        extracted_tcs = _extract_tool_calls_from_json(m_raw.group(1).strip())
-
-                if extracted_tcs:
-                    logger.info("[LiteLLM] Intercepted %d JSON tool call(s) from text stream.", len(extracted_tcs))
-                    for i, tc in enumerate(extracted_tcs):
-                        yield LLMStreamEvent(
-                            type="tool_call",
-                            tool_call={
-                                "id": f"json_extract_txt_{i}",
-                                "name": tc["name"],
-                                "arguments": tc["arguments"]
-                            }
-                        )
+                if text_streamed:
+                    # Text was already yielded chunk-by-chunk during streaming.
+                    # Only check for JSON tool calls if text was NOT streamed
+                    # (i.e., it looked like JSON from the first chunk).
+                    pass
                 else:
-                    # Guard: small models sometimes output {"error": "..."} as text
-                    # instead of retrying with a proper tool call. Suppress these so
-                    # VCPU sees an empty response and triggers continuation poke.
-                    handled_error = False
-                    if content_to_check.startswith('{') or content_to_check.startswith('['):
-                        try:
-                            parsed_obj = json.loads(content_to_check)
-                            if isinstance(parsed_obj, dict) and "error" in parsed_obj and len(parsed_obj) <= 3:
-                                logger.warning(
-                                    "[LiteLLM] Suppressed JSON error text (small model retry signal): %s",
-                                    content_to_check[:200],
-                                )
-                                handled_error = True
-                                # Don't yield — empty response triggers VCPU retry
-                        except (json.JSONDecodeError, ValueError):
-                            pass
-                            
-                    if not handled_error:
-                        yield LLMStreamEvent(type="text", text=full_text)
+                    # Text was buffered (first chunk looked like JSON) — check for tool calls
+                    content_to_check = full_text.strip()
+                    extracted_tcs = None
+
+                    # Check for markdown json or code blocks
+                    m = re.search(r'```(?:json)?\s*\n(.*?)\n\s*```', content_to_check, re.DOTALL)
+                    if m:
+                        extracted_tcs = _extract_tool_calls_from_json(m.group(1).strip())
+
+                    if not extracted_tcs:
+                        # Look for raw json blocks `{ ... }` or `[ ... ]`
+                        m_raw = re.search(r'(\{.*\}|\[.*\])', content_to_check, re.DOTALL)
+                        if m_raw:
+                            extracted_tcs = _extract_tool_calls_from_json(m_raw.group(1).strip())
+
+                    if extracted_tcs:
+                        logger.info("[LiteLLM] Intercepted %d JSON tool call(s) from text stream.", len(extracted_tcs))
+                        for i, tc in enumerate(extracted_tcs):
+                            yield LLMStreamEvent(
+                                type="tool_call",
+                                tool_call={
+                                    "id": f"json_extract_txt_{i}",
+                                    "name": tc["name"],
+                                    "arguments": tc["arguments"]
+                                }
+                            )
+                    else:
+                        # Guard: small models sometimes output {"error": "..."} as text
+                        handled_error = False
+                        if content_to_check.startswith('{') or content_to_check.startswith('['):
+                            try:
+                                parsed_obj = json.loads(content_to_check)
+                                if isinstance(parsed_obj, dict) and "error" in parsed_obj and len(parsed_obj) <= 3:
+                                    logger.warning(
+                                        "[LiteLLM] Suppressed JSON error text (small model retry signal): %s",
+                                        content_to_check[:200],
+                                    )
+                                    handled_error = True
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+
+                        if not handled_error:
+                            yield LLMStreamEvent(type="text", text=full_text)
 
             # 2. Fallback: if no text or tool_calls, but we got reasoning_content
             if not full_text and not tool_call_chunks and reasoning_chunks:
@@ -1519,6 +1694,24 @@ class DirectAdapter:
                         "arguments": args
                     }
                 )
+
+            # Emit usage event BEFORE stop (pi-style, must be before stop
+            # so chat() consumer sees it before ending iteration)
+            if last_usage:
+                logger.info("[LiteLLM] last_usage found: %s", last_usage)
+                cached = 0
+                prompt_details = getattr(last_usage, 'prompt_tokens_details', None)
+                if prompt_details:
+                    cached = getattr(prompt_details, 'cached_tokens', 0) or 0
+                usage_dict = {
+                    "input": (getattr(last_usage, 'prompt_tokens', 0) or 0) - cached,
+                    "output": getattr(last_usage, 'completion_tokens', 0) or 0,
+                    "cache_read": cached,
+                    "cache_write": 0,
+                    "total": getattr(last_usage, 'total_tokens', 0) or 0,
+                }
+                if usage_dict["total"] > 0:
+                    yield LLMStreamEvent(type="usage", usage=usage_dict)
 
             yield LLMStreamEvent(type="stop", reason="stop")
 

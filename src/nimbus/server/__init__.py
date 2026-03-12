@@ -10,7 +10,7 @@ This module provides:
 
 from .app import create_app
 from .permission import PermissionManager
-from .session_v2 import SessionManagerV2
+from .session import SessionManagerV2
 from .sse import SSEHub
 
 __all__ = [

@@ -21,10 +21,12 @@ interface SessionPanelProps {
 
 type SessionStatus = "active" | "interrupted" | "completed" | "deleted";
 
-const STATUS_CONFIG: Record<SessionStatus, { label: string; color: string; icon: string }> = {
-  active: { label: "Active", color: "text-emerald-400 bg-emerald-400/10 border-emerald-400/20", icon: "●" },
-  interrupted: { label: "Paused", color: "text-amber-400 bg-amber-400/10 border-amber-400/20", icon: "⏸" },
+const STATUS_CONFIG: Record<string, { label: string; color: string; icon: string }> = {
+  running: { label: "Running", color: "text-emerald-400 bg-emerald-400/10 border-emerald-400/20", icon: "●" },
+  suspended: { label: "Suspended", color: "text-amber-400 bg-amber-400/10 border-amber-400/20", icon: "⏸" },
   completed: { label: "Done", color: "text-blue-400 bg-blue-400/10 border-blue-400/20", icon: "✓" },
+  error: { label: "Error", color: "text-red-400 bg-red-400/10 border-red-400/20", icon: "⚠" },
+  active: { label: "Active", color: "text-emerald-400 bg-emerald-400/10 border-emerald-400/20", icon: "●" },
   deleted: { label: "Deleted", color: "text-gray-500 bg-gray-500/10 border-gray-500/20", icon: "🗑" },
 };
 
@@ -101,8 +103,9 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
       await deleteSession(id);
       setSessions(prev => prev.filter(s => s.id !== id));
       if (currentSession?.id === id) switchSession(null);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to delete session:", err);
+      alert(`删除失败: ${err?.message || err}`);
     } finally {
       setActionLoading(null);
     }
@@ -296,11 +299,11 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
                 );
               }).map(session => {
                 const isActive = currentSession?.id === session.id;
-                const status = STATUS_CONFIG[session.status as SessionStatus] || STATUS_CONFIG.active;
+                const status = STATUS_CONFIG[session.status || "suspended"] || STATUS_CONFIG.suspended;
                 const isSelected = selectedIds.has(session.id);
                 // Fallback name logic: name -> id prefix -> "Untitled"
                 const displayName = session.name?.trim() || `Session ${session.id.slice(0, 8)}`;
-                const isStatusActive = session.status === "active";
+                const isStatusActive = session.status === "running" || session.status === "active";
 
                 return (
                   <div

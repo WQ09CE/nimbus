@@ -13,6 +13,7 @@ interface ToolDisplayProps {
     error?: string;
     status: "running" | "completed" | "failed";
     duration?: number;
+    ui_detail?: Record<string, any>;
   };
   isExpanded: boolean;
 }
@@ -29,6 +30,9 @@ export const ToolDisplay = memo(function ToolDisplay({ tool, isExpanded }: ToolD
       return <FileDiff {...tool} />;
     case 'Bash':
       return <Bash {...tool} />;
+    case 'Grep':
+    case 'Glob':
+      return <DefaultTool {...tool} />;
     default:
       return <DefaultTool {...tool} />;
   }

@@ -1,373 +1,180 @@
 "use client";
 
-import React, { useMemo, useRef, useEffect, memo } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { Message } from "@/stores/chat-store";
 import { useChatStore } from "@/stores";
 import { ChatMessage } from "./ChatMessage";
-import { AgentProcess } from "./AgentProcess";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────────────────────────────────────
-
-interface VirtualItem {
-  type: 'user' | 'system' | 'agent_group';
-  key: string;
-  // for user/system
-  message?: Message;
-  // for agent_group
-  processSteps?: Message[];
-  resultMsg?: Message | null;
-}
 
 interface ChatListProps {
   messages: Message[];
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// StreamingTail — isolated component that subscribes to streaming state.
-// Rendered OUTSIDE the virtualizer so historical messages never re-render
-// when streaming content changes.
-// ─────────────────────────────────────────────────────────────────────────────
-
-const StreamingTail = memo(function StreamingTail() {
-  const isStreaming = useChatStore(s => s.isStreaming);
-  const streamingContent = useChatStore(s => s.streamingContent);
-  const streamingToolCalls = useChatStore(s => s.streamingToolCalls);
-  const streamingToolResults = useChatStore(s => s.streamingToolResults);
-
-  if (!isStreaming) return null;
-
-  const streamingMsg: Message = {
-    id: "streaming",
-    role: "assistant",
-    content: streamingContent,
-    toolCalls: streamingToolCalls.length > 0 ? streamingToolCalls : undefined,
-    toolResults: streamingToolResults.length > 0 ? streamingToolResults : undefined,
-    timestamp: Date.now(),
-  };
-
-  return (
-    <div className="max-w-4xl mx-auto px-4">
-      <ChatMessage message={streamingMsg} isStreaming={true} />
-    </div>
-  );
-});
-
-const InjectionTail = memo(function InjectionTail() {
-  const isStreaming = useChatStore(s => s.isStreaming);
-  const messages = useChatStore(s => s.messages);
-
-  if (!isStreaming || messages.length === 0) return null;
-
-  // Only show the injection if it's the very last message (active intervention)
-  const lastMsg = messages[messages.length - 1];
-  const isActiveInjection = lastMsg.role === 'user' && lastMsg.isInjection;
-
-  if (!isActiveInjection) return null;
-
-  return (
-    <div key={lastMsg.id} className="max-w-4xl mx-auto px-4 py-3">
-      <ChatMessage message={lastMsg} />
-    </div>
-  );
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ScrollToBottom — sticky button that appears when user scrolls up
-// ─────────────────────────────────────────────────────────────────────────────
-
-const ScrollToBottom = memo(function ScrollToBottom({ containerRef }: { containerRef: React.RefObject<HTMLDivElement | null> }) {
-  const isStreaming = useChatStore(s => s.isStreaming);
-  const messages = useChatStore(s => s.messages);
-  const [show, setShow] = React.useState(false);
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const handleScroll = () => {
-      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      setShow(distFromBottom > 200);
-    };
-    el.addEventListener('scroll', handleScroll, { passive: true });
-    return () => el.removeEventListener('scroll', handleScroll);
-  }, [containerRef]);
-
-  if (!show || (!isStreaming && messages.length <= 3)) return null;
-
-  return (
-    <div className="sticky bottom-4 flex justify-center z-10 pointer-events-none">
-      <button
-        onClick={() => {
-          const el = containerRef.current;
-          if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-          setShow(false);
-        }}
-        className="pointer-events-auto bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-2 rounded-full shadow-lg transition-all duration-200 flex items-center gap-2 border border-blue-500/50 hover:scale-105 active:scale-95"
-      >
-        <span>&darr;</span>
-        <span className="hidden sm:inline">To Bottom</span>
-        {isStreaming && (
-          <div className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" />
-        )}
-      </button>
-    </div>
-  );
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HistoricalRow — memoized row wrapper; each row will not re-render unless
-// its own data changes.
-// ─────────────────────────────────────────────────────────────────────────────
-
-interface HistoricalRowProps {
-  item: VirtualItem;
-}
-
-const HistoricalRow = memo(function HistoricalRow({ item }: HistoricalRowProps) {
-  if (item.type === 'user' || item.type === 'system') {
-    return (
-      <div className="max-w-4xl mx-auto px-4">
-        <ChatMessage message={item.message!} />
-      </div>
-    );
-  }
-
-  if (item.type === 'agent_group') {
-    return (
-      <div className="max-w-4xl mx-auto px-4">
-        {(item.processSteps?.length ?? 0) > 0 && (
-          <AgentProcess steps={item.processSteps!} isStreaming={false} />
-        )}
-        {item.resultMsg && (
-          <ChatMessage message={item.resultMsg} isStreaming={false} />
-        )}
-      </div>
-    );
-  }
-
-  return null;
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ChatList — main list with virtual scrolling
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function ChatList({ messages }: ChatListProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const isStreaming = useChatStore(s => s.isStreaming);
+  const [showNewMessagesPill, setShowNewMessagesPill] = useState(false);
+  const shouldStick = useRef(true);
+  const lastCount = useRef(messages.length);
 
-  // Compute grouped items from historical messages only.
-  // This memo only re-runs when messages array reference changes.
-  const items = useMemo<VirtualItem[]>(() => {
-    const result: VirtualItem[] = [];
-    let currentAgentGroup: Message[] = [];
-
-    // Tools whose completed state must be rendered by ChatMessage (Grid layout),
-    // not by AgentProcess (linear list).
-    const PARALLEL_TOOLS = new Set(["Dispatch", "Explore", "Implement", "Design", "Test", "ParallelDispatch"]);
-
-    /** Returns true if the message contains any ParallelDispatch tool call */
-    const hasParallelTool = (msg: Message): boolean =>
-      !!msg.toolCalls?.some(tc => PARALLEL_TOOLS.has(tc.name));
-
-    const flushAgentGroup = () => {
-      if (currentAgentGroup.length === 0) return;
-
-      const msgs = [...currentAgentGroup];
-      currentAgentGroup = [];
-
-      const lastMsg = msgs[msgs.length - 1];
-      const lastHasTools = lastMsg.toolCalls && lastMsg.toolCalls.length > 0;
-
-      // If the last message contains a ParallelDispatch tool, it must be
-      // rendered by ChatMessage (which has the Grid layout) regardless of
-      // whether it "has tools".  Treat it as resultMsg so it bypasses
-      // AgentProcess entirely.
-      const lastIsParallel = hasParallelTool(lastMsg);
-
-      let processSteps: Message[];
-      let resultMsg: Message | null;
-
-      if (!lastHasTools || lastIsParallel) {
-        if (msgs.length > 1) {
-          resultMsg = lastMsg;
-          processSteps = msgs.slice(0, -1);
-        } else {
-          resultMsg = lastMsg;
-          processSteps = [];
-        }
-      } else {
-        // Check whether any earlier message in the group contains a
-        // ParallelDispatch — those should also be extracted as standalone
-        // resultMsg rows so they keep their Grid layout.
-        const parallelIdx = msgs.findIndex(hasParallelTool);
-        if (parallelIdx >= 0) {
-          // Everything before the parallel message goes to processSteps,
-          // the parallel message itself becomes a dedicated resultMsg row,
-          // and everything after it (if any) becomes a second agent_group.
-          const before = msgs.slice(0, parallelIdx);
-          const parallelMsg = msgs[parallelIdx];
-          const after = msgs.slice(parallelIdx + 1);
-
-          if (before.length > 0) {
-            result.push({
-              type: 'agent_group',
-              key: `agent-${msgs[0].id}`,
-              processSteps: before,
-              resultMsg: null,
-            });
-          }
-
-          // Parallel message as standalone resultMsg (rendered by ChatMessage)
-          result.push({
-            type: 'agent_group',
-            key: `agent-parallel-${parallelMsg.id}`,
-            processSteps: [],
-            resultMsg: parallelMsg,
-          });
-
-          // Re-queue the remaining messages as a new group
-          if (after.length > 0) {
-            currentAgentGroup = after;
-            flushAgentGroup();
-          }
-          return;
-        }
-
-        processSteps = msgs;
-        resultMsg = null;
-      }
-
-      result.push({
-        type: 'agent_group',
-        key: `agent-${msgs[0].id}`,
-        processSteps,
-        resultMsg,
-      });
-    };
-
-    messages.forEach((msg, index) => {
-      if (msg.role === 'user') {
-        // During streaming, skip injection messages — they'll be rendered
-        // in InjectionTail after StreamingTail to preserve visual ordering.
-        // Only skip the *active* injection (last message), historical ones stay in place.
-        const isActiveInjection = isStreaming && msg.isInjection && index === messages.length - 1;
-        if (isActiveInjection) return;
-
-        flushAgentGroup();
-        result.push({ type: 'user', key: msg.id, message: msg });
-      } else if (msg.role === 'assistant') {
-        currentAgentGroup.push(msg);
-      } else if (msg.role === 'system') {
-        flushAgentGroup();
-        result.push({ type: 'system', key: msg.id, message: msg });
-      }
-    });
-
-    flushAgentGroup();
-    return result;
-  }, [messages, isStreaming]);
-
-  // Virtual scrolling: estimate row height conservatively to avoid
-  // unnecessary re-layouts. Each item's measured height will override.
-  const rowVirtualizer = useVirtualizer({
-    count: items.length,
+  const virtualizer = useVirtualizer({
+    count: messages.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: (i) => {
-      const item = items[i];
-      if (!item) return 200;
-      if (item.type === 'user') return 120;
-      if (item.type === 'system') return 60;
-      // agent_group: generous estimate — overshoot is better than undershoot
-      // for scroll stability (total height shrinks rather than grows on measure)
-      const steps = item.processSteps?.length ?? 0;
-      const hasResult = item.resultMsg ? 200 : 0;
-      return 200 + steps * 160 + hasResult;
-    },
-    overscan: 10,
+    estimateSize: () => 200,
+    overscan: 5,
+    gap: 32,
+    paddingEnd: 48,
   });
 
-  // Scroll to bottom when messages are first loaded (page refresh / session switch)
-  const prevItemsLen = useRef(0);
-  useEffect(() => {
-    const wasEmpty = prevItemsLen.current === 0;
-    prevItemsLen.current = items.length;
-    if (wasEmpty && items.length > 0) {
-      // 双重 rAF：第一帧触发布局测量，第二帧读取真实 scrollHeight（iOS Safari ResizeObserver 延迟更长）
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          const el = parentRef.current;
-          if (el) el.scrollTop = el.scrollHeight;
-        });
-      });
-      // setTimeout 兜底：确保 virtual scroller measureElement 回调已完成
-      setTimeout(() => {
-        const el = parentRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
-      }, 150);
-    }
-  }, [items.length]);
+  const virtualItems = virtualizer.getVirtualItems();
 
-  // Scroll to bottom on new messages or start of streaming (only if near bottom)
+  const lastTotalSize = useRef(0);
+  const scrollElement = parentRef.current;
+
+  // Track scroll position to update shouldStick and pill visibility
   useEffect(() => {
     const el = parentRef.current;
     if (!el) return;
-    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distFromBottom > 200) return;
-    requestAnimationFrame(() => {
-      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    const handleScroll = () => {
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      // Sticky Zone logic: 100px threshold for better reliability
+      if (distFromBottom < 100) {
+        shouldStick.current = true;
+        setShowNewMessagesPill(false);
+      } else {
+        shouldStick.current = false;
+      }
+    };
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  // Use ResizeObserver on the container to detect height changes
+  useEffect(() => {
+    const el = parentRef.current;
+    if (!el) return;
+
+    let lastHeight = el.scrollHeight;
+
+    const resizeObserver = new ResizeObserver(() => {
+      const newHeight = el.scrollHeight;
+      const heightDelta = Math.abs(newHeight - lastHeight);
+      
+      // Only auto-scroll if:
+      // 1. We should stick to bottom
+      // 2. The height change is significant (not just virtualizer jitter)
+      // 3. Or we're already very close to the bottom
+      if (shouldStick.current && heightDelta > 5) {
+        el.scrollTo({
+          top: newHeight,
+          behavior: 'auto' // Use 'auto' instead of 'smooth' to avoid scroll loops during measurement
+        });
+      }
+      lastHeight = newHeight;
     });
-  }, [messages, isStreaming]);
+
+    // Observe the scrollable container's content (the virtual list inner element)
+    const content = el.firstElementChild;
+    if (content) {
+      resizeObserver.observe(content);
+    }
+
+    return () => resizeObserver.disconnect();
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    if (messages.length > 0) {
+      shouldStick.current = true;
+      parentRef.current?.scrollTo({
+        top: parentRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+    }
+  }, [messages.length]);
+
+  // When new messages arrive, stick to bottom if we are in sticky zone
+  useEffect(() => {
+    if (messages.length > lastCount.current) {
+      if (shouldStick.current) {
+        // Smoothly scroll to the new bottom
+        requestAnimationFrame(() => {
+          parentRef.current?.scrollTo({
+            top: parentRef.current.scrollHeight,
+            behavior: 'auto' // Use 'auto' to ensure immediate scroll
+          });
+        });
+      } else {
+        setShowNewMessagesPill(true);
+      }
+    }
+    lastCount.current = messages.length;
+  }, [messages.length]);
+
+  // Initial scroll to bottom on mount
+  useEffect(() => {
+    if (messages.length > 0) {
+      // Step 1: Virtualizer scroll to bottom
+      virtualizer.scrollToIndex(messages.length - 1, { align: 'end', behavior: 'auto' });
+      shouldStick.current = true;
+
+      // Step 2: Forcibly scroll to absolute bottom after a tick to ensure full message visibility
+      requestAnimationFrame(() => {
+        if (parentRef.current) {
+          parentRef.current.scrollTop = parentRef.current.scrollHeight;
+        }
+      });
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    // Outer scroll container — virtualizer attaches here
     <div
       ref={parentRef}
-      className="flex-1 min-h-0 overflow-y-auto custom-scrollbar"
+      className="flex-1 min-h-0 overflow-y-auto custom-scrollbar pt-6 relative"
+      style={{ overflowAnchor: 'auto' }}
     >
-      {/* Virtual list inner container */}
       <div
-        style={{
-          height: `${rowVirtualizer.getTotalSize()}px`,
-          width: '100%',
-          position: 'relative',
-        }}
+        style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}
+        className="max-w-4xl mx-auto px-4"
       >
-        {rowVirtualizer.getVirtualItems().map((virtualRow) => (
-          <div
-            key={virtualRow.key}
-            data-index={virtualRow.index}
-            ref={rowVirtualizer.measureElement}
-            style={{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              width: '100%',
-              transform: `translateY(${virtualRow.start}px)`,
-            }}
-          >
-            <div className="py-3">
-              <HistoricalRow item={items[virtualRow.index]} />
+        {virtualItems.map(vItem => {
+          const msg = messages[vItem.index];
+          const isLast = vItem.index === messages.length - 1;
+          return (
+            <div
+              key={msg.id || vItem.index}
+              data-index={vItem.index}
+              ref={virtualizer.measureElement}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                transform: `translateY(${vItem.start}px)`,
+              }}
+            >
+              <ChatMessage
+                message={msg}
+                isStreaming={isStreaming && isLast && msg.role === 'assistant'}
+              />
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
-      {/* Streaming tail: outside virtual list — never triggers historical re-renders */}
-      <div className="py-3">
-        <StreamingTail />
-      </div>
-
-      {/* Injection messages rendered after streaming tail to preserve visual order */}
-      <InjectionTail />
-
-      {/* Bottom spacer for comfortable reading */}
-      <div className="h-6" />
-
-      {/* Scroll-to-bottom button */}
-      <ScrollToBottom containerRef={parentRef} />
+      {showNewMessagesPill && (
+        <button
+          onClick={() => {
+            scrollToBottom();
+            setShowNewMessagesPill(false);
+          }}
+          className="new-messages-pill fixed bottom-28 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-sky-500/90 hover:bg-sky-400/90 text-white text-sm font-medium shadow-lg shadow-sky-500/20 backdrop-blur-sm transition-colors cursor-pointer flex items-center gap-1.5"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 13.5L12 21m0 0l-7.5-7.5M12 21V3" />
+          </svg>
+          New messages
+        </button>
+      )}
     </div>
   );
 }
