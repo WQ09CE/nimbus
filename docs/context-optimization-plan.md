@@ -1,107 +1,101 @@
-# Context 膨胀问题研究：Nimbus vs Pi 深度对比
+# Context 管理整改 Design Doc
 
-## 问题
+> Owner: WQ · Date: 2026-03-12 · Status: **已实施并验证**
 
-Nimbus 框架 token 消耗过快，context 很快超过 200K，而 Pi coding agent 在同类任务下稳步增长。
+## 1. 问题背景
 
----
+Nimbus agent 的 context 消耗过快——简单 10 轮对话 context 就逼近 200K。核心原因是框架缺乏 Pi coding agent 中已成熟的 **assembly-time token 预算** 机制。
 
-## 核心差异对比（经二次核实）
+## 2. 根因分析
 
-| 维度 | Pi (成熟方案) | Nimbus (当前) | 影响 |
-|------|-------------|-------------|------|
-| **bash 截断** | **50KB / 2000行**，超过后写临时文件 | 100KB / 2000行，不写临时文件 | 🔴 2x |
-| **read 截断** | **50KB / 2000行** | 100KB / 2000行 | 🔴 2x |
-| **grep 截断** | 50KB + 每行截断 **500字符** | **200条匹配，无字节限制，无行截断** | 🔴 可爆炸 |
-| **Keep recent** | **token-based** `20000 tokens` | **count-based** `20条消息` | 🔴 20条大消息=100K+ |
-| **Compaction 触发** | usage + trailing 估算 | ✅ hybrid 估算（已对齐） | ✅ |
-| **Compaction 效果** | `replaceMessages` 立即收缩 | ✅ `assemble_context` 下次生效（等价） | ✅ |
-| **大输出临时文件** | bash 超 50KB 自动写 `/tmp`，context 中只放截断+路径 | ❌ 无此机制 | 🟡 |
-| **Overflow recovery** | 自动 compact → retry（最多1次） | ❌ 直接报错 | 🟡 |
+通过与 Pi 源码（`sourcecode/pi-mono`）的深度对比，定位到 4 项关键差异：
 
----
+| 维度 | Pi | Nimbus (改前) | 影响 |
+|------|-----|-------------|------|
+| **Assembly-time 限制** | `keepRecentTokens: 20K` — 每次 LLM 调用只发送 budget 内的消息 | ❌ `assemble_context` 发送**全部** messages | 🔴 致命 |
+| **Tool 截断** | 50KB (bash/read/grep) | 100KB, grep 无字节限制 | 🔴 2x+ |
+| **keep_recent** | token-based `20000` | count-based `20条` | 🔴 |
+| **Overflow recovery** | compact → retry | ✅ 已有（`CTX_OVERFLOW` → `_try_compaction`） | ✅ |
 
-## 根因详析（按影响排序）
+## 3. 架构设计
 
-### 1. 🔴 grep 无字节限制 + 无单行截断（最危险）
+### 3.1 Assembly-Time Token Budget（核心）
 
-**Pi grep**: `truncateHead(rawOutput, { maxLines: Infinity })` 仍受 **50KB 字节限制**。每行还截断到 **500 字符**：
-```typescript
-// Pi: 每行最多500字符
-export const GREP_MAX_LINE_LENGTH = 500;
+```
+assemble_context()                      ← 每次 LLM 调用前
+├── 1. anchor: system prompt + goal + summary
+├── 2. 计算 available_budget = max_context - anchor - reserve(4K)
+├── 3. 从末尾回溯 _messages，累积 tokens 直到超 budget
+│   └── cut_index 不切分 tool_call ↔ tool_result 对
+└── 4. 只发送 messages[cut_index:] 给 LLM
 ```
 
-**Nimbus grep**: `MAX_MATCHES = 200` 按条数限制，但每条匹配行**无长度限制**。一个 JSON 文件里一行可能上万字符，200 条匹配 = **数 MB context**。
+**与 compaction 的关系**：assembly-time 限制是 **即时生效的防线**（每次 LLM 调用都限制），compaction 是 **存储层清理**（真正减少 `_messages` 数组大小）。两者互补。
 
-### 2. 🔴 Tool 截断阈值 2x（bash + read）
+### 3.2 工具截断对齐
 
-| Tool | Pi | Nimbus | 差距 |
-|------|-----|--------|------|
-| bash `MAX_OUTPUT_BYTES` | 50KB | 100KB | 2x |
-| read `MAX_BYTES` | 50KB | 100KB | 2x |
+```
+bash.py:  100KB → 50KB + 超限写 /tmp/nimbus-bash-*.log
+read.py:  100KB → 50KB
+grep.py:  无限制 → 50KB + 500 char/line
+```
 
-并行执行时放大：Nimbus 5 个并行 Read = 5 × 100KB = **500KB**；Pi = 5 × 50KB = 250KB。
+### 3.3 Token-Based Keep Recent
 
-Pi 还有关键机制：**bash 超过 50KB 自动写临时文件** `/tmp/pi-bash-*.log`，context 中只放截断的尾部 + 文件路径。这样 LLM 需要看全文时可以 `Read` 临时文件而非占用 context。
+```
+MMUConfig.keep_recent_messages: 20  →  keep_recent_tokens: 20000
+_smart_drop: 按 token 回溯计算 hot boundary（而非固定条数）
+```
 
-### 3. 🔴 `keep_recent` 用条数而非 token 数
+## 4. 改动清单
 
-**Pi**: `keepRecentTokens: 20000` — 保留最近 ~20K tokens，不管有几条消息。
+| 文件 | 改动 | Commit |
+|------|------|--------|
+| [mmu.py](file:///Users/wangqing/sourcecode/agent/agent-framework/nimbus/src/nimbus/core/mmu.py) | `assemble_context` 加入 token budget 限制 | `5c52511` |
+| [mmu.py](file:///Users/wangqing/sourcecode/agent/agent-framework/nimbus/src/nimbus/core/mmu.py) | `keep_recent_messages` → `keep_recent_tokens` | `145df0c` |
+| [bash.py](file:///Users/wangqing/sourcecode/agent/agent-framework/nimbus/src/nimbus/core/tools/bash.py) | 50KB + 临时文件 | `145df0c` |
+| [read.py](file:///Users/wangqing/sourcecode/agent/agent-framework/nimbus/src/nimbus/core/tools/read.py) | 50KB | `145df0c` |
+| [grep.py](file:///Users/wangqing/sourcecode/agent/agent-framework/nimbus/src/nimbus/core/tools/grep.py) | 50KB + 500 char/line | `145df0c` |
+| [test_mmu.py](file:///Users/wangqing/sourcecode/agent/agent-framework/nimbus/tests/core/test_mmu.py) | 孤儿检测测试 + 参数迁移 | `26a5b9d` |
 
-**Nimbus**: `keep_recent_messages: 20` — 保留最近 20 条。
-- 3 个大 Read 结果（各 100KB）= 3 条 tool result 占 ~75K tokens
-- 加上 assistant + user 消息 = compaction 后还保留了 80-100K tokens
-- **Compaction 效果大打折扣**
+## 5. 验证结果
 
-### 4. 🟡 Overflow recovery
+### 5.1 单元测试
 
-Pi 有两级保护：
-1. **threshold compaction**：`contextTokens > contextWindow - 16384` 时主动压缩
-2. **overflow recovery**：LLM 返回 `context_length_exceeded` → 删错误消息 → compact → 自动 retry
+65/65 全绿，含 3 个新增孤儿检测测试（token boundary mid-turn / emergency hot zone / multi-result）。
 
-Nimbus 只有 threshold compaction，overflow 直接报错。
+### 5.2 实景测试 (10 场景)
 
----
+per-call `step_input` 对比：
 
-## 修复方案
+```
+场景                       v1 (无 budget)   v2 (有 budget)     Δ
+───────────────────────────────────────────────────────────────
+1_simple_question                 726            727      +0%
+3_read_large_file (30KB)       10,183         10,684      +5%
+4_grep_codebase                26,123          2,185    -92% ✅
+5_grep_broad                   17,178          2,462    -86% ✅
+9_grep_json                    21,053          8,100    -62% ✅
+10_complex_task                 7,291          2,570    -65% ✅
+```
 
-### P0: 统一工具截断到 50KB（最大投入产出比）
+核心改善：场景 4 从 **26K→2K**（-92%），因为之前 3 轮的大 tool output 不再无脑带入 context。
 
-#### [MODIFY] [bash.py](file:///Users/wangqing/sourcecode/agent/agent-framework/nimbus/src/nimbus/core/tools/bash.py)
-- `MAX_OUTPUT_BYTES`: 100KB → **50KB**
-- 大输出时**写临时文件**（对齐 Pi），context 内只放截断版 + 路径
+## 6. 数据流示意
 
-#### [MODIFY] [read.py](file:///Users/wangqing/sourcecode/agent/agent-framework/nimbus/src/nimbus/core/tools/read.py)
-- `MAX_BYTES`: 100KB → **50KB**
+```
+User msg → MMU._messages.append()
+         → VCPU.step()
+           → mmu.assemble_context()     ← ★ 这里限制发送量
+             → LLM API call (bounded)
+           → tool execution
+           → mmu.add_tool_result()      ← tool output 截断到 50KB
+         → 检查是否触发 compaction (85%)
+           → archive_and_reset()        ← 存储层清理
+```
 
-#### [MODIFY] [grep.py](file:///Users/wangqing/sourcecode/agent/agent-framework/nimbus/src/nimbus/core/tools/grep.py)
-- 添加 **50KB 字节硬限**
-- 每行截断到 **500 字符**（对齐 Pi 的 `GREP_MAX_LINE_LENGTH`）
+## 7. 后续可选优化
 
-### P1: keep_recent 改为 token-based
-
-#### [MODIFY] [mmu.py](file:///Users/wangqing/sourcecode/agent/agent-framework/nimbus/src/nimbus/core/mmu.py)
-- `keep_recent_messages: int = 20` → `keep_recent_tokens: int = 20000`
-- `_smart_drop` 和 `_find_cut_point` 统一按 token 数保留最近消息
-- 确保 compaction 后 context 显著缩减
-
-### P2: Overflow auto-recovery
-
-#### [MODIFY] [vcpu.py](file:///Users/wangqing/sourcecode/agent/agent-framework/nimbus/src/nimbus/core/vcpu.py)
-- 捕获 `context_length_exceeded` / `ContextWindowExceeded` 错误
-- 删除错误消息 → forced compact → retry（最多 1 次）
-
----
-
-## 验证计划
-
-### 定量对比
-1. 用同一对话（10+ 轮、包含 Read/Bash/Grep 操作）对比：
-   - 修改前 token 增长速率
-   - 修改后 token 增长速率
-2. 验证 compaction 后 context 缩减到 ~20K recent + summary
-
-### 手动验证
-1. TokenFooter 观察：长对话下 token 应保持在合理范围
-2. grep 大文件后验证 context 不爆炸
-3. bash 大输出后验证临时文件生成 + 截断显示
+- **Lazy Offload**: 在 assembly 时对旧 turn 的 tool result 二次截断，只保留摘要
+- **Compaction 触发阈值下调**: 85% → 70%，更早清理存储层
+- **Tool result 内容摘要**: 用小模型对大 tool output 生成摘要替代原文
