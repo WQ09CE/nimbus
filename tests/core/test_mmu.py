@@ -131,7 +131,7 @@ class TestMMU:
     @pytest.mark.asyncio
     async def test_archive_and_reset_fallback(self):
         # Use a low token limit so smart_drop actually drops messages
-        config = MMUConfig(max_context_tokens=100, keep_recent_messages=4)
+        config = MMUConfig(max_context_tokens=100, keep_recent_tokens=200)
         mmu = MMU(config)
         for i in range(15):
             mmu.add_user_message(f"message {i} " + "x" * 50)
@@ -148,7 +148,7 @@ class TestMMU:
     @pytest.mark.asyncio
     async def test_archive_with_summarizer(self):
         # Need enough messages that cut point separates some for summarization
-        config = MMUConfig(max_context_tokens=200, keep_recent_messages=2)
+        config = MMUConfig(max_context_tokens=200, keep_recent_tokens=100)
         mmu = MMU(config)
         # Add many messages so cut point places some before the hot zone
         for i in range(10):
@@ -191,9 +191,9 @@ class TestMMU:
     @pytest.mark.asyncio
     async def test_archive_merge_not_append(self):
         """Global summary should be merged (replaced), not infinitely appended."""
-        config = MMUConfig(max_context_tokens=200, keep_recent_messages=2)
+        config = MMUConfig(max_context_tokens=5000, keep_recent_tokens=50)
         mmu = MMU(config)
-        for i in range(10):
+        for i in range(20):
             mmu.add_user_message(f"msg {i}" + "x" * 200)
             mmu.add_assistant_message(f"resp {i}" + "y" * 200)
 
@@ -203,7 +203,7 @@ class TestMMU:
         assert first_summary
 
         # Add more messages
-        for i in range(10):
+        for i in range(20):
             mmu.add_user_message(f"msg2 {i}" + "x" * 200)
             mmu.add_assistant_message(f"resp2 {i}" + "y" * 200)
 
@@ -213,7 +213,7 @@ class TestMMU:
             assert "<previous-summary>" in user_prompt
             return "Complete merged summary of everything"
 
-        await mmu.archive_and_reset(summarizer=mock_summarizer)
+        summary = await mmu.archive_and_reset(summarizer=mock_summarizer)
         # Should contain the new summary (may also have file ops appended)
         assert "Complete merged summary of everything" in mmu._global_summary
 
@@ -346,10 +346,25 @@ class TestTombstone:
 # =============================================================================
 
 
+def _assert_no_orphan_tool_calls(messages):
+    """Assert no tool_call message exists without its corresponding tool_result(s), and vice versa."""
+    for i, m in enumerate(messages):
+        if m.is_tool_call:
+            # Must be followed by at least one tool_result
+            assert i + 1 < len(messages), f"tool_call at index {i} is at end without any tool_result"
+            assert messages[i + 1].is_tool_result, f"tool_call at index {i} not followed by tool_result"
+        if m.is_tool_result:
+            # Must be preceded by either another tool_result or a tool_call
+            assert i > 0, f"tool_result at index {i} is at start without a tool_call"
+            prev = messages[i - 1]
+            assert prev.is_tool_call or prev.is_tool_result, \
+                f"tool_result at index {i} not preceded by tool_call or another tool_result"
+
+
 class TestSmartDrop:
     def test_no_drop_under_budget(self):
         msgs = [Message(role="user", content="short")]
-        surviving, tomb = _smart_drop(msgs, target_tokens=9999, keep_recent=1)
+        surviving, tomb = _smart_drop(msgs, target_tokens=9999, keep_recent_tokens=1000)
         assert len(surviving) == 1
         assert tomb == ""
 
@@ -366,7 +381,7 @@ class TestSmartDrop:
             Message(role="user", content="continue"),
         ]
         # Set budget low enough to force dropping one turn
-        surviving, tomb = _smart_drop(msgs, target_tokens=200, keep_recent=1)
+        surviving, tomb = _smart_drop(msgs, target_tokens=200, keep_recent_tokens=50)
         # Error turn should be dropped, success turn might remain
         assert "ERR" in tomb
         # The user message (hot) should survive
@@ -378,7 +393,7 @@ class TestSmartDrop:
             Message(role="assistant", content="old resp " + "y" * 500),
             Message(role="user", content="recent"),
         ]
-        surviving, tomb = _smart_drop(msgs, target_tokens=50, keep_recent=1)
+        surviving, tomb = _smart_drop(msgs, target_tokens=50, keep_recent_tokens=50)
         # Last message (hot) must survive
         assert surviving[-1].content == "recent"
 
@@ -389,21 +404,67 @@ class TestSmartDrop:
             _assistant_tc("tc2", "Bash"), _tool_result("tc2", "Bash", "y" * 200),
             Message(role="user", content="done"),
         ]
-        surviving, _ = _smart_drop(msgs, target_tokens=100, keep_recent=1)
+        surviving, _ = _smart_drop(msgs, target_tokens=100, keep_recent_tokens=50)
         # Verify: every assistant with tool_calls is followed by its tool results
-        for i, m in enumerate(surviving):
-            if m.is_tool_call:
-                assert i + 1 < len(surviving), "tool_call at end without result"
-                assert surviving[i + 1].is_tool_result, "tool_call not followed by result"
+        _assert_no_orphan_tool_calls(surviving)
 
     def test_tombstone_produced(self):
         msgs = [
             Message(role="user", content="old message " + "x" * 500),
             Message(role="user", content="recent"),
         ]
-        surviving, tomb = _smart_drop(msgs, target_tokens=50, keep_recent=1)
+        surviving, tomb = _smart_drop(msgs, target_tokens=50, keep_recent_tokens=50)
         assert "Dropped" in tomb
         assert "old message" in tomb
+
+    def test_token_based_hot_boundary_no_orphans(self):
+        """Token-based hot boundary must not split tool_call from its results."""
+        msgs = [
+            Message(role="user", content="start " + "x" * 200),
+            # Turn 1: small tool call
+            _assistant_tc("tc1", "Grep"),
+            _tool_result("tc1", "Grep", "match1\nmatch2"),
+            # Turn 2: large tool result that will straddle the boundary
+            _assistant_tc("tc2", "Read"),
+            _tool_result("tc2", "Read", "y" * 2000),  # ~500 tokens
+            # Recent
+            Message(role="user", content="continue"),
+            Message(role="assistant", content="ok"),
+        ]
+        # Keep only ~200 tokens in hot zone - boundary likely falls mid-turn 2
+        surviving, _ = _smart_drop(msgs, target_tokens=300, keep_recent_tokens=200)
+        _assert_no_orphan_tool_calls(surviving)
+
+    def test_emergency_drop_in_hot_zone_no_orphans(self):
+        """Even when forced to breach hot zone, tool pairs must stay atomic."""
+        # All messages are large tool results in the hot zone
+        msgs = [
+            _assistant_tc("tc1", "Read"),
+            _tool_result("tc1", "Read", "big1 " + "x" * 4000),  # ~1000 tokens
+            _assistant_tc("tc2", "Read"),
+            _tool_result("tc2", "Read", "big2 " + "y" * 4000),  # ~1000 tokens
+            _assistant_tc("tc3", "Read"),
+            _tool_result("tc3", "Read", "big3 " + "z" * 4000),  # ~1000 tokens
+            Message(role="user", content="done"),
+        ]
+        # Very tight budget forces emergency drops into hot zone
+        surviving, _ = _smart_drop(msgs, target_tokens=500, keep_recent_tokens=20000)
+        _assert_no_orphan_tool_calls(surviving)
+
+    def test_multiple_tool_results_per_call_no_orphans(self):
+        """Multi-result tool calls (e.g., parallel tools) stay atomic."""
+        msgs = [
+            Message(role="user", content="old " + "x" * 400),
+            # One assistant call with 3 tool results
+            Message(role="assistant", content=None,
+                    tool_calls=_tc("tc1", "Read") + _tc("tc2", "Bash") + _tc("tc3", "Grep")),
+            _tool_result("tc1", "Read", "r" * 800),
+            _tool_result("tc2", "Bash", "b" * 800),
+            _tool_result("tc3", "Grep", "g" * 800),
+            Message(role="user", content="next"),
+        ]
+        surviving, _ = _smart_drop(msgs, target_tokens=300, keep_recent_tokens=100)
+        _assert_no_orphan_tool_calls(surviving)
 
 
 # =============================================================================
@@ -617,7 +678,7 @@ class TestCompactionWithFileOps:
     @pytest.mark.asyncio
     async def test_file_ops_in_summary(self):
         """File operations should be tracked and appended to the summary."""
-        config = MMUConfig(max_context_tokens=200, keep_recent_messages=2)
+        config = MMUConfig(max_context_tokens=200, keep_recent_tokens=100)
         mmu = MMU(config)
 
         # Add messages with tool calls
@@ -645,7 +706,7 @@ class TestCompactionWithFileOps:
     @pytest.mark.asyncio
     async def test_llm_summarizer_fallback_on_error(self):
         """When LLM summarizer fails, should fall back to deterministic."""
-        config = MMUConfig(max_context_tokens=200, keep_recent_messages=2)
+        config = MMUConfig(max_context_tokens=200, keep_recent_tokens=100)
         mmu = MMU(config)
         for i in range(10):
             mmu.add_user_message(f"msg {i} " + "x" * 100)
@@ -662,13 +723,13 @@ class TestCompactionWithFileOps:
     @pytest.mark.asyncio
     async def test_incremental_summary_with_previous(self):
         """Second compaction should pass previous summary to the LLM."""
-        config = MMUConfig(max_context_tokens=200, keep_recent_messages=2)
+        config = MMUConfig(max_context_tokens=5000, keep_recent_tokens=50)
         mmu = MMU(config)
 
-        # First round of messages
-        for i in range(10):
-            mmu.add_user_message(f"msg {i} " + "x" * 100)
-            mmu.add_assistant_message(f"resp {i} " + "y" * 100)
+        # First round of messages - enough to force summarizer path
+        for i in range(20):
+            mmu.add_user_message(f"msg {i} " + "x" * 200)
+            mmu.add_assistant_message(f"resp {i} " + "y" * 200)
 
         # First compaction (deterministic)
         await mmu.archive_and_reset()
@@ -676,9 +737,9 @@ class TestCompactionWithFileOps:
         assert first_summary
 
         # Second round
-        for i in range(10):
-            mmu.add_user_message(f"msg2 {i} " + "x" * 100)
-            mmu.add_assistant_message(f"resp2 {i} " + "y" * 100)
+        for i in range(20):
+            mmu.add_user_message(f"msg2 {i} " + "x" * 200)
+            mmu.add_assistant_message(f"resp2 {i} " + "y" * 200)
 
         # Second compaction with LLM
         received_prompts = {}
