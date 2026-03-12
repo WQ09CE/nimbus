@@ -8,6 +8,8 @@ from typing import Any, Optional
 from .registry import ToolParameter, tool
 
 MAX_MATCHES = 200
+MAX_OUTPUT_BYTES = 50 * 1024  # 50KB total output limit (aligned with pi-coding-agent)
+MAX_LINE_LENGTH = 500  # Per-line truncation (aligned with pi's GREP_MAX_LINE_LENGTH)
 
 
 @tool(
@@ -38,6 +40,7 @@ async def grep_search(
         raise ValueError(f"Invalid regex: {e}")
 
     matches = []
+    total_bytes = 0
 
     if search_path.is_file():
         files = [search_path]
@@ -62,7 +65,21 @@ async def grep_search(
         for i, line in enumerate(text.split("\n"), 1):
             if regex.search(line):
                 rel = file.relative_to(search_path) if search_path.is_dir() else file.name
-                matches.append(f"{rel}:{i}: {line.rstrip()}")
+                # Per-line truncation (pi-style: GREP_MAX_LINE_LENGTH = 500)
+                display_line = line.rstrip()
+                if len(display_line) > MAX_LINE_LENGTH:
+                    display_line = display_line[:MAX_LINE_LENGTH] + "…"
+                match_str = f"{rel}:{i}: {display_line}"
+                match_bytes = len(match_str.encode("utf-8")) + 1  # +1 for newline
+
+                # Byte limit check
+                if total_bytes + match_bytes > MAX_OUTPUT_BYTES:
+                    matches.append(f"\n[Output truncated at {MAX_OUTPUT_BYTES // 1024}KB. {len(matches)} matches shown.]")
+                    return "\n".join(matches)
+
+                matches.append(match_str)
+                total_bytes += match_bytes
+
                 if len(matches) >= MAX_MATCHES:
                     matches.append(f"\n[Stopped at {MAX_MATCHES} matches]")
                     return "\n".join(matches)

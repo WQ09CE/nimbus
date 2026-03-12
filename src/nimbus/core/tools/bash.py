@@ -9,12 +9,13 @@ Pi-coding-agent influence:
 import asyncio
 import os
 import signal
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from .registry import ToolParameter, tool
 
-MAX_OUTPUT_BYTES = 100 * 1024  # 100KB
+MAX_OUTPUT_BYTES = 50 * 1024  # 50KB (aligned with pi-coding-agent)
 MAX_OUTPUT_LINES = 2000
 DEFAULT_TIMEOUT = 60.0
 
@@ -38,7 +39,7 @@ async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
 
 @tool(
     name="Bash",
-    description="Execute a bash command. Output truncated to first+last 2000 lines or 100KB.",
+    description="Execute a bash command. Output truncated to last 2000 lines or 50KB. If truncated, full output is saved to a temp file.",
     parameters=[
         ToolParameter("command", "string", "The bash command to execute", required=True),
         ToolParameter("timeout", "number", "Timeout in seconds (default: 60)", required=False),
@@ -204,8 +205,20 @@ async def bash_command(
     original_lines = output.count("\n") + 1
     original_bytes = len(output.encode("utf-8"))
     truncated = False
+    full_output_path = None
 
-    # Truncate by bytes
+    # Save full output to temp file if it exceeds limit (pi-style)
+    if original_bytes > MAX_OUTPUT_BYTES:
+        try:
+            fd, full_output_path = tempfile.mkstemp(
+                prefix="nimbus-bash-", suffix=".log", dir=tempfile.gettempdir()
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(output)
+        except Exception:
+            full_output_path = None  # Silently skip if temp file creation fails
+
+    # Truncate by bytes (keep tail, aligned with pi)
     if original_bytes > MAX_OUTPUT_BYTES:
         output = output[-(MAX_OUTPUT_BYTES):]
         output = "[...truncated...]\n" + output
@@ -222,6 +235,10 @@ async def bash_command(
         omitted = total - head_lines - tail_lines
         output = "\n".join(head) + f"\n\n[... {omitted} lines omitted (total {total} lines) ...]\n\n" + "\n".join(tail)
         truncated = True
+
+    # Append truncation notice with temp file path (pi-style)
+    if truncated and full_output_path:
+        output += f"\n\n[Output truncated to {MAX_OUTPUT_BYTES // 1024}KB. Full output ({original_bytes // 1024}KB): {full_output_path}]"
 
     if not output.strip():
         output = "(no output)"

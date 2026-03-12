@@ -6,7 +6,7 @@ from typing import Any, Optional
 from .registry import ToolParameter, tool
 
 MAX_LINES = 2000
-MAX_BYTES = 100 * 1024  # 100KB
+MAX_BYTES = 50 * 1024  # 50KB (aligned with pi-coding-agent)
 
 
 @tool(

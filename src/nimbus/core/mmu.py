@@ -317,7 +317,7 @@ class MMUConfig:
     max_context_tokens: int = 100_000
     compress_threshold: float = 0.85  # trigger compaction at 85% capacity
     summary_max_tokens: int = 2000
-    keep_recent_messages: int = 20  # minimum hot messages to always retain
+    keep_recent_tokens: int = 20_000  # token budget for hot zone (aligned with pi's keepRecentTokens)
 
 
 # =============================================================================
@@ -416,7 +416,7 @@ def _make_tombstone(messages: List[Message]) -> str:
 def _smart_drop(
     messages: List[Message],
     target_tokens: int,
-    keep_recent: int,
+    keep_recent_tokens: int,
 ) -> tuple[List[Message], str]:
     """Drop messages to fit within token budget, with priority ordering.
 
@@ -425,7 +425,7 @@ def _smart_drop(
     2. Old successful tool-use turns (content was consumed by the LLM)
     3. Old user/assistant exchanges
 
-    Never drops the last `keep_recent` messages.
+    Protects a token-based hot zone (last ~keep_recent_tokens).
     Never splits tool_call ↔ tool_result pairs.
     Dropped messages become a tombstone stub.
 
@@ -434,8 +434,15 @@ def _smart_drop(
     if not messages:
         return messages, ""
 
-    # Protect hot zone
-    hot_boundary = max(0, len(messages) - keep_recent)
+    # Protect hot zone: walk backward until we accumulate keep_recent_tokens
+    # (aligned with pi's keepRecentTokens: 20000)
+    hot_boundary = 0
+    accumulated = 0
+    for i in range(len(messages) - 1, -1, -1):
+        accumulated += messages[i].token_estimate()
+        if accumulated >= keep_recent_tokens:
+            hot_boundary = i
+            break
 
     # Nothing to drop
     current_tokens = sum(m.token_estimate() for m in messages)
@@ -753,12 +760,10 @@ class MMU:
         if not to_summarize or keep_tokens_estimate > stream_budget:
             # Nothing to summarize or to_keep is still over budget due to massive tool turns.
             # Fall back to the old smart_drop approach on all messages.
-            keep_recent = min(self.config.keep_recent_messages, len(self._messages))
-
             surviving, tombstone = _smart_drop(
                 self._messages,
                 target_tokens=max(stream_budget, 0),
-                keep_recent=keep_recent,
+                keep_recent_tokens=self.config.keep_recent_tokens,
             )
 
             summary_parts: List[str] = []
