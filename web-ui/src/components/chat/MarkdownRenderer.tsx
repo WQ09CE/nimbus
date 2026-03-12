@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo, memo, useDeferredValue } from "react";
+import React, { useState, useMemo, memo, useDeferredValue, useEffect, useRef } from "react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -61,12 +61,62 @@ function CopyButton({ code }: { code: string }) {
 
 const plugins = [remarkGfm];
 
+// 1. Create a 'MemoizedMarkdownBlock' sub-component
+const MemoizedMarkdownBlock = memo(({ content, components }: { content: string; components: any }) => {
+  return (
+    <ReactMarkdown
+      remarkPlugins={plugins}
+      components={components}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+});
+MemoizedMarkdownBlock.displayName = "MemoizedMarkdownBlock";
+
 export const MarkdownRenderer = memo(function MarkdownRenderer({ content, className = "", isStreaming = false }: MarkdownRendererProps) {
+  const [batchedContent, setBatchedContent] = useState(content);
+  const rafRef = useRef<number | null>(null);
+  const latestContentRef = useRef(content);
+
+  // Sync latest content to ref
+  useEffect(() => {
+    latestContentRef.current = content;
+
+    // If not streaming, update immediately
+    if (!isStreaming) {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      setBatchedContent(content);
+      return;
+    }
+
+    // If streaming, setup RAF batching
+    if (isStreaming && !rafRef.current) {
+      const update = () => {
+        if (latestContentRef.current !== batchedContent) {
+          setBatchedContent(latestContentRef.current);
+        }
+        rafRef.current = requestAnimationFrame(update);
+      };
+      rafRef.current = requestAnimationFrame(update);
+    }
+
+    return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, [content, isStreaming, batchedContent]);
+
   // Use React 18 Concurrent Features to debounce expensive Markdown AST parsing
-  const deferredContent = useDeferredValue(content);
+  const deferredContent = useDeferredValue(batchedContent);
   // During streaming, we use the deferred content to maintain 15fps max rendering speed.
   // When streaming finishes, we immediately render the final content.
-  const renderContent = isStreaming ? deferredContent : content;
+  const renderContent = isStreaming ? deferredContent : batchedContent;
 
   const components = useMemo(() => ({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -89,7 +139,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, classN
           return topBottomPattern.test(content) && sidePattern.test(content);
         })();
 
-        // 3. 流程图箭头和连接符
+        // 3. 流程图箭头 and 连接符
         const hasFlowElements = /[←→↑↓▲▼◀▶⬆⬇⬅➡]|[──→←│┼├┤┬┴]/.test(content);
 
         // 4. 架构图特征 - 检测明显的组件布局
@@ -235,41 +285,88 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content, classN
     h2: ({ children }: any) => <h2 className="text-xl font-bold text-blue-300 mb-3 mt-5 border-b border-gray-800 pb-1">{children}</h2>,
     h3: ({ children }: any) => <h3 className="text-lg font-semibold text-blue-300 mb-2 mt-4">{children}</h3>,
     h4: ({ children }: any) => <h4 className="text-base font-semibold text-blue-300 mb-2 mt-3">{children}</h4>,
-    p: ({ children }: any) => <p className="mb-4 text-gray-300 leading-relaxed">{children}</p>,
-    ul: ({ children }: any) => <ul className="mb-4 ml-6 space-y-2 list-disc text-gray-300">{children}</ul>,
-    ol: ({ children }: any) => <ol className="mb-4 ml-6 space-y-2 list-decimal text-gray-300">{children}</ol>,
-    li: ({ children }: any) => <li className="pl-1 text-gray-300">{children}</li>,
+    p: ({ children }: any) => <p className="mb-4 text-gray-300 leading-relaxed new-content-segment last:mb-0">{children}</p>,
+    ul: ({ children }: any) => <ul className="mb-4 ml-6 space-y-2 list-disc text-gray-300 new-content-segment last:mb-0">{children}</ul>,
+    ol: ({ children }: any) => <ol className="mb-4 ml-6 space-y-2 list-decimal text-gray-300 new-content-segment last:mb-0">{children}</ol>,
+    li: ({ children }: any) => <li className="pl-1 text-gray-300 new-content-segment">{children}</li>,
     a: ({ href, children }: any) => <a href={href} className="text-blue-400 hover:text-blue-300 underline" target="_blank" rel="noopener noreferrer">{children} 🔗</a>,
-    blockquote: ({ children }: any) => <blockquote className="border-l-4 border-gray-600 pl-4 py-1 my-4 text-gray-400 italic bg-gray-800/30 rounded-r">{children}</blockquote>,
+    blockquote: ({ children }: any) => <blockquote className="border-l-4 border-gray-600 pl-4 py-1 my-4 text-gray-400 italic bg-gray-800/30 rounded-r last:mb-0">{children}</blockquote>,
     hr: () => <hr className="my-6 border-gray-700" />,
-    table: ({ children }: any) => <div className="overflow-x-auto mb-4"><table className="w-full border-collapse bg-gray-900/40 rounded-lg overflow-hidden border border-gray-700">{children}</table></div>,
+    table: ({ children }: any) => <div className="overflow-x-auto mb-4 last:mb-0"><table className="w-full border-collapse bg-gray-900/40 rounded-lg overflow-hidden border border-gray-700">{children}</table></div>,
     thead: ({ children }: any) => <thead className="bg-gray-800/60">{children}</thead>,
     th: ({ children }: any) => <th className="text-gray-300 font-semibold px-4 py-3 text-left border-b border-gray-700">{children}</th>,
     td: ({ children }: any) => <td className="text-gray-300 px-4 py-3 border-b border-gray-800">{children}</td>,
-    img: ({ src, alt }: any) => <div className="mb-4 text-center"><img src={src} alt={alt} className="max-w-full h-auto rounded-lg border border-gray-700 shadow-lg inline-block" loading="lazy" /></div>,
+    img: ({ src, alt }: any) => <div className="mb-4 text-center last:mb-0"><img src={src} alt={alt} className="max-w-full h-auto rounded-lg border border-gray-700 shadow-lg inline-block" loading="lazy" /></div>,
   }), []);
 
-  // Auto-close code blocks during streaming to ensure syntax highlighting works in real-time
-  const processedContent = useMemo(() => {
-    if (!isStreaming) return renderContent;
-    // Count occurrences of ```
-    const ticks = (renderContent.match(/```/g) || []).length;
-    // If odd number of ```, the last code block is unclosed
-    if (ticks % 2 !== 0) {
-      // Find the last ``` to see if it has a language tag, but we just need to close it
-      return renderContent + '\n```';
+  // Split content into blocks by double newlines to optimize rendering.
+  // We use a regex that handles various newline formats (\n\n, \r\n\r\n).
+  const blocks = useMemo(() => {
+    if (!renderContent) return [];
+    
+    // Split by double newlines but keep track of code blocks.
+    // A more robust way to split while respecting code blocks:
+    const parts = renderContent.split(/(\n\n)/g);
+    const result: string[] = [];
+    let currentBlock = "";
+    let inCodeBlock = false;
+
+    for (const part of parts) {
+      // Check for code block toggles
+      const codeBlockMatches = part.match(/```/g);
+      if (codeBlockMatches) {
+        if (codeBlockMatches.length % 2 !== 0) {
+          inCodeBlock = !inCodeBlock;
+        }
+      }
+
+      if (part === "\n\n" && !inCodeBlock) {
+        if (currentBlock) result.push(currentBlock);
+        currentBlock = "";
+      } else {
+        currentBlock += part;
+      }
     }
-    return renderContent;
-  }, [renderContent, isStreaming]);
+    if (currentBlock) result.push(currentBlock);
+    return result;
+  }, [renderContent]);
+
+  const lastBlockIndex = blocks.length - 1;
 
   return (
-    <div className={`markdown-content ${className}`}>
-      <ReactMarkdown
-        remarkPlugins={plugins}
-        components={components}
-      >
-        {processedContent}
-      </ReactMarkdown>
+    <div className={`markdown-content ${className} ${isStreaming ? 'streaming-fade-in' : ''}`}>
+      {blocks.map((block, index) => {
+        const isLastBlock = index === lastBlockIndex;
+        
+        // Auto-close code blocks for the last streaming block
+        let blockContent = block;
+        if (isLastBlock && isStreaming) {
+          const ticks = (block.match(/```/g) || []).length;
+          if (ticks % 2 !== 0) {
+            blockContent += '\n```';
+          }
+        }
+
+        if (isLastBlock) {
+          return (
+            <ReactMarkdown
+              key={index}
+              remarkPlugins={plugins}
+              components={components}
+            >
+              {blockContent}
+            </ReactMarkdown>
+          );
+        }
+
+        return (
+          <MemoizedMarkdownBlock
+            key={index}
+            content={blockContent}
+            components={components}
+          />
+        );
+      })}
       {isStreaming && <span className="animate-pulse text-blue-400 font-mono ml-1">▍</span>}
     </div>
   );

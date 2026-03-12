@@ -497,12 +497,10 @@ body::before {
 @keyframes message-fade-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
   }
 
   to {
     opacity: 1;
-    transform: translateY(0);
   }
 }
 
@@ -563,7 +561,6 @@ body::before {
 .new-messages-pill {
   animation: message-fade-in 200ms ease-out;
 }
-
 /* ========== Token Usage Footer ========== */
 .token-footer {
   display: flex;
@@ -607,4 +604,23 @@ body::before {
 
 .token-cost:hover {
   color: rgba(74, 222, 128, 0.8);
+}
+
+/* Streaming text fade-in effect */
+.streaming-fade-in {
+  mask-image: linear-gradient(to bottom, black calc(100% - 20px), transparent 100%);
+  transition: mask-image 0.3s_ease-out;
+}
+
+@keyframes content-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.new-content-segment {
+  animation: content-fade-in 0.3s ease-out forwards;
 }

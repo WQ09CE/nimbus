@@ -24,87 +24,12 @@ export function ChatList({ messages }: ChatListProps) {
     overscan: 5,
     gap: 32,
     paddingEnd: 48,
-    // Removed onChange scrollToIndex — it fights user scroll on every measurement.
-    // The totalSize effect below handles auto-stick correctly.
   });
 
   const virtualItems = virtualizer.getVirtualItems();
-  const totalSize = virtualizer.getTotalSize();
-  const prevTotalSize = useRef(totalSize);
 
-  useEffect(() => {
-    if (shouldStick.current && totalSize !== prevTotalSize.current) {
-      prevTotalSize.current = totalSize;
-      if (parentRef.current) {
-        parentRef.current.scrollTop = parentRef.current.scrollHeight;
-      }
-    }
-  }, [totalSize]);
-
-  const scrollToBottom = useCallback(() => {
-    if (messages.length > 0) {
-      shouldStick.current = true;
-      virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
-      requestAnimationFrame(() => {
-        if (parentRef.current) {
-          parentRef.current.scrollTop = parentRef.current.scrollHeight;
-        }
-      });
-    }
-  }, [messages.length, virtualizer]);
-
-  // When new messages arrive, stick to bottom or show pill
-  useEffect(() => {
-    if (messages.length > lastCount.current) {
-      if (shouldStick.current || isStreaming) {
-        virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
-      } else {
-        setShowNewMessagesPill(true);
-      }
-    }
-    lastCount.current = messages.length;
-  }, [messages.length, isStreaming, virtualizer]);
-
-  // During streaming, keep sticking (only when shouldStick is true)
-  useEffect(() => {
-    if (isStreaming && shouldStick.current && messages.length > 0) {
-      virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
-    }
-  }, [messages.length, isStreaming, virtualizer]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Detect upward scroll intent — wheel (desktop) + touch (mobile)
-  useEffect(() => {
-    const el = parentRef.current;
-    if (!el) return;
-
-    // Desktop: wheel up
-    const handleWheel = (e: WheelEvent) => {
-      if (e.deltaY < 0) shouldStick.current = false;
-    };
-
-    // Mobile: touch swipe detection
-    let touchStartY = 0;
-    const handleTouchStart = (e: TouchEvent) => {
-      touchStartY = e.touches[0].clientY;
-    };
-    const handleTouchMove = (e: TouchEvent) => {
-      const currentY = e.touches[0].clientY;
-      // Finger moves down on screen → content scrolls up → user wants to read history
-      if (currentY - touchStartY > 10) {
-        shouldStick.current = false;
-      }
-      touchStartY = currentY;
-    };
-
-    el.addEventListener('wheel', handleWheel, { passive: true });
-    el.addEventListener('touchstart', handleTouchStart, { passive: true });
-    el.addEventListener('touchmove', handleTouchMove, { passive: true });
-    return () => {
-      el.removeEventListener('wheel', handleWheel);
-      el.removeEventListener('touchstart', handleTouchStart);
-      el.removeEventListener('touchmove', handleTouchMove);
-    };
-  }, []);
+  const lastTotalSize = useRef(0);
+  const scrollElement = parentRef.current;
 
   // Track scroll position to update shouldStick and pill visibility
   useEffect(() => {
@@ -112,10 +37,11 @@ export function ChatList({ messages }: ChatListProps) {
     if (!el) return;
     const handleScroll = () => {
       const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      // Sticky Zone logic: 100px threshold for better reliability
       if (distFromBottom < 100) {
         shouldStick.current = true;
         setShowNewMessagesPill(false);
-      } else if (distFromBottom > 300) {
+      } else {
         shouldStick.current = false;
       }
     };
@@ -123,13 +49,80 @@ export function ChatList({ messages }: ChatListProps) {
     return () => el.removeEventListener('scroll', handleScroll);
   }, []);
 
+  // Use ResizeObserver on the container to detect height changes
+  useEffect(() => {
+    const el = parentRef.current;
+    if (!el) return;
+
+    let lastHeight = el.scrollHeight;
+
+    const resizeObserver = new ResizeObserver(() => {
+      const newHeight = el.scrollHeight;
+      const heightDelta = Math.abs(newHeight - lastHeight);
+      
+      // Only auto-scroll if:
+      // 1. We should stick to bottom
+      // 2. The height change is significant (not just virtualizer jitter)
+      // 3. Or we're already very close to the bottom
+      if (shouldStick.current && heightDelta > 5) {
+        el.scrollTo({
+          top: newHeight,
+          behavior: 'auto' // Use 'auto' instead of 'smooth' to avoid scroll loops during measurement
+        });
+      }
+      lastHeight = newHeight;
+    });
+
+    // Observe the scrollable container's content (the virtual list inner element)
+    const content = el.firstElementChild;
+    if (content) {
+      resizeObserver.observe(content);
+    }
+
+    return () => resizeObserver.disconnect();
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    if (messages.length > 0) {
+      shouldStick.current = true;
+      parentRef.current?.scrollTo({
+        top: parentRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+    }
+  }, [messages.length]);
+
+  // When new messages arrive, stick to bottom if we are in sticky zone
+  useEffect(() => {
+    if (messages.length > lastCount.current) {
+      if (shouldStick.current) {
+        // Smoothly scroll to the new bottom
+        requestAnimationFrame(() => {
+          parentRef.current?.scrollTo({
+            top: parentRef.current.scrollHeight,
+            behavior: 'auto' // Use 'auto' to ensure immediate scroll
+          });
+        });
+      } else {
+        setShowNewMessagesPill(true);
+      }
+    }
+    lastCount.current = messages.length;
+  }, [messages.length]);
+
   // Initial scroll to bottom on mount
   useEffect(() => {
     if (messages.length > 0) {
-      const t = setTimeout(() => {
-        virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
-      }, 50);
-      return () => clearTimeout(t);
+      // Step 1: Virtualizer scroll to bottom
+      virtualizer.scrollToIndex(messages.length - 1, { align: 'end', behavior: 'auto' });
+      shouldStick.current = true;
+
+      // Step 2: Forcibly scroll to absolute bottom after a tick to ensure full message visibility
+      requestAnimationFrame(() => {
+        if (parentRef.current) {
+          parentRef.current.scrollTop = parentRef.current.scrollHeight;
+        }
+      });
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -137,6 +130,7 @@ export function ChatList({ messages }: ChatListProps) {
     <div
       ref={parentRef}
       className="flex-1 min-h-0 overflow-y-auto custom-scrollbar pt-6 relative"
+      style={{ overflowAnchor: 'auto' }}
     >
       <div
         style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}
