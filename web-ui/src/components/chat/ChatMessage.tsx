@@ -150,7 +150,8 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
           /* Assistant: render parts in chronological order */
           <div className="flex flex-col gap-3 w-full">
             {hasParts ? (
-              parts.map((part, idx) => {
+              <>
+              {parts.map((part, idx) => {
                 if (part.type === "text") {
                   const isLastPart = idx === parts.length - 1;
                   return (
@@ -185,7 +186,17 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
                     </div>
                   );
                 }
-              })
+              })}
+              {isStreaming && parts[parts.length - 1]?.type !== "text" && (
+                <div className="flex items-center gap-1.5 px-4 py-2">
+                  <div className="reading-indicator">
+                    <span className="dot"></span>
+                    <span className="dot"></span>
+                    <span className="dot"></span>
+                  </div>
+                </div>
+              )}
+              </>
             ) : (
               isStreaming && (
                 <div className="relative px-4 md:px-5 py-3 md:py-4 shadow-xl bg-nimbus-surface backdrop-blur-xl border border-nimbus-border text-gray-100 rounded-2xl rounded-tl-sm w-full streaming-message">
