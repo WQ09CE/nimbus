@@ -440,9 +440,8 @@ class RuntimeLoop:
                 # Accumulate token usage (pi-style)
                 if step_result.usage is not None:
                     self._cumulative_usage += step_result.usage
-                    # Update MMU with real usage for hybrid estimation
-                    if hasattr(self.mmu, 'set_last_usage'):
-                        self.mmu.set_last_usage(step_result.usage)
+                    # We NO LONGER update MMU usage here because VCPU already updated it
+                    # before adding the massive tool results.
                     yield {
                         "type": "usage_update",
                         "step_usage": step_result.usage.to_dict(),

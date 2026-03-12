@@ -192,6 +192,14 @@ async def _run_sub_agent(
 
         output_text = str(result.output) if result.output else "(no output)"
 
+        # Prevent massive sub-agent outputs from blowing up parent context
+        if len(output_text) > 4000:
+            output_text = (
+                output_text[:4000] 
+                + "\n\n...(Output truncated to 4000 chars to protect parent context. "
+                f"Full details are in the scratchpad: {scratchpad_path})"
+            )
+
         return {
             "output": (
                 f"Sub-agent [{role}] completed successfully.\n\n"

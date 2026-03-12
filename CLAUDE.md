@@ -55,9 +55,8 @@ spawn_agent(role="Security Scanner", task="...", mode="async")  # background, re
 ```
 
 - Sub-agents get a **fresh MMU** (no context pollution from parent).
-- `sync` mode: parent blocks, receives distilled result string.
-- `async` mode: returns a PID immediately; full `wait_agent(pid)` / `kill_agent(pid)` API is pending.
-- Current `spawn_agent.py` is a **stub implementation** — real nested `AgentOS` instantiation is the next milestone.
+- They operate inside the same process but use isolated `AgentOS` loops and models.
+- **Output isolation**: Large sub-agent returns are truncated (max 4000 chars) in the parent's tool result. Full details must be read from their disk `scratchpad`.
 
 ## Web UI
 
@@ -70,7 +69,7 @@ spawn_agent(role="Security Scanner", task="...", mode="async")  # background, re
 
 - `mmu.py` (744 lines) — context management, compression, pinned store all coupled; needs splitting.
 - `loop.py` (680 lines) — `RuntimeLoop` has god-class tendencies; `SteeringHandler` should be extracted.
-- `spawn_agent` is still a stub — real nested `AgentOS` not yet wired.
-- `async` spawn_agent PID query API (`wait_agent` / `kill_agent`) missing.
+- Sub-agent massive outputs were previously leaking into the parent Context Window, causing Token bloat (now truncated with a scratchpad redirect).
+- `async` spawn_agent background polling is missing.
 - Semantic Relevance compression requires external embedding service; silently degrades to Sliding Window (should emit explicit warning log).
 - `Task was destroyed but it is pending!` asyncio warnings on session teardown — benign but noisy.

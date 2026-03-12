@@ -287,6 +287,8 @@ class VCPU:
                     self.mmu.add_assistant_message(content)
                 elif text:
                     self.mmu.add_assistant_message(text)
+                if result.usage is not None and hasattr(self.mmu, 'set_last_usage'):
+                    self.mmu.set_last_usage(result.usage)
                 result.is_final = True
                 result.final_result = ToolResult(status="OK", output=text, is_final=True)
                 return result
@@ -307,6 +309,8 @@ class VCPU:
                 "function": {"name": a.name, "arguments": json.dumps(a.args)},
             } for a in tool_actions]
             self.mmu.add_assistant_with_tool_calls(thought_text, tc_dicts)
+            if result.usage is not None and hasattr(self.mmu, 'set_last_usage'):
+                self.mmu.set_last_usage(result.usage)
 
             # Concurrent execution: run all tool calls in parallel via gather,
             # then write results back to MMU in original order.
@@ -342,6 +346,9 @@ class VCPU:
             count = self._exec.on_thought()
             if thought_text:
                 self.mmu.add_assistant_message(thought_text)
+            
+            if result.usage is not None and hasattr(self.mmu, 'set_last_usage'):
+                self.mmu.set_last_usage(result.usage)
 
             if count >= self.config.max_consecutive_thoughts:
                 result.is_final = True

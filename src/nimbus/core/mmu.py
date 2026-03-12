@@ -481,6 +481,37 @@ def _smart_drop(
             to_drop.add(k)
         tokens_freed += seg_tokens
 
+    # EMERGENCY: If we STILL need to free tokens, we MUST breach the hot boundary
+    # to protect the token limit. (e.g. massive tool results in the hot zone)
+    if tokens_freed < tokens_needed:
+        hot_segments: List[tuple[int, int, int, int]] = []
+        for start, end in turns:
+            if start >= hot_boundary:
+                turn_msgs = messages[start:end + 1]
+                turn_tokens = sum(m.token_estimate() for m in turn_msgs)
+                has_error = any(m.is_error for m in turn_msgs)
+                priority = 1 if has_error else 2
+                hot_segments.append((start, end, priority, turn_tokens))
+                for k in range(start, end + 1):
+                    covered.add(k)
+        
+        for i in range(hot_boundary, len(messages)):
+            if i not in covered:
+                hot_segments.append((i, i, 3, messages[i].token_estimate()))
+                
+        # Sort hot segments: drop errors first, then oldest
+        hot_segments.sort(key=lambda s: (s[2], s[0]))
+        
+        for start, end, priority, seg_tokens in hot_segments:
+            if tokens_freed >= tokens_needed:
+                break
+            # Never drop the absolute last message if it's the only one left
+            if start == len(messages) - 1 and len(to_drop) == len(messages) - 1:
+                break
+            for k in range(start, end + 1):
+                to_drop.add(k)
+            tokens_freed += seg_tokens
+
     if not to_drop:
         return messages, ""
 
@@ -708,18 +739,20 @@ class MMU:
         to_summarize = self._messages[:cut_index]
         to_keep = self._messages[cut_index:]
 
-        if not to_summarize:
-            # Nothing to summarize -- all messages are in hot zone.
-            # Fall back to the old smart_drop approach on all messages.
-            anchor_tokens = 0
-            if self._pinned:
-                anchor_tokens += self._pinned.token_estimate()
-            if self._goal:
-                anchor_tokens += estimate_text_tokens(self._goal) + MESSAGE_OVERHEAD
-            if self._global_summary:
-                anchor_tokens += estimate_text_tokens(self._global_summary) + MESSAGE_OVERHEAD
+        anchor_tokens = 0
+        if self._pinned:
+            anchor_tokens += self._pinned.token_estimate()
+        if self._goal:
+            anchor_tokens += estimate_text_tokens(self._goal) + MESSAGE_OVERHEAD
+        if self._global_summary:
+            anchor_tokens += estimate_text_tokens(self._global_summary) + MESSAGE_OVERHEAD
 
-            stream_budget = int(self.config.max_context_tokens * 0.7) - anchor_tokens
+        stream_budget = int(self.config.max_context_tokens * 0.7) - anchor_tokens
+        keep_tokens_estimate = sum(m.token_estimate() for m in to_keep)
+
+        if not to_summarize or keep_tokens_estimate > stream_budget:
+            # Nothing to summarize or to_keep is still over budget due to massive tool turns.
+            # Fall back to the old smart_drop approach on all messages.
             keep_recent = min(self.config.keep_recent_messages, len(self._messages))
 
             surviving, tombstone = _smart_drop(
