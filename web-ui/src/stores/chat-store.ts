@@ -831,37 +831,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
-        // Could be user interrupt or watchdog timeout — try to recover
-        console.warn("[Store] Stream aborted, checking agent status for recovery...");
-        let recovered = false;
-        try {
-          const status = await getSessionStatus(session.id);
-          if (get().session?.id === session.id) {
-            await get().switchSession(session);
-            recovered = true;
+        // P3 fix: lightweight recovery — finalize with existing messages
+        // instead of calling switchSession which triggers full UI re-render
+        console.warn("[Store] Stream aborted, finalizing with existing messages...");
+        const finalMsgs = [...get().messages];
+        const streamingIdx = finalMsgs.findIndex(m => m.id === STREAMING_ID);
+        if (streamingIdx !== -1) {
+          const msg = finalMsgs[streamingIdx];
+          if (!msg.content && (!msg.parts || msg.parts.length === 0)) {
+            finalMsgs.splice(streamingIdx, 1);
+          } else {
+            finalMsgs[streamingIdx] = { ...msg, id: `assistant-aborted-${Date.now()}` };
           }
-        } catch (recoveryErr) {
-          console.warn("[Store] Recovery after abort failed:", recoveryErr);
         }
+        set({
+          messages: finalMsgs,
+          isStreaming: false,
+          streamAbortController: null,
+        });
 
-        if (!recovered) {
-          // Finalize with whatever we have
-          const finalMsgs = [...get().messages];
-          const streamingIdx = finalMsgs.findIndex(m => m.id === STREAMING_ID);
-          if (streamingIdx !== -1) {
-            const msg = finalMsgs[streamingIdx];
-            if (!msg.content && (!msg.parts || msg.parts.length === 0)) {
-              finalMsgs.splice(streamingIdx, 1);
-            } else {
-              finalMsgs[streamingIdx].id = `assistant-${Date.now()}`;
-            }
-          }
-          set({
-            messages: finalMsgs,
-            isStreaming: false,
-            streamAbortController: null,
-          });
-        }
+
       } else {
         // Find and clean up or finalize the STREAMING_ID message
         const finalMsgs = [...get().messages];
@@ -903,12 +892,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   interruptMessage: async () => {
     const { streamAbortController, session, isStreaming } = get();
 
-    // Abort the local stream first (unblocks the UI immediately)
-    if (streamAbortController) {
-      streamAbortController.abort();
-    }
-
-    // Then tell the backend to stop the agent
+    // P1 fix: tell backend FIRST so it sends done:CANCELLED via SSE
+    // before we abort the stream (frontend can still receive the event)
     if (session) {
       try {
         const { interruptSession } = await import("@/lib/api/sessions");
@@ -916,6 +901,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       } catch (err) {
         console.warn("[Store] interruptSession API call failed:", err);
       }
+    }
+
+    // Then abort the local SSE stream
+    if (streamAbortController) {
+      streamAbortController.abort();
     }
 
     // Safety net: if isStreaming is still true after abort (e.g. dead connection),

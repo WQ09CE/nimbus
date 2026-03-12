@@ -520,7 +520,7 @@ class SessionManagerV2:
                 if evt_type == "interrupted":
                     logger.info("[stream_chat] Execution cancelled by interrupt request")
                     await self._sse_hub.publish(session_id, "done", {"status": "CANCELLED"})
-                    continue
+                    break  # P0 fix: stop processing loop events after interrupt
                 
                 if evt_type == "message_queued":
                     logger.info(f"[stream_chat] Handled enqueued message: {str(event.get('content'))[:50]}...")
@@ -571,10 +571,16 @@ class SessionManagerV2:
             logger.error(f"[stream_chat] Streaming failed: {chat_err}", exc_info=True)
             raise
         finally:
+            # P0 fix: only publish done:OK if the loop was NOT interrupted
+            # (interrupted path already published done:CANCELLED)
+            loop = self._active_loops.get(session_id)
+            was_interrupted = loop and getattr(loop, '_interrupted', False)
+
             if session_id in self._active_loops:
                 del self._active_loops[session_id]
 
-            await self._sse_hub.publish(session_id, "done", {"status": "OK"})
+            if not was_interrupted:
+                await self._sse_hub.publish(session_id, "done", {"status": "OK"})
 
             # Do NOT close the SSE connections — keep subscribers alive so they
             # can receive the next task's events without reconnecting.

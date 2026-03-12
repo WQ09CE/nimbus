@@ -172,8 +172,18 @@ async def _run_sub_agent(
     loop = agent_os.stream_with_queue(goal, session_id=sub_session_id)
 
     # Propagate parent abort event to sub-agent loop so bash processes get killed
+    # P2 fix: also set up an abort watcher that fully aborts the child loop
+    # (sets _interrupted + interrupts child VCPU), not just the abort event
+    abort_watcher = None
     if _abort_event is not None:
         loop._abort_event = _abort_event
+
+        async def _watch_parent_abort():
+            await _abort_event.wait()
+            logger.info(f"[spawn] Parent abort detected, aborting sub-agent [{role}]")
+            loop.abort()
+
+        abort_watcher = asyncio.create_task(_watch_parent_abort())
 
     async def _drain_loop():
         """Drive the loop to completion, return final ToolResult."""
@@ -215,16 +225,20 @@ async def _run_sub_agent(
             },
         }
 
-    except (asyncio.TimeoutError, Exception) as exc:
+    except (asyncio.TimeoutError, asyncio.CancelledError, Exception) as exc:
         is_timeout = isinstance(exc, asyncio.TimeoutError)
-        status = "TIMEOUT" if is_timeout else "ERROR"
-        reason = (
-            f"timed out after {timeout_seconds} seconds"
-            if is_timeout
-            else f"failed with error: {exc}"
-        )
+        is_cancelled = isinstance(exc, asyncio.CancelledError)
+        if is_cancelled:
+            status = "CANCELLED"
+            reason = "cancelled by user interrupt"
+        elif is_timeout:
+            status = "TIMEOUT"
+            reason = f"timed out after {timeout_seconds} seconds"
+        else:
+            status = "ERROR"
+            reason = f"failed with error: {exc}"
 
-        if not is_timeout:
+        if not is_timeout and not is_cancelled:
             logger.error(f"Sub-agent [{role}] {reason}", exc_info=True)
         if on_update:
             on_update(f"[spawn] Sub-agent [{role}] {reason}.\n")
@@ -244,9 +258,13 @@ async def _run_sub_agent(
                 "status": status,
                 "sub_session_id": sub_session_id,
                 "scratchpad": scratchpad_path,
-                **({"error": str(exc)} if not is_timeout else {}),
+                **({"error": str(exc)} if not is_timeout and not is_cancelled else {}),
             },
         }
+    finally:
+        # Clean up abort watcher
+        if abort_watcher and not abort_watcher.done():
+            abort_watcher.cancel()
 
 
 @tool(
