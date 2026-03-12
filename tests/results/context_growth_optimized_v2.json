@@ -1,0 +1,187 @@
+{
+  "label": "optimized_v2",
+  "timestamp": "2026-03-12T11:01:41.534207",
+  "base_url": "http://localhost:4096/api/v1",
+  "scenarios": [
+    {
+      "scenario": "1_simple_question",
+      "description": "Baseline: pure text, no tools",
+      "elapsed_seconds": 3.3,
+      "usage": {
+        "cumulative_total": 744,
+        "cumulative_input": 727,
+        "cumulative_output": 17,
+        "step_total": 744,
+        "step_input": 727,
+        "step_output": 17
+      },
+      "usage_events_count": 1,
+      "tool_calls": [],
+      "assistant_text_chars": 55,
+      "compaction_happened": false,
+      "context_growth_tokens": 727
+    },
+    {
+      "scenario": "2_read_small_file",
+      "description": "Single Read: small file (~2KB)",
+      "elapsed_seconds": 5.0,
+      "usage": {
+        "cumulative_total": 2534,
+        "cumulative_input": 2506,
+        "cumulative_output": 28,
+        "step_total": 1762,
+        "step_input": 1751,
+        "step_output": 11
+      },
+      "usage_events_count": 2,
+      "tool_calls": [],
+      "assistant_text_chars": 14,
+      "compaction_happened": false,
+      "context_growth_tokens": 1007
+    },
+    {
+      "scenario": "3_read_large_file",
+      "description": "Single Read: medium file (~30KB, tests read truncation)",
+      "elapsed_seconds": 5.0,
+      "usage": {
+        "cumulative_total": 12561,
+        "cumulative_input": 12484,
+        "cumulative_output": 77,
+        "step_total": 10737,
+        "step_input": 10684,
+        "step_output": 53
+      },
+      "usage_events_count": 2,
+      "tool_calls": [],
+      "assistant_text_chars": 102,
+      "compaction_happened": false,
+      "context_growth_tokens": 8150
+    },
+    {
+      "scenario": "4_grep_codebase",
+      "description": "Grep: moderate matches, tests grep output size",
+      "elapsed_seconds": 15.0,
+      "usage": {
+        "cumulative_total": 64110,
+        "cumulative_input": 39530,
+        "cumulative_output": 106,
+        "step_total": 26723,
+        "step_input": 2185,
+        "step_output": 64
+      },
+      "usage_events_count": 3,
+      "tool_calls": [],
+      "assistant_text_chars": 140,
+      "compaction_happened": false,
+      "context_growth_tokens": -10376
+    },
+    {
+      "scenario": "5_grep_broad",
+      "description": "Grep: many matches, tests grep line limit + byte limit",
+      "elapsed_seconds": 10.0,
+      "usage": {
+        "cumulative_total": 112735,
+        "cumulative_input": 46868,
+        "cumulative_output": 447,
+        "step_total": 43751,
+        "step_input": 2462,
+        "step_output": 403
+      },
+      "usage_events_count": 3,
+      "tool_calls": [],
+      "assistant_text_chars": 1268,
+      "compaction_happened": false,
+      "context_growth_tokens": -61648
+    },
+    {
+      "scenario": "6_bash_command",
+      "description": "Bash: small output",
+      "elapsed_seconds": 10.0,
+      "usage": {
+        "cumulative_total": 88521,
+        "cumulative_input": 47087,
+        "cumulative_output": 561,
+        "step_total": 44702,
+        "step_input": 3307,
+        "step_output": 522
+      },
+      "usage_events_count": 2,
+      "tool_calls": [],
+      "assistant_text_chars": 1082,
+      "compaction_happened": false,
+      "context_growth_tokens": -109428
+    },
+    {
+      "scenario": "7_bash_large_output",
+      "description": "Bash: potentially large output, tests truncation",
+      "elapsed_seconds": 5.0,
+      "usage": {
+        "cumulative_total": 89604,
+        "cumulative_input": 48682,
+        "cumulative_output": 61,
+        "step_total": 44821,
+        "step_input": 3940,
+        "step_output": 20
+      },
+      "usage_events_count": 2,
+      "tool_calls": [],
+      "assistant_text_chars": 29,
+      "compaction_happened": false,
+      "context_growth_tokens": -84581
+    },
+    {
+      "scenario": "8_multi_read",
+      "description": "Multi-tool: 3 parallel Reads, tests context accumulation",
+      "elapsed_seconds": 5.0,
+      "usage": {
+        "cumulative_total": 90045,
+        "cumulative_input": 49077,
+        "cumulative_output": 120,
+        "step_total": 45123,
+        "step_input": 4202,
+        "step_output": 73
+      },
+      "usage_events_count": 2,
+      "tool_calls": [],
+      "assistant_text_chars": 138,
+      "compaction_happened": false,
+      "context_growth_tokens": -85402
+    },
+    {
+      "scenario": "9_grep_json",
+      "description": "Grep: JSON files with potentially long lines",
+      "elapsed_seconds": 15.0,
+      "usage": {
+        "cumulative_total": 336137,
+        "cumulative_input": 106990,
+        "cumulative_output": 242,
+        "step_total": 81823,
+        "step_input": 8100,
+        "step_output": 139
+      },
+      "usage_events_count": 5,
+      "tool_calls": [],
+      "assistant_text_chars": 299,
+      "compaction_happened": false,
+      "context_growth_tokens": -81945
+    },
+    {
+      "scenario": "10_complex_task",
+      "description": "Multi-step: Read + analysis, tests cumulative growth",
+      "elapsed_seconds": 10.0,
+      "usage": {
+        "cumulative_total": 166432,
+        "cumulative_input": 84432,
+        "cumulative_output": 249,
+        "step_total": 84545,
+        "step_input": 2570,
+        "step_output": 224
+      },
+      "usage_events_count": 2,
+      "tool_calls": [],
+      "assistant_text_chars": 576,
+      "compaction_happened": false,
+      "context_growth_tokens": -333567
+    }
+  ]
+}
