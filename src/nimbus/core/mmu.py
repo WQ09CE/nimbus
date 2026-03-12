@@ -610,7 +610,11 @@ class MMU:
         1. System message (from PinnedContext) — always first
         2. Goal reminder (if set) — pinned after system
         3. Global summary (merged from past compactions)
-        4. Current message history
+        4. Current message history (token-budget limited, pi-style keepRecentTokens)
+
+        Token budget: only includes recent messages that fit within the available
+        context window. Older messages are silently excluded (their content is
+        already captured in the global summary or will be at next compaction).
         """
         messages = []
 
@@ -632,10 +636,49 @@ class MMU:
                 "content": f"[Previous conversation summary]\n{self._global_summary}",
             })
 
-        # 4. Current stream
-        for msg in self._messages:
-            messages.append(msg.to_dict())
+        # 4. Current stream — apply token budget (pi-style keepRecentTokens)
+        # Calculate available budget: total context minus anchor tokens minus reserve
+        anchor_tokens = sum(
+            estimate_text_tokens(m.get("content", "") or "") + MESSAGE_OVERHEAD
+            for m in messages
+        )
+        reserve_tokens = 4096  # Reserve for LLM output
+        available_budget = self.config.max_context_tokens - anchor_tokens - reserve_tokens
 
+        # Walk backward from most recent message, accumulating tokens
+        # until we hit the budget. This ensures the most recent context
+        # is always included (aligned with pi's keepRecentTokens).
+        if self._messages:
+            accumulated = 0
+            cut_index = len(self._messages)  # Start with "include all"
+
+            for i in range(len(self._messages) - 1, -1, -1):
+                msg_tokens = self._messages[i].token_estimate()
+                if accumulated + msg_tokens > available_budget:
+                    cut_index = i + 1  # Exclude this message and everything before it
+                    break
+                accumulated += msg_tokens
+            else:
+                cut_index = 0  # All messages fit
+
+            # Adjust cut_index to avoid splitting tool_call ↔ tool_result pairs
+            while cut_index < len(self._messages) and self._messages[cut_index].is_tool_result:
+                cut_index += 1  # Skip orphan tool_results
+
+            # Include only messages from cut_index onward
+            included = self._messages[cut_index:]
+
+            # If we dropped messages, add a brief inline notice
+            if cut_index > 0 and not self._global_summary:
+                dropped_count = cut_index
+                messages.append({
+                    "role": "user",
+                    "content": f"[{dropped_count} earlier messages omitted to fit context window]",
+                })
+
+            for msg in included:
+                messages.append(msg.to_dict())
+        
         return messages
 
     # --- Token Estimation ---
