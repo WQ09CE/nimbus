@@ -892,24 +892,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
   interruptMessage: async () => {
     const { streamAbortController, session, isStreaming } = get();
 
-    // P1 fix: tell backend FIRST so it sends done:CANCELLED via SSE
-    // before we abort the stream (frontend can still receive the event)
-    if (session) {
-      try {
-        const { interruptSession } = await import("@/lib/api/sessions");
-        await interruptSession(session.id);
-      } catch (err) {
-        console.warn("[Store] interruptSession API call failed:", err);
-      }
-    }
-
-    // Then abort the local SSE stream
+    // 1. Abort SSE immediately — instant UI feedback
     if (streamAbortController) {
       streamAbortController.abort();
     }
 
-    // Safety net: if isStreaming is still true after abort (e.g. dead connection),
-    // force-finalize so the UI is never stuck in streaming state.
+    // 2. Fire-and-forget: tell backend to stop (don't await — it blocks up to 10s)
+    if (session) {
+      import("@/lib/api/sessions").then(({ interruptSession }) =>
+        interruptSession(session.id).catch(err =>
+          console.warn("[Store] interruptSession API call failed:", err)
+        )
+      );
+    }
+
+    // 3. Safety net: force-finalize so the UI is never stuck in streaming state
     if (get().isStreaming) {
       const finalMsgs = [...get().messages];
       const streamingIdx = finalMsgs.findIndex(m => m.id === "streaming-assistant");
