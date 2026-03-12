@@ -31,7 +31,7 @@ from pathlib import Path
 
 import httpx
 
-BASE_URL = os.environ.get("NIMBUS_URL", "http://localhost:3456/api")
+BASE_URL = os.environ.get("NIMBUS_URL", "http://localhost:4096/api/v1")
 RESULTS_DIR = Path(__file__).parent / "results"
 
 # ─────────────────────────────────────────────────────────────
@@ -99,13 +99,14 @@ async def send_chat_and_collect_usage(
     client: httpx.AsyncClient,
     session_id: str,
     message: str,
-    timeout: float = 120.0,
+    timeout: float = 180.0,
 ) -> dict:
     """Send a chat message and collect usage_update events via SSE."""
     usage_events = []
     tool_calls = []
     text_length = 0
     compaction_happened = False
+    done_received = False
 
     try:
         async with client.stream(
@@ -116,6 +117,8 @@ async def send_chat_and_collect_usage(
         ) as response:
             buffer = ""
             async for chunk in response.aiter_text():
+                if done_received:
+                    break
                 buffer += chunk
                 while "\n\n" in buffer:
                     event_text, buffer = buffer.split("\n\n", 1)
@@ -134,7 +137,7 @@ async def send_chat_and_collect_usage(
                     if event_type == "usage_update" and isinstance(event_data, dict):
                         usage_events.append(event_data)
 
-                    elif event_type == "tool_start" and isinstance(event_data, dict):
+                    elif event_type == "tool_call_start" and isinstance(event_data, dict):
                         tool_calls.append({
                             "tool": event_data.get("tool", "?"),
                             "args_preview": {
@@ -143,7 +146,7 @@ async def send_chat_and_collect_usage(
                             },
                         })
 
-                    elif event_type == "tool_result" and isinstance(event_data, dict):
+                    elif event_type == "tool_call_done" and isinstance(event_data, dict):
                         content = event_data.get("content", "")
                         content_len = len(content) if isinstance(content, str) else 0
                         if tool_calls:
@@ -156,10 +159,13 @@ async def send_chat_and_collect_usage(
                         compaction_happened = True
 
                     elif event_type == "done":
+                        done_received = True
                         break
 
     except httpx.ReadTimeout:
         pass
+    except httpx.RemoteProtocolError:
+        pass  # Server closed connection after done
 
     # Extract final usage
     final_usage = {}
