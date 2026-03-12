@@ -297,14 +297,11 @@ describe('chat-store SSE integration', () => {
   // Injection during streaming
   // ----------------------------------------------------------
 
-  it('injects message during active stream', async () => {
-    const injectSpy = vi.fn()
+  it('interrupts and re-sends when message sent during active stream', async () => {
     server.use(
       createOpenStreamHandler(),
-      http.post('/api/v1/sessions/:id/inject', async ({ request }) => {
-        const body = await request.json()
-        injectSpy(body)
-        return HttpResponse.json({ status: 'injected' })
+      http.post('/api/v1/sessions/:id/interrupt', async () => {
+        return HttpResponse.json({ success: true })
       })
     )
     const result = await setupSession()
@@ -313,19 +310,11 @@ describe('chat-store SSE integration', () => {
     act(() => { result.current.sendMessage('Long task') })
     expect(result.current.isStreaming).toBe(true)
 
-    // Inject while streaming
+    // Send a new message while streaming — should interrupt first
     await act(async () => { await result.current.sendMessage('Stop!') })
 
-    // Verify injection API was called
-    expect(injectSpy).toHaveBeenCalledWith({ content: 'Stop!' })
-
-    // Injected message should appear in messages list
-    const injectedMsg = result.current.messages.find(m => m.content === 'Stop!')
-    expect(injectedMsg).toBeDefined()
-    expect(injectedMsg?.isInjection).toBe(true)
-
-    // Streaming should still be active
-    expect(result.current.isStreaming).toBe(true)
+    // After interrupt, isStreaming should be false (interrupt clears it)
+    expect(result.current.isStreaming).toBe(false)
   })
 
   // ----------------------------------------------------------

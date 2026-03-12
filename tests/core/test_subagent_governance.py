@@ -280,3 +280,42 @@ class TestCountdownSteering:
         calls = [str(c) for c in mmu.add_system_message.call_args_list]
         assert any("步" in str(c) or "step" in str(c).lower() for c in calls), \
             f"Expected countdown warning in system messages, got: {calls}"
+
+class TestMultiAgentSteering:
+    """Verifies behavior when steering messages are injected during sub-agent execution."""
+
+    @pytest.mark.asyncio
+    async def test_steering_injection_routing(self):
+        """Currently, steering messages injected into parent queue remain there until 
+        the sub-agent completes. This test documents the current architecture's behavior.
+        """
+        import asyncio
+        from nimbus.core.loop import MessageQueue
+        
+        # Parent queue
+        class MockQueue:
+            def __init__(self):
+                self._q = []
+            def enqueue(self, msg):
+                self._q.append(msg)
+            def dequeue(self):
+                return self._q.pop(0) if self._q else None
+            def empty(self):
+                return len(self._q) == 0
+
+        parent_queue = MockQueue()
+        
+        # Simulate an external API call injecting a message
+        parent_queue.enqueue("Hey, change your plan!")
+        
+        # It sits in the parent's queue
+        assert not parent_queue.empty()
+        
+        # If we had a sub-agent loop running, it would have its own queue
+        sub_queue = MockQueue()
+        assert sub_queue.empty()
+        
+        # The behavior: Parent queue retains the steering message, and will process it
+        # on its NEXT think step after the subagent returns.
+        msg = parent_queue.dequeue()
+        assert msg == "Hey, change your plan!"

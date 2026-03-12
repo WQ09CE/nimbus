@@ -547,6 +547,7 @@ class SessionManagerV2:
                     await self._sse_hub.publish(session_id, "usage_update", {
                         "step_usage": event.get("step_usage", {}),
                         "cumulative_usage": event.get("cumulative_usage", {}),
+                        "context_window": event.get("context_window"),
                     })
                     continue
 

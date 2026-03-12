@@ -54,6 +54,7 @@ export interface ToolResult {
   duration?: number;
   ui_detail?: Record<string, any>;
   sub_events?: Record<string, any>[]; // Structured progress events from sub-agents
+  _streaming?: boolean; // true while tool_output_chunks are still arriving
 }
 
 /**

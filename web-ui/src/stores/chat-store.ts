@@ -45,6 +45,10 @@ export interface TokenUsageData {
     cache_write: number;
     total: number;
   };
+  context_window?: {
+    current: number;
+    maximum: number;
+  };
 }
 
 interface ChatState {
@@ -474,21 +478,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 const uiDetail = d.ui_detail;
                 if (!chunk && !uiDetail) break;
 
-                // 1. Always write to Map
+                // 1. Always write to Map — mark as streaming (not yet completed)
                 const map = targetMsg.toolResultsMap || {};
                 const existing = map[tcId];
                 if (existing) {
                   map[tcId] = { 
                     ...existing, 
                     result: (existing.result || "") + chunk,
-                    sub_events: uiDetail ? [...(existing.sub_events || []), uiDetail] : existing.sub_events
+                    sub_events: uiDetail ? [...(existing.sub_events || []), uiDetail] : existing.sub_events,
+                    _streaming: true,
                   };
                 } else {
                   map[tcId] = { 
                     id: tcId, 
                     name: d.tool || "unknown", 
                     result: chunk,
-                    sub_events: uiDetail ? [uiDetail] : undefined
+                    sub_events: uiDetail ? [uiDetail] : undefined,
+                    _streaming: true,
                   };
                 }
                 targetMsg.toolResultsMap = map;
@@ -509,6 +515,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   error: d.status === "ERROR" ? (d.fault?.message || "Error") : undefined,
                   ui_detail: d.ui_detail,
                   sub_events: existing?.sub_events,
+                  _streaming: false,
                 };
                 targetMsg.toolResults = [...(targetMsg.toolResults || []), tr];
                 // Always write to Map
@@ -532,6 +539,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 const d = data as any;
                 console.debug("[SSE] Usage Update received:", d);
                 const usage = d.cumulative_usage || null;
+                if (usage && d.context_window) {
+                  usage.context_window = d.context_window;
+                }
                 set({ tokenUsage: usage });
                 // Persist to sessionStorage for refresh survival
                 const sid = get().session?.id;
@@ -595,33 +605,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
 
-    // In-flight streaming injection
+    // In-flight streaming injection or Fast Re-prompt
     if (isStreaming) {
-      const userMessage: Message = {
-        id: `user-inject-${Date.now()}`,
-        role: "user",
-        content,
-        parts: [{ type: "text", content }],
-        attachments,
-        timestamp: Date.now(),
-        isInjection: true,
-        _rev: 0,
-      };
-      // Insert BEFORE the streaming-assistant message so it doesn't float
-      // on top of tool cards. The streaming message should always be last.
-      const msgs = [...get().messages];
-      const streamIdx = msgs.findIndex(m => m.id === "streaming-assistant");
-      if (streamIdx !== -1) {
-        msgs.splice(streamIdx, 0, userMessage);
-      } else {
-        msgs.push(userMessage);
-      }
-      set({ messages: msgs });
-      try {
-        await injectMessage(session.id, content, attachments);
-      } catch (err) {
-        console.error("Injection failed", err);
-      }
+      // Stop the current generation completely
+      get().interruptMessage();
+      
+      // Wait for state to settle, then send as a brand new message
+      setTimeout(() => {
+        get().sendMessage(content, attachments);
+      }, 100);
       return;
     }
 
@@ -733,13 +725,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 ? { 
                     ...existing, 
                     result: (existing.result || "") + chunk,
-                    sub_events: uiDetail ? [...(existing.sub_events || []), uiDetail] : existing.sub_events
+                    sub_events: uiDetail ? [...(existing.sub_events || []), uiDetail] : existing.sub_events,
+                    _streaming: true,
                   }
                 : { 
                     id: tcId, 
                     name: d.tool || "unknown", 
                     result: chunk,
-                    sub_events: uiDetail ? [uiDetail] : undefined
+                    sub_events: uiDetail ? [uiDetail] : undefined,
+                    _streaming: true,
                   };
               targetMsg.toolResultsMap = { ...(targetMsg.toolResultsMap || {}), [tcId]: updatedEntry };
               updated = true;
@@ -759,6 +753,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 error: d.status === "ERROR" ? (d.fault?.message || "Error") : undefined,
                 ui_detail: d.ui_detail,
                 sub_events: existing?.sub_events,
+                _streaming: false,
               };
               targetMsg.toolResults = [...(targetMsg.toolResults || []), tr];
               // IMPORTANT: Create a new Map reference so React.memo detects the change
@@ -782,6 +777,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             if (data && typeof data === "object") {
               const d = data as any;
               const usage = d.cumulative_usage || null;
+              if (usage && d.context_window) {
+                usage.context_window = d.context_window;
+              }
               set({ tokenUsage: usage });
               // Persist to sessionStorage for refresh survival
               const sid = get().session?.id;

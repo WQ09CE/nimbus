@@ -446,6 +446,10 @@ class RuntimeLoop:
                         "type": "usage_update",
                         "step_usage": step_result.usage.to_dict(),
                         "cumulative_usage": self._cumulative_usage.to_dict(),
+                        "context_window": {
+                            "current": self.mmu.estimate_tokens(),
+                            "maximum": self.mmu.config.max_context_tokens
+                        }
                     }
 
                 # Track partial results (pi-style abort recovery)

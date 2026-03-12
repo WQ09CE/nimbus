@@ -33,11 +33,14 @@ The Web-UI has achieved significant stability and features a highly functional s
 ## 🛠 Post-Implementation Issues & Testing
 
 ### 1. UI Refinements
-- [ ] **Fix Sub-agent Timeline layout**: The checkmarks/icons are currently overflowing the ToolCard container.
-- [ ] **Fix Timeline visual artifact**: There is a vertical line running through the center of the timeline area that needs to be removed or correctly aligned.
+- [x] **Fix Sub-agent Timeline layout**: The checkmarks/icons are currently overflowing the ToolCard container.
+- [x] **Fix Timeline visual artifact**: There is a vertical line running through the center of the timeline area that needs to be removed or correctly aligned.
 
 ### 2. Interaction & Control
-- [ ] **Fix LLM Interruption**: Currently, clicking "Interrupt" (or sending a new message while LLM is generating) does not stop the stream correctly, and the user message sometimes gets sent multiple times in the WebUI. This needs to be bulletproof.
+- [x] **Fix LLM Interruption**: Currently, clicking "Interrupt" (or sending a new message while LLM is generating) does not stop the stream correctly, and the user message sometimes gets sent multiple times in the WebUI. This needs to be bulletproof.
 
 ### 3. Core Architecture Testing
-- [ ] **Test Multi-agent Steering Message**: Verify the feasibility and stability of injecting steering messages into a session where multiple sub-agents are running concurrently. Ensure the steering reaches the correct active agent and is handled gracefully.
+- [x] **Test Multi-agent Steering Message**: Verify the feasibility and stability of injecting steering messages into a session where multiple sub-agents are running concurrently. Ensure the steering reaches the correct active agent and is handled gracefully.
+
+### 4. Observability Feature
+- [x] **Context Window Usage UI**: Enhance the TokenFooter/Token Usage area to display the maximum context window size (e.g., 200k tokens) and a percentage completion bar/indicator (similar to Pi Agent). This provides immediate visual feedback on the health of the MMU compaction mechanisms and token budget.

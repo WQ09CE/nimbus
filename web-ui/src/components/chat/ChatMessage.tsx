@@ -177,7 +177,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
                         args: tcArgs,
                         result: resolvedResult?.result,
                         error: resolvedResult?.error,
-                        status: resolvedResult ? (resolvedResult.error ? "failed" : "completed") : "running",
+                        status: resolvedResult ? (resolvedResult.error ? "failed" : ((resolvedResult as any)._streaming ? "running" : "completed")) : "running",
                         duration: resolvedResult?.duration,
                         ui_detail: (resolvedResult as any)?.ui_detail,
                         sub_events: (resolvedResult as any)?.sub_events,

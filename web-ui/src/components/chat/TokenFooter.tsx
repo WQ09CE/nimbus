@@ -25,8 +25,27 @@ export function TokenFooter() {
 
     if (!tokenUsage || tokenUsage.total === 0) return null;
 
+    const ctx = tokenUsage.context_window;
+
     return (
-        <div className="token-footer">
+        <div className="token-footer flex items-center flex-wrap gap-x-2 gap-y-1">
+            {ctx && ctx.maximum > 0 && (
+                <div 
+                    className="flex items-center gap-1.5 px-2 py-0.5 bg-black/20 rounded border border-white/5 mr-2" 
+                    title={`Context Window: ${ctx.current} / ${ctx.maximum} tokens`}
+                >
+                    <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-semibold">CTX</span>
+                    <div className="w-16 h-1.5 bg-zinc-800 rounded-full overflow-hidden flex">
+                        <div 
+                            className={`h-full ${ctx.current / ctx.maximum > 0.85 ? 'bg-red-400' : ctx.current / ctx.maximum > 0.6 ? 'bg-amber-400' : 'bg-emerald-400'}`} 
+                            style={{ width: `${Math.min(100, Math.max(0, (ctx.current / ctx.maximum) * 100))}%` }} 
+                        />
+                    </div>
+                    <span className="text-xs font-mono text-zinc-400">
+                        {Math.round((ctx.current / ctx.maximum) * 100)}%
+                    </span>
+                </div>
+            )}
             <span className="token-stat" title="Input tokens">
                 ↑ {formatTokens(tokenUsage.input)}
             </span>

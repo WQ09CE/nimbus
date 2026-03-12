@@ -129,7 +129,7 @@ export function SpawnAgentCard({ tool, defaultState = "expanded" }: SpawnAgentCa
                     {subEvents.length > 0 && (
                         <div>
                             <div className="text-xs text-zinc-500 mb-3 uppercase tracking-wider font-semibold">Execution Timeline</div>
-                            <div className="space-y-3 relative before:absolute before:inset-0 before:ml-2 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-slate-300/10 before:to-transparent">
+                            <div className="space-y-3 relative before:absolute before:top-2 before:bottom-2 before:left-[11px] before:w-px before:bg-white/10 ml-2 pl-6">
                                 {subEvents.filter(evt => evt.type !== 'tool_start').map((evt, idx) => {
                                     const isThinking = evt.type === 'thinking';
                                     const isError = evt.status === 'ERROR';
@@ -143,13 +143,14 @@ export function SpawnAgentCard({ tool, defaultState = "expanded" }: SpawnAgentCa
                                     return (
                                         <details key={idx} className="relative group/step">
                                             <summary className="flex items-start gap-3 cursor-pointer list-none [&::-webkit-details-marker]:hidden select-none">
-                                                <div className="absolute left-[-21px] mt-1.5 text-zinc-500 bg-background">
+                                                {/* Adjusted absolute positioning to align with the vertical line at left-[11px] */}
+                                                <div className="absolute left-[-21px] top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-background border border-white/10 shadow-sm z-10">
                                                     {isThinking ? (
-                                                        <Brain className="text-purple-400" />
+                                                        <Brain className="text-purple-400 w-3 h-3" />
                                                     ) : isError ? (
-                                                        <XCircle className="text-red-400" />
+                                                        <XCircle className="text-red-400 w-3 h-3" />
                                                     ) : (
-                                                        <CheckCircle className="text-emerald-400" />
+                                                        <CheckCircle className="text-emerald-400 w-3 h-3" />
                                                     )}
                                                 </div>
                                                 <div className="flex-1 min-w-0 bg-black/10 rounded border border-white/5 p-2 text-xs hover:bg-black/20 transition-colors">
@@ -207,11 +208,11 @@ export function SpawnAgentCard({ tool, defaultState = "expanded" }: SpawnAgentCa
                                     );
                                 })}
                                 {isRunning && (
-                                    <div className="relative flex items-start gap-3 opacity-50">
-                                        <div className="absolute left-[-21px] mt-1 text-zinc-500 bg-background">
-                                            <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse ml-[2px]" />
+                                    <div className="relative flex items-start gap-3 opacity-50 mt-3">
+                                        <div className="absolute left-[-21px] top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-background border border-white/10 shadow-sm z-10">
+                                            <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
                                         </div>
-                                        <div className="text-zinc-500 italic text-xs mt-[2px]">Agent is working...</div>
+                                        <div className="text-zinc-500 italic text-xs py-1.5">Agent is working...</div>
                                     </div>
                                 )}
                             </div>
