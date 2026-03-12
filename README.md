@@ -2,13 +2,13 @@
 
 > **Building Resilient, Long-Horizon AI Agents with Operating System Principles.**
 
-Nimbus 是一款受操作系统内核设计启发的 AI Agent 运行时框架。它将 LLM 视为 CPU，围绕其构建了完整的系统抽象，专注解决 Agent 在复杂长程任务中的上下文漂移、状态管理失效和稳定性问题。
+Nimbus is an AI Agent runtime framework inspired by OS kernel design. It treats the LLM as a CPU and builds a complete system abstraction around it — focusing on solving context drift, state management failures, and stability issues that plague agents during complex, long-horizon tasks.
 
-当前版本：**v0.2.0 (Nimbus Next)**
+Current version: **v0.2.0 (Nimbus Next)**
 
 ---
 
-## 🏗 核心架构
+## 🏗 Core Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -22,9 +22,9 @@ Nimbus 是一款受操作系统内核设计启发的 AI Agent 运行时框架。
 └─────────────────────────────────────────────────┘
 ```
 
-### VCPU — 虚拟 CPU
+### VCPU — Virtual CPU
 
-基于有限状态机（FSM）驱动 Think-Act-Observe 循环：
+FSM-driven Think-Act-Observe loop:
 
 ```
 IDLE ──→ THINKING ──→ ACTING ──→ OBSERVING
@@ -43,75 +43,80 @@ THINKING/ACTING ──→ ERROR ──→ (retryable?) ──→ THINKING
                                     └─────────→ DEAD
 ```
 
-**COMPRESSING 触发时机（三种）：**
-1. 每轮循环开始前主动检测：`token 使用率 > 85%`
-2. LLM 调用返回 `CTX_OVERFLOW` 错误时被动触发
-3. VCPU 迭代次数超过上限（`BUDGET_EXCEEDED`）时触发，同时重置迭代计数器
+**COMPRESSING triggers (3 paths):**
+1. **Proactive**: token usage > 85% detected at loop start
+2. **Reactive**: LLM returns `CTX_OVERFLOW` error
+3. **Budget**: iteration count exceeds limit (`BUDGET_EXCEEDED`), resets counter
 
-**保险机制：** 最多压缩 `3` 次（`max_compactions`），且两次压缩之间必须间隔 `5` 步（`compaction_cooldown`），防止死循环。超出限制直接进入 `DEAD`。
+**Safety**: max 3 compressions (`max_compactions`), cooldown of 5 steps between compressions. Exceeding → `DEAD`.
 
-- 最大迭代次数：200（上下文压缩是真正的资源边界）
-- 支持实时 Steering 注入（用户可在 Agent 运行中途插入新指令）
-- 并行工具调用（`asyncio.gather`）
+- Max iterations: 200 (context compression is the real resource boundary)
+- Real-time Steering injection (user can insert new instructions mid-run)
+- Parallel tool calls via `asyncio.gather`
 
-### MMU — 内存管理单元
+### MMU — Memory Management Unit
 
-- **Pinned Context（锚点）**：固定系统规则、核心目标，防止 LLM 近因偏见导致的"遗忘"
-- **动态 Stream**：自动追踪对话历史，token 使用率超过 85% 时触发压缩
-- **压缩策略**：滑动窗口（默认）/ 摘要压缩 / 语义相关性筛选（需 embedding 服务）
-- 默认 Context Budget：100k tokens（标准）/ 1M tokens（claude-sonnet-4-6）
+- **Pinned Context (Anchors)**: Fixed system rules and core goals, preventing LLM recency bias from causing "forgetting"
+- **Dynamic Stream**: Auto-tracks conversation history, triggers compression at 85% token usage
+- **Compression strategies**: Sliding Window (default) / Summary Compression / Semantic Relevance filtering (requires embedding service)
+- Default context budget: 100k tokens (standard) / 1M tokens (claude-sonnet-4-6)
 
-### KernelGate — 工具执行安全层
+### KernelGate — Tool Execution Safety Layer
 
-- 权限白名单/黑名单过滤
-- `asyncio.wait_for` 超时 + 进程组 `SIGKILL` 隔离
-- 工具结果分离：`output`（LLM 可见）+ `ui_detail`（仅 UI 展示）
+- Permission whitelist/blacklist filtering
+- `asyncio.wait_for` timeout + process group `SIGKILL` isolation
+- Tool result separation: `output` (LLM-visible) + `ui_detail` (UI-only display)
+- Doom loop detection: consecutive identical tool calls are intercepted
 
-### ALU / Adapter — LLM 接口层
+### ALU / Adapter — LLM Interface Layer
 
-三通道自动选择：
+Three-channel auto-selection:
 
-| 通道 | 适用场景 |
-|------|----------|
-| Anthropic Native (OAuth) | Claude 模型 + Pi OAuth 凭证 |
-| OpenAI Codex (OAuth) | Codex 模型 + ChatGPT 订阅凭证 |
-| LiteLLM (默认) | Gemini、OpenAI API Key、其他所有模型 |
+| Channel | Use Case |
+|---------|----------|
+| Anthropic Native (OAuth) | Claude models + Pi OAuth credentials |
+| OpenAI Codex (OAuth) | Codex models + ChatGPT subscription credentials |
+| LiteLLM (default) | Gemini, OpenAI API Key, all other models |
 
 ---
 
-## 🤝 多 Agent 协作：spawn_agent
+## 🤝 Multi-Agent: spawn_agent
 
-Unix 哲学：**子 Agent 即子进程**，通过工具调用拉起。
+Unix philosophy: **sub-agents are subprocesses**, spawned via tool calls.
 
 ```python
-# 同步：父 Agent 阻塞等待结果
-spawn_agent(role="Test Engineer", task="为 auth 模块写单测", mode="sync")
+# Sync: parent agent blocks and waits for result
+spawn_agent(role="reader", goal="Read all test files and summarize coverage")
 
-# 异步：后台运行，返回 PID
-spawn_agent(role="Security Scanner", task="扫描 src/ 目录", mode="async")
+# Async: runs in background, returns PID
+spawn_agent(role="worker", goal="Refactor the auth module", mode="async")
 ```
 
-**核心优势**：
-- 子 Agent 拥有独立的 MMU，上下文不污染父 Agent
-- 父 Agent 只收到精炼的结果摘要，彻底避免长链任务的记忆崩溃
-- 框架层处理超时熔断，父 Agent 只需关心成功/失败
+**Key design:**
+- Sub-agents get a **fresh, independent MMU** — zero context pollution to parent
+- Parent only receives a **structured summary** (max 4000 chars), not raw output
+- Sub-agents operate in `contract_mode`: they MUST call `submit_result` to deliver findings
+- Each sub-agent writes to its own scratchpad at `.nimbus/sessions/{sub_id}/scratchpad.md`
+- Framework handles timeout, retry, and error isolation — parent just sees success/failure
+- **Role-based permissions**: `reader` agents can only Read/Grep; `worker` agents get full tool access
 
-> ⚠️ 当前 `spawn_agent` 为 stub 实现，真实嵌套 `AgentOS` 实例化是下一个里程碑。
+**Context pressure test result:** 22 parallel sub-agents reading 100+ files consumed only ~20% of the parent agent's context window — the rest was contained within sub-agent boundaries.
 
 ---
 
-## 🛠 内置工具集
+## 🛠 Built-in Tools
 
-| 工具 | 描述 |
-|------|------|
-| `bash` | 执行 shell 命令，支持流式输出 |
-| `read` | 读取文件内容，支持 offset/limit |
-| `write` | 写入文件，自动创建目录 |
-| `edit` | 精确文本替换编辑 |
-| `grep` | 正则搜索文件内容 |
-| `spawn_agent` | 派生子 Agent 处理复杂独立任务 |
+| Tool | Description |
+|------|-------------|
+| `bash` | Execute shell commands with streaming output and auto-truncation |
+| `read` | Read file contents with offset/limit support |
+| `write` | Write files, auto-creates parent directories |
+| `edit` | Exact text replacement with fuzzy fallback |
+| `grep` | Regex search across files with glob filtering |
+| `spawn_agent` | Delegate complex sub-tasks to independent child agents |
+| `submit_result` | Sub-agent result delivery (contract mode) |
 
-自定义工具通过 `@tool` 装饰器注册：
+Custom tools via `@tool` decorator:
 
 ```python
 from nimbus.core.tools.registry import tool
@@ -125,92 +130,125 @@ async def my_tool(param: str) -> str:
 
 ## 🌐 Web UI
 
-基于 **Next.js 14 + TypeScript + Tailwind CSS** 的实时对话界面。
+Real-time conversational interface built with **Next.js 14 + TypeScript + Tailwind CSS**.
 
-- SSE 实时流式渲染（`_pendingStreamMsg` rAF buffer，解决同帧事件覆盖问题）
-- 会话管理、文件浏览、工具执行可视化
-- 端口：`3000`（生产）/ `3001`（staging）
+- SSE real-time streaming (`_pendingStreamMsg` rAF buffer — solves same-frame event overwrite)
+- Session management with create/delete/switch
+- Tool execution visualization with expandable cards
+- Sub-agent spawn timeline with nested tool call display
+- Context window usage indicator (token count + percentage bar)
+- Model selector with multi-provider support
+- Port: `3000` (production) / `3001` (staging)
 
 ---
 
-## 🚀 快速开始
+## 🚀 Quick Start
 
 ```bash
-# 克隆仓库
+# Clone
 git clone https://github.com/WQ09CE/nimbus.git
 cd nimbus
 
-# 安装依赖（推荐使用 uv）
+# Install (uv recommended)
 pip install -e ".[llm]"
 
-# 启动服务端
+# Start server
 nimbus serve
 
-# 启动 Web UI（另开终端）
+# Start Web UI (separate terminal)
 cd web-ui && npm install && npm run dev
 ```
 
-环境变量（二选一）：
+Environment variables (pick one):
 
 ```bash
-# 使用 API Key
+# API Key mode
 export ANTHROPIC_API_KEY=sk-ant-...
 export OPENAI_API_KEY=sk-...
 
-# 或使用 Pi OAuth（自动从 ~/.pi/agent/auth.json 读取）
+# Or Pi OAuth (auto-reads from ~/.pi/agent/auth.json)
 ```
 
 ---
 
-## 🧪 测试
+## 🧪 Testing
 
 ```bash
-# 核心单元测试
+# Core unit tests
 pytest tests/core --tb=short
 
-# 全量测试
+# Full test suite
 pytest tests/ --tb=short
 ```
 
 ---
 
-## 📁 项目结构
+## 📁 Project Structure
 
 ```
 nimbus/
 ├── src/nimbus/
 │   ├── core/
-│   │   ├── agent.py          # AgentOS facade
-│   │   ├── vcpu.py           # FSM 执行引擎
-│   │   ├── mmu.py            # 上下文管理
-│   │   ├── gate.py           # KernelGate 安全执行
-│   │   ├── loop.py           # RuntimeLoop 驱动层
-│   │   ├── adapter.py        # ALU 基类
+│   │   ├── agent.py          # AgentOS facade (367 lines)
+│   │   ├── vcpu.py           # FSM execution engine (326 lines)
+│   │   ├── mmu.py            # Context management (486 lines)
+│   │   ├── gate.py           # KernelGate safety layer (202 lines)
+│   │   ├── loop.py           # RuntimeLoop driver (593 lines)
 │   │   ├── decoder.py        # InstructionDecoder
-│   │   ├── protocol.py       # Event / ToolCall / ToolResult 协议
-│   │   └── tools/            # 内置工具集
+│   │   ├── protocol.py       # Event / ActionIR / ToolResult protocol
+│   │   ├── storage.py        # Conversation persistence
+│   │   ├── models/           # Model registry & manifests
+│   │   └── tools/            # Built-in tool implementations
+│   │       ├── bash.py, read.py, write.py, edit.py, grep.py
+│   │       ├── spawn_agent.py   # Multi-agent orchestration (421 lines)
+│   │       ├── submit_result.py # Sub-agent result delivery
+│   │       └── registry.py     # Tool registration & schema
 │   ├── adapters/
-│   │   ├── direct_adapter.py # 三通道 LLM 适配器
-│   │   └── llm_factory.py    # 模型工厂
+│   │   ├── direct_adapter.py # Three-channel LLM adapter
+│   │   ├── llm_factory.py    # Model factory
+│   │   └── types.py          # LLM adapter type definitions
 │   ├── server/
-│   │   ├── api.py            # FastAPI 路由
+│   │   ├── api.py            # FastAPI routes
 │   │   ├── session.py        # SessionManagerV2
-│   │   └── sse.py            # SSE Hub
-│   └── cli/                  # nimbus CLI
-├── web-ui/                   # Next.js 前端
-└── tests/                    # 测试套件
+│   │   ├── sse.py            # SSE Hub
+│   │   ├── permission.py     # Runtime permission rules
+│   │   └── log_hub.py        # Real-time log streaming
+│   └── cli/                  # nimbus CLI (serve, run, config, session, acp)
+├── web-ui/                   # Next.js frontend (21 components)
+├── tests/                    # Test suite (33 files)
+├── docs/                     # Architecture & design documents
+└── skills/                   # Pluggable skill packs
 ```
 
 ---
 
-## 📈 路线图
+## 📚 Documentation
 
-- [ ] **spawn_agent 真实实现** — 嵌套 `AgentOS` 实例化，完成多 Agent 进程树
-- [ ] **async spawn 查询 API** — `wait_agent(pid)` / `kill_agent(pid)` 工具
-- [ ] **MMU 重构** — 拆分 `mmu.py` 为 `context_manager` / `compressor` / `pinned_store`
-- [ ] **进程树 UI 可视化** — Web UI 展示 Agent 父子关系和状态
-- [ ] **Semantic Compression** — 接入 embedding 服务，语义相关性筛选压缩策略
+| Document | Description |
+|----------|-------------|
+| [Architecture Overview](docs/architecture_overview.md) | High-level framework design |
+| [Actual Architecture](docs/actual_architecture.md) | Implementation reality vs. design |
+| [Toolchain Design](docs/toolchain_design.md) | Tool system philosophy |
+| [Multi-Agent Collaboration](docs/multi_agent_collaboration.md) | spawn_agent design rationale |
+| [State & Context Management](docs/state_and_context_management.md) | MMU and context strategies |
+| [System Rules & Prompting](docs/system_rules_and_prompting.md) | Prompt engineering approach |
+| [Key Technologies](docs/actual_key_tech.md) | Core technical innovations |
+| [Pi Coding Agent Study](docs/pi-coding-agent-article.md) | Research on Pi's architecture |
+| [Pi Robustness Study](docs/pi-robustness-study.md) | Robustness analysis |
+| [Sub-agent Orchestration](docs/subagent-orchestration-design.md) | Detailed orchestration design |
 
 ---
 
-*Nimbus — 赋予 LLM 真正的系统级执行能力。*
+## 📈 Roadmap
+
+- [x] **spawn_agent real implementation** — Nested `AgentOS` instances with contract mode
+- [x] **Context window usage UI** — Token count + percentage indicator in footer
+- [x] **Sub-agent timeline visualization** — Expandable tool call cards in Web UI
+- [ ] **async spawn polling API** — `wait_agent(pid)` / `kill_agent(pid)` tools
+- [ ] **MMU modularization** — Split into `context_manager` / `compressor` / `pinned_store`
+- [ ] **Process tree UI** — Visualize parent-child agent relationships
+- [ ] **Semantic Compression** — Integrate embedding service for relevance-based filtering
+
+---
+
+*Nimbus — Giving LLMs true system-level execution capabilities.*

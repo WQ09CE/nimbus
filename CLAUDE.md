@@ -1,75 +1,129 @@
 # Nimbus Developer Context
 
-This project uses an external AI Context Hub for maintaining cross-tool architectural knowledge.
+## Quick Reference
 
-Before making significant architectural changes or assumptions, **MUST READ** the living documents in the Context Hub:
-`../ai-context-hub/projects/nimbus/`
-
-Key files to check:
-1. `STATUS.md`: Current project health, technical debt, and pending roadmap.
-2. `ARCHITECTURE.md`: Subagent/Specialist boundaries, Component breakdown.
-3. `DECISIONS.md`: ADRs and conventions.
-4. `GOTCHAS.md`: Known edge cases, LLM hallucination firewalls, and model quirks.
-5. `STACK.md`: Exact frameworks and tools in use.
-
-**Important Instructions**:
-- Always run `pytest tests/core --tb=short` before pushing commits manually.
-- Use `ruff` for linting/formatting.
+- **Version**: 0.2.0 (Nimbus Next)
+- **Python**: 3.13+ | **Node**: 18+
+- **Test**: `pytest tests/core --tb=short`
+- **Lint**: `ruff check src/ tests/`
+- **Server**: `nimbus serve` (port 8000)
+- **Web UI**: `cd web-ui && npm run dev` (port 3000)
 
 ---
 
-## Architecture: AgentOS (Nimbus Next)
+## Architecture: AgentOS
 
 `AgentOS` is a facade orchestrating specialized components (inspired by OS kernel design):
 
-- **VCPU**: FSM-based execution engine (`IDLE → THINKING → ACTING → OBSERVING → COMPRESSING → ERROR → DEAD`). Drives the Think-Act-Observe loop.
-- **MMU**: Context & state management. Handles message compression (sliding window / summary), Pinned context, and token budget enforcement.
-- **KernelGate**: Tool execution with safety timeouts, process-group abort (`SIGKILL`), and result auditing.
-- **ALU / Adapter**: LLM interface layer. Three channels:
-  1. **Anthropic Native (OAuth)** — Direct Anthropic SDK with stealth headers (Claude Code identity).
-  2. **OpenAI Codex (OAuth)** — Direct OpenAI SDK via ChatGPT subscription credentials.
-  3. **LiteLLM (default)** — Fallback for Gemini, OpenAI API key, and others.
-- **RuntimeLoop**: Drives the VCPU, manages `SteeringQueue` (real-time message injection) and `FollowUpQueue`.
-- **InstructionDecoder**: Validates and decodes raw LLM output into structured `ToolCall` / text actions.
+| Component | File | Lines | Role |
+|-----------|------|-------|------|
+| **AgentOS** | `core/agent.py` | 367 | Facade: wires VCPU + MMU + Gate + Loop |
+| **VCPU** | `core/vcpu.py` | 326 | FSM engine: IDLE → THINKING → ACTING → OBSERVING → COMPRESSING → ERROR → DEAD |
+| **MMU** | `core/mmu.py` | 486 | Context management: Pinned anchors + dynamic stream + compression |
+| **KernelGate** | `core/gate.py` | 202 | Tool execution: permissions, timeout, SIGKILL isolation |
+| **RuntimeLoop** | `core/loop.py` | 593 | Drives VCPU steps, manages SteeringQueue and FollowUpQueue |
+| **InstructionDecoder** | `core/decoder.py` | 154 | Validates/decodes LLM output into ActionIR |
+| **Protocol** | `core/protocol.py` | 149 | Event / ActionIR / ToolResult / Fault types |
+
+### ALU / Adapter — Three LLM Channels
+
+1. **Anthropic Native (OAuth)** — Direct SDK with stealth headers (Claude Code identity)
+2. **OpenAI Codex (OAuth)** — Direct SDK via ChatGPT subscription credentials
+3. **LiteLLM (default)** — Fallback for Gemini, OpenAI API key, others
+
+Auto-selected based on model name and available credentials.
+
+---
 
 ## Server Layer
 
-- **FastAPI** server (`nimbus serve`) with SSE streaming (`/api/v1/sessions/{id}/events`).
-- **SessionManagerV2**: Per-session `AgentOS` instances, cached between turns, with pre-warming.
-- **SSEHub**: Fan-out event broadcasting to connected web clients.
-- **PermissionManager**: Runtime tool permission rules.
+- **FastAPI** server (`nimbus serve`) with SSE streaming (`/api/v1/sessions/{id}/events`)
+- **SessionManagerV2** (`server/session.py`): Per-session `AgentOS` instances, cached between turns
+- **SSEHub** (`server/sse.py`): Fan-out event broadcasting to connected web clients
+- **PermissionManager** (`server/permission.py`): Runtime tool permission rules
+- **LogHub** (`server/log_hub.py`): Real-time log streaming to UI
 
-## Tooling
+---
 
-Registered via `ToolRegistry`. Built-in tools (all in `src/nimbus/core/tools/`):
-- `read`, `write`, `edit`, `bash`, `grep` — filesystem & shell
-- `spawn_agent` — Multi-agent subprocess delegation (see below)
+## Tool System
 
-## spawn_agent (Multi-Agent)
+Registered via `ToolRegistry` (`core/tools/registry.py`). Built-in tools:
 
-Unix-philosophy multi-agent design: sub-agents are **subprocesses**, spawned via tool call.
+| Tool | File | Key Detail |
+|------|------|------------|
+| `bash` | `tools/bash.py` | Streaming output, 60s timeout, auto-truncation (50KB / 2000 lines) |
+| `read` | `tools/read.py` | Line-based offset/limit, byte truncation |
+| `write` | `tools/write.py` | Auto-creates parent dirs |
+| `edit` | `tools/edit.py` | Exact match + fuzzy fallback |
+| `grep` | `tools/grep.py` | Regex with glob filter, per-line truncation |
+| `spawn_agent` | `tools/spawn_agent.py` | **421 lines** — Full multi-agent orchestration (see below) |
+| `submit_result` | `tools/submit_result.py` | Sub-agent result delivery in contract mode |
 
-```python
-spawn_agent(role="Test Engineer", task="...", mode="sync")   # blocking
-spawn_agent(role="Security Scanner", task="...", mode="async")  # background, returns PID
-```
+---
 
-- Sub-agents get a **fresh MMU** (no context pollution from parent).
-- They operate inside the same process but use isolated `AgentOS` loops and models.
-- **Output isolation**: Large sub-agent returns are truncated (max 4000 chars) in the parent's tool result. Full details must be read from their disk `scratchpad`.
+## spawn_agent — Multi-Agent System
+
+**Status: Fully implemented** (not a stub).
+
+### How it works:
+1. Parent calls `spawn_agent(role, goal, timeout_seconds)`
+2. Framework creates a **new AgentOS instance** with fresh MMU (zero context pollution)
+3. Sub-agent runs in `contract_mode=True`: must call `submit_result` to deliver findings
+4. Sub-agent writes progress to `.nimbus/sessions/{sub_id}/scratchpad.md`
+5. Parent receives structured summary (max 4000 chars), not raw output
+6. Role-based tool permissions: `reader` = Read/Grep only; `worker` = full access
+
+### Key implementation details:
+- Sub-agents share the parent's LLM adapter but get isolated MMU/VCPU/Gate
+- Timeout handled at framework level with `asyncio.wait_for`
+- Sub-agents cannot spawn further sub-agents (no nesting)
+- Results are structured: `summary`, `findings[]`, `artifacts[]`, `scratchpad_path`
+
+### Verified performance:
+22 parallel sub-agents reading 100+ files → only ~20% parent context consumed.
+
+---
 
 ## Web UI
 
-- **Next.js 14** (App Router) + **TypeScript** + **Tailwind CSS**.
-- Served on port `3000` (deploy) / `3001` (staging).
-- Real-time SSE rendering via `chat-store.ts` (Zustand).
-- **Key fix (2026-03-10)**: `_pendingStreamMsg` rAF buffer — consecutive SSE events within the same animation frame now build on each other instead of overwriting stale store state.
+- **Next.js 14** (App Router) + **TypeScript** + **Tailwind CSS** + **Zustand**
+- 21 `.tsx` components across `app/`, `components/chat/`, `components/session/`
+- SSE streaming: `_pendingStreamMsg` rAF buffer (consecutive events build on each other)
+- Key components:
+  - `ChatMessage.tsx` — Message rendering with tool cards
+  - `SpawnAgentCard.tsx` — Sub-agent timeline with expandable nested tool calls
+  - `TokenFooter.tsx` — Context window usage indicator (token count + % bar)
+  - `MarkdownRenderer.tsx` — Fenced code blocks, tables, syntax highlighting
+  - `SessionPanel.tsx` — Session CRUD with path selection
+  - `ChatInput.tsx` — Input with interrupt support
+
+---
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `nimbus serve` | Start FastAPI server (default port 8000) |
+| `nimbus run "task"` | One-shot execution mode |
+| `nimbus config show` | Show current configuration |
+| `nimbus session list` | List active sessions |
+| `nimbus acp` | Start as ACP agent over stdio |
+
+---
+
+## Development Conventions
+
+- **Commits**: Semantic, English (`feat:`, `fix:`, `docs:`, `refactor:`, `perf:`, `test:`)
+- **Testing**: Always run `pytest tests/core --tb=short` before pushing
+- **Linting**: `ruff check src/ tests/`
+- **Branching**: Feature branches → merge to `main` (no PR required for solo dev)
+
+---
 
 ## Known Issues / Tech Debt
 
-- `mmu.py` (744 lines) — context management, compression, pinned store all coupled; needs splitting.
-- `loop.py` (680 lines) — `RuntimeLoop` has god-class tendencies; `SteeringHandler` should be extracted.
-- Sub-agent massive outputs were previously leaking into the parent Context Window, causing Token bloat (now truncated with a scratchpad redirect).
-- `async` spawn_agent background polling is missing.
-- Semantic Relevance compression requires external embedding service; silently degrades to Sliding Window (should emit explicit warning log).
-- `Task was destroyed but it is pending!` asyncio warnings on session teardown — benign but noisy.
+1. **`mmu.py` coupling** (486 lines) — Context management, compression, and pinned store are in one file; should be split into modules
+2. **`loop.py` size** (593 lines) — `SteeringHandler` logic should be extracted
+3. **Semantic compression degradation** — Silently falls back to Sliding Window when no embedding service; should emit warning log
+4. **asyncio teardown warnings** — `Task was destroyed but it is pending!` on session teardown; benign but noisy
+5. **async spawn_agent polling** — Background sub-agents lack `wait_agent(pid)` / `kill_agent(pid)` query tools
