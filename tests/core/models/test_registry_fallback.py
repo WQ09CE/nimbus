@@ -2,6 +2,16 @@
 import pytest
 from nimbus.core.models.registry import ModelRegistry, ModelInfo, ModelManifest
 
+
+def test_codex_latest_aliases():
+    assert ModelRegistry.normalize("codex") == "openai-codex/gpt-5.4"
+    assert ModelRegistry.normalize("codex-latest") == "openai-codex/gpt-5.4"
+    assert ModelRegistry.normalize("gpt-5.4") == "openai-codex/gpt-5.4"
+    assert ModelRegistry.normalize("gpt-5.4-codex") == "openai-codex/gpt-5.4"
+    assert ModelRegistry.normalize("gpt-5.3") == "openai-codex/gpt-5.3"
+    assert ModelRegistry.normalize("gpt-5.3-codex") == "openai-codex/gpt-5.3"
+
+
 def test_registry_fallback():
     # Test Google Logic
     

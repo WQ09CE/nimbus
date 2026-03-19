@@ -358,11 +358,22 @@ ModelRegistry.register(ModelInfo(
 # ---------------------------------------------------------------------------
 # Codex (Special — coding tier)
 # ---------------------------------------------------------------------------
+# Keep the previous model registered for backward compatibility, but move the
+# generic "codex" alias to the newest supported version.
 ModelRegistry.register(ModelInfo(
-    model_id="gpt-5.3-codex",
+    model_id="gpt-5.3",
     provider="openai-codex",
     tier="coding",
-    aliases=["codex"],
+    aliases=["gpt-5.3", "gpt-5.3-codex"],
+    manifest=ModelManifest("codex", GPT_FEATURES),
+    context_window=128_000,
+))
+
+ModelRegistry.register(ModelInfo(
+    model_id="gpt-5.4",
+    provider="openai-codex",
+    tier="coding",
+    aliases=["codex", "gpt-5.4", "gpt-5.4-codex", "codex-latest"],
     manifest=ModelManifest("codex", GPT_FEATURES),
     context_window=128_000,
 ))
