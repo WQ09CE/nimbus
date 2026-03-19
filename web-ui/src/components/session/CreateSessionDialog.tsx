@@ -37,7 +37,7 @@ const DEFAULT_MODELS = {
         "claude-haiku-4",
     ],
     openai: ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"],
-    "openai-codex": ["gpt-5.3-codex", "gpt-4o", "o3-mini"],
+    "openai-codex": ["gpt-5.4", "gpt-5.3", "gpt-4o", "o3-mini"],
     deepseek: ["deepseek-chat", "deepseek-coder"],
     ollama: ["qwen3.5:9b", "qwen3.5:4b", "qwen3.5:2b"],
 };

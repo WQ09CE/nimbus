@@ -57,7 +57,7 @@ class NimbusConfig:
     # Review Committee default models
     review_models: list = field(default_factory=lambda: [
         "anthropic/claude-opus-4-6",
-        "openai-codex/gpt-5.3-codex",
+        "openai-codex/gpt-5.4",
         "google/gemini-3.1-pro-preview",
     ])
 
