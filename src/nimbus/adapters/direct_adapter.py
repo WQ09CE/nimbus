@@ -157,6 +157,103 @@ def _extract_tool_calls_from_json(json_str: str) -> list[dict] | None:
     return results if results else None
 
 
+def _parse_maybe_json(value: Any) -> Any:
+    """Best-effort parse of JSON-ish function-call arguments."""
+    if value in (None, ""):
+        return {}
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return value
+    return value
+
+
+def _merge_codex_function_call_item(
+    pending: Optional[dict[str, Any]],
+    item: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge streaming + final Responses API function_call payloads.
+
+    GPT-5.4 sometimes sends full arguments on output_item.added/done instead of only
+    streaming them via response.function_call_arguments.delta. Keep compatibility
+    with both shapes.
+    """
+    item_id = item.get("id", "")
+    call_id = item.get("call_id") or item_id
+    name = item.get("name") or (pending or {}).get("name", "")
+
+    pending_args = (pending or {}).get("arguments", "")
+    item_args = item.get("arguments")
+    if item_args in (None, ""):
+        arguments = pending_args
+    elif pending_args:
+        arguments = pending_args
+    else:
+        arguments = item_args
+
+    return {
+        "id": (pending or {}).get("id") or call_id,
+        "name": name,
+        "arguments": _parse_maybe_json(arguments),
+    }
+
+
+_BUILTIN_OPENAI_TOOL_CACHE: Optional[dict[str, dict[str, Any]]] = None
+
+
+def _get_builtin_openai_tool_schema(name: str) -> Optional[dict[str, Any]]:
+    """Best-effort lookup for Nimbus builtin tool schema by name."""
+    global _BUILTIN_OPENAI_TOOL_CACHE
+    if _BUILTIN_OPENAI_TOOL_CACHE is None:
+        try:
+            from nimbus.core.agent import _register_default_tools
+            from nimbus.core.tools.registry import ToolRegistry
+
+            registry = ToolRegistry()
+            _register_default_tools(registry)
+            cache: dict[str, dict[str, Any]] = {}
+            for schema in registry.get_schemas(format="openai"):
+                func = schema.get("function", {})
+                name_key = func.get("name")
+                if name_key:
+                    cache[name_key] = schema
+            _BUILTIN_OPENAI_TOOL_CACHE = cache
+        except Exception:
+            _BUILTIN_OPENAI_TOOL_CACHE = {}
+    schema = _BUILTIN_OPENAI_TOOL_CACHE.get(name) if _BUILTIN_OPENAI_TOOL_CACHE else None
+    return schema.copy() if schema else None
+
+
+def _codex_event_summary(event_type: str, data: dict[str, Any]) -> str:
+    """Compact info-level summary for Codex SSE debugging."""
+    item = data.get("item", {}) if isinstance(data, dict) else {}
+    if isinstance(item, dict) and item.get("type") == "function_call":
+        args = item.get("arguments")
+        if isinstance(args, str):
+            args_desc = f"str:{len(args)}"
+        elif isinstance(args, dict):
+            args_desc = f"dict:{','.join(sorted(args.keys()))}"
+        elif args is None:
+            args_desc = "none"
+        else:
+            args_desc = type(args).__name__
+        return (
+            f"event={event_type} item.type=function_call id={item.get('id','')} "
+            f"call_id={item.get('call_id','')} name={item.get('name','')} args={args_desc}"
+        )
+    if event_type.startswith("response.function_call"):
+        args = data.get("arguments") if isinstance(data, dict) else None
+        delta = data.get("delta") if isinstance(data, dict) else None
+        return (
+            f"event={event_type} item_id={data.get('item_id','')} call_id={data.get('call_id','')} "
+            f"has_args={args not in (None, '')} has_delta={delta not in (None, '')}"
+        )
+    return f"event={event_type}"
+
+
 def _classify_llm_exception(exc: Exception) -> Fault:
     """Map transient network/LLM upstream errors to retryable Fault."""
     msg = str(exc)
@@ -436,20 +533,21 @@ class DirectAdapter:
         result = []
         for tool in tools:
             t = tool.copy()
-            if t.get("type") == "function":
+            if t.get("type") == "function" and "function" in t:
                 result.append(t)
             elif "function" in t:
-                 if "type" not in t:
-                     t["type"] = "function"
-                 result.append(t)
+                if "type" not in t:
+                    t["type"] = "function"
+                result.append(t)
             else:
-                 # Simplified format -> OpenAI format
+                # Simplified format -> OpenAI format
                 result.append({
                     "type": "function",
                     "function": {
                         "name": t.get("name"),
                         "description": t.get("description", ""),
                         "parameters": t.get("parameters", {}),
+                        "strict": t.get("strict", True),
                     }
                 })
         return result
@@ -1115,19 +1213,41 @@ class DirectAdapter:
         for tool in tools:
             if tool.get("type") == "function" and "function" in tool:
                 func = tool["function"]
+                parameters = func.get("parameters", {})
+                if not parameters and func.get("name"):
+                    fallback = _get_builtin_openai_tool_schema(func.get("name", ""))
+                    if fallback:
+                        fallback_func = fallback.get("function", {})
+                        parameters = fallback_func.get("parameters", parameters)
+                        func = {
+                            **fallback_func,
+                            **func,
+                            "parameters": parameters,
+                        }
                 result.append({
                     "type": "function",
                     "name": func.get("name", ""),
                     "description": func.get("description", ""),
-                    "parameters": func.get("parameters", {}),
+                    "parameters": parameters,
                 })
             elif "name" in tool:
                 # Nimbus simplified format
+                parameters = tool.get("parameters", {})
+                if not parameters and tool.get("name"):
+                    fallback = _get_builtin_openai_tool_schema(tool.get("name", ""))
+                    if fallback:
+                        fallback_func = fallback.get("function", {})
+                        parameters = fallback_func.get("parameters", parameters)
+                        tool = {
+                            **fallback_func,
+                            **tool,
+                            "parameters": parameters,
+                        }
                 result.append({
                     "type": "function",
                     "name": tool.get("name", ""),
                     "description": tool.get("description", ""),
-                    "parameters": tool.get("parameters", {}),
+                    "parameters": parameters,
                 })
         return result if result else None
 
@@ -1271,6 +1391,8 @@ class DirectAdapter:
                             "SSE event=%s data=%s",
                             event_type, data_str[:500],
                         )
+                        if event_type.startswith("response.output_item") or event_type.startswith("response.function_call"):
+                            logger.info("[CodexSSE] %s", _codex_event_summary(event_type, data))
 
                         if event_type == "response.output_text.delta":
                             yield LLMStreamEvent(
@@ -1286,8 +1408,14 @@ class DirectAdapter:
                                 pending_calls[item_id] = {
                                     "id": call_id,
                                     "name": item.get("name", ""),
-                                    "arguments": "",
+                                    "arguments": item.get("arguments", ""),
                                 }
+                                if item.get("arguments") not in (None, ""):
+                                    logger.info(
+                                        "[Codex] function_call added with inline arguments: id=%s name=%s",
+                                        call_id,
+                                        item.get("name", ""),
+                                    )
 
                         elif event_type == "response.function_call_arguments.delta":
                             item_id = data.get("item_id", data.get("call_id", ""))
@@ -1296,28 +1424,30 @@ class DirectAdapter:
                                     "delta", ""
                                 )
 
+                        elif event_type == "response.function_call_arguments.done":
+                            item_id = data.get("item_id", data.get("call_id", ""))
+                            if item_id in pending_calls and data.get("arguments") not in (None, ""):
+                                pending_calls[item_id]["arguments"] = data.get("arguments", "")
+
                         elif event_type == "response.output_item.done":
                             item = data.get("item", {})
                             if item.get("type") == "function_call":
                                 item_id = item.get("id", "")
-                                tc = pending_calls.pop(item_id, None)
-                                if tc:
-                                    try:
-                                        args = (
-                                            json.loads(tc["arguments"])
-                                            if tc["arguments"]
-                                            else {}
-                                        )
-                                    except (json.JSONDecodeError, TypeError):
-                                        args = tc["arguments"]
-                                    yield LLMStreamEvent(
-                                        type="tool_call",
-                                        tool_call={
-                                            "id": tc["id"],
-                                            "name": tc["name"],
-                                            "arguments": args,
-                                        },
-                                    )
+                                merged = _merge_codex_function_call_item(
+                                    pending_calls.pop(item_id, None),
+                                    item,
+                                )
+                                yield LLMStreamEvent(
+                                    type="tool_call",
+                                    tool_call=merged,
+                                )
+
+                        elif event_type.startswith("response.function_call"):
+                            logger.info(
+                                "[Codex] Unhandled function-call event=%s payload=%s",
+                                event_type,
+                                data_str[:500],
+                            )
 
                         elif event_type == "response.completed":
                             # Pi-style usage parsing from response.completed

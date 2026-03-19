@@ -39,7 +39,7 @@ async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
 
 @tool(
     name="Bash",
-    description="Execute a bash command. Output truncated to last 2000 lines or 50KB. If truncated, full output is saved to a temp file.",
+    description="Execute a bash command. REQUIRED: provide the `command` string argument with the exact shell command to run (for example: `pwd` or `ls -la`). Output truncated to last 2000 lines or 50KB. If truncated, full output is saved to a temp file.",
     parameters=[
         ToolParameter("command", "string", "The bash command to execute", required=True),
         ToolParameter("timeout", "number", "Timeout in seconds (default: 60)", required=False),

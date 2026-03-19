@@ -58,7 +58,9 @@ class ToolDefinition:
                     "type": "object",
                     "properties": properties,
                     "required": required,
+                    "additionalProperties": False,
                 },
+                "strict": True,
             },
         }
 
