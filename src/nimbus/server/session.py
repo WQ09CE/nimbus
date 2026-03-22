@@ -393,6 +393,17 @@ class SessionManagerV2:
 
         # Let AgentOS know this session is being instantiated
         # (MMU and VCPU will be rehydrated when stream_with_queue is called)
+        # Build path context from session workspace (if set)
+        from nimbus.core.path_context import AgentPathContext
+        if workspace:
+            path_ctx = AgentPathContext(
+                workspace_root=str(workspace),
+                target_root=str(workspace),
+                execution_cwd=str(workspace),
+            )
+        else:
+            path_ctx = AgentPathContext.from_cwd()
+
         agent_os = AgentOS(
             config=agent_config,
             adapter=llm_client,
@@ -401,6 +412,7 @@ class SessionManagerV2:
             event_callback=_gate_event_cb,
             on_text_delta=_text_delta_cb,
             on_tool_output=_tool_output_cb,
+            path_context=path_ctx,
         )
 
         # Attach task reference to agent_os so it isn't garbage collected

@@ -1,9 +1,10 @@
 """Grep Tool — Search file contents by pattern."""
 
-import os
 import re
 from pathlib import Path
 from typing import Any, Optional
+
+from nimbus.core.path_context import AgentPathContext, PathResolver
 
 from .registry import ToolParameter, tool
 
@@ -27,9 +28,13 @@ async def grep_search(
     glob: Optional[str] = None,
     **kwargs: Any,
 ) -> str:
-    search_path = Path(path) if path else Path.cwd()
-    if not search_path.is_absolute():
-        search_path = (Path.cwd() / search_path).resolve()
+    _path_context: AgentPathContext = kwargs.get("_path_context") or AgentPathContext.from_cwd()
+
+    if path:
+        search_path = Path(PathResolver.validate_read(path, _path_context))
+    else:
+        search_path = Path(_path_context.target_root)
+        # NOTE: default search path is target_root, not execution_cwd
 
     if not search_path.exists():
         raise FileNotFoundError(f"Path not found: {path}")

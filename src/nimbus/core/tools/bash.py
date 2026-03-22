@@ -10,8 +10,9 @@ import asyncio
 import os
 import signal
 import tempfile
-from pathlib import Path
 from typing import Any, Callable, Dict, Optional
+
+from nimbus.core.path_context import AgentPathContext
 
 from .registry import ToolParameter, tool
 
@@ -68,10 +69,20 @@ async def bash_command(
         raise ValueError("command cannot be empty")
 
     timeout = float(timeout) if timeout else DEFAULT_TIMEOUT
-    cwd = str(Path.cwd())
+    _path_context: AgentPathContext = kwargs.get("_path_context") or AgentPathContext.from_cwd()
+    cwd = _path_context.execution_cwd
+    # NOTE: Bash uses execution_cwd (tracks cd), not target_root
+
+    # Save start cwd before subprocess (cd may change execution_cwd later)
+    start_cwd = _path_context.execution_cwd
+
+    # Wrap command with a cwd sentinel so we can track `cd` effects.
+    # The sentinel is printed on a unique line after the user's command completes.
+    _CWD_SENTINEL = "__NIMBUS_CWD__:"
+    wrapped_command = f'{{ {command}\n}}; echo "{_CWD_SENTINEL}$(pwd)"'
 
     process = await asyncio.create_subprocess_shell(
-        command,
+        wrapped_command,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         cwd=cwd,
@@ -185,6 +196,7 @@ async def bash_command(
                 "aborted": True,
                 "exit_code": process.returncode,
                 "partial_bytes": total_bytes,
+                "executed_in": start_cwd,
             },
         }
 
@@ -198,10 +210,25 @@ async def bash_command(
                 "timeout_seconds": timeout,
                 "exit_code": process.returncode,
                 "partial_bytes": total_bytes,
+                "executed_in": start_cwd,
             },
         }
 
     output = b"".join(chunks).decode("utf-8", errors="replace")
+
+    # Extract cwd sentinel and update path context
+    if _path_context and _CWD_SENTINEL in output:
+        lines = output.split("\n")
+        clean_lines = []
+        for line in lines:
+            if line.startswith(_CWD_SENTINEL):
+                new_cwd = line[len(_CWD_SENTINEL):].strip()
+                if new_cwd:
+                    _path_context.update_cwd(new_cwd)
+            else:
+                clean_lines.append(line)
+        output = "\n".join(clean_lines)
+
     original_lines = output.count("\n") + 1
     original_bytes = len(output.encode("utf-8"))
     truncated = False
@@ -256,5 +283,7 @@ async def bash_command(
             "total_bytes": original_bytes,
             "truncated": truncated,
             "timed_out": False,
+            "executed_in": start_cwd,
+            "new_execution_cwd": _path_context.execution_cwd,
         },
     }

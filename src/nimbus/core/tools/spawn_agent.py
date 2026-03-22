@@ -7,13 +7,18 @@ its own VCPU loop and scratchpad.
 Design doc: docs/spawn_agent.md
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from nimbus.core.tools.registry import ToolParameter, ToolRegistry, tool
+
+if TYPE_CHECKING:
+    from nimbus.core.path_context import AgentPathContext
 
 logger = logging.getLogger("nimbus.spawn_agent")
 
@@ -120,6 +125,7 @@ async def _run_sub_agent(
     timeout_seconds: int,
     on_update: Optional[Callable] = None,  # (chunk: str, ui_detail?: dict) -> None
     _abort_event: Optional[asyncio.Event] = None,
+    path_context: Optional[AgentPathContext] = None,
 ) -> Dict[str, Any]:
     """Instantiate and run a sub-agent AgentOS."""
     from nimbus.adapters.llm_factory import create_llm_client
@@ -141,6 +147,8 @@ async def _run_sub_agent(
     sub_tools = _build_sub_agent_tools(role)
 
     # 4. System prompt for sub-agent
+    workspace_root = path_context.workspace_root if path_context else os.getcwd()
+    target_root = path_context.target_root if path_context else os.getcwd()
     system_prompt = (
         f"You are a sub-agent with the role of '{role}'. "
         "Complete the goal given to you using ONLY the tools available. "
@@ -155,7 +163,9 @@ async def _run_sub_agent(
         "When your work is complete, you MUST call `submit_result` to deliver structured results. "
         "Do NOT just say 'done' in text — call the tool.\n\n"
         f"# Working Directory\n"
-        f"{os.getcwd()}"
+        f"Workspace root: {workspace_root}\n"
+        f"Target directory: {target_root}\n"
+        f"You may only write files within the target directory."
     )
 
     # 5. Configure AgentOS
@@ -174,6 +184,7 @@ async def _run_sub_agent(
         adapter=llm_client,
         tools=sub_tools,
         system_prompt=system_prompt,
+        path_context=path_context,
     )
 
     # 6. Run with timeout, using stream_with_queue to capture partial_results
@@ -399,12 +410,22 @@ async def _run_sub_agent(
             description="Maximum execution time in seconds. Defaults to 600.",
             required=False,
         ),
+        ToolParameter(
+            name="target_sub_path",
+            type="string",
+            description=(
+                "Optional sub-directory to narrow the sub-agent's workspace scope "
+                "(e.g. 'src/utils'). The sub-agent will only write within this directory."
+            ),
+            required=False,
+        ),
     ],
 )
 async def spawn_agent(
     role: str,
     goal: str = "",
     timeout_seconds: int = DEFAULT_TIMEOUT,
+    target_sub_path: Optional[str] = None,
     on_update: Optional[Callable] = None,  # (chunk: str, ui_detail?: dict) -> None
     _abort_event: Optional[asyncio.Event] = None,
     **kwargs: Any,
@@ -433,6 +454,15 @@ async def spawn_agent(
             "ui_detail": {"status": "aborted"},
         }
 
+    # Derive child path context from parent (injected by Gate via kwargs)
+    from nimbus.core.path_context import AgentPathContext
+
+    parent_path_context: AgentPathContext | None = kwargs.get("_path_context")
+    if parent_path_context:
+        child_path_context = parent_path_context.derive_for_sub_agent(target_sub_path)
+    else:
+        child_path_context = AgentPathContext.from_cwd()
+
     # Generate unique sub-session ID
     sub_session_id = f"sub_{uuid.uuid4().hex[:12]}"
 
@@ -446,4 +476,5 @@ async def spawn_agent(
         timeout_seconds=timeout_seconds,
         on_update=on_update,
         _abort_event=_abort_event,
+        path_context=child_path_context,
     )

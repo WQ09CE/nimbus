@@ -6,7 +6,17 @@ from pathlib import Path
 
 import pytest
 
+from nimbus.core.path_context import AgentPathContext
 from nimbus.core.tools.registry import ToolDefinition, ToolParameter, ToolRegistry, tool
+
+
+def _test_ctx(tmp_path) -> AgentPathContext:
+    """Create a path context for testing, rooted at tmp_path."""
+    return AgentPathContext(
+        workspace_root=str(tmp_path),
+        target_root=str(tmp_path),
+        execution_cwd=str(tmp_path),
+    )
 
 
 # =============================================================================
@@ -133,7 +143,7 @@ class TestReadTool:
         f = tmp_path / "test.txt"
         f.write_text("line1\nline2\nline3")
         from nimbus.core.tools.read import read_file
-        result = await read_file(str(f))
+        result = await read_file(str(f), _path_context=_test_ctx(tmp_path))
         assert "line1" in result
         assert "line2" in result
 
@@ -142,21 +152,22 @@ class TestReadTool:
         f = tmp_path / "test.txt"
         f.write_text("\n".join(f"line{i}" for i in range(1, 11)))
         from nimbus.core.tools.read import read_file
-        result = await read_file(str(f), offset=5, limit=3)
+        result = await read_file(str(f), offset=5, limit=3, _path_context=_test_ctx(tmp_path))
         assert "line5" in result
 
     @pytest.mark.asyncio
-    async def test_read_not_found(self):
+    async def test_read_not_found(self, tmp_path):
         from nimbus.core.tools.read import read_file
+        ctx = _test_ctx(tmp_path)
         with pytest.raises(FileNotFoundError):
-            await read_file("/nonexistent/file.txt")
+            await read_file(str(tmp_path / "nonexistent.txt"), _path_context=ctx)
 
     @pytest.mark.asyncio
     async def test_read_directory(self, tmp_path):
         (tmp_path / "a.txt").write_text("a")
         (tmp_path / "sub").mkdir()
         from nimbus.core.tools.read import read_file
-        result = await read_file(str(tmp_path))
+        result = await read_file(str(tmp_path), _path_context=_test_ctx(tmp_path))
         assert "Directory" in result
 
 
@@ -165,7 +176,7 @@ class TestWriteTool:
     async def test_write_new_file(self, tmp_path):
         target = tmp_path / "new" / "file.txt"
         from nimbus.core.tools.write import write_file
-        result = await write_file(str(target), "hello world")
+        result = await write_file(str(target), "hello world", _path_context=_test_ctx(tmp_path))
         assert "Successfully wrote" in result
         assert target.read_text() == "hello world"
 
@@ -174,7 +185,7 @@ class TestWriteTool:
         target = tmp_path / "file.txt"
         target.write_text("old")
         from nimbus.core.tools.write import write_file
-        await write_file(str(target), "new")
+        await write_file(str(target), "new", _path_context=_test_ctx(tmp_path))
         assert target.read_text() == "new"
 
 
@@ -184,7 +195,7 @@ class TestEditTool:
         f = tmp_path / "test.py"
         f.write_text("def hello():\n    pass\n")
         from nimbus.core.tools.edit import edit_file
-        result = await edit_file(str(f), "pass", "return 42")
+        result = await edit_file(str(f), "pass", "return 42", _path_context=_test_ctx(tmp_path))
         assert "Successfully" in result
         assert "return 42" in f.read_text()
 
@@ -194,7 +205,7 @@ class TestEditTool:
         f.write_text("x = 1\nx = 1\n")
         from nimbus.core.tools.edit import edit_file
         with pytest.raises(ValueError, match="occurrences"):
-            await edit_file(str(f), "x = 1", "x = 2")
+            await edit_file(str(f), "x = 1", "x = 2", _path_context=_test_ctx(tmp_path))
 
     @pytest.mark.asyncio
     async def test_not_found(self, tmp_path):
@@ -202,7 +213,7 @@ class TestEditTool:
         f.write_text("hello world")
         from nimbus.core.tools.edit import edit_file
         with pytest.raises(ValueError, match="not found"):
-            await edit_file(str(f), "xyz", "abc")
+            await edit_file(str(f), "xyz", "abc", _path_context=_test_ctx(tmp_path))
 
 
 class TestBashTool:
@@ -256,7 +267,7 @@ class TestGrepTool:
         f = tmp_path / "test.py"
         f.write_text("def hello():\n    pass\ndef world():\n    pass\n")
         from nimbus.core.tools.grep import grep_search
-        result = await grep_search("def", str(f))
+        result = await grep_search("def", str(f), _path_context=_test_ctx(tmp_path))
         assert "def hello" in result
         assert "def world" in result
 
@@ -265,7 +276,7 @@ class TestGrepTool:
         (tmp_path / "a.py").write_text("import os\n")
         (tmp_path / "b.py").write_text("import sys\n")
         from nimbus.core.tools.grep import grep_search
-        result = await grep_search("import", str(tmp_path), glob="*.py")
+        result = await grep_search("import", str(tmp_path), glob="*.py", _path_context=_test_ctx(tmp_path))
         assert "a.py" in result
         assert "b.py" in result
 
@@ -273,5 +284,5 @@ class TestGrepTool:
     async def test_no_matches(self, tmp_path):
         (tmp_path / "a.txt").write_text("hello")
         from nimbus.core.tools.grep import grep_search
-        result = await grep_search("xyz", str(tmp_path))
+        result = await grep_search("xyz", str(tmp_path), _path_context=_test_ctx(tmp_path))
         assert "No matches" in result

@@ -29,7 +29,6 @@ Usage:
 
 import asyncio
 import logging
-import os
 import uuid
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
@@ -38,6 +37,7 @@ from .decoder import InstructionDecoder
 from .gate import KernelGate
 from .loop import FollowUpQueue, LoopConfig, RuntimeLoop, SteeringQueue
 from .mmu import MMU, MMUConfig, PinnedContext
+from .path_context import AgentPathContext
 from .protocol import Event, ToolResult
 from .tools.registry import ToolRegistry
 from .vcpu import VCPU, VCPUConfig
@@ -90,12 +90,12 @@ class AgentConfig:
 
 def _register_default_tools(registry: ToolRegistry):
     """Register the default tool set."""
-    from .tools.read import read_file
-    from .tools.write import write_file
-    from .tools.edit import edit_file
     from .tools.bash import bash_command
+    from .tools.edit import edit_file
     from .tools.grep import grep_search
+    from .tools.read import read_file
     from .tools.spawn_agent import spawn_agent
+    from .tools.write import write_file
 
     registry.register_decorated(read_file)
     registry.register_decorated(write_file)
@@ -128,6 +128,7 @@ class AgentOS:
         event_callback: Optional[Callable[[Event], None]] = None,
         on_tool_output: Optional[Callable[[str, str], None]] = None,
         on_text_delta: Optional[Callable[[str], None]] = None,
+        path_context: Optional[AgentPathContext] = None,
     ):
         self.config = config or AgentConfig()
         self._event_cb = event_callback
@@ -135,6 +136,8 @@ class AgentOS:
         self._on_tool_output = on_tool_output
         # Token-level text streaming callback (chunk)
         self._on_text_delta = on_text_delta
+        # Optional path context override (used by sub-agents to inherit parent scope)
+        self._path_context = path_context
 
         # 1. Adapter (ALU)
         if adapter:
@@ -259,6 +262,10 @@ class AgentOS:
         """
         pid = uuid.uuid4().hex[:8]
 
+        # Path context for workspace isolation
+        # Use externally provided context (e.g. from parent agent) or default to cwd
+        path_context = self._path_context or AgentPathContext.from_cwd()
+
         # MMU Stateful Retrieval
         if session_id not in self._mmus:
             mmu_config = MMUConfig(
@@ -269,7 +276,7 @@ class AgentOS:
             logger.info(f"MMU context budget: {self._context_window:,} tokens (model: {getattr(self._adapter, '_model', 'unknown')})")
             mmu.set_pinned(PinnedContext(
                 system_rules=self._system_prompt,
-                workspace_info=f"Working directory: {os.getcwd()}",
+                workspace_info=f"Working directory: {path_context.target_root}",
                 user_memory=self._memory,
             ))
             
@@ -360,6 +367,7 @@ class AgentOS:
             default_timeout=self.config.tool_timeout,
             on_tool_output=self._on_tool_output,
             abort_event=abort_event,
+            path_context=path_context,
         )
 
         # Decoder

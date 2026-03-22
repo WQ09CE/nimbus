@@ -3,6 +3,8 @@
 from pathlib import Path
 from typing import Any, Optional
 
+from nimbus.core.path_context import AgentPathContext, PathResolver
+
 from .registry import ToolParameter, tool
 
 MAX_LINES = 2000
@@ -19,9 +21,9 @@ MAX_BYTES = 50 * 1024  # 50KB (aligned with pi-coding-agent)
     ],
 )
 async def read_file(file_path: str, offset: Optional[int] = None, limit: Optional[int] = None, **kwargs: Any) -> str:
-    path = Path(file_path)
-    if not path.is_absolute():
-        path = (Path.cwd() / path).resolve()
+    _path_context: AgentPathContext = kwargs.get("_path_context") or AgentPathContext.from_cwd()
+
+    path = Path(PathResolver.validate_read(file_path, _path_context))
 
     if not path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")

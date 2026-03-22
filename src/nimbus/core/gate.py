@@ -16,8 +16,8 @@ import json
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .path_context import AgentPathContext
 from .protocol import ActionIR, Event, Fault, ToolResult
-
 
 # =============================================================================
 # Doom Loop Detector (inlined — single responsibility, ~50 lines)
@@ -117,6 +117,7 @@ class KernelGate:
         default_timeout: float = 60.0,
         on_tool_output: Optional[Callable[[str, str], None]] = None,
         abort_event: Optional[asyncio.Event] = None,
+        path_context: Optional[AgentPathContext] = None,
     ):
         self.pid = pid
         self._executor = tool_executor
@@ -127,6 +128,8 @@ class KernelGate:
         self._on_tool_output = on_tool_output
         # Abort event -- propagated to tools (e.g., bash) for process group kill
         self._abort_event = abort_event
+        # Path context for workspace isolation
+        self._path_context = path_context
 
     async def syscall_tool(self, action: ActionIR, timeout: Optional[float] = None) -> ToolResult:
         """Execute a TOOL_CALL action through the gate."""
@@ -166,6 +169,10 @@ class KernelGate:
         # Inject streaming callback for tools that support it (pi-style)
         # Dual-channel: chunk (for agent context) + ui_detail (for frontend SSE)
         exec_args = dict(action.args)
+
+        # Inject path context for all tools
+        if self._path_context:
+            exec_args["_path_context"] = self._path_context
         if self._on_tool_output and tool_name in ("Bash", "spawn_agent"):
             def _on_update(chunk: str, ui_detail: Optional[Dict] = None) -> None:
                 assert self._on_tool_output is not None
