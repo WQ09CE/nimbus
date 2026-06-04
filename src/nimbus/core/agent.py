@@ -476,9 +476,18 @@ class AgentOS:
         for pattern in cls._EXPLICIT_GOAL_PATTERNS:
             match = pattern.match(text.strip())
             if match:
-                goal = match.group(1).strip()
+                goal = cls._normalize_explicit_goal(match.group(1))
                 return goal or None
         return None
+
+    @staticmethod
+    def _normalize_explicit_goal(text: str) -> str:
+        goal = text.strip()
+        for line in goal.splitlines():
+            line = line.strip()
+            if line:
+                return line
+        return goal
 
     @classmethod
     def _looks_like_durable_goal(cls, text: str) -> bool:

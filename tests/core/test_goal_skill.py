@@ -56,6 +56,19 @@ def test_goal_skill_allows_explicit_goal_replacement():
     assert mmu.goal == "只做文档整理"
 
 
+def test_goal_skill_uses_first_line_of_explicit_goal():
+    agent = _agent_with_goal_skill()
+
+    agent.stream_with_queue(
+        "目标：实现 Nimbus 的 goal skill smoke\n请只回复：goal received",
+        session_id="sess_goal",
+    )
+
+    mmu = agent.get_mmu("sess_goal")
+    assert mmu is not None
+    assert mmu.goal == "实现 Nimbus 的 goal skill smoke"
+
+
 def test_without_goal_skill_preserves_previous_latest_message_behavior():
     agent = AgentOS(config=AgentConfig(), adapter=DummyAdapter(), system_prompt="Base rules.")
     agent.stream_with_queue("first goal", session_id="sess_no_skill")
