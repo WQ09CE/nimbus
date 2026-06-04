@@ -29,6 +29,7 @@ Usage:
 
 import asyncio
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
@@ -125,6 +126,8 @@ class AgentOS:
         tools: Optional[ToolRegistry] = None,
         system_prompt: str = "",
         memory: str = "",
+        skills: Optional[List[Any]] = None,
+        skill_context: Optional[Dict[str, Any]] = None,
         event_callback: Optional[Callable[[Event], None]] = None,
         on_tool_output: Optional[Callable[[str, str], None]] = None,
         on_text_delta: Optional[Callable[[str], None]] = None,
@@ -166,6 +169,19 @@ class AgentOS:
 
         # 4. User memory (from memory.md, pinned into MMU alongside system rules)
         self._memory = memory
+        self._skills = list(skills or [])
+        self._skill_context = dict(skill_context or {})
+        try:
+            from nimbus.skills import SkillManager
+
+            self._skill_instructions = SkillManager.render_system_instructions(
+                self._skills,
+                self._skill_context,
+            )
+        except Exception as exc:
+            logger.warning("Failed to render skill instructions: %s", exc)
+            self._skill_instructions = ""
+        self._goal_skill_enabled = any(getattr(skill, "name", "") == "goal" for skill in self._skills)
 
         # 5. Session State (MMUs)
         self._mmus: Dict[str, MMU] = {}
@@ -278,6 +294,7 @@ class AgentOS:
                 system_rules=self._system_prompt,
                 workspace_info=f"Working directory: {path_context.target_root}",
                 user_memory=self._memory,
+                skill_instructions=self._skill_instructions,
             ))
             
             # Rehydrate initial messages directly into MMU from Dict cache
@@ -330,10 +347,8 @@ class AgentOS:
 
         mmu = self._mmus[session_id]
 
-        # Always update goal to the CURRENT user message so compaction
-        # preserves the active goal, not a stale initial greeting.
         if goal:
-            mmu.set_goal(goal)
+            self._update_mmu_goal(mmu, goal)
             mmu.add_user_message(goal)
 
         # Create steering/followup queues and abort event first
@@ -428,3 +443,46 @@ class AgentOS:
     def register_tool(self, func: Callable) -> None:
         """Register a @tool-decorated function."""
         self._registry.register_decorated(func)
+
+    # --- Goal skill support ---
+
+    _EXPLICIT_GOAL_PATTERNS = [
+        re.compile(r"^\s*(?:/goal|goal|objective)\s*[:：]\s*(.+)$", re.IGNORECASE | re.DOTALL),
+        re.compile(r"^\s*(?:set|change|replace|update)\s+(?:the\s+)?goal\s+(?:to\s+)?(.+)$", re.IGNORECASE | re.DOTALL),
+        re.compile(r"^\s*(?:目标|长期目标|当前目标)\s*[:：]\s*(?:改成|设置为|更新为)?\s*(.+)$", re.DOTALL),
+        re.compile(r"^\s*把(?:当前)?目标(?:改成|设置为|更新为)\s*(.+)$", re.DOTALL),
+    ]
+    _TASK_HINT_RE = re.compile(
+        r"(实现|支持|修复|测试|设计|改|优化|部署|研究|记录|写|build|implement|support|fix|test|design|add|update|optimize|deploy|document)",
+        re.IGNORECASE,
+    )
+
+    def _update_mmu_goal(self, mmu: MMU, user_message: str) -> None:
+        """Update durable goal according to the active goal skill policy."""
+        if not self._goal_skill_enabled:
+            mmu.set_goal(user_message)
+            return
+
+        explicit_goal = self._extract_explicit_goal(user_message)
+        if explicit_goal:
+            mmu.set_goal(explicit_goal)
+            return
+
+        if not mmu.goal and self._looks_like_durable_goal(user_message):
+            mmu.set_goal(user_message)
+
+    @classmethod
+    def _extract_explicit_goal(cls, text: str) -> Optional[str]:
+        for pattern in cls._EXPLICIT_GOAL_PATTERNS:
+            match = pattern.match(text.strip())
+            if match:
+                goal = match.group(1).strip()
+                return goal or None
+        return None
+
+    @classmethod
+    def _looks_like_durable_goal(cls, text: str) -> bool:
+        stripped = text.strip()
+        if len(stripped) < 12:
+            return False
+        return bool(cls._TASK_HINT_RE.search(stripped))

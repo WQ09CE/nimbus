@@ -13,7 +13,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 NIMBUS_HOME = Path.home() / ".nimbus"
 CONFIG_PATH = NIMBUS_HOME / "config.json"
@@ -50,6 +50,10 @@ class NimbusConfig:
 
     # User memory file (Pinned into MMU at session start, human-editable)
     memory_path: str = str(DEFAULT_MEMORY_PATH)
+
+    # Skills
+    enabled_skills: List[str] = field(default_factory=lambda: ["goal"])
+    skill_paths: List[str] = field(default_factory=list)
 
     # Nimbus Server
     server_port: int = 4096
@@ -126,6 +130,13 @@ def _apply_json(config: NimbusConfig, data: dict) -> None:
         if isinstance(roles, dict):
             config.agent_roles = dict(roles)
 
+    skills = data.get("skills", {})
+    if isinstance(skills, dict):
+        if "enabled" in skills and skills["enabled"] is not None:
+            config.enabled_skills = list(skills["enabled"])
+        if paths := skills.get("paths"):
+            config.skill_paths = [str(p) for p in paths]
+
     _VALID_PROFILES = {"orchestrator", "standard", "executor"}
     # Agent profile (top-level or under "agent" section)
     if v := data.get("agent_profile"):
@@ -169,6 +180,13 @@ def _apply_env(config: NimbusConfig) -> None:
 
     if v := os.environ.get("OLLAMA_BASE_URL"):
         config.ollama_base_url = v
+
+    if "NIMBUS_SKILLS" in os.environ:
+        raw = os.environ.get("NIMBUS_SKILLS", "")
+        config.enabled_skills = [s.strip() for s in raw.split(",") if s.strip()]
+    if "NIMBUS_SKILL_PATHS" in os.environ:
+        raw = os.environ.get("NIMBUS_SKILL_PATHS", "")
+        config.skill_paths = [p.strip() for p in raw.split(os.pathsep) if p.strip()]
 
     if v := os.environ.get("NIMBUS_AGENT_PROFILE"):
         _VALID_PROFILES = {"orchestrator", "standard", "executor"}

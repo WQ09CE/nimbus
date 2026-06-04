@@ -68,12 +68,16 @@ class SessionManagerV2:
         workspace_path: Optional[str] = None,
         model_config: Optional[Dict[str, str]] = None,
         agent_mode: str = "standard",
+        skills: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Create a new session in memory."""
         session_id = f"sess_{uuid.uuid4().hex[:12]}"
 
+        from nimbus.config import get_config
+        enabled_skills = list(skills if skills is not None else get_config().enabled_skills)
+
         # Store agent_mode in config_overrides
-        config_overrides = {"agent_mode": agent_mode}
+        config_overrides = {"agent_mode": agent_mode, "skills": enabled_skills}
 
         now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -82,6 +86,7 @@ class SessionManagerV2:
             "name": name or "New Chat",
             "workspace_path": workspace_path,
             "llm_config": model_config or {},
+            "skills": enabled_skills,
             "config_overrides": config_overrides,
             "status": "active",
             "created_at": now_iso,
@@ -100,6 +105,7 @@ class SessionManagerV2:
                 "name": name or "New Chat",
                 "workspace_path": workspace_path,
                 "config_overrides": config_overrides,
+                "skills": enabled_skills,
                 "created_at": now_iso,
             }
         )
@@ -133,6 +139,13 @@ class SessionManagerV2:
                     meta[k] = v
                     if k == "workspace_path":
                         need_rebuild = True
+                elif k == "skills":
+                    meta["skills"] = list(v or [])
+                    config_overrides = meta.get("config_overrides", {})
+                    if isinstance(config_overrides, dict):
+                        config_overrides["skills"] = list(v or [])
+                        meta["config_overrides"] = config_overrides
+                    need_rebuild = True
                 elif k == "model_config":
                     dump["llm_config"] = v
                     need_rebuild = True
@@ -158,12 +171,16 @@ class SessionManagerV2:
         dump = self._storage.load_session(session_id)
         if dump:
             meta = dump.get("metadata", {})
+            meta_overrides = meta.get("config_overrides", {})
+            if not isinstance(meta_overrides, dict):
+                meta_overrides = {}
             return {
                 "id": session_id,
                 "status": dump.get("status", "unknown"),
                 "name": meta.get("name", "Unknown"),
                 "workspace_path": meta.get("workspace_path"),
                 "llm_config": dump.get("llm_config", {}),
+                "skills": meta.get("skills", meta_overrides.get("skills", [])),
                 "config_overrides": meta.get("config_overrides", {}),
                 "created_at": meta.get("created_at") or dump.get("updated_at"),
                 "updated_at": dump.get("updated_at"),
@@ -182,12 +199,16 @@ class SessionManagerV2:
         sessions = []
         for d in dumps:
             meta = d.get("metadata", {})
+            meta_overrides = meta.get("config_overrides", {})
+            if not isinstance(meta_overrides, dict):
+                meta_overrides = {}
             sessions.append({
                 "id": d.get("session_id"),
                 "status": d.get("status", "unknown"),
                 "name": meta.get("name", "Unknown"),
                 "workspace_path": meta.get("workspace_path"),
                 "llm_config": d.get("llm_config", {}),
+                "skills": meta.get("skills", meta_overrides.get("skills", [])),
                 "config_overrides": meta.get("config_overrides", {}),
                 "created_at": meta.get("created_at") or d.get("updated_at"),
                 "updated_at": d.get("updated_at"),
@@ -300,6 +321,23 @@ class SessionManagerV2:
 
         from nimbus.config import get_config
         nimbus_config = get_config()
+        skill_names = session.get("skills")
+        if skill_names is None:
+            skill_names = overrides.get("skills")
+        if skill_names is None:
+            skill_names = nimbus_config.enabled_skills
+        skill_names = list(skill_names or [])
+
+        # Build path context from session workspace (if set)
+        from nimbus.core.path_context import AgentPathContext
+        if workspace:
+            path_ctx = AgentPathContext(
+                workspace_root=str(workspace),
+                target_root=str(workspace),
+                execution_cwd=str(workspace),
+            )
+        else:
+            path_ctx = AgentPathContext.from_cwd()
 
         # Build the new nimbus-next AgentOS
         from nimbus.core.agent import AgentConfig, AgentOS
@@ -329,6 +367,11 @@ class SessionManagerV2:
             "5. **Verify after delegate** — after a worker completes, always validate the result (read file, run test).\n\n"
             "If a sub-agent times out, read its scratchpad to recover partial progress."
         )
+
+        from nimbus.skills import SkillManager
+
+        skill_manager = SkillManager.from_config(nimbus_config)
+        active_skills = skill_manager.load_enabled(skill_names)
 
         # Load user memory file and append to system prompt as pinned context
         from nimbus.config import DEFAULT_MEMORY_PATH
@@ -391,24 +434,17 @@ class SessionManagerV2:
         def _tool_output_cb(tool_name: str, chunk: str):
             pass  # Actual SSE emission is handled by gate's TOOL_CALL_DELTA event
 
-        # Let AgentOS know this session is being instantiated
-        # (MMU and VCPU will be rehydrated when stream_with_queue is called)
-        # Build path context from session workspace (if set)
-        from nimbus.core.path_context import AgentPathContext
-        if workspace:
-            path_ctx = AgentPathContext(
-                workspace_root=str(workspace),
-                target_root=str(workspace),
-                execution_cwd=str(workspace),
-            )
-        else:
-            path_ctx = AgentPathContext.from_cwd()
-
         agent_os = AgentOS(
             config=agent_config,
             adapter=llm_client,
             system_prompt=system_prompt,
             memory=memory_content,
+            skills=active_skills,
+            skill_context={
+                "session_id": session_id,
+                "workspace": str(path_ctx.target_root),
+                "scratchpad": scratchpad_path,
+            },
             event_callback=_gate_event_cb,
             on_text_delta=_text_delta_cb,
             on_tool_output=_tool_output_cb,

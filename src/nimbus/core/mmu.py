@@ -83,7 +83,7 @@ SUMMARIZATION_PROMPT = """The messages above are a conversation to summarize. Cr
 Use this EXACT format:
 
 ## Goal
-[What is the user trying to accomplish?]
+[Durable objective from CURRENT GOAL, plus any explicit goal evolution. Do not replace it with recent side requests.]
 
 ## Constraints & Preferences
 - [Any constraints, preferences, or requirements mentioned by user]
@@ -117,6 +117,7 @@ Update the existing structured summary with new information. RULES:
 - UPDATE the Progress section: move items from "In Progress" to "Done" when completed
 - UPDATE "Next Steps" based on what was accomplished
 - PRESERVE exact file paths, function names, and error messages
+- PRESERVE the durable goal from CURRENT GOAL; record goal evolution separately from progress
 - If something is no longer relevant, you may remove it
 
 Use the same format as above (Goal, Constraints, Progress, Key Decisions, Next Steps, Critical Context)."""
@@ -296,6 +297,7 @@ class PinnedContext:
     system_rules: str = ""
     workspace_info: str = ""
     user_memory: str = ""  # Contents of ~/.nimbus/memory.md
+    skill_instructions: str = ""
 
     def to_system_message(self) -> Message:
         parts = []
@@ -305,6 +307,8 @@ class PinnedContext:
             parts.append(f"# Workspace\n{self.workspace_info}")
         if self.user_memory:
             parts.append(f"# User Memory\n{self.user_memory}")
+        if self.skill_instructions:
+            parts.append(self.skill_instructions)
         return Message(role="system", content="\n\n".join(parts))
 
     def token_estimate(self) -> int:
@@ -312,6 +316,7 @@ class PinnedContext:
             estimate_text_tokens(self.system_rules)
             + estimate_text_tokens(self.workspace_info)
             + estimate_text_tokens(self.user_memory)
+            + estimate_text_tokens(self.skill_instructions)
         )
 
 
@@ -584,6 +589,10 @@ class MMU:
     def set_goal(self, goal: str) -> None:
         """Pin the user's original goal (resists recency bias)."""
         self._goal = goal
+
+    @property
+    def goal(self) -> str:
+        return self._goal
 
     # --- Message Management (Stream) ---
 

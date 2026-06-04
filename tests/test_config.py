@@ -22,6 +22,8 @@ class TestNimbusConfigDefaults:
         assert config.server_port == 4096
         assert len(config.review_models) == 3
         assert config.agent_roles == {}
+        assert config.enabled_skills == ["goal"]
+        assert config.skill_paths == []
 
 
 class TestNimbusConfigJson:
@@ -65,6 +67,20 @@ class TestNimbusConfigJson:
             "worker": "openai/gpt-5",
         }
 
+    def test_skills_load_from_json(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "skills": {
+                "enabled": ["goal", "custom"],
+                "paths": ["/tmp/nimbus-skills"],
+            },
+        }))
+
+        config = NimbusConfig.load(config_path=config_file)
+
+        assert config.enabled_skills == ["goal", "custom"]
+        assert config.skill_paths == ["/tmp/nimbus-skills"]
+
     def test_missing_json_uses_defaults(self, tmp_path):
         config = NimbusConfig.load(config_path=tmp_path / "nonexistent.json")
         assert config.default_model == "google/gemini-3-flash-preview"
@@ -101,6 +117,16 @@ class TestNimbusConfigEnv:
             config = NimbusConfig.load(config_path=tmp_path / "nope.json")
         assert config.default_model == "google/gemini-pro"
         assert config.max_tokens == 2048
+
+    def test_env_skill_overrides(self, tmp_path):
+        with patch.dict(os.environ, {
+            "NIMBUS_SKILLS": "goal, custom",
+            "NIMBUS_SKILL_PATHS": f"/a{os.pathsep}/b",
+        }):
+            config = NimbusConfig.load(config_path=tmp_path / "nope.json")
+
+        assert config.enabled_skills == ["goal", "custom"]
+        assert config.skill_paths == ["/a", "/b"]
 
 
 class TestGetConfigSingleton:

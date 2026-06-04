@@ -63,6 +63,7 @@ class SessionCreate(BaseModel):
     workspace_path: Optional[str] = None
     llm_config: Optional[Dict[str, Any]] = None  # {provider, model_id, ...}
     agent_mode: str = "standard"  # standard | dual_agent
+    skills: Optional[List[str]] = None
 
 
 class SessionUpdate(BaseModel):
@@ -72,6 +73,7 @@ class SessionUpdate(BaseModel):
     workspace_path: Optional[str] = None
     llm_config: Optional[Dict[str, Any]] = None
     agent_mode: Optional[str] = None
+    skills: Optional[List[str]] = None
 
 
 class SessionResponse(BaseModel):
@@ -84,6 +86,7 @@ class SessionResponse(BaseModel):
     agent_mode: str = "standard"
     workspace_path: Optional[str] = None
     llm_config: Optional[Dict[str, Any]] = None
+    skills: List[str] = Field(default_factory=list)
 
 
 class SessionDetail(SessionResponse):
@@ -295,4 +298,3 @@ class FileNode(BaseModel):
 
 
 FileNode.model_rebuild()
-

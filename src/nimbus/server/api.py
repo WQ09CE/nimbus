@@ -145,9 +145,19 @@ async def create_session(
         workspace_path=getattr(data, "workspace_path", None) or getattr(data, "workspace_id", None),
         model_config=data.llm_config,
         agent_mode=data.agent_mode,
+        skills=data.skills,
     )
 
     return SessionResponse(**session)
+
+
+@router.get("/skills")
+async def list_skills():
+    """List discoverable Nimbus skills."""
+    from nimbus.skills import SkillManager
+
+    manager = SkillManager.from_config(get_nimbus_config())
+    return {"skills": manager.list_skills()}
 
 
 @router.get("/sessions", response_model=SessionList)
