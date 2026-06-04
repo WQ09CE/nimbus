@@ -1,0 +1,87 @@
+services:
+  nimbus:
+    build:
+      context: .
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:20-bookworm-slim}
+    image: nimbus-agentos:local
+    depends_on:
+      ollama:
+        condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
+    environment:
+      NIMBUS_MODEL: ${NIMBUS_MODEL:-ollama/gemma4:26b}
+      OLLAMA_BASE_URL: http://ollama:11434
+      NIMBUS_HOST: 0.0.0.0
+      NIMBUS_PORT: 4096
+      WEBUI_PORT: 3000
+      NIMBUS_API_URL: http://127.0.0.1:4096
+      NIMBUS_DB: /app/.nimbus/nimbus.db
+      NIMBUS_ACCESS_TOKEN: ${NIMBUS_ACCESS_TOKEN:-nimbus-666}
+    ports:
+      - "${WEBUI_PORT:-3000}:3000"
+      - "${NIMBUS_PORT:-4096}:4096"
+    volumes:
+      - nimbus-data:/app/.nimbus
+      - nimbus-logs:/app/.logs
+      - ./workspace:/workspace
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  ollama:
+    build:
+      context: .
+      dockerfile: docker/ollama/Dockerfile
+      args:
+        OLLAMA_BASE_IMAGE: ${OLLAMA_BASE_IMAGE:-ubuntu:24.04}
+        OLLAMA_VERSION: ${OLLAMA_VERSION:-}
+    image: ${OLLAMA_IMAGE:-nimbus-ollama:local}
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${OLLAMA_GPU_DEVICE:-1}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      OLLAMA_HOST: 0.0.0.0:11434
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids:
+                - ${OLLAMA_GPU_DEVICE:-1}
+              capabilities:
+                - gpu
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  ollama-pull:
+    image: ${OLLAMA_IMAGE:-nimbus-ollama:local}
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma4:26b}
+    volumes:
+      - ollama-data:/root/.ollama
+    entrypoint: ["/bin/sh", "-c"]
+    command: ['ollama list >/dev/null && ollama pull "$${OLLAMA_MODEL}"']
+    restart: "no"
+
+volumes:
+  nimbus-data:
+  nimbus-logs:
+  ollama-data:

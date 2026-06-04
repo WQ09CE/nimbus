@@ -53,6 +53,7 @@ Thumbs.db
 .checkpoints/
 .wukong/
 .nexus/
+workspace/
 
 # Node.js (for pi-ai-server)
 node_modules/

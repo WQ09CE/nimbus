@@ -17,7 +17,7 @@ import { NextRequest, NextResponse } from "next/server";
 const TOKEN = process.env.NIMBUS_ACCESS_TOKEN || "nimbus-666";
 
 // Paths that must always be accessible (Next.js internals + health check)
-const ALWAYS_ALLOW = ["/_next/", "/favicon.ico", "/fonts/", "/_health"];
+const ALWAYS_ALLOW = ["/_next/", "/favicon.ico", "/fonts/", "/healthz"];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -56,6 +56,6 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // Exclude Next.js internals and /_health from middleware
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|_health).*)"],
+  // Exclude Next.js internals and /healthz from middleware
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|healthz).*)"],
 };

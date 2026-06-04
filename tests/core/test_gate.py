@@ -245,3 +245,25 @@ class TestKernelGate:
         await gate.syscall_tool(action)
         assert len(chunks) == 1
         assert chunks[0] == ("Bash", "hello chunk")
+
+    @pytest.mark.asyncio
+    async def test_parent_model_injected_only_for_spawn_agent(self):
+        calls: list[tuple[str, dict]] = []
+
+        async def executor(name, args):
+            calls.append((name, dict(args)))
+            return "ok"
+
+        gate = KernelGate(
+            "p1",
+            executor,
+            parent_model="ollama/gemma4:26b",
+            parent_base_url="http://ollama:11434",
+        )
+
+        await gate.syscall_tool(ActionIR(kind="TOOL_CALL", name="Read", args={"file_path": "x"}))
+        await gate.syscall_tool(ActionIR(kind="TOOL_CALL", name="spawn_agent", args={"role": "reader", "goal": "g"}))
+
+        assert "_parent_model" not in calls[0][1]
+        assert calls[1][1]["_parent_model"] == "ollama/gemma4:26b"
+        assert calls[1][1]["_parent_base_url"] == "http://ollama:11434"

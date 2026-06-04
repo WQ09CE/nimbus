@@ -72,6 +72,7 @@ class ModelRegistry:
     def register(cls, info: ModelInfo):
         """Register a model and its aliases."""
         cls._models[info.full_name] = info
+        cls._alias_map[info.full_name.lower()] = info.full_name
         for alias in info.aliases:
             cls._alias_map[alias.lower()] = info.full_name
 
@@ -379,6 +380,21 @@ ModelRegistry.register(ModelInfo(
 ))
 
 # ── Ollama / Local Models ──────────────────────────────────────
+ModelRegistry.register(ModelInfo(
+    model_id="gemma4:26b",
+    provider="ollama",
+    tier="pro",
+    aliases=[
+        "gemma4",
+        "gemma4-26b",
+        "gemma-4-26b",
+        "ollama-gemma4",
+        "ollama-gemma4-26b",
+    ],
+    manifest=ModelManifest("gemma4", OLLAMA_FEATURES),
+    context_window=128_000,
+))
+
 ModelRegistry.register(ModelInfo(
     model_id="qwen3.5:9b",
     provider="ollama",

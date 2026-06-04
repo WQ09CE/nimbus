@@ -21,6 +21,7 @@ class TestNimbusConfigDefaults:
         assert config.temperature is None
         assert config.server_port == 4096
         assert len(config.review_models) == 3
+        assert config.agent_roles == {}
 
 
 class TestNimbusConfigJson:
@@ -47,6 +48,22 @@ class TestNimbusConfigJson:
         assert config.temperature == 0.7
         assert config.server_port == 8080
         assert config.review_models == ["a/b", "c/d"]
+
+    def test_agent_roles_load_from_json(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "agent_roles": {
+                "reader": "ollama/gemma4:26b",
+                "worker": "openai/gpt-5",
+            },
+        }))
+
+        config = NimbusConfig.load(config_path=config_file)
+
+        assert config.agent_roles == {
+            "reader": "ollama/gemma4:26b",
+            "worker": "openai/gpt-5",
+        }
 
     def test_missing_json_uses_defaults(self, tmp_path):
         config = NimbusConfig.load(config_path=tmp_path / "nonexistent.json")

@@ -231,3 +231,21 @@ class TestVCPUErrorHandling:
 
         r2 = await vcpu.step()
         assert r2.is_final
+
+    @pytest.mark.asyncio
+    async def test_announced_tool_intent_retries_in_chat_mode(self):
+        """Text that announces tool use without a tool call must not finish chat mode."""
+        tc = make_tool_call("Write", {"file_path": "doc.md", "content": "hello"})
+        vcpu, gate = make_vcpu([
+            MockResponse(content="我将使用 `Write` 工具为你生成这个文档的内容。"),
+            MockResponse(tool_calls=[tc]),
+        ], text_is_final=True)
+
+        r1 = await vcpu.step()
+        assert not r1.is_final
+        assert len(gate.calls) == 0
+
+        r2 = await vcpu.step()
+        assert not r2.is_final
+        assert len(gate.calls) == 1
+        assert gate.calls[0].name == "Write"

@@ -37,6 +37,7 @@ dependencies = [
     "html2text>=2024.2.26",
     "duckduckgo-search>=6.0.0",
     "PyYAML>=6.0.0",
+    "litellm>=1.87.0",
 ]
 
 [project.optional-dependencies]

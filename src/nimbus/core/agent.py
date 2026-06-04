@@ -368,6 +368,8 @@ class AgentOS:
             on_tool_output=self._on_tool_output,
             abort_event=abort_event,
             path_context=path_context,
+            parent_model=getattr(self._adapter, "_model", self.config.model),
+            parent_base_url=getattr(getattr(self._adapter, "config", None), "base_url", None),
         )
 
         # Decoder

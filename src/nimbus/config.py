@@ -61,11 +61,9 @@ class NimbusConfig:
         "google/gemini-3.1-pro-preview",
     ])
 
-    # Sub-agent role → model mapping (spawn_agent)
-    agent_roles: Dict[str, str] = field(default_factory=lambda: {
-        "reader": "gemini-3-flash-preview",
-        "worker": "gemini-3-flash-preview",
-    })
+    # Optional sub-agent role → model mapping (spawn_agent).
+    # Empty by default: sub-agents inherit the parent agent model.
+    agent_roles: Dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls, config_path: Optional[Path] = None) -> "NimbusConfig":

@@ -99,6 +99,35 @@ class TestHallucinationDetection:
         actions = self.decoder.decode(content="Here's how to read files in Python.", tool_calls=None, text_is_final=True)
         assert len(actions) == 1
 
+    def test_detects_announced_tool_intent_english(self):
+        with pytest.raises(Fault) as exc_info:
+            self.decoder.decode(
+                content="I will use the Write tool to create the document now.",
+                tool_calls=None,
+                text_is_final=True,
+            )
+        assert exc_info.value.code == "ILL_INSTRUCTION"
+        assert exc_info.value.retryable is True
+        assert exc_info.value.context["pattern"] == "announced_tool_intent_without_call"
+
+    def test_detects_announced_tool_intent_chinese(self):
+        with pytest.raises(Fault) as exc_info:
+            self.decoder.decode(
+                content="我将使用 `Write` 工具为你生成这个文档的内容。",
+                tool_calls=None,
+                text_is_final=True,
+            )
+        assert exc_info.value.code == "ILL_INSTRUCTION"
+        assert exc_info.value.retryable is True
+
+    def test_allows_tool_discussion_without_intent(self):
+        actions = self.decoder.decode(
+            content="你可以用 Write 工具写文件，也可以用 Read 检查内容。",
+            tool_calls=None,
+            text_is_final=True,
+        )
+        assert actions[0].kind == "REPLY"
+
 
 class TestPureTextDecoding:
     def setup_method(self):

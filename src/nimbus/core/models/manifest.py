@@ -183,6 +183,6 @@ def get_model_manifest(model_id: Any) -> ModelManifest:
     # Default to GPT behavior for unknown models
     if "gpt" in model_id or "openai" in model_id:
         return _REGISTRY["gpt-4"]
-    if "qwen" in model_id or "llama" in model_id or "ollama" in model_id:
+    if "qwen" in model_id or "llama" in model_id or "gemma" in model_id or "ollama" in model_id:
         return ModelManifest(model_id, OLLAMA_FEATURES)
     return _REGISTRY["claude"]

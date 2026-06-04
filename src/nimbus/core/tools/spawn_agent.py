@@ -62,20 +62,23 @@ def _build_sub_agent_tools(role: str) -> ToolRegistry:
     return registry
 
 
-def _resolve_model_for_role(role: str) -> str:
-    """Resolve role → full model name from config."""
+def _resolve_model_for_role(role: str, parent_model: Optional[str] = None) -> tuple[str, bool]:
+    """Resolve role model, inheriting the parent model when no override exists.
+
+    Returns (full_model, inherited_parent).
+    """
     from nimbus.config import get_config
     from nimbus.core.models.registry import ModelRegistry
 
     cfg = get_config()
     model_alias = cfg.agent_roles.get(role)
-    if not model_alias:
-        raise ValueError(
-            f"No model configured for role '{role}'. "
-            f"Set agent_roles.{role} in ~/.nimbus/config.json"
-        )
+    if model_alias:
+        return ModelRegistry.normalize(model_alias), False
 
-    return ModelRegistry.normalize(model_alias)
+    if parent_model:
+        return ModelRegistry.normalize(parent_model), True
+
+    return ModelRegistry.normalize(cfg.default_model), False
 
 
 def _collect_partial(loop: Any, scratchpad_path: str) -> str:
@@ -126,6 +129,8 @@ async def _run_sub_agent(
     on_update: Optional[Callable] = None,  # (chunk: str, ui_detail?: dict) -> None
     _abort_event: Optional[asyncio.Event] = None,
     path_context: Optional[AgentPathContext] = None,
+    parent_model: Optional[str] = None,
+    parent_base_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Instantiate and run a sub-agent AgentOS."""
     from nimbus.adapters.llm_factory import create_llm_client
@@ -134,14 +139,18 @@ async def _run_sub_agent(
     scratchpad_path = f".nimbus/sessions/{sub_session_id}/scratchpad.md"
 
     # 1. Resolve model
-    full_model = _resolve_model_for_role(role)
+    full_model, inherited_parent_model = _resolve_model_for_role(role, parent_model)
     provider, model_id = full_model.split("/", 1) if "/" in full_model else ("google", full_model)
 
     if on_update:
         on_update(f"[spawn] Creating sub-agent [{role}] with model {full_model}\n")
 
     # 2. Create LLM adapter
-    llm_client = await create_llm_client(model=full_model, timeout=120.0)
+    llm_client = await create_llm_client(
+        model=full_model,
+        base_url=parent_base_url if inherited_parent_model and parent_base_url else "",
+        timeout=120.0,
+    )
 
     # 3. Build restricted tool registry
     sub_tools = _build_sub_agent_tools(role)
@@ -312,6 +321,7 @@ async def _run_sub_agent(
                 "ui_detail": {
                     "role": role,
                     "model": full_model,
+                    "model_source": "parent" if inherited_parent_model else "configured",
                     "status": "completed",
                     "sub_session_id": sub_session_id,
                     "scratchpad": scratchpad_path,
@@ -339,6 +349,7 @@ async def _run_sub_agent(
             "ui_detail": {
                 "role": role,
                 "model": full_model,
+                "model_source": "parent" if inherited_parent_model else "configured",
                 "status": "completed",
                 "sub_session_id": sub_session_id,
                 "scratchpad": scratchpad_path,
@@ -375,6 +386,7 @@ async def _run_sub_agent(
             "ui_detail": {
                 "role": role,
                 "model": full_model,
+                "model_source": "parent" if inherited_parent_model else "configured",
                 "status": status,
                 "sub_session_id": sub_session_id,
                 "scratchpad": scratchpad_path,
@@ -477,4 +489,6 @@ async def spawn_agent(
         on_update=on_update,
         _abort_event=_abort_event,
         path_context=child_path_context,
+        parent_model=kwargs.get("_parent_model"),
+        parent_base_url=kwargs.get("_parent_base_url"),
     )

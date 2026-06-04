@@ -30,6 +30,27 @@ class InstructionDecoder:
         "<function_call>",
     ]
 
+    _ANNOUNCED_TOOL_INTENT_RE = re.compile(
+        r"""
+        (?:
+            \b(?:i\s+(?:will|am\s+going\s+to|need\s+to)|i'll|let\s+me|now\s+i)\b
+            .{0,80}
+            \b(?:use|call|invoke|execute|run)\b
+            .{0,80}
+            \b(?:Read|Write|Edit|Bash|Grep|spawn_agent|submit_result)\b
+        )
+        |
+        (?:
+            (?:我(?:将|会|需要|来)|接下来我|现在我|开始)
+            .{0,80}
+            (?:使用|调用|执行|运行|启动)
+            .{0,80}
+            (?:Read|Write|Edit|Bash|Grep|spawn_agent|submit_result)
+        )
+        """,
+        re.IGNORECASE | re.VERBOSE | re.DOTALL,
+    )
+
     # Patterns indicating the LLM considers its goal complete
     _DONE_PATTERNS = re.compile(
         r"""
@@ -123,6 +144,19 @@ class InstructionDecoder:
                     retryable=True,
                     context={"pattern": pattern},
                 )
+
+        if self._ANNOUNCED_TOOL_INTENT_RE.search(stripped):
+            raise Fault(
+                domain="LLM",
+                code="ILL_INSTRUCTION",
+                message=(
+                    "The model announced it would use a tool but did not emit a tool call. "
+                    "When a tool is needed, output only a JSON tool call with the exact "
+                    "tool name and arguments."
+                ),
+                retryable=True,
+                context={"pattern": "announced_tool_intent_without_call"},
+            )
 
     def _map_tool_call(self, tool_call: Any) -> ActionIR:
         """Convert a tool call object to ActionIR."""

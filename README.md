@@ -159,6 +159,32 @@ nimbus serve
 cd web-ui && npm install && npm run dev
 ```
 
+Docker deployment with the web UI and AgentOS API in one app container, plus
+Ollama in Compose:
+
+```bash
+docker compose up --build
+```
+
+Default local model:
+
+```bash
+NIMBUS_MODEL=ollama/gemma4:26b
+OLLAMA_MODEL=gemma4:26b
+OLLAMA_GPU_DEVICE=1
+```
+
+See [Docker Deployment](docs/docker-deployment.md) for ports, token, volumes,
+and logs.
+
+For backend-only Docker development, use the dev override to mount local
+`./src` into the app container, then restart without rebuilding:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+make docker-dev-restart
+```
+
 Environment variables (pick one):
 
 ```bash

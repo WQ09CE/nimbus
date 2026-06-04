@@ -7,7 +7,7 @@
 #   make dev        # 开发模式 (前台)
 #
 
-.PHONY: start stop restart status logs dev install test clean help test-e2e test-e2e-integration test-e2e-all
+.PHONY: start stop restart status logs dev docker-dev-restart install test clean help test-e2e test-e2e-integration test-e2e-all
 
 # 默认目标
 help:
@@ -23,6 +23,8 @@ help:
 	@echo "  status     Show service status"
 	@echo "  logs       View all logs"
 	@echo "  dev        Start in foreground (dev mode)"
+	@echo "  docker-dev-restart"
+	@echo "             Restart Docker app with local backend src mounted"
 	@echo "  install    Install dependencies"
 	@echo "  test       Run tests"
 	@echo "  clean      Clean up logs and cache"
@@ -56,6 +58,10 @@ dev:
 	@echo "Starting nimbus in foreground..."
 	@echo "Press Ctrl+C to stop"
 	@uv run nimbus serve
+
+# Docker dev restart: reuse the existing image, but mount local Python source.
+docker-dev-restart:
+	docker compose -f docker-compose.yml -f docker-compose.dev.yml restart nimbus
 
 # 安装依赖
 install:

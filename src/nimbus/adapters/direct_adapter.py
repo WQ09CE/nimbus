@@ -157,6 +157,142 @@ def _extract_tool_calls_from_json(json_str: str) -> list[dict] | None:
     return results if results else None
 
 
+def _extract_tool_calls_from_text(text: str) -> list[dict] | None:
+    """Extract JSON tool calls embedded in free-form model text.
+
+    Gemma4/Ollama can emit a short explanation followed by a fenced JSON
+    function-call object. That content may already have streamed as text, but
+    the adapter still needs to recover the structured call before VCPU handling.
+    """
+    content = text.strip()
+    if not content:
+        return None
+
+    candidates: list[str] = []
+    for match in re.finditer(
+        r"```(?:json)?\s*\n(.*?)\n\s*```",
+        content,
+        re.DOTALL | re.IGNORECASE,
+    ):
+        candidates.append(match.group(1).strip())
+
+    if not candidates:
+        if content.startswith(("{", "[")):
+            candidates.append(content)
+        else:
+            raw = re.search(r"(\{.*\}|\[.*\])", content, re.DOTALL)
+            if raw:
+                candidates.append(raw.group(1).strip())
+
+    for candidate in candidates:
+        extracted = _extract_tool_calls_from_json(candidate)
+        if extracted:
+            return extracted
+    return None
+
+
+def _tool_names_from_openai_tools(tools: Optional[List[Dict[str, Any]]]) -> set[str]:
+    names: set[str] = set()
+    for tool in tools or []:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        name = function.get("name") if isinstance(function, dict) else None
+        if isinstance(name, str) and name:
+            names.add(name)
+    return names
+
+
+def _build_gemma4_tool_prompt(
+    tools: Optional[List[Dict[str, Any]]],
+    *,
+    post_tool_turn: bool = False,
+) -> str | None:
+    """Describe tools in text without using LiteLLM's Ollama tools transformer."""
+    if not tools:
+        return None
+
+    lines = [
+        "Tool calling is available.",
+        "For normal conversational replies, answer in natural language and do not output JSON.",
+        "When tools are required, output one JSON object or a JSON array of objects and no extra prose:",
+        '{"name":"Bash","arguments":{"command":"pwd"}}',
+        "Available tools:",
+    ]
+    for tool in tools:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if not name:
+            continue
+        description = function.get("description") or ""
+        lines.append(f"- {name}: {description}")
+        parameters = function.get("parameters") or {}
+        properties = parameters.get("properties") or {}
+        required = set(parameters.get("required") or [])
+        if properties:
+            lines.append("  Use exactly these parameter names:")
+            for param_name, schema in properties.items():
+                if not isinstance(schema, dict):
+                    schema = {}
+                param_type = schema.get("type") or "any"
+                requirement = "required" if param_name in required else "optional"
+                param_desc = schema.get("description") or ""
+                enum = schema.get("enum")
+                enum_text = f"; enum={json.dumps(enum, ensure_ascii=False)}" if enum else ""
+                lines.append(
+                    f"  - {param_name} ({param_type}, {requirement}{enum_text}): {param_desc}"
+                )
+        else:
+            lines.append("  Parameters: none")
+    if post_tool_turn:
+        lines.extend([
+            "Tool results were just returned.",
+            "Do not repeat a tool call that already appears in the conversation.",
+            "If the task still needs more tool work, call the next required tool.",
+            "If the task is complete, answer in natural language.",
+        ])
+    return "\n".join(lines)
+
+
+def _filter_tool_calls_for_schemas(
+    tool_calls: list[dict] | None,
+    tool_names: set[str],
+) -> list[dict] | None:
+    if not tool_calls:
+        return None
+    if not tool_names:
+        return tool_calls
+    filtered = [tc for tc in tool_calls if tc.get("name") in tool_names]
+    return filtered or None
+
+
+def _find_closing_fence(text: str) -> int | None:
+    if not text.startswith("```"):
+        return None
+    idx = text.find("```", 3)
+    return idx if idx >= 0 else None
+
+
+_TOOL_CALL_TEXT_MARKERS = ("tool calls:", "tool call:")
+
+
+def _find_tool_call_text_marker(text: str) -> int | None:
+    lower = text.lower()
+    hits = [idx for marker in _TOOL_CALL_TEXT_MARKERS if (idx := lower.find(marker)) >= 0]
+    return min(hits) if hits else None
+
+
+def _tool_call_marker_suffix_len(text: str) -> int:
+    lower = text.lower()
+    best = 0
+    for marker in _TOOL_CALL_TEXT_MARKERS:
+        max_len = min(len(marker) - 1, len(lower))
+        for length in range(1, max_len + 1):
+            if lower.endswith(marker[:length]):
+                best = max(best, length)
+    return best
+
+
 def _parse_maybe_json(value: Any) -> Any:
     """Best-effort parse of JSON-ish function-call arguments."""
     if value in (None, ""):
@@ -1569,19 +1705,59 @@ class DirectAdapter:
                 )
             clean_messages.append(msg)
 
+        def _tools_for_request(current_model: str) -> Optional[List[Dict[str, Any]]]:
+            return openai_tools
+
+        def _is_post_tool_turn() -> bool:
+            last_non_system = next(
+                (msg for msg in reversed(clean_messages) if msg.get("role") != "system"),
+                None,
+            )
+            return bool(last_non_system and last_non_system.get("role") == "tool")
+
+        def _request_payload_for_model(
+            current_model: str,
+        ) -> tuple[list[dict], Optional[List[Dict[str, Any]]], Optional[List[Dict[str, Any]]]]:
+            logical_tools = _tools_for_request(current_model)
+            if not current_model.startswith("ollama/gemma4") or not logical_tools:
+                return clean_messages, logical_tools, logical_tools
+
+            # LiteLLM's Ollama tool transformer forces format=json, which breaks
+            # ordinary Gemma4 chat by producing {"name":"None","arguments":{}}.
+            # Keep the logical tools for adapter-side extraction, but pass no
+            # provider tools and describe the schema in text ourselves.
+            tool_prompt = _build_gemma4_tool_prompt(
+                logical_tools,
+                post_tool_turn=_is_post_tool_turn(),
+            )
+            if not tool_prompt:
+                return clean_messages, None, logical_tools
+
+            request_messages = [msg.copy() for msg in clean_messages]
+            for msg in request_messages:
+                if msg.get("role") == "system":
+                    msg["content"] = f"{msg.get('content') or ''}\n\n{tool_prompt}"
+                    break
+            else:
+                request_messages.insert(0, {"role": "system", "content": tool_prompt})
+            return request_messages, None, logical_tools
+
         try:
             t_start = time.monotonic()
             ttfb_logged = False
             chunk_count = 0
+            active_tools_for_response = None
             
             # Rate limit retry logic
             current_model = model
             try:
                 # Pass api_base for Ollama/local providers
+                request_messages, request_tools, logical_tools = _request_payload_for_model(current_model)
+                active_tools_for_response = logical_tools
                 acompletion_kwargs = dict(
                     model=current_model,
-                    messages=clean_messages,
-                    tools=openai_tools,
+                    messages=request_messages,
+                    tools=request_tools,
                     temperature=self.config.temperature,
                     max_tokens=self.config.max_tokens,
                     stream=True,
@@ -1624,10 +1800,12 @@ class DirectAdapter:
                         
                         # Retry with fallback
                         current_model = fallback_model
+                        request_messages, request_tools, logical_tools = _request_payload_for_model(current_model)
+                        active_tools_for_response = logical_tools
                         acompletion_kwargs = dict(
                             model=current_model,
-                            messages=clean_messages,
-                            tools=openai_tools,
+                            messages=request_messages,
+                            tools=request_tools,
                             temperature=self.config.temperature,
                             max_tokens=self.config.max_tokens,
                             stream=True,
@@ -1650,6 +1828,18 @@ class DirectAdapter:
             reasoning_chunks = []
             text_buffer = []
             text_streamed = False  # Track if we've yielded text chunks in real-time
+            buffering_json_text = False
+            embedded_text_tool_calls: list[dict] = []
+            buffering_fenced_tool_text = False
+            fenced_tool_buffer = ""
+            buffering_labeled_tool_text = False
+            labeled_tool_buffer = ""
+            fence_probe = ""
+            tool_schema_names = _tool_names_from_openai_tools(active_tools_for_response)
+            gemma_text_tool_extract = (
+                current_model.startswith("ollama/gemma4")
+                and active_tools_for_response is not None
+            )
             last_usage = None  # Last chunk's usage data (LiteLLM/OpenAI)
 
             async for chunk in response:
@@ -1673,14 +1863,100 @@ class DirectAdapter:
 
                 if delta.content:
                     text_buffer.append(delta.content)
+                    if gemma_text_tool_extract and not buffering_json_text:
+                        candidate = "".join(text_buffer).lstrip()
+                        if not text_streamed and candidate.startswith(("{", "[")):
+                            buffering_json_text = True
+                            continue
+
+                        pending = delta.content
+                        while True:
+                            if buffering_fenced_tool_text:
+                                fenced_tool_buffer += pending
+                                pending = ""
+                                close_idx = _find_closing_fence(fenced_tool_buffer)
+                                if close_idx is None:
+                                    break
+
+                                block = fenced_tool_buffer[:close_idx + 3]
+                                rest = fenced_tool_buffer[close_idx + 3:]
+                                extracted = _filter_tool_calls_for_schemas(
+                                    _extract_tool_calls_from_text(block),
+                                    tool_schema_names,
+                                )
+                                if extracted:
+                                    embedded_text_tool_calls.extend(extracted)
+                                else:
+                                    text_streamed = True
+                                    yield LLMStreamEvent(type="text", text=block)
+
+                                buffering_fenced_tool_text = False
+                                fenced_tool_buffer = ""
+                                pending = rest
+                                if not pending:
+                                    break
+                                continue
+
+                            if buffering_labeled_tool_text:
+                                labeled_tool_buffer += pending
+                                break
+
+                            if fence_probe:
+                                pending = fence_probe + pending
+                                fence_probe = ""
+
+                            marker_idx = _find_tool_call_text_marker(pending)
+                            fence_idx = pending.find("```")
+                            if marker_idx is not None and (fence_idx < 0 or marker_idx < fence_idx):
+                                prefix = pending[:marker_idx]
+                                if prefix:
+                                    text_streamed = True
+                                    yield LLMStreamEvent(type="text", text=prefix)
+                                buffering_labeled_tool_text = True
+                                labeled_tool_buffer = pending[marker_idx:]
+                                break
+
+                            if fence_idx >= 0:
+                                prefix = pending[:fence_idx]
+                                if prefix:
+                                    text_streamed = True
+                                    yield LLMStreamEvent(type="text", text=prefix)
+                                buffering_fenced_tool_text = True
+                                fenced_tool_buffer = pending[fence_idx:]
+                                pending = ""
+                                continue
+
+                            backtick_tail_len = 2 if pending.endswith("``") else 1 if pending.endswith("`") else 0
+                            marker_tail_len = _tool_call_marker_suffix_len(pending)
+                            tail_len = max(backtick_tail_len, marker_tail_len)
+                            if tail_len:
+                                emit_text = pending[:-tail_len]
+                                fence_probe = pending[-tail_len:]
+                            else:
+                                emit_text = pending
+                            if emit_text:
+                                text_streamed = True
+                                yield LLMStreamEvent(type="text", text=emit_text)
+                            break
+                        continue
+
                     # Yield text chunks immediately for real-time streaming.
-                    # Heuristic: if first text chunk looks like JSON, buffer it
-                    # for JSON tool call extraction (small model fallback).
-                    if text_streamed:
+                    # Heuristic: if the accumulated text starts like JSON, buffer
+                    # the whole response for tool-call extraction. Gemma4/Ollama
+                    # can stream JSON tool calls as content split like '{"',
+                    # 'name', ...; checking only the current delta drops the
+                    # opening brace and prevents extraction.
+                    if buffering_json_text:
+                        pass
+                    elif text_streamed:
                         yield LLMStreamEvent(type="text", text=delta.content)
-                    elif not delta.content.lstrip().startswith(("{", "[")):
-                        text_streamed = True
-                        yield LLMStreamEvent(type="text", text=delta.content)
+                    else:
+                        candidate = "".join(text_buffer).lstrip()
+                        if candidate.startswith(("{", "[")):
+                            buffering_json_text = True
+                        elif candidate:
+                            text_streamed = True
+                            yield LLMStreamEvent(type="text", text="".join(text_buffer))
 
                 # Capture reasoning_content as fallback (qwen3.5/deepseek thinking mode)
                 reasoning = getattr(delta, 'reasoning_content', None)
@@ -1716,6 +1992,35 @@ class DirectAdapter:
                     yield LLMStreamEvent(type="error", error=f"LLM stopped abruptly with reason: {reason}")
                     return
 
+            if buffering_fenced_tool_text:
+                extracted = _filter_tool_calls_for_schemas(
+                    _extract_tool_calls_from_text(fenced_tool_buffer),
+                    tool_schema_names,
+                )
+                if extracted:
+                    embedded_text_tool_calls.extend(extracted)
+                else:
+                    text_streamed = True
+                    yield LLMStreamEvent(type="text", text=fenced_tool_buffer)
+                buffering_fenced_tool_text = False
+                fenced_tool_buffer = ""
+            elif buffering_labeled_tool_text:
+                extracted = _filter_tool_calls_for_schemas(
+                    _extract_tool_calls_from_text(labeled_tool_buffer),
+                    tool_schema_names,
+                )
+                if extracted:
+                    embedded_text_tool_calls.extend(extracted)
+                else:
+                    text_streamed = True
+                    yield LLMStreamEvent(type="text", text=labeled_tool_buffer)
+                buffering_labeled_tool_text = False
+                labeled_tool_buffer = ""
+            elif fence_probe:
+                text_streamed = True
+                yield LLMStreamEvent(type="text", text=fence_probe)
+                fence_probe = ""
+
             total = time.monotonic() - t_start
             logger.info(
                 "[LiteLLM] model=%s TTFB=%.1fs total=%.1fs chunks=%d",
@@ -1725,55 +2030,74 @@ class DirectAdapter:
             # 1. Yield extracted JSON tool calls or the raw text
             full_text = "".join(text_buffer)
             if full_text.strip():
-                if text_streamed:
-                    # Text was already yielded chunk-by-chunk during streaming.
-                    # Only check for JSON tool calls if text was NOT streamed
-                    # (i.e., it looked like JSON from the first chunk).
-                    pass
-                else:
-                    # Text was buffered (first chunk looked like JSON) — check for tool calls
-                    content_to_check = full_text.strip()
-                    extracted_tcs = None
+                content_to_check = full_text.strip()
+                gemma_post_tool_without_schemas = (
+                    current_model.startswith("ollama/gemma4")
+                    and active_tools_for_response is None
+                    and any(msg.get("role") == "tool" for msg in clean_messages)
+                )
+                should_extract_text_tools = (
+                    not gemma_post_tool_without_schemas
+                    and (
+                        not text_streamed
+                        or (
+                            current_model.startswith("ollama/")
+                            and active_tools_for_response is not None
+                        )
+                    )
+                )
+                extracted_tcs = None
+                if embedded_text_tool_calls:
+                    extracted_tcs = embedded_text_tool_calls
+                elif should_extract_text_tools:
+                    extracted_tcs = _extract_tool_calls_from_text(content_to_check)
+                    if (
+                        extracted_tcs
+                        and current_model.startswith("ollama/gemma4")
+                        and active_tools_for_response is not None
+                    ):
+                        extracted_tcs = _filter_tool_calls_for_schemas(
+                            extracted_tcs,
+                            tool_schema_names,
+                        )
 
-                    # Check for markdown json or code blocks
-                    m = re.search(r'```(?:json)?\s*\n(.*?)\n\s*```', content_to_check, re.DOTALL)
-                    if m:
-                        extracted_tcs = _extract_tool_calls_from_json(m.group(1).strip())
+                if extracted_tcs:
+                    logger.info("[LiteLLM] Intercepted %d JSON tool call(s) from text stream.", len(extracted_tcs))
+                    for i, tc in enumerate(extracted_tcs):
+                        yield LLMStreamEvent(
+                            type="tool_call",
+                            tool_call={
+                                "id": f"json_extract_txt_{i}",
+                                "name": tc["name"],
+                                "arguments": tc["arguments"]
+                            }
+                        )
+                elif not text_streamed:
+                    # Guard: small models sometimes output {"error": "..."} as text
+                    handled_error = False
+                    if content_to_check.startswith('{') or content_to_check.startswith('['):
+                        try:
+                            parsed_obj = json.loads(content_to_check)
+                            if isinstance(parsed_obj, dict) and "error" in parsed_obj and len(parsed_obj) <= 3:
+                                logger.warning(
+                                    "[LiteLLM] Suppressed JSON error text (small model retry signal): %s",
+                                    content_to_check[:200],
+                                )
+                                handled_error = True
+                            elif (
+                                isinstance(parsed_obj, dict)
+                                and str(parsed_obj.get("name", "")).lower() in {"none", "null", "no_tool"}
+                            ):
+                                logger.warning(
+                                    "[LiteLLM] Suppressed JSON no-op tool text: %s",
+                                    content_to_check[:200],
+                                )
+                                handled_error = True
+                        except (json.JSONDecodeError, ValueError):
+                            pass
 
-                    if not extracted_tcs:
-                        # Look for raw json blocks `{ ... }` or `[ ... ]`
-                        m_raw = re.search(r'(\{.*\}|\[.*\])', content_to_check, re.DOTALL)
-                        if m_raw:
-                            extracted_tcs = _extract_tool_calls_from_json(m_raw.group(1).strip())
-
-                    if extracted_tcs:
-                        logger.info("[LiteLLM] Intercepted %d JSON tool call(s) from text stream.", len(extracted_tcs))
-                        for i, tc in enumerate(extracted_tcs):
-                            yield LLMStreamEvent(
-                                type="tool_call",
-                                tool_call={
-                                    "id": f"json_extract_txt_{i}",
-                                    "name": tc["name"],
-                                    "arguments": tc["arguments"]
-                                }
-                            )
-                    else:
-                        # Guard: small models sometimes output {"error": "..."} as text
-                        handled_error = False
-                        if content_to_check.startswith('{') or content_to_check.startswith('['):
-                            try:
-                                parsed_obj = json.loads(content_to_check)
-                                if isinstance(parsed_obj, dict) and "error" in parsed_obj and len(parsed_obj) <= 3:
-                                    logger.warning(
-                                        "[LiteLLM] Suppressed JSON error text (small model retry signal): %s",
-                                        content_to_check[:200],
-                                    )
-                                    handled_error = True
-                            except (json.JSONDecodeError, ValueError):
-                                pass
-
-                        if not handled_error:
-                            yield LLMStreamEvent(type="text", text=full_text)
+                    if not handled_error:
+                        yield LLMStreamEvent(type="text", text=full_text)
 
             # 2. Fallback: if no text or tool_calls, but we got reasoning_content
             if not full_text and not tool_call_chunks and reasoning_chunks:
@@ -1787,25 +2111,21 @@ class DirectAdapter:
                 
                 # Check if the fallback reasoning content is actually a JSON tool call (Ollama specific leak fix)
                 content_to_check = full_reasoning.strip()
-                m = re.search(r'```(?:json)?\s*\n(.*?)\n\s*```', content_to_check, re.DOTALL)
-                json_str = m.group(1).strip() if m else content_to_check
-                
-                if json_str.startswith('{') or json_str.startswith('['):
-                    extracted_tcs = _extract_tool_calls_from_json(json_str)
-                    if extracted_tcs:
-                        logger.info("[LiteLLM] Extracted %d JSON tool call(s) from Ollama reasoning fallback text.", len(extracted_tcs))
-                        # Yield proper tool call events instead of text
-                        for i, tc in enumerate(extracted_tcs):
-                            yield LLMStreamEvent(
-                                type="tool_call",
-                                tool_call={
-                                    "id": f"json_extract_reas_{i}",
-                                    "name": tc["name"],
-                                    "arguments": tc["arguments"]
-                                }
-                            )
-                        yield LLMStreamEvent(type="stop", reason="stop")
-                        return
+                extracted_tcs = _extract_tool_calls_from_text(content_to_check)
+                if extracted_tcs:
+                    logger.info("[LiteLLM] Extracted %d JSON tool call(s) from Ollama reasoning fallback text.", len(extracted_tcs))
+                    # Yield proper tool call events instead of text
+                    for i, tc in enumerate(extracted_tcs):
+                        yield LLMStreamEvent(
+                            type="tool_call",
+                            tool_call={
+                                "id": f"json_extract_reas_{i}",
+                                "name": tc["name"],
+                                "arguments": tc["arguments"]
+                            }
+                        )
+                    yield LLMStreamEvent(type="stop", reason="stop")
+                    return
 
                 yield LLMStreamEvent(type="text", text=full_reasoning)
 

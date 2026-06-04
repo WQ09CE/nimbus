@@ -623,11 +623,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     let receivedDone = false;
     let lastEventTime = Date.now();
 
-    // Watchdog: if no SSE event (including heartbeats) for 30s, connection is dead
+    const sseWatchdogMs = Number(process.env.NEXT_PUBLIC_SSE_WATCHDOG_MS || 120000);
+
+    // Watchdog: if no SSE event (including heartbeats) for a long time, connection is dead.
+    // Local Ollama models can spend tens of seconds on cold-start/prompt eval before first token.
     const watchdog = setInterval(() => {
-      if (Date.now() - lastEventTime > 30000) {
+      if (Date.now() - lastEventTime > sseWatchdogMs) {
         clearInterval(watchdog);
-        console.warn("[Store] SSE watchdog: no event for 30s, aborting stream");
+        console.warn(`[Store] SSE watchdog: no event for ${sseWatchdogMs}ms, aborting stream`);
         abortController.abort();
       }
     }, 5000);

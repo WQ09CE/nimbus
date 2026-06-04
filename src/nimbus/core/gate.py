@@ -118,6 +118,8 @@ class KernelGate:
         on_tool_output: Optional[Callable[[str, str], None]] = None,
         abort_event: Optional[asyncio.Event] = None,
         path_context: Optional[AgentPathContext] = None,
+        parent_model: Optional[str] = None,
+        parent_base_url: Optional[str] = None,
     ):
         self.pid = pid
         self._executor = tool_executor
@@ -130,6 +132,9 @@ class KernelGate:
         self._abort_event = abort_event
         # Path context for workspace isolation
         self._path_context = path_context
+        # Parent LLM context for spawn_agent inheritance
+        self._parent_model = parent_model
+        self._parent_base_url = parent_base_url
 
     async def syscall_tool(self, action: ActionIR, timeout: Optional[float] = None) -> ToolResult:
         """Execute a TOOL_CALL action through the gate."""
@@ -173,6 +178,11 @@ class KernelGate:
         # Inject path context for all tools
         if self._path_context:
             exec_args["_path_context"] = self._path_context
+        if tool_name == "spawn_agent":
+            if self._parent_model:
+                exec_args["_parent_model"] = self._parent_model
+            if self._parent_base_url:
+                exec_args["_parent_base_url"] = self._parent_base_url
         if self._on_tool_output and tool_name in ("Bash", "spawn_agent"):
             def _on_update(chunk: str, ui_detail: Optional[Dict] = None) -> None:
                 assert self._on_tool_output is not None
