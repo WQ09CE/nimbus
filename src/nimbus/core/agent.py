@@ -464,19 +464,42 @@ class AgentOS:
         re.IGNORECASE,
     )
 
-    def _update_mmu_goal(self, mmu: MMU, user_message: str) -> None:
-        """Update durable goal according to the active goal skill policy."""
-        if not self._goal_skill_enabled:
-            mmu.set_goal(user_message)
+    def _update_mmu_goal(self, mmu: MMU, user_message: Any) -> None:
+        """Update durable goal according to the active goal skill policy.
+
+        `user_message` may be a plain string or a multimodal content-block list
+        (when the turn carries attachments); coerce to text before matching.
+        """
+        text = self._coerce_message_text(user_message)
+        if not text:
             return
 
-        explicit_goal = self._extract_explicit_goal(user_message)
+        if not self._goal_skill_enabled:
+            mmu.set_goal(text)
+            return
+
+        explicit_goal = self._extract_explicit_goal(text)
         if explicit_goal:
             mmu.set_goal(explicit_goal)
             return
 
-        if not mmu.goal and self._looks_like_durable_goal(user_message):
-            mmu.set_goal(user_message)
+        if not mmu.goal and self._looks_like_durable_goal(text):
+            mmu.set_goal(text)
+
+    @staticmethod
+    def _coerce_message_text(message: Any) -> str:
+        """Extract plain text from a str or multimodal content-block list."""
+        if isinstance(message, str):
+            return message
+        if isinstance(message, list):
+            parts = []
+            for block in message:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+                elif isinstance(block, str):
+                    parts.append(block)
+            return "\n".join(p for p in parts if p)
+        return str(message) if message is not None else ""
 
     @classmethod
     def _extract_explicit_goal(cls, text: str) -> Optional[str]:
