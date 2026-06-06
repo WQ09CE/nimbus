@@ -64,12 +64,13 @@ async def create_llm_client(
         thinking=thinking,
     )
 
-    # Set Ollama base_url from global config
-    info = ModelRegistry.get(model)
-    if info and info.provider == "ollama":
+    # Set Ollama base_url from global config. Key off the provider parsed from
+    # the model string ("ollama/...") rather than the ModelRegistry — the
+    # registry may not know newer model tags (e.g. gemma4:12b-it-qat), and
+    # without the base_url litellm silently falls back to localhost:11434.
+    if provider == "ollama":
         from nimbus.config import get_config
-        nimbus_config = get_config()
-        config.base_url = nimbus_config.ollama_base_url
+        config.base_url = get_config().ollama_base_url
 
     adapter = DirectAdapter(config)
     await adapter.__aenter__()
