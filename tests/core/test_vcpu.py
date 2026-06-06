@@ -166,6 +166,27 @@ class TestVCPULimits:
         assert r2.is_final
 
     @pytest.mark.asyncio
+    async def test_max_consecutive_empty_responses(self):
+        """Repeated empty (undecodable) responses must terminate, not spin
+        until max_iterations. Regression: the empty-actions branch used to skip
+        the max_consecutive_errors check."""
+        config = VCPUConfig(max_consecutive_errors=2, max_iterations=100)
+        responses = [MockResponse(content="") for _ in range(5)]
+        alu = MockALU(responses)
+        decoder = InstructionDecoder()
+        gate = MockGate()
+        mmu = MMU()
+        mmu.add_user_message("Go")
+        vcpu = VCPU(alu, decoder, gate, mmu, [], config=config, text_is_final=False)
+
+        r1 = await vcpu.step()
+        assert not r1.is_final  # 1st empty → retry
+        r2 = await vcpu.step()
+        assert r2.is_final  # 2nd empty → hits max_consecutive_errors
+        assert r2.final_result.status == "ERROR"
+        assert "empty response" in r2.final_result.output.lower()
+
+    @pytest.mark.asyncio
     async def test_interruption(self):
         vcpu, _ = make_vcpu([MockResponse(content="hello")])
         vcpu.request_interruption()

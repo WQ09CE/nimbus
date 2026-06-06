@@ -292,7 +292,15 @@ class VCPU:
 
         if not actions:
             self.mmu.add_system_message("Empty response. You MUST call a tool or return a final answer.")
-            self._exec.on_error()
+            errs = self._exec.on_error()
+            # Enforce the consecutive-error budget here too (other error paths do).
+            # Without this the loop spins on empty responses until max_iterations.
+            if errs >= self.config.max_consecutive_errors:
+                return self._error_step(
+                    result,
+                    f"Model produced {errs} consecutive empty responses "
+                    "(no tool call or final answer).",
+                )
             return result
 
         result.actions = actions
