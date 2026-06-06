@@ -55,6 +55,10 @@ class NimbusConfig:
     enabled_skills: List[str] = field(default_factory=lambda: ["goal"])
     skill_paths: List[str] = field(default_factory=list)
 
+    # Plugins
+    enabled_plugins: List[str] = field(default_factory=list)
+    plugin_paths: List[str] = field(default_factory=list)
+
     # Nimbus Server
     server_port: int = 4096
 
@@ -137,6 +141,13 @@ def _apply_json(config: NimbusConfig, data: dict) -> None:
         if paths := skills.get("paths"):
             config.skill_paths = [str(p) for p in paths]
 
+    plugins = data.get("plugins", {})
+    if isinstance(plugins, dict):
+        if "enabled" in plugins and plugins["enabled"] is not None:
+            config.enabled_plugins = list(plugins["enabled"])
+        if paths := plugins.get("paths"):
+            config.plugin_paths = [str(p) for p in paths]
+
     _VALID_PROFILES = {"orchestrator", "standard", "executor"}
     # Agent profile (top-level or under "agent" section)
     if v := data.get("agent_profile"):
@@ -187,6 +198,13 @@ def _apply_env(config: NimbusConfig) -> None:
     if "NIMBUS_SKILL_PATHS" in os.environ:
         raw = os.environ.get("NIMBUS_SKILL_PATHS", "")
         config.skill_paths = [p.strip() for p in raw.split(os.pathsep) if p.strip()]
+
+    if "NIMBUS_PLUGINS" in os.environ:
+        raw = os.environ.get("NIMBUS_PLUGINS", "")
+        config.enabled_plugins = [s.strip() for s in raw.split(",") if s.strip()]
+    if "NIMBUS_PLUGIN_PATHS" in os.environ:
+        raw = os.environ.get("NIMBUS_PLUGIN_PATHS", "")
+        config.plugin_paths = [p.strip() for p in raw.split(os.pathsep) if p.strip()]
 
     if v := os.environ.get("NIMBUS_AGENT_PROFILE"):
         _VALID_PROFILES = {"orchestrator", "standard", "executor"}

@@ -69,15 +69,22 @@ class SessionManagerV2:
         model_config: Optional[Dict[str, str]] = None,
         agent_mode: str = "standard",
         skills: Optional[List[str]] = None,
+        plugins: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Create a new session in memory."""
         session_id = f"sess_{uuid.uuid4().hex[:12]}"
 
         from nimbus.config import get_config
-        enabled_skills = list(skills if skills is not None else get_config().enabled_skills)
+        config = get_config()
+        enabled_skills = list(skills if skills is not None else config.enabled_skills)
+        enabled_plugins = list(plugins if plugins is not None else config.enabled_plugins)
 
         # Store agent_mode in config_overrides
-        config_overrides = {"agent_mode": agent_mode, "skills": enabled_skills}
+        config_overrides = {
+            "agent_mode": agent_mode,
+            "skills": enabled_skills,
+            "plugins": enabled_plugins,
+        }
 
         now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -87,6 +94,7 @@ class SessionManagerV2:
             "workspace_path": workspace_path,
             "llm_config": model_config or {},
             "skills": enabled_skills,
+            "plugins": enabled_plugins,
             "config_overrides": config_overrides,
             "status": "active",
             "created_at": now_iso,
@@ -106,6 +114,7 @@ class SessionManagerV2:
                 "workspace_path": workspace_path,
                 "config_overrides": config_overrides,
                 "skills": enabled_skills,
+                "plugins": enabled_plugins,
                 "created_at": now_iso,
             }
         )
@@ -146,6 +155,13 @@ class SessionManagerV2:
                         config_overrides["skills"] = list(v or [])
                         meta["config_overrides"] = config_overrides
                     need_rebuild = True
+                elif k == "plugins":
+                    meta["plugins"] = list(v or [])
+                    config_overrides = meta.get("config_overrides", {})
+                    if isinstance(config_overrides, dict):
+                        config_overrides["plugins"] = list(v or [])
+                        meta["config_overrides"] = config_overrides
+                    need_rebuild = True
                 elif k == "model_config":
                     dump["llm_config"] = v
                     need_rebuild = True
@@ -181,6 +197,7 @@ class SessionManagerV2:
                 "workspace_path": meta.get("workspace_path"),
                 "llm_config": dump.get("llm_config", {}),
                 "skills": meta.get("skills", meta_overrides.get("skills", [])),
+                "plugins": meta.get("plugins", meta_overrides.get("plugins", [])),
                 "config_overrides": meta.get("config_overrides", {}),
                 "created_at": meta.get("created_at") or dump.get("updated_at"),
                 "updated_at": dump.get("updated_at"),
@@ -209,6 +226,7 @@ class SessionManagerV2:
                 "workspace_path": meta.get("workspace_path"),
                 "llm_config": d.get("llm_config", {}),
                 "skills": meta.get("skills", meta_overrides.get("skills", [])),
+                "plugins": meta.get("plugins", meta_overrides.get("plugins", [])),
                 "config_overrides": meta.get("config_overrides", {}),
                 "created_at": meta.get("created_at") or d.get("updated_at"),
                 "updated_at": d.get("updated_at"),
@@ -328,6 +346,13 @@ class SessionManagerV2:
             skill_names = nimbus_config.enabled_skills
         skill_names = list(skill_names or [])
 
+        plugin_names = session.get("plugins")
+        if plugin_names is None:
+            plugin_names = overrides.get("plugins")
+        if plugin_names is None:
+            plugin_names = nimbus_config.enabled_plugins
+        plugin_names = list(plugin_names or [])
+
         # Build path context from session workspace (if set)
         from nimbus.core.path_context import AgentPathContext
         if workspace:
@@ -372,6 +397,19 @@ class SessionManagerV2:
 
         skill_manager = SkillManager.from_config(nimbus_config)
         active_skills = skill_manager.load_enabled(skill_names)
+
+        from nimbus.plugins import PluginContext, PluginManager
+
+        plugin_manager = PluginManager.from_config(nimbus_config)
+        plugin_snapshot = plugin_manager.snapshot(
+            plugin_names,
+            context=PluginContext(
+                plugin_name="",
+                generation=0,
+                session_id=session_id,
+                workspace=str(path_ctx.target_root),
+            ),
+        )
 
         # Load user memory file and append to system prompt as pinned context
         from nimbus.config import DEFAULT_MEMORY_PATH
@@ -445,6 +483,7 @@ class SessionManagerV2:
                 "workspace": str(path_ctx.target_root),
                 "scratchpad": scratchpad_path,
             },
+            plugin_snapshot=plugin_snapshot,
             event_callback=_gate_event_cb,
             on_text_delta=_text_delta_cb,
             on_tool_output=_tool_output_cb,

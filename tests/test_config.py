@@ -24,6 +24,8 @@ class TestNimbusConfigDefaults:
         assert config.agent_roles == {}
         assert config.enabled_skills == ["goal"]
         assert config.skill_paths == []
+        assert config.enabled_plugins == []
+        assert config.plugin_paths == []
 
 
 class TestNimbusConfigJson:
@@ -81,6 +83,20 @@ class TestNimbusConfigJson:
         assert config.enabled_skills == ["goal", "custom"]
         assert config.skill_paths == ["/tmp/nimbus-skills"]
 
+    def test_plugins_load_from_json(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "plugins": {
+                "enabled": ["hello"],
+                "paths": ["/tmp/nimbus-plugins"],
+            },
+        }))
+
+        config = NimbusConfig.load(config_path=config_file)
+
+        assert config.enabled_plugins == ["hello"]
+        assert config.plugin_paths == ["/tmp/nimbus-plugins"]
+
     def test_missing_json_uses_defaults(self, tmp_path):
         config = NimbusConfig.load(config_path=tmp_path / "nonexistent.json")
         assert config.default_model == "google/gemini-3-flash-preview"
@@ -127,6 +143,16 @@ class TestNimbusConfigEnv:
 
         assert config.enabled_skills == ["goal", "custom"]
         assert config.skill_paths == ["/a", "/b"]
+
+    def test_env_plugin_overrides(self, tmp_path):
+        with patch.dict(os.environ, {
+            "NIMBUS_PLUGINS": "hello, other",
+            "NIMBUS_PLUGIN_PATHS": f"/a{os.pathsep}/b",
+        }):
+            config = NimbusConfig.load(config_path=tmp_path / "nope.json")
+
+        assert config.enabled_plugins == ["hello", "other"]
+        assert config.plugin_paths == ["/a", "/b"]
 
 
 class TestGetConfigSingleton:

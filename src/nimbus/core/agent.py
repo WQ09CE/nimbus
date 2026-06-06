@@ -128,6 +128,7 @@ class AgentOS:
         memory: str = "",
         skills: Optional[List[Any]] = None,
         skill_context: Optional[Dict[str, Any]] = None,
+        plugin_snapshot: Any = None,
         event_callback: Optional[Callable[[Event], None]] = None,
         on_tool_output: Optional[Callable[[str, str], None]] = None,
         on_text_delta: Optional[Callable[[str], None]] = None,
@@ -163,6 +164,10 @@ class AgentOS:
         self._registry = tools or ToolRegistry()
         if tools is None:
             _register_default_tools(self._registry)
+        self._plugin_snapshot = plugin_snapshot
+        if self._plugin_snapshot:
+            for contribution in getattr(self._plugin_snapshot, "tools", []):
+                self._registry.register_plugin_tool(contribution)
 
         # 3. System prompt
         self._system_prompt = system_prompt or self._default_system_prompt()
@@ -170,6 +175,8 @@ class AgentOS:
         # 4. User memory (from memory.md, pinned into MMU alongside system rules)
         self._memory = memory
         self._skills = list(skills or [])
+        if self._plugin_snapshot:
+            self._skills.extend(getattr(self._plugin_snapshot, "skills", []))
         self._skill_context = dict(skill_context or {})
         try:
             from nimbus.skills import SkillManager

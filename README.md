@@ -239,6 +239,8 @@ nimbus/
 │   │   ├── sse.py            # SSE Hub
 │   │   ├── permission.py     # Runtime permission rules
 │   │   └── log_hub.py        # Real-time log streaming
+│   ├── plugins/              # Runtime plugin discovery and activation
+│   ├── skills/               # Prompt skill loading
 │   └── cli/                  # nimbus CLI (serve, run, config, session, acp)
 ├── web-ui/                   # Next.js frontend (21 components)
 ├── tests/                    # Test suite (33 files)
@@ -255,6 +257,7 @@ nimbus/
 | [Architecture Overview](docs/architecture_overview.md) | High-level framework design |
 | [Actual Architecture](docs/actual_architecture.md) | Implementation reality vs. design |
 | [Toolchain Design](docs/toolchain_design.md) | Tool system philosophy |
+| [Plugin System](docs/plugins.md) | Plugin discovery, activation, and reload model |
 | [Multi-Agent Collaboration](docs/multi_agent_collaboration.md) | spawn_agent design rationale |
 | [State & Context Management](docs/state_and_context_management.md) | MMU and context strategies |
 | [System Rules & Prompting](docs/system_rules_and_prompting.md) | Prompt engineering approach |

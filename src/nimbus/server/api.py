@@ -146,6 +146,7 @@ async def create_session(
         model_config=data.llm_config,
         agent_mode=data.agent_mode,
         skills=data.skills,
+        plugins=data.plugins,
     )
 
     return SessionResponse(**session)
@@ -158,6 +159,15 @@ async def list_skills():
 
     manager = SkillManager.from_config(get_nimbus_config())
     return {"skills": manager.list_skills()}
+
+
+@router.get("/plugins")
+async def list_plugins():
+    """List discoverable Nimbus plugins without activating plugin code."""
+    from nimbus.plugins import PluginManager
+
+    manager = PluginManager.from_config(get_nimbus_config())
+    return {"plugins": manager.list_plugins()}
 
 
 @router.get("/sessions", response_model=SessionList)

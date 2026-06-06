@@ -29,6 +29,7 @@ class TestServerModels:
         assert session.llm_config is None
         assert session.agent_mode == "standard"
         assert session.skills is None
+        assert session.plugins is None
 
     def test_session_create_custom(self):
         """Test SessionCreate with custom values."""
@@ -40,12 +41,14 @@ class TestServerModels:
             llm_config={"provider": "anthropic", "model_id": "claude-sonnet-4-5"},
             agent_mode="dual_agent",
             skills=["goal"],
+            plugins=["hello"],
         )
         assert session.name == "test-session"
         assert session.workspace_path == "/tmp/test"
         assert session.llm_config["provider"] == "anthropic"
         assert session.agent_mode == "dual_agent"
         assert session.skills == ["goal"]
+        assert session.plugins == ["hello"]
 
     def test_session_response(self):
         """Test SessionResponse model."""
@@ -61,6 +64,7 @@ class TestServerModels:
         assert response.status == SessionStatus.ACTIVE
         assert response.agent_mode == "standard"
         assert response.skills == []
+        assert response.plugins == []
 
     def test_permission_decision_enum(self):
         """Test PermissionDecision enum values."""
@@ -109,10 +113,12 @@ class TestServerModels:
             name="updated-name",
             llm_config={"provider": "google", "model_id": "gemini-3-flash-preview"},
             skills=["goal"],
+            plugins=["hello"],
         )
         assert update.name == "updated-name"
         assert update.llm_config["provider"] == "google"
         assert update.skills == ["goal"]
+        assert update.plugins == ["hello"]
 
     def test_sse_event(self):
         """Test SSEEvent model."""
@@ -308,6 +314,7 @@ class TestAPIRouter:
         assert "/sessions" in route_paths
         assert "/models" in route_paths
         assert "/skills" in route_paths
+        assert "/plugins" in route_paths
 
     def test_fastapi_app_creation(self):
         """Test FastAPI app can be created with router."""

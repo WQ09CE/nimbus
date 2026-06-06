@@ -64,6 +64,7 @@ class SessionCreate(BaseModel):
     llm_config: Optional[Dict[str, Any]] = None  # {provider, model_id, ...}
     agent_mode: str = "standard"  # standard | dual_agent
     skills: Optional[List[str]] = None
+    plugins: Optional[List[str]] = None
 
 
 class SessionUpdate(BaseModel):
@@ -74,6 +75,7 @@ class SessionUpdate(BaseModel):
     llm_config: Optional[Dict[str, Any]] = None
     agent_mode: Optional[str] = None
     skills: Optional[List[str]] = None
+    plugins: Optional[List[str]] = None
 
 
 class SessionResponse(BaseModel):
@@ -87,6 +89,7 @@ class SessionResponse(BaseModel):
     workspace_path: Optional[str] = None
     llm_config: Optional[Dict[str, Any]] = None
     skills: List[str] = Field(default_factory=list)
+    plugins: List[str] = Field(default_factory=list)
 
 
 class SessionDetail(SessionResponse):

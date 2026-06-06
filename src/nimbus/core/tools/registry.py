@@ -88,15 +88,31 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: Dict[str, tuple[ToolDefinition, Callable[..., Any]]] = {}
+        self._origins: Dict[str, str] = {}
 
-    def register(self, definition: ToolDefinition, func: Callable[..., Any]) -> None:
+    def register(
+        self,
+        definition: ToolDefinition,
+        func: Callable[..., Any],
+        *,
+        origin: str = "",
+    ) -> None:
         self._tools[definition.name] = (definition, func)
+        self._origins[definition.name] = origin
 
     def register_decorated(self, func: Callable[..., Any]) -> None:
         """Register a function decorated with @tool."""
         if not hasattr(func, "_tool_definition"):
             raise ValueError(f"'{func.__name__}' is not decorated with @tool")
         self.register(func._tool_definition, func)
+
+    def register_plugin_tool(self, contribution: Any) -> None:
+        """Register a plugin tool contribution while preserving origin metadata."""
+        self.register(
+            contribution.definition,
+            contribution.handler,
+            origin=f"plugin:{contribution.plugin_name}",
+        )
 
     def get(self, name: str) -> Optional[tuple[ToolDefinition, Callable[..., Any]]]:
         return self._tools.get(name)
@@ -107,6 +123,9 @@ class ToolRegistry:
 
     def list_tools(self) -> List[str]:
         return list(self._tools.keys())
+
+    def get_origin(self, name: str) -> str:
+        return self._origins.get(name, "")
 
     def get_schemas(self, format: str = "openai") -> List[Dict[str, Any]]:
         """Export all tool schemas in the specified format."""
