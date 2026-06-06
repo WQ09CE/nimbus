@@ -205,6 +205,16 @@ class TestVCPULimits:
         r2 = await vcpu.step()
         assert r2.is_final  # 2nd narration hits max_consecutive_errors → finalize
 
+    def test_announce_detector_real_phrasings(self):
+        """The narrate-not-act detector catches real premature-stop phrasings
+        (incl. 'Next Action: Spawn …') but not genuine final answers."""
+        from nimbus.core.vcpu import _announces_unfulfilled_tool as f
+        assert f("I am ready. Next Action: Spawn researcher to gather details.")
+        assert f("I am now spawning the researcher agent.")
+        assert f("接下来我将调用 Grep 工具扫描目录。")
+        assert not f("The library has 4 features: sessions, auth, timeouts, JSON.")
+        assert not f("Done. Wrote the summary to report.md and verified it.")
+
     @pytest.mark.asyncio
     async def test_plain_final_answer_not_nudged(self):
         """An ordinary text answer (no tool announcement) finalizes immediately."""

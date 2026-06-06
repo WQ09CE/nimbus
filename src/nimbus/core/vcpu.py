@@ -28,25 +28,42 @@ from .protocol import ActionIR, Fault, StepResult, ToolResult
 
 logger = logging.getLogger("nimbus.vcpu")
 
-# Detects a reply that ANNOUNCES an imminent tool action ("I will run bash…",
-# "我将调用 Grep 工具…") — used to catch the narrate-instead-of-act failure mode
-# where the model describes what it will do but emits no tool call. Requires
-# intent + action-verb + a tool-ish noun in proximity to avoid matching ordinary
-# final answers like "I will summarize the results".
-_ANNOUNCES_TOOL_RE = re.compile(
-    r"(我将|我会|我现在|我打算|接下来我|让我|马上|稍后我|"
-    r"i['’ ]?(?:will|'ll|m going to)|let me|going to|i am going to)"
-    r"[^。.!?\n]{0,40}"
-    r"(调用|使用|运行|执行|跑(?:一下|个)?|call|use|run|invoke|execute)"
-    r"[^。.!?\n]{0,30}"
-    r"(工具|命令|脚本|tool|bash|grep|glob|read|write|edit|spawn_agent|command|script)",
-    re.IGNORECASE,
-)
+# Catches the narrate-instead-of-act failure mode: a tool-call-less reply that
+# only ANNOUNCES an upcoming action and then stops. Small models do this a lot
+# ("Next Action: Spawn researcher", "我将调用 Grep…", "I am now spawning…").
+# Matched against the message TAIL, because a genuine final answer doesn't END
+# on an unfulfilled plan, whereas a premature stop does.
+_NARRATE_TAIL_CHARS = 320
+_ANNOUNCE_PATTERNS = [
+    # intent + action-verb + tool/agent noun in proximity
+    re.compile(
+        r"(我将|我会|我现在|我打算|接下来我?|让我|马上|稍后我?|准备|现在就|"
+        r"i['’ ]?(?:will|'ll|m going to|am going to|am about to)|let me|going to|about to|now i)"
+        r"[^。.!?\n]{0,40}"
+        r"(调用|使用|运行|执行|跑|生成|创建|分派|派|启动|开始|spawn|call|use|run|invoke|"
+        r"execute|dispatch|launch|create|generate|proceed)"
+        r"[^。.!?\n]{0,40}"
+        r"(工具|命令|脚本|子?(?:智能体|代理)|agent|researcher|worker|reader|tool|bash|grep|"
+        r"glob|read|write|edit|spawn_agent|command|script)",
+        re.IGNORECASE,
+    ),
+    # explicit "next action" / 下一步 execution markers (strong premature-stop signal)
+    re.compile(r"(next\s+action|下一步(行动|动作|操作)?|下一个动作|接下来(我)?(要|将|需要|准备))", re.IGNORECASE),
+    # "spawning the X agent" / 分派/启动 … agent
+    re.compile(
+        r"(spawn(ing|ed)?|dispatch(ing)?|分派|派遣|启动)\s*[a-z一-鿿_ ]{0,24}"
+        r"(agent|researcher|worker|reader|子?智能体|子?代理)",
+        re.IGNORECASE,
+    ),
+]
 
 
 def _announces_unfulfilled_tool(text: str) -> bool:
-    """True if the (tool-call-less) reply text merely announces a tool action."""
-    return bool(text) and bool(_ANNOUNCES_TOOL_RE.search(text))
+    """True if a tool-call-less reply ENDS by announcing an unfulfilled action."""
+    if not text:
+        return False
+    tail = text[-_NARRATE_TAIL_CHARS:]
+    return any(p.search(tail) for p in _ANNOUNCE_PATTERNS)
 
 
 # =============================================================================
