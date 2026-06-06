@@ -9,7 +9,7 @@ import type { ChatAttachment } from "@/lib/api/chat";
 
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_TEXT_SIZE = 5 * 1024 * 1024;   // 5MB
-const MAX_VIDEO_SIZE = 200 * 1024 * 1024; // 200MB
+const MAX_VIDEO_SIZE = 10 * 1024 * 1024 * 1024; // 10GB
 const MAX_ATTACHMENTS = 5;
 const ACCEPTED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
 const ACCEPTED_VIDEO_TYPES = ["video/mp4", "video/webm", "video/quicktime", "video/x-matroska"];
@@ -53,7 +53,8 @@ function readFileAsText(file: File): Promise<string> {
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)}GB`;
 }
 
 function isImageType(file: File): boolean {

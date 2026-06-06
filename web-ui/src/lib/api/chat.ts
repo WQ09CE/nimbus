@@ -32,6 +32,10 @@ export interface ChatAttachment {
   url?: string;
   /** Raw File, held client-side until uploaded (video). Not serialized. */
   file?: File;
+  /** Upload progress 0-100 (video, while uploading). Client-side only. */
+  uploadProgress?: number;
+  /** Upload lifecycle state (video). Client-side only. */
+  uploadStatus?: "uploading" | "done" | "error";
 }
 
 /** Result of POST /sessions/{id}/upload */
@@ -57,22 +61,38 @@ export interface ChatRequest {
 
 /**
  * Upload a media file (image/video) via raw body. Returns a served URL.
- * Streams the File directly — no base64, no multipart.
+ * Streams the File directly — no base64, no multipart. Uses XHR so the caller
+ * can show real upload progress (fetch can't report request progress).
  */
-export async function uploadMedia(sessionId: string, file: File): Promise<UploadResult> {
-  const res = await fetch(`/api/v1/sessions/${sessionId}/upload`, {
-    method: "POST",
-    headers: {
-      "Content-Type": file.type || "application/octet-stream",
-      "X-Filename": encodeURIComponent(file.name || "upload"),
-    },
-    body: file,
+export function uploadMedia(
+  sessionId: string,
+  file: File,
+  onProgress?: (pct: number) => void
+): Promise<UploadResult> {
+  return new Promise<UploadResult>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api/v1/sessions/${sessionId}/upload`);
+    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    xhr.setRequestHeader("X-Filename", encodeURIComponent(file.name || "upload"));
+
+    let lastPct = -1;
+    xhr.upload.onprogress = (e) => {
+      if (!onProgress || !e.lengthComputable) return;
+      const pct = Math.round((e.loaded / e.total) * 100);
+      if (pct !== lastPct) { lastPct = pct; onProgress(pct); }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try { resolve(JSON.parse(xhr.responseText) as UploadResult); }
+        catch { reject(new Error("Invalid upload response")); }
+      } else {
+        reject(new Error(`Upload failed (${xhr.status}): ${(xhr.responseText || "").slice(0, 200)}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Upload network error"));
+    xhr.onabort = () => reject(new Error("Upload aborted"));
+    xhr.send(file);
   });
-  if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`Upload failed (${res.status}): ${detail.slice(0, 200)}`);
-  }
-  return (await res.json()) as UploadResult;
 }
 
 export interface ToolCall {

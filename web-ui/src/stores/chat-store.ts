@@ -652,29 +652,76 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     // Upload any url-backed media (video) to the server before sending, so the
     // request references it by URL instead of inlining bytes. Images stay base64.
+    // Standard send.
+    // Render the user message + assistant placeholder IMMEDIATELY so the UI
+    // reacts the instant Send is clicked, THEN upload any media (with live
+    // progress), THEN stream. Uploading before the first render is what made
+    // the UI look frozen right after sending a video.
+    const STREAMING_ID = "streaming-assistant";
+    const userMessage: Message = { id: `user-${Date.now()}`, role: "user", content, parts: [{ type: "text", content }], attachments, timestamp: Date.now(), _rev: 0 };
+    const abortController = new AbortController();
+    let receivedDone = false;
+    let lastEventTime = Date.now();
+
+    const initialAssistantMsg: Message = { id: STREAMING_ID, role: "assistant", content: "", parts: [], timestamp: Date.now(), toolCallsMap: {}, toolResults: [], toolResultsMap: {}, _rev: 0 };
+
+    set({
+      messages: [...get().messages, userMessage, initialAssistantMsg],
+      isStreaming: true,
+      streamAbortController: abortController,
+      error: null,
+    });
+
+    // Re-render the user message in place (e.g. to reflect upload progress).
+    const bumpUserMessage = () => {
+      const msgs = [...get().messages];
+      const idx = msgs.findIndex(m => m.id === userMessage.id);
+      if (idx !== -1) {
+        msgs[idx] = { ...msgs[idx], _rev: (msgs[idx]._rev || 0) + 1 };
+        set({ messages: msgs });
+      }
+    };
+
+    // Upload url-backed media (video) with live progress before streaming.
     if (attachments && attachments.length > 0) {
       for (const att of attachments) {
         if (att.type === "video" && att.file && !att.url) {
+          att.uploadStatus = "uploading";
+          att.uploadProgress = 0;
+          bumpUserMessage();
           try {
-            const res = await uploadMedia(session.id, att.file);
+            const res = await uploadMedia(session.id, att.file, (pct) => {
+              att.uploadProgress = pct;
+              bumpUserMessage();
+            });
             att.url = res.url;
             att.mimeType = res.mime_type || att.mimeType;
             att.size = res.size || att.size;
+            att.uploadStatus = "done";
+            att.uploadProgress = 100;
+            bumpUserMessage();
           } catch (e) {
-            set({ error: `视频上传失败: ${e instanceof Error ? e.message : "unknown"}` });
+            att.uploadStatus = "error";
+            bumpUserMessage();
+            // Drop the pending assistant placeholder and surface the error;
+            // the user message (with the failed attachment) stays for context.
+            set({
+              messages: get().messages.filter(m => m.id !== STREAMING_ID),
+              isStreaming: false,
+              streamAbortController: null,
+              error: `视频上传失败: ${e instanceof Error ? e.message : "unknown"}`,
+            });
             return;
           }
         }
       }
     }
 
-    // Standard send
-    const userMessage: Message = { id: `user-${Date.now()}`, role: "user", content, parts: [{ type: "text", content }], attachments, timestamp: Date.now(), _rev: 0 };
-    const abortController = new AbortController();
-    let receivedDone = false;
-    let lastEventTime = Date.now();
-
     const sseWatchdogMs = Number(process.env.NEXT_PUBLIC_SSE_WATCHDOG_MS || 120000);
+
+    // Reset the watchdog clock now that uploads are done and streaming begins
+    // (a long upload must not count against the no-SSE-event timeout).
+    lastEventTime = Date.now();
 
     // Watchdog: if no SSE event (including heartbeats) for a long time, connection is dead.
     // Local Ollama models can spend tens of seconds on cold-start/prompt eval before first token.
@@ -685,17 +732,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         abortController.abort();
       }
     }, 5000);
-
-    // Start streaming: prepare an empty assistant message
-    const STREAMING_ID = "streaming-assistant";
-    const initialAssistantMsg: Message = { id: STREAMING_ID, role: "assistant", content: "", parts: [], timestamp: Date.now(), toolCallsMap: {}, toolResults: [], toolResultsMap: {}, _rev: 0 };
-
-    set({
-      messages: [...get().messages, userMessage, initialAssistantMsg],
-      isStreaming: true,
-      streamAbortController: abortController,
-      error: null,
-    });
 
     try {
       for await (const event of streamChat(session.id, content, attachments, abortController.signal)) {

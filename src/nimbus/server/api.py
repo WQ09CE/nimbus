@@ -693,8 +693,9 @@ async def list_files(
 # Media Upload APIs
 # =============================================================================
 
-# Max upload size — generous for video; images/pdf are far smaller.
-MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200MB
+# Max upload size. Streamed to disk in chunks, so memory isn't the constraint —
+# this is a disk-abuse guard. Large videos are UI-only (not sent to the model).
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024  # 10GB
 
 # Allowlist of media safe to store and serve INLINE on the app's own origin.
 # Deliberately excludes scriptable/HTML types (text/html, image/svg+xml,

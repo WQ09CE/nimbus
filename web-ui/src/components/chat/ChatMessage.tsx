@@ -128,14 +128,31 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
                   if (att.type === "video") {
                     const src = att.url || att.preview;
                     if (!src) return null;
+                    const uploading = att.uploadStatus === "uploading";
+                    const failed = att.uploadStatus === "error";
                     return (
-                      <video
-                        key={att.id}
-                        src={src}
-                        controls
-                        preload="metadata"
-                        className="max-w-[280px] max-h-[280px] rounded-xl border border-sky-400/20 shadow-md bg-black"
-                      />
+                      <div key={att.id} className="relative">
+                        <video
+                          src={src}
+                          controls={!uploading}
+                          preload="metadata"
+                          className="max-w-[280px] max-h-[280px] rounded-xl border border-sky-400/20 shadow-md bg-black"
+                        />
+                        {uploading && (
+                          <div className="absolute inset-0 rounded-xl bg-black/55 flex flex-col items-center justify-center gap-2 text-white px-4">
+                            <div className="w-9 h-9 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                            <span className="text-xs font-medium tabular-nums">上传中 {att.uploadProgress ?? 0}%</span>
+                            <div className="w-3/4 h-1 bg-white/20 rounded-full overflow-hidden">
+                              <div className="h-full bg-sky-400 transition-[width] duration-150" style={{ width: `${att.uploadProgress ?? 0}%` }} />
+                            </div>
+                          </div>
+                        )}
+                        {failed && (
+                          <div className="absolute inset-0 rounded-xl bg-red-900/60 flex items-center justify-center text-red-100 text-xs font-medium">
+                            上传失败
+                          </div>
+                        )}
+                      </div>
                     );
                   }
                   if (att.type === "text" || att.type === "pdf") {
