@@ -98,3 +98,4 @@ test_post.js
 web-ui/src/app/test.tsx
 .gstack/
 .tmp/
+.env
