@@ -6,11 +6,14 @@ and permission control.
 
 import asyncio
 import logging
+import mimetypes
+import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from nimbus.config import get_config as get_nimbus_config
 
@@ -386,6 +389,16 @@ async def chat(
                     "type": "text",
                     "text": f"\n\n--- {file_label} ---\n{att.content}\n--- end of {file_label} ---",
                 })
+            elif att.type == "video":
+                # Video is UI-only (default models can't watch it). Record a text
+                # reference so the model is aware and it survives reload; the actual
+                # playback is rendered client-side from att.url.
+                label = att.name or "video"
+                ref = att.url or "uploaded"
+                content_parts.append({
+                    "type": "text",
+                    "text": f"\n\n[Attached video: {label} ({ref})]",
+                })
         if content_parts:
             chat_content = content_parts
 
@@ -674,6 +687,136 @@ async def list_files(
     nodes.sort(key=lambda x: (x.type != FileType.DIRECTORY, x.name.lower()))
 
     return nodes
+
+
+# =============================================================================
+# Media Upload APIs
+# =============================================================================
+
+# Max upload size — generous for video; images/pdf are far smaller.
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200MB
+
+# Allowlist of media safe to store and serve INLINE on the app's own origin.
+# Deliberately excludes scriptable/HTML types (text/html, image/svg+xml,
+# application/xhtml+xml, …) which would otherwise execute JS same-origin → XSS.
+ALLOWED_UPLOAD_MIME = {
+    "image/png", "image/jpeg", "image/gif", "image/webp",
+    "video/mp4", "video/webm", "video/quicktime", "video/x-matroska",
+}
+ALLOWED_UPLOAD_EXT = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp",
+    ".mp4", ".webm", ".mov", ".mkv",
+}
+
+
+def _uploads_dir(session_manager, session_id: str) -> Path:
+    """Resolve (and create) the on-disk uploads directory for a session.
+
+    Stored under ~/.nimbus/uploads/<session_id>/ — a sibling of the session
+    JSON store so it survives independent of workspace cwd.
+    """
+    base = Path(session_manager._storage.base_dir)  # ~/.nimbus/sessions
+    d = base.parent / "uploads" / session_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+@router.post("/sessions/{session_id}/upload")
+async def upload_media(
+    session_id: str,
+    request: Request,
+    session_manager=Depends(get_session_manager),
+):
+    """Upload a media file (image/video/etc) and return a served URL.
+
+    Accepts the raw file body (no multipart, no extra dependency) and streams
+    it to disk in chunks so large videos don't blow up the process. The
+    filename and content type are passed via headers. Returns metadata the
+    frontend uses to render and reference the file by URL instead of inlining
+    base64.
+    """
+    from urllib.parse import unquote
+
+    session = await session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    filename = unquote(request.headers.get("X-Filename") or "upload")
+    content_type = request.headers.get("Content-Type") or ""
+    ext = Path(filename).suffix.lower()
+
+    # Security: only accept inline-safe media. Both the declared MIME and the
+    # extension must be allowlisted (defense in depth) — this prevents storing
+    # HTML/SVG/etc. that would execute JS when served same-origin (XSS).
+    declared_mime = content_type.split(";")[0].strip().lower()
+    mime = declared_mime or (mimetypes.guess_type(filename)[0] or "")
+    if ext not in ALLOWED_UPLOAD_EXT or mime not in ALLOWED_UPLOAD_MIME:
+        raise HTTPException(
+            status_code=415,
+            detail="Unsupported media type (allowed: PNG/JPEG/GIF/WebP images, MP4/WebM/MOV/MKV video)",
+        )
+
+    stored_name = f"{uuid.uuid4().hex}{ext}"
+    dest = _uploads_dir(session_manager, session_id) / stored_name
+
+    size = 0
+    try:
+        with open(dest, "wb") as out:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    out.close()
+                    dest.unlink(missing_ok=True)
+                    raise HTTPException(status_code=413, detail="File too large (max 200MB)")
+                out.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        logger.error(f"Upload failed for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail="Upload failed")
+
+    if size == 0:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Empty upload")
+
+    # mime was validated against the allowlist above.
+    kind = "video" if mime.startswith("video/") else "image"
+
+    return {
+        "id": stored_name,
+        "url": f"/api/v1/sessions/{session_id}/uploads/{stored_name}",
+        "name": filename or stored_name,
+        "mime_type": mime,
+        "size": size,
+        "kind": kind,
+    }
+
+
+@router.get("/sessions/{session_id}/uploads/{filename}")
+async def serve_upload(
+    session_id: str,
+    filename: str,
+    session_manager=Depends(get_session_manager),
+):
+    """Serve a previously uploaded media file (traversal-guarded)."""
+    uploads = _uploads_dir(session_manager, session_id).resolve()
+    target = (uploads / filename).resolve()
+    # Guard against path traversal (e.g. ../../etc/passwd)
+    try:
+        target.relative_to(uploads)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    # Extra hardening: only inline-safe media is ever stored (allowlist on upload),
+    # but defend against MIME sniffing regardless. nosniff stops a browser from
+    # reinterpreting bytes as HTML/JS.
+    if target.suffix.lower() not in ALLOWED_UPLOAD_EXT:
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(target, headers={"X-Content-Type-Options": "nosniff"})
 
 
 # =============================================================================

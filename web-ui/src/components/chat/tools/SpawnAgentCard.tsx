@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { MarkdownRenderer } from '../MarkdownRenderer';
+import { MediaView, normalizeMedia } from '../MediaView';
 import { LiveTimer } from './LiveTimer';
 
 export interface SpawnAgentCardProps {
@@ -14,6 +15,7 @@ export interface SpawnAgentCardProps {
         status: "running" | "completed" | "failed";
         duration?: number;
         sub_events?: Record<string, any>[];
+        ui_detail?: Record<string, any>;
     };
     defaultState?: "expanded" | "collapsed";
 }
@@ -73,6 +75,12 @@ export function SpawnAgentCard({ tool, defaultState = "expanded" }: SpawnAgentCa
     }, [isRunning, defaultState]);
 
     const subEvents = tool.sub_events || [];
+    // Timeline step stats (exclude tool_start pairing events) for an at-a-glance
+    // progress summary that's visible even when the card is collapsed.
+    const steps = subEvents.filter(e => e.type !== 'tool_start');
+    const stepCount = steps.length;
+    const errorCount = steps.filter(e => e.status === 'ERROR').length;
+    const finalMedia = normalizeMedia(tool.ui_detail?.media);
 
     return (
         <div className={`mt-2 mb-3 rounded-lg border ${theme.border} bg-background/50 overflow-hidden`}>
@@ -93,6 +101,14 @@ export function SpawnAgentCard({ tool, defaultState = "expanded" }: SpawnAgentCa
                 </div>
 
                 <div className="ml-auto flex items-center space-x-3 text-xs">
+                    {/* Step-progress summary (visible collapsed) */}
+                    {stepCount > 0 && (
+                        <span className="text-zinc-500 font-mono">
+                            {stepCount} {stepCount === 1 ? "step" : "steps"}
+                            {errorCount > 0 && <span className="text-red-400/80"> · {errorCount}✕</span>}
+                        </span>
+                    )}
+
                     {isRunning ? (
                         <div className="flex items-center text-blue-400 font-mono">
                             <LiveTimer />
@@ -135,6 +151,7 @@ export function SpawnAgentCard({ tool, defaultState = "expanded" }: SpawnAgentCa
                                     const isError = evt.status === 'ERROR';
                                     const hasOutput = evt.output_preview && evt.output_preview.length > 0;
                                     const hasArgs = evt.args_summary || evt.args;
+                                    const stepMedia = normalizeMedia(evt.media || evt.ui_detail?.media);
                                     // Find matching tool_start event for args display
                                     const toolStart = subEvents.find(e => e.type === 'tool_start' && e.tool === evt.tool && subEvents.indexOf(e) < subEvents.indexOf(evt));
                                     const argsToShow = toolStart?.args || evt.args;
@@ -172,7 +189,7 @@ export function SpawnAgentCard({ tool, defaultState = "expanded" }: SpawnAgentCa
                                                                 <span className={`font-mono ${isError ? "text-red-400" : "text-emerald-400"}`}>
                                                                     {evt.status}
                                                                 </span>
-                                                                {(hasOutput || argsToShow) && (
+                                                                {(hasOutput || argsToShow || stepMedia.length > 0) && (
                                                                     <ChevronRight className="w-3 h-3 text-zinc-600 transition-transform group-open/step:rotate-90" />
                                                                 )}
                                                             </div>
@@ -181,8 +198,14 @@ export function SpawnAgentCard({ tool, defaultState = "expanded" }: SpawnAgentCa
                                                 </div>
                                             </summary>
                                             {/* Expanded detail */}
-                                            {!isThinking && (hasOutput || argsToShow) && (
+                                            {!isThinking && (hasOutput || argsToShow || stepMedia.length > 0) && (
                                                 <div className="ml-0 mt-1 space-y-1.5">
+                                                    {stepMedia.length > 0 && (
+                                                        <div className="bg-black/20 rounded border border-white/5 p-2">
+                                                            <div className="text-zinc-600 text-[10px] uppercase tracking-wider mb-1.5 font-semibold">Media</div>
+                                                            <MediaView media={stepMedia} />
+                                                        </div>
+                                                    )}
                                                     {argsToShow && Object.keys(argsToShow).length > 0 && (
                                                         <div className="bg-black/20 rounded border border-white/5 p-2 text-xs">
                                                             <div className="text-zinc-600 text-[10px] uppercase tracking-wider mb-1 font-semibold">Arguments</div>
@@ -220,12 +243,19 @@ export function SpawnAgentCard({ tool, defaultState = "expanded" }: SpawnAgentCa
                     )}
 
                     {/* Final Deliverable */}
-                    {tool.status === 'completed' && tool.result && (
+                    {tool.status === 'completed' && (tool.result || finalMedia.length > 0) && (
                         <div>
                             <div className="text-xs text-zinc-500 mb-2 uppercase tracking-wider font-semibold">Final Deliverable</div>
-                            <div className="bg-black/30 rounded border border-emerald-500/20 p-3 max-h-[400px] overflow-y-auto">
-                                <MarkdownRenderer content={typeof tool.result === 'string' ? tool.result : JSON.stringify(tool.result, null, 2)} />
-                            </div>
+                            {finalMedia.length > 0 && (
+                                <div className="mb-2">
+                                    <MediaView media={finalMedia} />
+                                </div>
+                            )}
+                            {tool.result && (
+                                <div className="bg-black/30 rounded border border-emerald-500/20 p-3 max-h-[400px] overflow-y-auto">
+                                    <MarkdownRenderer content={typeof tool.result === 'string' ? tool.result : JSON.stringify(tool.result, null, 2)} />
+                                </div>
+                            )}
                         </div>
                     )}
 

@@ -17,17 +17,31 @@ export interface ChatAttachment {
   /** Unique ID (generated client-side) */
   id: string;
   /** Attachment type */
-  type: "image" | "text" | "pdf";
+  type: "image" | "text" | "pdf" | "video";
   /** File name */
   name: string;
   /** File size in bytes */
   size: number;
-  /** Content: base64 for images, raw text for text files */
+  /** Content: base64 for images, raw text for text files, "" for url-backed media */
   content: string;
-  /** MIME type, e.g. "image/png", "text/plain" */
+  /** MIME type, e.g. "image/png", "text/plain", "video/mp4" */
   mimeType: string;
-  /** Preview URL for images (blob URL) */
+  /** Preview URL for images/video (blob URL, client-side only) */
   preview?: string;
+  /** Served URL for url-backed media (video) — set after upload */
+  url?: string;
+  /** Raw File, held client-side until uploaded (video). Not serialized. */
+  file?: File;
+}
+
+/** Result of POST /sessions/{id}/upload */
+export interface UploadResult {
+  id: string;
+  url: string;
+  name: string;
+  mime_type: string;
+  size: number;
+  kind: "image" | "video" | "file";
 }
 
 export interface ChatRequest {
@@ -37,7 +51,28 @@ export interface ChatRequest {
     content: string;
     name?: string;
     mime_type?: string;
+    url?: string;
   }>;
+}
+
+/**
+ * Upload a media file (image/video) via raw body. Returns a served URL.
+ * Streams the File directly — no base64, no multipart.
+ */
+export async function uploadMedia(sessionId: string, file: File): Promise<UploadResult> {
+  const res = await fetch(`/api/v1/sessions/${sessionId}/upload`, {
+    method: "POST",
+    headers: {
+      "Content-Type": file.type || "application/octet-stream",
+      "X-Filename": encodeURIComponent(file.name || "upload"),
+    },
+    body: file,
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`Upload failed (${res.status}): ${detail.slice(0, 200)}`);
+  }
+  return (await res.json()) as UploadResult;
 }
 
 export interface ToolCall {
@@ -97,6 +132,7 @@ export async function injectMessage(
       content: att.content,
       name: att.name,
       mime_type: att.mimeType,
+      url: att.url,
     }));
   }
 
@@ -122,6 +158,7 @@ export async function* streamChat(
       content: att.content,
       name: att.name,
       mime_type: att.mimeType,
+      url: att.url,
     }));
   }
 

@@ -7,6 +7,7 @@ import {
   createSession,
   streamChat,
   injectMessage,
+  uploadMedia,
   getSessionMessages,
   getSession,
   getSessionStatus,
@@ -143,6 +144,157 @@ function flushPendingSync(set: SetFn, get: GetFn, streamingId: string) {
       next[idx] = msg;
       set({ messages: next });
     }
+  }
+}
+
+// --- Unified SSE event reducer ---
+// Shared by sendMessage (POST /chat) and _attachToRunningSession (GET /events).
+// Mutates `targetMsg` in place for content/tool updates and persists usage to
+// the store. Mode-specific concerns are handled by each caller:
+//   - user_message: sender skips it; attach-mode inserts a remote user message
+//   - done/error: sender tracks receivedDone / throws; attach-mode aborts
+type StreamControl = "none" | "done" | "error";
+interface StreamEventOutcome {
+  updated: boolean;
+  control: StreamControl;
+  errorMessage?: string;
+}
+
+function reduceStreamEvent(
+  type: string,
+  data: unknown,
+  targetMsg: Message,
+  set: SetFn,
+  get: GetFn
+): StreamEventOutcome {
+  switch (type) {
+    case "message": {
+      const chunk = typeof data === "string" ? data : (data as any)?.content || (data as any)?.chunk || "";
+      if (chunk) {
+        targetMsg.content += chunk;
+        // Build ordered parts: append to last text part or create new one
+        const parts = [...(targetMsg.parts || [])];
+        const lastPart = parts[parts.length - 1];
+        if (lastPart && lastPart.type === "text") {
+          parts[parts.length - 1] = { ...lastPart, content: lastPart.content + chunk };
+        } else {
+          parts.push({ type: "text", content: chunk });
+        }
+        targetMsg.parts = parts;
+        return { updated: true, control: "none" };
+      }
+      return { updated: false, control: "none" };
+    }
+    case "tool_call": {
+      if (data && typeof data === "object") {
+        const d = data as any;
+        const tcId = d.action_id || d.id || `tc-${Date.now()}`;
+
+        const tcMap = targetMsg.toolCallsMap || {};
+        const existingTc = tcMap[tcId];
+        const tc: ToolCall = {
+          id: tcId,
+          name: d.tool || d.name || existingTc?.name || "unknown",
+          arguments: d.args || d.arguments || existingTc?.arguments || {},
+        };
+        targetMsg.toolCallsMap = { ...tcMap, [tcId]: tc };
+
+        const parts = [...(targetMsg.parts || [])];
+        const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
+        if (matchIdx === -1) {
+          parts.push({ type: "tool", toolCall: { id: tcId, name: tc.name, arguments: {} } } as any);
+          targetMsg.parts = parts;
+        }
+        return { updated: true, control: "none" };
+      }
+      return { updated: false, control: "none" };
+    }
+    case "tool_output_chunk": {
+      if (data && typeof data === "object") {
+        const d = data as any;
+        const tcId = d.action_id || d.id;
+        const chunk = d.chunk || "";
+        const uiDetail = d.ui_detail;
+        if (!chunk && !uiDetail) return { updated: false, control: "none" };
+
+        // Always write to Map — never lose data regardless of parts state.
+        // Create a new Map reference so React.memo detects the change.
+        const existing = targetMsg.toolResultsMap?.[tcId];
+        const updatedEntry = existing
+          ? {
+              ...existing,
+              result: (existing.result || "") + chunk,
+              sub_events: uiDetail ? [...(existing.sub_events || []), uiDetail] : existing.sub_events,
+              _streaming: true,
+            }
+          : {
+              id: tcId,
+              name: d.tool || "unknown",
+              result: chunk,
+              sub_events: uiDetail ? [uiDetail] : undefined,
+              _streaming: true,
+            };
+        targetMsg.toolResultsMap = { ...(targetMsg.toolResultsMap || {}), [tcId]: updatedEntry };
+        return { updated: true, control: "none" };
+      }
+      return { updated: false, control: "none" };
+    }
+    case "tool_result": {
+      if (data && typeof data === "object") {
+        const d = data as any;
+        const tcId = d.action_id || d.id;
+        // Merge with any streaming chunks already buffered in the Map
+        const existing = targetMsg.toolResultsMap?.[tcId];
+        const tr: ToolResult = {
+          id: tcId || "",
+          name: d.tool || d.name || "unknown",
+          result: d.output !== undefined ? d.output : (d.result !== undefined ? d.result : existing?.result),
+          error: d.status === "ERROR" ? (d.fault?.message || "Error") : undefined,
+          ui_detail: d.ui_detail,
+          sub_events: existing?.sub_events,
+          _streaming: false,
+        };
+        targetMsg.toolResults = [...(targetMsg.toolResults || []), tr];
+        // Create a new Map reference so React.memo detects the change
+        targetMsg.toolResultsMap = { ...(targetMsg.toolResultsMap || {}), [tcId]: tr };
+
+        // Ensure a part placeholder exists in case tool_result beat tool_call
+        const parts = [...(targetMsg.parts || [])];
+        const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
+        if (matchIdx === -1) {
+          parts.push({ type: "tool", toolCall: { id: tcId, name: tr.name, arguments: {} } } as any);
+          targetMsg.parts = parts;
+        }
+        return { updated: true, control: "none" };
+      }
+      return { updated: false, control: "none" };
+    }
+    case "usage_update": {
+      if (data && typeof data === "object") {
+        const d = data as any;
+        const usage = d.cumulative_usage || null;
+        if (usage && d.context_window) {
+          usage.context_window = d.context_window;
+        }
+        set({ tokenUsage: usage });
+        // Persist to sessionStorage for refresh survival
+        const sid = get().session?.id;
+        if (sid && usage) {
+          try { sessionStorage.setItem(`nimbus_token_usage_${sid}`, JSON.stringify(usage)); } catch { /* ignore */ }
+        }
+      }
+      return { updated: false, control: "none" };
+    }
+    case "done":
+      return { updated: false, control: "done" };
+    case "error":
+      return {
+        updated: false,
+        control: "error",
+        errorMessage: typeof data === "string" ? data : (data as any)?.message || "Stream error",
+      };
+    default:
+      return { updated: false, control: "none" };
   }
 }
 
@@ -391,6 +543,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (get().session?.id !== sessionId) { abortController.abort(); break; }
 
           const { type, data } = event;
+
+          // Mode-specific: a user message sent by another client (multi-client view).
+          // Insert it before the streaming assistant message; not part of targetMsg.
+          if (type === "user_message") {
+            if (data && typeof data === "object") {
+              const content = (data as any)?.content || "";
+              if (content) {
+                const userMsg: Message = {
+                  id: `user-remote-${Date.now()}`,
+                  role: "user",
+                  content,
+                  parts: [{ type: "text", content }],
+                  timestamp: Date.now(),
+                  _rev: 0,
+                };
+                const msgs = [...get().messages];
+                const streamIdx = msgs.findIndex(m => m.id === STREAMING_ID);
+                if (streamIdx !== -1) {
+                  msgs.splice(streamIdx, 0, userMsg);
+                } else {
+                  msgs.push(userMsg);
+                }
+                set({ messages: msgs });
+              }
+            }
+            continue;
+          }
+
           const currentMsgs = get().messages;
           const targetIdx = currentMsgs.findIndex(m => m.id === STREAMING_ID);
           if (targetIdx === -1) continue;
@@ -400,164 +580,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
           const targetMsg = _pendingStreamMsg
             ? { ..._pendingStreamMsg }
             : { ...currentMsgs[targetIdx] };
-          let updated = false;
 
-          switch (type) {
-            case "user_message": {
-              if (data && typeof data === "object") {
-                const content = (data as any)?.content || "";
-                if (content) {
-                  // Add user message that was sent by another client
-                  const userMsg: Message = {
-                    id: `user-remote-${Date.now()}`,
-                    role: "user",
-                    content,
-                    parts: [{ type: "text", content }],
-                    timestamp: Date.now(),
-                    _rev: 0,
-                  };
-                  // Insert BEFORE the streaming assistant message
-                  const msgs = [...get().messages];
-                  const streamIdx = msgs.findIndex(m => m.id === STREAMING_ID);
-                  if (streamIdx !== -1) {
-                    msgs.splice(streamIdx, 0, userMsg);
-                  } else {
-                    msgs.push(userMsg);
-                  }
-                  set({ messages: msgs });
-                }
-              }
-              break;
-            }
-            case "message": {
-              const chunk = typeof data === "string" ? data : (data as any)?.content || (data as any)?.chunk || "";
-              if (chunk) {
-                targetMsg.content += chunk;
-                const parts = [...(targetMsg.parts || [])];
-                const last = parts[parts.length - 1];
-                if (last?.type === "text") {
-                  parts[parts.length - 1] = { ...last, content: last.content + chunk };
-                } else {
-                  parts.push({ type: "text", content: chunk });
-                }
-                targetMsg.parts = parts;
-                updated = true;
-              }
-              break;
-            }
-            case "tool_call": {
-              if (data && typeof data === "object") {
-                const d = data as any;
-                const tcId = d.action_id || d.id || `tc-${Date.now()}`;
+          const outcome = reduceStreamEvent(type, data, targetMsg, set, get);
 
-                const tcMap = targetMsg.toolCallsMap || {};
-                const existingTc = tcMap[tcId];
-                const tc: ToolCall = {
-                  id: tcId,
-                  name: d.tool || d.name || existingTc?.name || "unknown",
-                  arguments: d.args || d.arguments || existingTc?.arguments || {},
-                };
-
-                targetMsg.toolCallsMap = { ...tcMap, [tcId]: tc };
-
-                const parts = [...(targetMsg.parts || [])];
-                const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
-                if (matchIdx === -1) {
-                  parts.push({ type: "tool", toolCall: { id: tcId, name: tc.name, arguments: {} } } as any);
-                  targetMsg.parts = parts;
-                }
-                updated = true;
-              }
-              break;
-            }
-            case "tool_output_chunk": {
-              if (data && typeof data === "object") {
-                const d = data as any;
-                const tcId = d.action_id || d.id;
-                const chunk = d.chunk || "";
-                const uiDetail = d.ui_detail;
-                if (!chunk && !uiDetail) break;
-
-                // 1. Always write to Map — mark as streaming (not yet completed)
-                const map = targetMsg.toolResultsMap || {};
-                const existing = map[tcId];
-                if (existing) {
-                  map[tcId] = { 
-                    ...existing, 
-                    result: (existing.result || "") + chunk,
-                    sub_events: uiDetail ? [...(existing.sub_events || []), uiDetail] : existing.sub_events,
-                    _streaming: true,
-                  };
-                } else {
-                  map[tcId] = { 
-                    id: tcId, 
-                    name: d.tool || "unknown", 
-                    result: chunk,
-                    sub_events: uiDetail ? [uiDetail] : undefined,
-                    _streaming: true,
-                  };
-                }
-                targetMsg.toolResultsMap = map;
-                updated = true;
-              }
-              break;
-            }
-            case "tool_result": {
-              if (data && typeof data === "object") {
-                const d = data as any;
-                const tcId = d.action_id || d.id;
-                // Merge with any streaming chunks already buffered
-                const existing = targetMsg.toolResultsMap?.[tcId];
-                const tr: ToolResult = {
-                  id: tcId || "",
-                  name: d.tool || d.name || "unknown",
-                  result: d.output !== undefined ? d.output : (d.result !== undefined ? d.result : existing?.result),
-                  error: d.status === "ERROR" ? (d.fault?.message || "Error") : undefined,
-                  ui_detail: d.ui_detail,
-                  sub_events: existing?.sub_events,
-                  _streaming: false,
-                };
-                targetMsg.toolResults = [...(targetMsg.toolResults || []), tr];
-                // Always write to Map
-                const map = targetMsg.toolResultsMap || {};
-                map[tcId] = tr;
-                targetMsg.toolResultsMap = map;
-
-                // Also ensure a part placeholder exists in case tool_result beat tool_call
-                const parts = [...(targetMsg.parts || [])];
-                const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
-                if (matchIdx === -1) {
-                  parts.push({ type: "tool", toolCall: { id: tcId, name: tr.name, arguments: {} } } as any);
-                  targetMsg.parts = parts;
-                }
-                updated = true;
-              }
-              break;
-            }
-            case "usage_update": {
-              if (data && typeof data === "object") {
-                const d = data as any;
-                console.debug("[SSE] Usage Update received:", d);
-                const usage = d.cumulative_usage || null;
-                if (usage && d.context_window) {
-                  usage.context_window = d.context_window;
-                }
-                set({ tokenUsage: usage });
-                // Persist to sessionStorage for refresh survival
-                const sid = get().session?.id;
-                if (sid && usage) {
-                  try { sessionStorage.setItem(`nimbus_token_usage_${sid}`, JSON.stringify(usage)); } catch { /* ignore */ }
-                }
-              }
-              break;
-            }
-            case "done":
-            case "error":
-              abortController.abort();
-              break;
+          // Attach-mode finalizes on done/error by aborting the stream.
+          if (outcome.control === "done" || outcome.control === "error") {
+            abortController.abort();
+            break;
           }
 
-          if (updated) {
+          if (outcome.updated) {
+            targetMsg._rev = (targetMsg._rev || 0) + 1;
             scheduleStreamUpdate(set, get, STREAMING_ID, targetMsg);
           }
         }
@@ -617,6 +650,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
 
+    // Upload any url-backed media (video) to the server before sending, so the
+    // request references it by URL instead of inlining bytes. Images stay base64.
+    if (attachments && attachments.length > 0) {
+      for (const att of attachments) {
+        if (att.type === "video" && att.file && !att.url) {
+          try {
+            const res = await uploadMedia(session.id, att.file);
+            att.url = res.url;
+            att.mimeType = res.mime_type || att.mimeType;
+            att.size = res.size || att.size;
+          } catch (e) {
+            set({ error: `视频上传失败: ${e instanceof Error ? e.message : "unknown"}` });
+            return;
+          }
+        }
+      }
+    }
+
     // Standard send
     const userMessage: Message = { id: `user-${Date.now()}`, role: "user", content, parts: [{ type: "text", content }], attachments, timestamp: Date.now(), _rev: 0 };
     const abortController = new AbortController();
@@ -656,6 +707,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
 
         const { type, data } = event;
+
+        // Sender already has its own user message — ignore the echoed event.
+        if (type === "user_message") continue;
+
         const currentMsgs = get().messages;
         const targetIdx = currentMsgs.findIndex(m => m.id === STREAMING_ID);
         if (targetIdx === -1) continue;
@@ -665,141 +720,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const targetMsg = _pendingStreamMsg
           ? { ..._pendingStreamMsg }
           : { ...currentMsgs[targetIdx] };
-        let updated = false;
 
-        switch (type) {
-          case "user_message":
-            // Sender already has the user message — skip
-            break;
-          case "message": {
-            const chunk = typeof data === "string" ? data : (data as any)?.content || (data as any)?.chunk || "";
-            if (chunk) {
-              targetMsg.content += chunk;
-              // Build ordered parts: append to last text part or create new one
-              const parts = [...(targetMsg.parts || [])];
-              const lastPart = parts[parts.length - 1];
-              if (lastPart && lastPart.type === "text") {
-                parts[parts.length - 1] = { ...lastPart, content: lastPart.content + chunk };
-              } else {
-                parts.push({ type: "text", content: chunk });
-              }
-              targetMsg.parts = parts;
-              updated = true;
-            }
-            break;
-          }
-          case "tool_call": {
-            if (data && typeof data === "object") {
-              const d = data as any;
-              const tcId = d.action_id || d.id || `tc-${Date.now()}`;
+        const outcome = reduceStreamEvent(type, data, targetMsg, set, get);
 
-              const tcMap = targetMsg.toolCallsMap || {};
-              const existingTc = tcMap[tcId];
-              const tc: ToolCall = {
-                id: tcId,
-                name: d.tool || d.name || existingTc?.name || "unknown",
-                arguments: d.args || d.arguments || existingTc?.arguments || {},
-              };
-
-              targetMsg.toolCallsMap = { ...tcMap, [tcId]: tc };
-
-              const parts = [...(targetMsg.parts || [])];
-              const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
-              if (matchIdx === -1) {
-                parts.push({ type: "tool", toolCall: { id: tcId, name: tc.name, arguments: {} } } as any);
-                targetMsg.parts = parts;
-              }
-              updated = true;
-            }
-            break;
-          }
-          case "tool_output_chunk": {
-            if (data && typeof data === "object") {
-              const d = data as any;
-              const tcId = d.action_id || d.id;
-              const chunk = d.chunk || "";
-              const uiDetail = d.ui_detail;
-              if (!chunk && !uiDetail) break;
-
-              // 1. Always write to Map — never lose data regardless of parts state
-              // IMPORTANT: Create a new Map reference so React.memo detects the change
-              const existing = targetMsg.toolResultsMap?.[tcId];
-              const updatedEntry = existing
-                ? { 
-                    ...existing, 
-                    result: (existing.result || "") + chunk,
-                    sub_events: uiDetail ? [...(existing.sub_events || []), uiDetail] : existing.sub_events,
-                    _streaming: true,
-                  }
-                : { 
-                    id: tcId, 
-                    name: d.tool || "unknown", 
-                    result: chunk,
-                    sub_events: uiDetail ? [uiDetail] : undefined,
-                    _streaming: true,
-                  };
-              targetMsg.toolResultsMap = { ...(targetMsg.toolResultsMap || {}), [tcId]: updatedEntry };
-              updated = true;
-            }
-            break;
-          }
-          case "tool_result": {
-            if (data && typeof data === "object") {
-              const d = data as any;
-              const tcId = d.action_id || d.id;
-              // Merge with any streaming chunks already buffered in the Map
-              const existing = targetMsg.toolResultsMap?.[tcId];
-              const tr: ToolResult = {
-                id: tcId || "",
-                name: d.tool || d.name || "unknown",
-                result: d.output !== undefined ? d.output : (d.result !== undefined ? d.result : existing?.result),
-                error: d.status === "ERROR" ? (d.fault?.message || "Error") : undefined,
-                ui_detail: d.ui_detail,
-                sub_events: existing?.sub_events,
-                _streaming: false,
-              };
-              targetMsg.toolResults = [...(targetMsg.toolResults || []), tr];
-              // IMPORTANT: Create a new Map reference so React.memo detects the change
-              targetMsg.toolResultsMap = { ...(targetMsg.toolResultsMap || {}), [tcId]: tr };
-
-              // Also ensure a part placeholder exists in case tool_result beat tool_call
-              const parts = [...(targetMsg.parts || [])];
-              const matchIdx = parts.findIndex(p => p.type === "tool" && (p as any).toolCall?.id === tcId);
-              if (matchIdx === -1) {
-                parts.push({ type: "tool", toolCall: { id: tcId, name: tr.name, arguments: {} } } as any);
-                targetMsg.parts = parts;
-              }
-              updated = true;
-            }
-            break;
-          }
-          case "done":
-            receivedDone = true;
-            break;
-          case "usage_update": {
-            if (data && typeof data === "object") {
-              const d = data as any;
-              const usage = d.cumulative_usage || null;
-              if (usage && d.context_window) {
-                usage.context_window = d.context_window;
-              }
-              set({ tokenUsage: usage });
-              // Persist to sessionStorage for refresh survival
-              const sid = get().session?.id;
-              if (sid && usage) {
-                try { sessionStorage.setItem(`nimbus_token_usage_${sid}`, JSON.stringify(usage)); } catch { /* ignore */ }
-              }
-            }
-            break;
-          }
-          case "error":
-            throw new Error(typeof data === "string" ? data : (data as any)?.message || "Stream error");
+        // Send-mode control flow: throw on error (caught below for recovery),
+        // flag done so the post-loop finalizer runs.
+        if (outcome.control === "error") {
+          throw new Error(outcome.errorMessage || "Stream error");
+        }
+        if (outcome.control === "done") {
+          receivedDone = true;
+          break;
         }
 
-        // Exit the for-await loop when stream is done
-        if (type === "done") break;
-
-        if (updated) {
+        if (outcome.updated) {
           targetMsg._rev = (targetMsg._rev || 0) + 1;
           scheduleStreamUpdate(set, get, STREAMING_ID, targetMsg);
         }

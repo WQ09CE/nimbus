@@ -125,6 +125,19 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
                       />
                     );
                   }
+                  if (att.type === "video") {
+                    const src = att.url || att.preview;
+                    if (!src) return null;
+                    return (
+                      <video
+                        key={att.id}
+                        src={src}
+                        controls
+                        preload="metadata"
+                        className="max-w-[280px] max-h-[280px] rounded-xl border border-sky-400/20 shadow-md bg-black"
+                      />
+                    );
+                  }
                   if (att.type === "text" || att.type === "pdf") {
                     return (
                       <div key={att.id} className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-sky-500/10 border border-sky-400/20 text-xs text-sky-200">

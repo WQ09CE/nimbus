@@ -116,7 +116,7 @@ class SessionList(BaseModel):
 class AttachmentCreate(BaseModel):
     """Attachment in a chat request."""
 
-    type: str  # image, text, pdf, file, url
+    type: str  # image, video, text, pdf, file, url
     path: Optional[str] = None
     url: Optional[str] = None
     content: Optional[str] = None

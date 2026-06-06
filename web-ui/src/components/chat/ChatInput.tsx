@@ -9,10 +9,13 @@ import type { ChatAttachment } from "@/lib/api/chat";
 
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_TEXT_SIZE = 5 * 1024 * 1024;   // 5MB
+const MAX_VIDEO_SIZE = 200 * 1024 * 1024; // 200MB
 const MAX_ATTACHMENTS = 5;
 const ACCEPTED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+const ACCEPTED_VIDEO_TYPES = ["video/mp4", "video/webm", "video/quicktime", "video/x-matroska"];
 const ACCEPTED_TEXT_TYPES = ["text/plain", "text/markdown", "text/csv", "text/yaml", "application/json", "application/pdf"];
 const ACCEPTED_EXTENSIONS = [".txt", ".md", ".csv", ".json", ".yaml", ".yml", ".log", ".pdf", ".py", ".ts", ".tsx", ".js", ".jsx", ".html", ".css", ".sh", ".toml"];
+const ACCEPTED_VIDEO_EXTENSIONS = [".mp4", ".webm", ".mov", ".mkv"];
 const LONG_TEXT_LINE_THRESHOLD = 5;    // Lines before auto-collapsing pasted text
 const LONG_TEXT_CHAR_THRESHOLD = 500;  // Characters before auto-collapsing pasted text
 
@@ -55,6 +58,12 @@ function formatFileSize(bytes: number): string {
 
 function isImageType(file: File): boolean {
   return ACCEPTED_IMAGE_TYPES.includes(file.type) || file.type.startsWith("image/");
+}
+
+function isVideoType(file: File): boolean {
+  if (ACCEPTED_VIDEO_TYPES.includes(file.type) || file.type.startsWith("video/")) return true;
+  const ext = `.${file.name.split(".").pop()?.toLowerCase()}`;
+  return ACCEPTED_VIDEO_EXTENSIONS.includes(ext);
 }
 
 function isTextType(file: File): boolean {
@@ -166,6 +175,23 @@ export const ChatInput = React.memo(function ChatInput({
         content: base64,
         mimeType: file.type || "image/png",
         preview: URL.createObjectURL(file),
+      };
+    } else if (isVideoType(file)) {
+      if (file.size > MAX_VIDEO_SIZE) {
+        setError(`视频大小不能超过 ${formatFileSize(MAX_VIDEO_SIZE)}`);
+        return null;
+      }
+      // Video is uploaded to the server at send time (no base64). Hold the raw
+      // File and show a local blob preview until then.
+      return {
+        id: generateId(),
+        type: "video",
+        name: file.name || "video.mp4",
+        size: file.size,
+        content: "",
+        mimeType: file.type || "video/mp4",
+        preview: URL.createObjectURL(file),
+        file,
       };
     } else if (isTextType(file)) {
       if (file.size > MAX_TEXT_SIZE) {
@@ -382,6 +408,18 @@ export const ChatInput = React.memo(function ChatInput({
                         />
                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/att:opacity-100 transition-opacity" />
                       </div>
+                    ) : att.type === "video" && att.preview ? (
+                      <div className="w-16 h-16 relative bg-black">
+                        <video
+                          src={att.preview}
+                          muted
+                          preload="metadata"
+                          className="w-full h-full object-cover"
+                        />
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                          <span className="text-white/90 text-base drop-shadow">▶</span>
+                        </div>
+                      </div>
                     ) : (
                       <div className="max-w-[280px] overflow-hidden">
                         <div className="px-3 py-1.5 flex items-center gap-2 border-b border-white/5">
@@ -428,7 +466,7 @@ export const ChatInput = React.memo(function ChatInput({
                   ref={fileInputRef}
                   type="file"
                   multiple
-                  accept={[...ACCEPTED_IMAGE_TYPES, ...ACCEPTED_EXTENSIONS.map(e => e)].join(",")}
+                  accept={[...ACCEPTED_IMAGE_TYPES, ...ACCEPTED_VIDEO_TYPES, ...ACCEPTED_VIDEO_EXTENSIONS, ...ACCEPTED_EXTENSIONS].join(",")}
                   onChange={handleFileSelect}
                   className="hidden"
                 />

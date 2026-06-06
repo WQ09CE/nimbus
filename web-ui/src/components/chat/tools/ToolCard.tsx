@@ -3,6 +3,7 @@ import { ToolDisplay } from './ToolDisplay';
 import { DispatchCard } from './DispatchCard';
 import { SpawnAgentCard } from './SpawnAgentCard';
 import { LiveTimer } from './LiveTimer';
+import { MediaView, normalizeMedia } from '../MediaView';
 import type { ToolCall, ToolResult } from '@/lib/api';
 
 // Tools that spawn sub-agents and get the dedicated DispatchCard treatment
@@ -92,6 +93,9 @@ export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: To
 
   const style = getStatusStyle();
   const isDispatch = tool.agentType === "dispatch";
+
+  // Media produced by the tool/sub-agent (image/video), surfaced via ui_detail.media
+  const media = normalizeMedia(tool.ui_detail?.media);
 
   // Summary extraction
   let summary = "";
@@ -212,6 +216,11 @@ export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: To
       {/* Body */}
       {isExpanded && (
         <div className="border-t border-gray-800/50 bg-[#0d1117] overflow-x-auto">
+          {media.length > 0 && (
+            <div className="px-3 py-3 border-b border-gray-800/50">
+              <MediaView media={media} />
+            </div>
+          )}
           <ToolDisplay tool={tool} isExpanded={true} />
         </div>
       )}

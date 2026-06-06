@@ -72,6 +72,26 @@ describe("SpawnAgentCard", () => {
         expect(screen.getByTestId("markdown-mock")).toHaveTextContent("Tests are fixed.");
     });
 
+    it("shows a step-count summary in the header", () => {
+        const completedTool = { ...spawnAgentTool, status: "completed" as const };
+        render(<SpawnAgentCard tool={completedTool} defaultState="collapsed" />);
+        // 3 sub_events, none are tool_start → "3 steps", one ERROR → "1✕"
+        expect(screen.getByText(/3 steps/)).toBeInTheDocument();
+        expect(screen.getByText(/1✕/)).toBeInTheDocument();
+    });
+
+    it("renders media produced in the final deliverable", () => {
+        const withMedia = {
+            ...spawnAgentTool,
+            status: "completed" as const,
+            ui_detail: { media: [{ kind: "image", url: "/api/v1/sessions/s/uploads/x.png", name: "chart.png" }] },
+        };
+        const { container } = render(<SpawnAgentCard tool={withMedia} />);
+        expect(screen.getByText("Final Deliverable")).toBeInTheDocument();
+        const img = container.querySelector('img[src="/api/v1/sessions/s/uploads/x.png"]');
+        expect(img).toBeInTheDocument();
+    });
+
     it("collapses/expands when header is clicked", async () => {
         const user = userEvent.setup();
         const collapsedTool = {
