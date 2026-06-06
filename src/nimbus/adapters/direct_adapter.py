@@ -22,21 +22,20 @@ import re
 import socket
 import ssl
 import time
-from pathlib import Path
+import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
-from nimbus.core.protocol import Fault
-
 import httpx
-
 import litellm
 from litellm import acompletion
 from litellm.utils import ModelResponse
 
+from nimbus.adapters.types import LLMConfig, LLMStreamEvent, TokenUsage, VcpuLLMResponse
 from nimbus.config import get_config
-from nimbus.adapters.types import LLMConfig, VcpuLLMResponse, LLMStreamEvent, TokenUsage
 from nimbus.core.models.registry import ModelRegistry
+from nimbus.core.protocol import Fault
 
 logger = logging.getLogger(__name__)
 
@@ -1066,9 +1065,9 @@ class DirectAdapter:
             return
 
         from nimbus.adapters.anthropic_oauth import (
-            check_and_refresh,
-            STEALTH_HEADERS,
             CLAUDE_CODE_SYSTEM_PREFIX,
+            STEALTH_HEADERS,
+            check_and_refresh,
         )
 
         # Refresh / validate OAuth token
@@ -2067,7 +2066,10 @@ class DirectAdapter:
                         yield LLMStreamEvent(
                             type="tool_call",
                             tool_call={
-                                "id": f"json_extract_txt_{i}",
+                                # Unique per call — `i` resets to 0 each step, so a
+                                # bare index collides across steps in a turn and makes
+                                # the UI merge separate tool cards (lost ordering).
+                                "id": f"json_extract_txt_{i}_{uuid.uuid4().hex[:8]}",
                                 "name": tc["name"],
                                 "arguments": tc["arguments"]
                             }
@@ -2119,7 +2121,7 @@ class DirectAdapter:
                         yield LLMStreamEvent(
                             type="tool_call",
                             tool_call={
-                                "id": f"json_extract_reas_{i}",
+                                "id": f"json_extract_reas_{i}_{uuid.uuid4().hex[:8]}",
                                 "name": tc["name"],
                                 "arguments": tc["arguments"]
                             }

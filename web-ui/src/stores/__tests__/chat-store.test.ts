@@ -15,6 +15,7 @@ import {
   WITH_USAGE_UPDATE,
   STREAM_ERROR,
   TEXT_TOOL_TEXT,
+  MULTI_STEP_INTERLEAVE,
   WITH_HEARTBEATS,
   REMOTE_USER_MESSAGE,
   TOOL_ERROR,
@@ -210,6 +211,31 @@ describe('chat-store SSE integration', () => {
     // A tool part should exist somewhere
     const toolIdx = assistant.parts.findIndex(p => p.type === 'tool')
     expect(toolIdx).toBeGreaterThan(0)
+  })
+
+  it('preserves order across multiple steps with distinct tool ids', async () => {
+    server.use(createSSEHandler(MULTI_STEP_INTERLEAVE))
+    const result = await setupSession()
+
+    await act(async () => { await result.current.sendMessage('Run steps') })
+
+    const assistant = result.current.messages[1]
+    // Expected interleave: text → tool → text → tool → text (5 parts, 2 distinct tools)
+    const kinds = assistant.parts.map(p => p.type)
+    expect(kinds).toEqual(['text', 'tool', 'text', 'tool', 'text'])
+
+    const toolParts = assistant.parts.filter(p => p.type === 'tool') as any[]
+    const ids = toolParts.map(p => p.toolCall.id)
+    expect(new Set(ids).size).toBe(2) // both tool cards preserved, not merged
+
+    // Each tool keeps its own result (not overwritten)
+    const rm = assistant.toolResultsMap || {}
+    expect(rm['json_extract_txt_0_aaaa']?.result).toBe('AAA')
+    expect(rm['json_extract_txt_0_bbbb']?.result).toBe('BBB')
+
+    // Messages are NOT clumped — three separate text parts
+    const texts = (assistant.parts.filter(p => p.type === 'text') as any[]).map(p => p.content)
+    expect(texts).toEqual(['Step one.', 'Step two.', 'Done.'])
   })
 
   // ----------------------------------------------------------

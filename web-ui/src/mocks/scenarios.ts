@@ -171,6 +171,23 @@ export const TEXT_TOOL_TEXT: SSEEvent[] = [
     { event: 'done', data: { status: 'OK' } },
 ]
 
+/**
+ * Multi-step turn: text → tool → text → tool → text, with DISTINCT tool ids.
+ * Guards interleaving order (regression: colliding action_ids merged the second
+ * tool into the first card and clumped messages — fixed by unique ids backend-side).
+ */
+export const MULTI_STEP_INTERLEAVE: SSEEvent[] = [
+    { event: 'connected', data: {} },
+    { event: 'message', data: { content: 'Step one.' } },
+    { event: 'tool_call', data: { action_id: 'json_extract_txt_0_aaaa', tool: 'Bash', args: { command: 'echo AAA' } } },
+    { event: 'tool_result', data: { action_id: 'json_extract_txt_0_aaaa', tool: 'Bash', output: 'AAA', status: 'OK' } },
+    { event: 'message', data: { content: 'Step two.' } },
+    { event: 'tool_call', data: { action_id: 'json_extract_txt_0_bbbb', tool: 'Bash', args: { command: 'echo BBB' } } },
+    { event: 'tool_result', data: { action_id: 'json_extract_txt_0_bbbb', tool: 'Bash', output: 'BBB', status: 'OK' } },
+    { event: 'message', data: { content: 'Done.' } },
+    { event: 'done', data: { status: 'OK' } },
+]
+
 /** Heartbeat events (keep-alive) */
 export const WITH_HEARTBEATS: SSEEvent[] = [
     { event: 'connected', data: {} },
