@@ -187,6 +187,33 @@ class TestVCPULimits:
         assert "empty response" in r2.final_result.output.lower()
 
     @pytest.mark.asyncio
+    async def test_narrate_not_act_is_nudged(self):
+        """A REPLY that only announces a tool action (no tool call) is nudged
+        to actually act, not accepted as the final answer. Bounded by
+        max_consecutive_errors."""
+        config = VCPUConfig(max_consecutive_errors=2, max_iterations=100)
+        responses = [MockResponse(content="I will now run bash to list the files.") for _ in range(5)]
+        alu = MockALU(responses)
+        decoder = InstructionDecoder()
+        gate = MockGate()
+        mmu = MMU()
+        mmu.add_user_message("List files")
+        vcpu = VCPU(alu, decoder, gate, mmu, [], config=config, text_is_final=True)
+
+        r1 = await vcpu.step()
+        assert not r1.is_final  # announced a tool action → nudged, not final
+        r2 = await vcpu.step()
+        assert r2.is_final  # 2nd narration hits max_consecutive_errors → finalize
+
+    @pytest.mark.asyncio
+    async def test_plain_final_answer_not_nudged(self):
+        """An ordinary text answer (no tool announcement) finalizes immediately."""
+        vcpu, _ = make_vcpu([MockResponse(content="The answer is 42.")], text_is_final=True)
+        r = await vcpu.step()
+        assert r.is_final
+        assert "42" in r.final_result.output
+
+    @pytest.mark.asyncio
     async def test_interruption(self):
         vcpu, _ = make_vcpu([MockResponse(content="hello")])
         vcpu.request_interruption()

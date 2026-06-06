@@ -20,12 +20,33 @@ This is the "brain" that ties together:
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
 from .protocol import ActionIR, Fault, StepResult, ToolResult
 
 logger = logging.getLogger("nimbus.vcpu")
+
+# Detects a reply that ANNOUNCES an imminent tool action ("I will run bash…",
+# "我将调用 Grep 工具…") — used to catch the narrate-instead-of-act failure mode
+# where the model describes what it will do but emits no tool call. Requires
+# intent + action-verb + a tool-ish noun in proximity to avoid matching ordinary
+# final answers like "I will summarize the results".
+_ANNOUNCES_TOOL_RE = re.compile(
+    r"(我将|我会|我现在|我打算|接下来我|让我|马上|稍后我|"
+    r"i['’ ]?(?:will|'ll|m going to)|let me|going to|i am going to)"
+    r"[^。.!?\n]{0,40}"
+    r"(调用|使用|运行|执行|跑(?:一下|个)?|call|use|run|invoke|execute)"
+    r"[^。.!?\n]{0,30}"
+    r"(工具|命令|脚本|tool|bash|grep|glob|read|write|edit|spawn_agent|command|script)",
+    re.IGNORECASE,
+)
+
+
+def _announces_unfulfilled_tool(text: str) -> bool:
+    """True if the (tool-call-less) reply text merely announces a tool action."""
+    return bool(text) and bool(_ANNOUNCES_TOOL_RE.search(text))
 
 
 # =============================================================================
@@ -306,9 +327,32 @@ class VCPU:
         result.actions = actions
 
         # ---- ROUTE: RETURN/REPLY → done ----
+        has_tool_action = any(a.kind == "TOOL_CALL" for a in actions)
         for action in actions:
             if action.kind in ("RETURN", "REPLY"):
                 text = action.args.get("text", action.args.get("result", ""))
+
+                # narrate-not-act guard: a plain-text REPLY that only ANNOUNCES a
+                # tool action ("I'll run bash…") but emits no tool call is the
+                # model planning instead of acting. Nudge it to actually act
+                # rather than accepting the plan as the final answer. Bounded by
+                # max_consecutive_errors (RETURN = explicit final is never nudged).
+                if (
+                    action.kind == "REPLY"
+                    and not has_tool_action
+                    and _announces_unfulfilled_tool(content or text)
+                ):
+                    errs = self._exec.on_error()
+                    if errs < self.config.max_consecutive_errors:
+                        if content or text:
+                            self.mmu.add_assistant_message(content or text)
+                        self.mmu.add_system_message(
+                            "You described a tool action but did not call any tool. "
+                            "If you intend to act, emit the tool call now. Only give a "
+                            "plain final answer if no tool is actually needed."
+                        )
+                        return result  # non-final, retry
+
                 # Persist to MMU
                 if content:
                     self.mmu.add_assistant_message(content)

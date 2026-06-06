@@ -22,10 +22,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("nimbus.spawn_agent")
 
-# Role → allowed tools mapping
+# Role → allowed tools mapping.
+# reader: read-only discovery (Glob lets it enumerate files — without it a
+#         reader literally cannot answer "what files are here").
+# worker: full read+write (a worker must be able to Read/Grep to verify its
+#         own mutations, not just blindly Write/Edit/Bash).
 _ROLE_TOOLS: Dict[str, List[str]] = {
-    "reader": ["Read", "Grep"],
-    "worker": ["Write", "Edit", "Bash"],
+    "reader": ["Read", "Grep", "Glob"],
+    "worker": ["Read", "Grep", "Glob", "Write", "Edit", "Bash"],
 }
 
 DEFAULT_TIMEOUT = 600
@@ -38,6 +42,7 @@ def _build_sub_agent_tools(role: str) -> ToolRegistry:
     from nimbus.core.tools.edit import edit_file
     from nimbus.core.tools.bash import bash_command
     from nimbus.core.tools.grep import grep_search
+    from nimbus.core.tools.glob import glob_search
     from nimbus.core.tools.submit_result import submit_result
 
     allowed = _ROLE_TOOLS.get(role, [])
@@ -46,6 +51,7 @@ def _build_sub_agent_tools(role: str) -> ToolRegistry:
     tool_map = {
         "Read": read_file,
         "Grep": grep_search,
+        "Glob": glob_search,
         "Write": write_file,
         "Edit": edit_file,
         "Bash": bash_command,
@@ -340,10 +346,19 @@ async def _run_sub_agent(
                 f"Full details are in the scratchpad: {scratchpad_path})"
             )
 
+        # Surface the role's toolset so the parent can recover correctly (e.g.
+        # re-spawn with a role that has the needed tool) instead of guessing the
+        # cause — a reader failing a "list files" task isn't a permission denial,
+        # it's a missing-capability mismatch.
+        role_tools = ", ".join(_ROLE_TOOLS.get(role, [])) or "(none)"
         return {
             "output": (
                 f"Sub-agent [{role}] completed (no structured deliverable).\n\n"
                 f"**Result:**\n{output_text}\n\n"
+                f"**Sub-agent role/tools:** `{role}` had only [{role_tools}]. "
+                f"If the task needed a tool this role lacks (e.g. running shell "
+                f"commands needs a `worker`), re-spawn with the right role rather "
+                f"than assuming a permission error.\n"
                 f"**Scratchpad:** `{scratchpad_path}`"
             ),
             "ui_detail": {
@@ -406,7 +421,14 @@ async def _run_sub_agent(
         ToolParameter(
             name="role",
             type="string",
-            description="The role of the sub-agent. MUST be 'reader' (Read/Grep only) or 'worker' (Write/Edit/Bash).",
+            description=(
+                "The sub-agent role. 'reader' = read-only inspection "
+                "(Read/Grep/Glob) — use for reading files, searching content, "
+                "listing/enumerating files. 'worker' = full access "
+                "(Read/Grep/Glob + Write/Edit/Bash) — use whenever the task needs "
+                "to run shell commands, create/modify files, or execute anything. "
+                "If in doubt, or the task involves running commands, pick 'worker'."
+            ),
             required=True,
             enum=["reader", "worker"],
         ),

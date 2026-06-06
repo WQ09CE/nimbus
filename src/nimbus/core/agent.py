@@ -93,6 +93,7 @@ def _register_default_tools(registry: ToolRegistry):
     """Register the default tool set."""
     from .tools.bash import bash_command
     from .tools.edit import edit_file
+    from .tools.glob import glob_search
     from .tools.grep import grep_search
     from .tools.read import read_file
     from .tools.spawn_agent import spawn_agent
@@ -103,6 +104,7 @@ def _register_default_tools(registry: ToolRegistry):
     registry.register_decorated(edit_file)
     registry.register_decorated(bash_command)
     registry.register_decorated(grep_search)
+    registry.register_decorated(glob_search)
     registry.register_decorated(spawn_agent)
 
 
