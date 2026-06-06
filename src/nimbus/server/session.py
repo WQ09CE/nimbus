@@ -374,14 +374,10 @@ class SessionManagerV2:
 
         scratchpad_path = f".nimbus/sessions/{session_id}/scratchpad.md"
         system_prompt = (
-            "You are a capable AI assistant. Use tools to solve the user's tasks. Think step by step.\n\n"
-            "# Execution Discipline (CRITICAL)\n"
-            "- NEVER end your turn with only a plan or a description of what you are about to do. "
-            "If you say you will call a tool or spawn an agent (e.g. 'Next Action: spawn researcher', "
-            "'I will now run X', '接下来我将调用…'), you MUST emit that tool call in the SAME response.\n"
-            "- A plain-text response with no tool call is treated as your FINAL answer — only do that "
-            "when the whole task is already complete.\n"
-            "- Announce-then-act in one turn, never announce-then-stop.\n\n"
+            "You are a capable AI assistant. Use tools to solve the user's tasks. Think step by step.\n"
+            "Always reply in the same language the user uses (请使用与用户相同的语言回复)。\n"
+            "If you say you will call a tool or spawn an agent, emit that tool call in the SAME "
+            "response — never stop at a plan. A plain-text reply with no tool call is your FINAL answer.\n\n"
             "# Task Management & Scratchpad\n"
             f"You have a dedicated scratchpad at `{scratchpad_path}`.\n"
             "For any task requiring multiple steps, you MUST use the `Write`, `Edit`, and `Read` tools to maintain this file.\n"
