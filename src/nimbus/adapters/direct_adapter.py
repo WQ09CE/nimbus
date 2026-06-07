@@ -190,6 +190,78 @@ def _extract_tool_calls_from_text(text: str) -> list[dict] | None:
     return None
 
 
+def _find_json_spans(text: str) -> list[tuple[int, int]]:
+    """Return (start, end) of top-level balanced {...}/[...] spans, ignoring
+    braces inside strings. Used to locate embedded JSON to strip from prose."""
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch in "{[":
+            depth = 0
+            in_str = False
+            esc = False
+            j = i
+            while j < n:
+                c = text[j]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif c == "\\":
+                        esc = True
+                    elif c == '"':
+                        in_str = False
+                else:
+                    if c == '"':
+                        in_str = True
+                    elif c in "{[":
+                        depth += 1
+                    elif c in "}]":
+                        depth -= 1
+                        if depth == 0:
+                            spans.append((i, j + 1))
+                            break
+                j += 1
+            i = (j + 1) if j < n else n
+        else:
+            i += 1
+    return spans
+
+
+def _strip_tool_call_blocks(text: str) -> str:
+    """Remove tool-call JSON that a model inlined into its prose, so the JSON
+    doesn't leak into the stored/displayed assistant message. Only removes
+    blocks that actually parse as a tool call — ordinary JSON the user is
+    discussing is left untouched."""
+    if not text:
+        return text
+    cleaned = text
+
+    # 1. Fenced ```json / ```tool_code blocks that are tool calls.
+    def _fenced_repl(m: "re.Match[str]") -> str:
+        inner = m.group(1).strip()
+        return "" if _extract_tool_calls_from_json(inner) else m.group(0)
+
+    cleaned = re.sub(
+        r"```(?:json|tool_code|tool)?\s*\n(.*?)\n\s*```",
+        _fenced_repl,
+        cleaned,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    # 2. Bare top-level JSON spans that are tool calls (remove from the end so
+    #    earlier indices stay valid).
+    for start, end in reversed(_find_json_spans(cleaned)):
+        seg = cleaned[start:end].strip()
+        if _extract_tool_calls_from_json(seg):
+            cleaned = cleaned[:start] + cleaned[end:]
+
+    # Tidy leftover whitespace.
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
 def _tool_names_from_openai_tools(tools: Optional[List[Dict[str, Any]]]) -> set[str]:
     names: set[str] = set()
     for tool in tools or []:
@@ -739,6 +811,13 @@ class DirectAdapter:
             raise _classify_llm_exception(e)
 
         content = "".join(full_content)
+
+        # If the model inlined tool-call JSON into its prose (gemma/ollama text
+        # protocol), strip it so the JSON doesn't leak into the stored message
+        # and the model's own next-turn context. No-op for providers whose tool
+        # calls arrive structured (Anthropic/Codex) — their prose has no JSON.
+        if collected_tool_calls and content:
+            content = _strip_tool_call_blocks(content)
 
         # Format tool calls for VcpuLLMResponse
         tool_calls = []
