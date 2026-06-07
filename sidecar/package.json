@@ -1,0 +1,12 @@
+{
+  "name": "nimbus-pi-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenAI-compatible local proxy over pi-ai → GPT-5.x on the ChatGPT/Codex subscription. nimbus routes pi-codex/* models here.",
+  "bin": { "nimbus-pi-sidecar": "pi-sidecar.mjs" },
+  "scripts": { "start": "node pi-sidecar.mjs" },
+  "dependencies": {
+    "@earendil-works/pi-ai": "^0.78.1"
+  }
+}
