@@ -55,6 +55,10 @@ class NimbusConfig:
     # binds beyond loopback, e.g. Docker). Empty = loopback/no-auth.
     pi_sidecar_token: str = ""
 
+    # Context window cap (ours — we control compaction). 0 = use the model's full
+    # registered window; >0 = cap the usable window at this many tokens.
+    max_context_tokens: int = 0
+
     # User memory file (Pinned into MMU at session start, human-editable)
     memory_path: str = str(DEFAULT_MEMORY_PATH)
 
@@ -204,6 +208,12 @@ def _apply_env(config: NimbusConfig) -> None:
 
     if v := os.environ.get("NIMBUS_PI_SIDECAR_TOKEN"):
         config.pi_sidecar_token = v
+
+    if v := os.environ.get("NIMBUS_MAX_CONTEXT_TOKENS"):
+        try:
+            config.max_context_tokens = int(v)
+        except ValueError:
+            pass
 
     if "NIMBUS_SKILLS" in os.environ:
         raw = os.environ.get("NIMBUS_SKILLS", "")

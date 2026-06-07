@@ -69,8 +69,9 @@ class AgentConfig:
     llm_call_timeout: float = 300.0
     max_consecutive_errors: int = 3
 
-    # MMU
-    max_context_tokens: int = 200_000
+    # MMU. Our context cap: 0 = use the model's full registered window;
+    # >0 = cap at min(model_window, this). Compaction is ours, so this is ours.
+    max_context_tokens: int = 0
     compress_threshold: float = 0.85
 
     # Loop
@@ -151,8 +152,11 @@ class AgentOS:
         else:
             self._adapter = self._create_adapter()
 
-        # Resolve model context window from registry
-        self._context_window = self.config.max_context_tokens  # default fallback
+        # Resolve usable context window. config.max_context_tokens is OUR cap:
+        #   0  → use the model's full registered window (compaction is ours)
+        #   >0 → cap at min(model_window, cap)
+        cap = self.config.max_context_tokens
+        self._context_window = cap if cap > 0 else 200_000  # fallback for unknown models
         if adapter and hasattr(adapter, '_model'):
             from nimbus.core.models.registry import ModelRegistry
             model_key = getattr(adapter, '_model', '')
@@ -160,7 +164,7 @@ class AgentOS:
                 model_key = model_key.split('/', 1)[1]
             info = ModelRegistry.get(model_key)
             if info:
-                self._context_window = min(info.context_window, self.config.max_context_tokens)
+                self._context_window = min(info.context_window, cap) if cap > 0 else info.context_window
 
         # 2. Tool Registry
         self._registry = tools or ToolRegistry()

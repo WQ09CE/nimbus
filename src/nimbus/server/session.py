@@ -371,6 +371,8 @@ class SessionManagerV2:
         agent_config.llm_call_timeout = 120.0
         agent_config.text_is_final = True  # Chat mode: pure text = final response, don't poke
         agent_config.max_consecutive_thoughts = 2  # Safety net: stop after 2 thoughts max
+        # Our context-window cap (0 = use the model's full window; compaction is ours).
+        agent_config.max_context_tokens = nimbus_config.max_context_tokens
 
         scratchpad_path = f".nimbus/sessions/{session_id}/scratchpad.md"
         system_prompt = (
