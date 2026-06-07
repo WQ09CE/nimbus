@@ -44,8 +44,9 @@ The sidecar fronts your ChatGPT subscription — never expose it unauthenticated
 
 ## Notes
 - Auth: reads `~/.pi/agent/auth.json` → `openai-codex.access` (Bearer). The
-  account id is derived from the JWT by pi-ai. Token currently must be valid;
-  refresh-on-expiry is a TODO (refresh token is present in the same file).
+  account id is derived from the JWT by pi-ai. The token is auto-refreshed
+  (single-flight) when within 5 min of expiry, using the refresh token in the
+  same file, and written back — so the sidecar keeps working across expiries.
 - ToS: subscription use in third-party harnesses is publicly supported by
   OpenAI (pi/OpenCode). Keep iteration volume reasonable.
 - Endpoints: `POST /v1/chat/completions` (stream + non-stream), `GET /v1/models`.

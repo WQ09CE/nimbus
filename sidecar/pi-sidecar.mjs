@@ -29,12 +29,42 @@ function authOk(req) {
   return crypto.timingSafeEqual(a, b);
 }
 
-function loadToken() {
-  const auth = JSON.parse(fs.readFileSync(AUTH_PATH, "utf8"));
-  const cx = auth["openai-codex"];
-  if (!cx || !cx.access) throw new Error("no openai-codex token in " + AUTH_PATH);
-  if (cx.expires && cx.expires < Date.now()) throw new Error("openai-codex token expired — re-run pi login");
+// --- codex OAuth token: load + auto-refresh ---
+const TOKEN_URL = "https://auth.openai.com/oauth/token";
+const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+const REFRESH_BUFFER_MS = 5 * 60 * 1000;
+let refreshing = null; // in-flight refresh promise (single-flight)
+
+function readAuth() { return JSON.parse(fs.readFileSync(AUTH_PATH, "utf8")); }
+
+function writeCodex(cx) {
+  let full = {};
+  try { full = readAuth(); } catch {}
+  full["openai-codex"] = cx;
+  fs.writeFileSync(AUTH_PATH, JSON.stringify(full, null, 2));
+}
+
+async function refreshCodex(cx) {
+  const body = new URLSearchParams({ grant_type: "refresh_token", client_id: CLIENT_ID, refresh_token: cx.refresh });
+  const r = await fetch(TOKEN_URL, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
+  if (!r.ok) throw new Error(`codex token refresh failed: HTTP ${r.status} ${(await r.text()).slice(0, 200)}`);
+  const j = await r.json();
+  cx.access = j.access_token;
+  cx.refresh = j.refresh_token || cx.refresh;
+  cx.expires = Date.now() + j.expires_in * 1000;
+  writeCodex(cx);
+  console.log("[pi-sidecar] refreshed codex token, new expiry " + new Date(cx.expires).toISOString());
   return cx.access;
+}
+
+async function getAccessToken() {
+  // Re-read each call so external refreshes (by pi) are picked up.
+  const cx = readAuth()["openai-codex"];
+  if (!cx || !cx.access) throw new Error("no openai-codex token in " + AUTH_PATH);
+  if (cx.expires && cx.expires - Date.now() > REFRESH_BUFFER_MS) return cx.access;
+  if (!cx.refresh) throw new Error("codex token expired and no refresh token — re-run pi login");
+  if (!refreshing) refreshing = refreshCodex(cx).finally(() => { refreshing = null; });
+  return await refreshing;
 }
 
 const modelId = (m) => { let id = m || "gpt-5.5"; if (id.includes("/")) id = id.split("/").pop(); return id; };
@@ -93,7 +123,7 @@ const server = http.createServer(async (req, res) => {
   let body; try { body = JSON.parse(raw); } catch { res.writeHead(400); return res.end("bad json"); }
 
   let token, model, ctx;
-  try { token = loadToken(); model = getModel("openai-codex", modelId(body.model)); ctx = toContext(body); }
+  try { token = await getAccessToken(); model = getModel("openai-codex", modelId(body.model)); ctx = toContext(body); }
   catch (e) { res.writeHead(500, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: { message: e.message } })); }
 
   const opts = { apiKey: token, reasoningEffort: "none" };
