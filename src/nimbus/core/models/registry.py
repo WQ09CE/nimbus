@@ -294,6 +294,39 @@ ModelRegistry.register(ModelInfo(
 ))
 
 # ---------------------------------------------------------------------------
+# pi-codex — GPT-5.x via the ChatGPT/Codex subscription, served by the local
+# pi-ai sidecar (OpenAI-compatible). Routed in llm_factory to openai/<id> at
+# config.pi_sidecar_url. No per-token cost (subscription).
+# ---------------------------------------------------------------------------
+
+ModelRegistry.register(ModelInfo(
+    model_id="gpt-5.5",
+    provider="pi-codex",
+    tier="ultra",
+    aliases=["gpt-5.5", "pi-codex/gpt-5.5"],
+    manifest=ModelManifest("gpt-5.5", GPT_FEATURES),
+    context_window=272_000,
+))
+
+ModelRegistry.register(ModelInfo(
+    model_id="gpt-5.4",
+    provider="pi-codex",
+    tier="pro",
+    aliases=["gpt-5.4", "pi-codex/gpt-5.4"],
+    manifest=ModelManifest("gpt-5.4", GPT_FEATURES),
+    context_window=272_000,
+))
+
+ModelRegistry.register(ModelInfo(
+    model_id="gpt-5.4-mini",
+    provider="pi-codex",
+    tier="flash",
+    aliases=["gpt-5.4-mini", "pi-codex/gpt-5.4-mini"],
+    manifest=ModelManifest("gpt-5.4-mini", GPT_FEATURES),
+    context_window=272_000,
+))
+
+# ---------------------------------------------------------------------------
 # Google
 # ---------------------------------------------------------------------------
 

@@ -71,6 +71,15 @@ async def create_llm_client(
     if provider == "ollama":
         from nimbus.config import get_config
         config.base_url = get_config().ollama_base_url
+    elif provider == "pi-codex":
+        # GPT-5.x via the ChatGPT/Codex subscription, proxied by the local pi-ai
+        # sidecar (OpenAI-compatible). Route as openai/<id> at the sidecar URL.
+        import os
+        from nimbus.config import get_config
+        config.provider = "openai"
+        config.base_url = base_url or get_config().pi_sidecar_url
+        # litellm's openai path requires a key; the sidecar ignores its value.
+        os.environ.setdefault("OPENAI_API_KEY", "sk-pi-sidecar")
 
     adapter = DirectAdapter(config)
     await adapter.__aenter__()
