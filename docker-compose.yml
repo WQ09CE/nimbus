@@ -19,6 +19,12 @@ services:
       NIMBUS_API_URL: http://127.0.0.1:4096
       NIMBUS_DB: /app/.nimbus/nimbus.db
       NIMBUS_ACCESS_TOKEN: ${NIMBUS_ACCESS_TOKEN:-nimbus-666}
+      # GPT-5.x (pi-codex/* models) via the pi-ai sidecar running on the HOST.
+      # Sidecar keeps the ChatGPT auth on the host; the container just connects out.
+      NIMBUS_PI_SIDECAR_URL: ${NIMBUS_PI_SIDECAR_URL:-http://host.docker.internal:8799/v1}
+    # Lets the container resolve the host (Linux needs the explicit host-gateway).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${WEBUI_PORT:-3000}:3000"
       - "${NIMBUS_PORT:-4096}:4096"

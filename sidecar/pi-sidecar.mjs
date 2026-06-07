@@ -105,4 +105,5 @@ const server = http.createServer(async (req, res) => {
   res.end();
 });
 
-server.listen(PORT, () => console.log(`pi-sidecar on http://localhost:${PORT}/v1 (gpt-5.5 via openai-codex)`));
+// Bind all interfaces so a container can reach it via host.docker.internal.
+server.listen(PORT, "0.0.0.0", () => console.log(`pi-sidecar on http://0.0.0.0:${PORT}/v1 (gpt-5.5 via openai-codex)`));
