@@ -51,6 +51,9 @@ class NimbusConfig:
     # pi-ai sidecar (OpenAI-compatible) for GPT-5.x via the ChatGPT/Codex
     # subscription. The pi-codex/* models route here.
     pi_sidecar_url: str = "http://localhost:8799/v1"
+    # Shared secret sent as the Bearer to the sidecar (required when the sidecar
+    # binds beyond loopback, e.g. Docker). Empty = loopback/no-auth.
+    pi_sidecar_token: str = ""
 
     # User memory file (Pinned into MMU at session start, human-editable)
     memory_path: str = str(DEFAULT_MEMORY_PATH)
@@ -198,6 +201,9 @@ def _apply_env(config: NimbusConfig) -> None:
 
     if v := os.environ.get("NIMBUS_PI_SIDECAR_URL"):
         config.pi_sidecar_url = v
+
+    if v := os.environ.get("NIMBUS_PI_SIDECAR_TOKEN"):
+        config.pi_sidecar_token = v
 
     if "NIMBUS_SKILLS" in os.environ:
         raw = os.environ.get("NIMBUS_SKILLS", "")

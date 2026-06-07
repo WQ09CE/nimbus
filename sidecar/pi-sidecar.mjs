@@ -3,10 +3,31 @@
 import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
+import crypto from "node:crypto";
 import { getModel, stream, complete } from "@earendil-works/pi-ai";
 
 const PORT = Number(process.env.PI_SIDECAR_PORT || 8799);
+// Default to loopback (host-only). Set 0.0.0.0 (or a bridge IP) for Docker —
+// but ONLY together with PI_SIDECAR_TOKEN, or the ChatGPT subscription is open
+// to anyone on the LAN.
+const HOST = process.env.PI_SIDECAR_HOST || "127.0.0.1";
+// Shared secret. When set, every request must carry `Authorization: Bearer <it>`
+// (litellm sends OPENAI_API_KEY there, so set them equal). Required when not on
+// loopback to avoid exposing the subscription token unauthenticated.
+const TOKEN = process.env.PI_SIDECAR_TOKEN || "";
+if (HOST !== "127.0.0.1" && HOST !== "localhost" && !TOKEN) {
+  console.error("[pi-sidecar] REFUSING to bind " + HOST + " without PI_SIDECAR_TOKEN (would expose the ChatGPT subscription unauthenticated). Set PI_SIDECAR_TOKEN.");
+  process.exit(1);
+}
 const AUTH_PATH = os.homedir() + "/.pi/agent/auth.json";
+
+function authOk(req) {
+  if (!TOKEN) return true; // loopback-only mode
+  const got = (req.headers["authorization"] || "").replace(/^Bearer\s+/i, "");
+  const a = crypto.createHash("sha256").update(got).digest();
+  const b = crypto.createHash("sha256").update(TOKEN).digest();
+  return crypto.timingSafeEqual(a, b);
+}
 
 function loadToken() {
   const auth = JSON.parse(fs.readFileSync(AUTH_PATH, "utf8"));
@@ -61,6 +82,7 @@ function assistantToOpenAI(r) {
 }
 
 const server = http.createServer(async (req, res) => {
+  if (!authOk(req)) { res.writeHead(401, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: { message: "unauthorized" } })); }
   if (req.method === "GET" && req.url.startsWith("/v1/models")) {
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ object: "list", data: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"].map((id) => ({ id, object: "model" })) }));
@@ -105,5 +127,4 @@ const server = http.createServer(async (req, res) => {
   res.end();
 });
 
-// Bind all interfaces so a container can reach it via host.docker.internal.
-server.listen(PORT, "0.0.0.0", () => console.log(`pi-sidecar on http://0.0.0.0:${PORT}/v1 (gpt-5.5 via openai-codex)`));
+server.listen(PORT, HOST, () => console.log(`pi-sidecar on http://${HOST}:${PORT}/v1 (gpt-5.5 via openai-codex)${TOKEN ? " [auth on]" : ""}`));

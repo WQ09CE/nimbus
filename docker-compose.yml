@@ -21,7 +21,10 @@ services:
       NIMBUS_ACCESS_TOKEN: ${NIMBUS_ACCESS_TOKEN:-nimbus-666}
       # GPT-5.x (pi-codex/* models) via the pi-ai sidecar running on the HOST.
       # Sidecar keeps the ChatGPT auth on the host; the container just connects out.
+      # Run the host sidecar with PI_SIDECAR_HOST=0.0.0.0 + PI_SIDECAR_TOKEN=<same>
+      # so it's not exposed unauthenticated on the LAN.
       NIMBUS_PI_SIDECAR_URL: ${NIMBUS_PI_SIDECAR_URL:-http://host.docker.internal:8799/v1}
+      NIMBUS_PI_SIDECAR_TOKEN: ${NIMBUS_PI_SIDECAR_TOKEN:-}
     # Lets the container resolve the host (Linux needs the explicit host-gateway).
     extra_hosts:
       - "host.docker.internal:host-gateway"

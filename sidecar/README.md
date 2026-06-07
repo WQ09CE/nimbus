@@ -24,11 +24,23 @@ npm install
 PI_SIDECAR_PORT=8799 npm start
 ```
 
-Then point nimbus at it (default already matches):
-```bash
-export NIMBUS_PI_SIDECAR_URL=http://localhost:8799/v1
-```
-and select model `gpt-5.5` (alias for `pi-codex/gpt-5.5`).
+and select model `gpt-5.5` (alias for `pi-codex/gpt-5.5`). nimbus defaults to
+`http://localhost:8799/v1`.
+
+## Bind & auth (important)
+The sidecar fronts your ChatGPT subscription — never expose it unauthenticated.
+
+- **Host-only (default, secure):** binds `127.0.0.1`, no token needed. Use this
+  when running `nimbus serve` on the host.
+- **Docker / remote:** the container reaches the host, so the sidecar must bind
+  beyond loopback — which REQUIRES a shared secret. Start it with:
+  ```bash
+  PI_SIDECAR_HOST=0.0.0.0 PI_SIDECAR_TOKEN=<random-secret> PI_SIDECAR_PORT=8799 npm start
+  ```
+  and set the same secret for nimbus: `NIMBUS_PI_SIDECAR_TOKEN=<random-secret>`
+  (compose passes it through). The sidecar refuses to bind non-loopback without
+  a token. The token is checked (constant-time) on every request via the
+  `Authorization: Bearer` header litellm already sends.
 
 ## Notes
 - Auth: reads `~/.pi/agent/auth.json` → `openai-codex.access` (Bearer). The

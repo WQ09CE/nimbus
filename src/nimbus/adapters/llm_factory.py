@@ -76,10 +76,15 @@ async def create_llm_client(
         # sidecar (OpenAI-compatible). Route as openai/<id> at the sidecar URL.
         import os
         from nimbus.config import get_config
+        cfg = get_config()
         config.provider = "openai"
-        config.base_url = base_url or get_config().pi_sidecar_url
-        # litellm's openai path requires a key; the sidecar ignores its value.
-        os.environ.setdefault("OPENAI_API_KEY", "sk-pi-sidecar")
+        config.base_url = base_url or cfg.pi_sidecar_url
+        # litellm sends OPENAI_API_KEY as the Bearer. When the sidecar enforces a
+        # shared secret (non-loopback bind), this must match PI_SIDECAR_TOKEN.
+        if cfg.pi_sidecar_token:
+            os.environ["OPENAI_API_KEY"] = cfg.pi_sidecar_token
+        else:
+            os.environ.setdefault("OPENAI_API_KEY", "sk-pi-sidecar")
 
     adapter = DirectAdapter(config)
     await adapter.__aenter__()
