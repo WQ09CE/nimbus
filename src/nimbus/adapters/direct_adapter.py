@@ -2107,6 +2107,14 @@ class DirectAdapter:
 
             # 1. Yield extracted JSON tool calls or the raw text
             full_text = "".join(text_buffer)
+            # Diagnostic (debug — fires on every text-protocol turn): the raw
+            # text when no native tool call was captured. Confirmed empty-decode
+            # turns show raw_text='' (genuine empty generation, nothing to extract).
+            if not tool_call_chunks and not embedded_text_tool_calls:
+                logger.debug(
+                    "[LiteLLM] no native tool_call. raw_text=%r reasoning_len=%d text_streamed=%s",
+                    full_text[:600], sum(len(r) for r in reasoning_chunks), text_streamed,
+                )
             if full_text.strip():
                 content_to_check = full_text.strip()
                 gemma_post_tool_without_schemas = (

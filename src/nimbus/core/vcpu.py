@@ -329,6 +329,12 @@ class VCPU:
             return result  # non-final, will retry
 
         if not actions:
+            # Diagnostic: capture exactly what the model produced that decoded to
+            # nothing, so we can tell missed-tool-call-format from reasoning/refusal.
+            logger.warning(
+                "[VCPU] Empty decode (iter=%d): content=%r tool_calls=%r",
+                self._exec.iteration, (str(content)[:600] if content else content), tool_calls,
+            )
             self.mmu.add_system_message("Empty response. You MUST call a tool or return a final answer.")
             errs = self._exec.on_error()
             # Enforce the consecutive-error budget here too (other error paths do).
