@@ -344,6 +344,38 @@ def _find_closing_fence(text: str) -> int | None:
     return idx if idx >= 0 else None
 
 
+def _find_closing_brace(text: str) -> int | None:
+    """Index of the brace that closes the JSON object/array at text[0], or None
+    if not yet balanced. String-aware (ignores braces inside JSON strings)."""
+    if not text or text[0] not in "{[":
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i, c in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        else:
+            if c == '"':
+                in_str = True
+            elif c in "{[":
+                depth += 1
+            elif c in "}]":
+                depth -= 1
+                if depth == 0:
+                    return i
+    return None
+
+
+# Start of an inlined JSON tool call: `{"` or `[{` (allowing whitespace).
+_BRACE_TOOL_START_RE = re.compile(r'\{\s*"|\[\s*\{')
+
+
 _TOOL_CALL_TEXT_MARKERS = ("tool calls:", "tool call:")
 
 
@@ -1912,6 +1944,8 @@ class DirectAdapter:
             fenced_tool_buffer = ""
             buffering_labeled_tool_text = False
             labeled_tool_buffer = ""
+            buffering_brace_tool_text = False
+            brace_tool_buffer = ""
             fence_probe = ""
             tool_schema_names = _tool_names_from_openai_tools(active_tools_for_response)
             gemma_text_tool_extract = (
@@ -1975,6 +2009,31 @@ class DirectAdapter:
                                     break
                                 continue
 
+                            if buffering_brace_tool_text:
+                                brace_tool_buffer += pending
+                                pending = ""
+                                close_idx = _find_closing_brace(brace_tool_buffer)
+                                if close_idx is None:
+                                    break
+                                block = brace_tool_buffer[:close_idx + 1]
+                                rest = brace_tool_buffer[close_idx + 1:]
+                                extracted = _filter_tool_calls_for_schemas(
+                                    _extract_tool_calls_from_text(block),
+                                    tool_schema_names,
+                                )
+                                if extracted:
+                                    embedded_text_tool_calls.extend(extracted)
+                                else:
+                                    # Not a tool call — it was just prose with braces.
+                                    text_streamed = True
+                                    yield LLMStreamEvent(type="text", text=block)
+                                buffering_brace_tool_text = False
+                                brace_tool_buffer = ""
+                                pending = rest
+                                if not pending:
+                                    break
+                                continue
+
                             if buffering_labeled_tool_text:
                                 labeled_tool_buffer += pending
                                 break
@@ -2004,9 +2063,25 @@ class DirectAdapter:
                                 pending = ""
                                 continue
 
+                            # Bare inlined JSON tool call after prose ("…path.\n\n{\"name\":…").
+                            # Buffer from the brace so the JSON never streams as text.
+                            brace_match = _BRACE_TOOL_START_RE.search(pending)
+                            if brace_match:
+                                bidx = brace_match.start()
+                                prefix = pending[:bidx]
+                                if prefix:
+                                    text_streamed = True
+                                    yield LLMStreamEvent(type="text", text=prefix)
+                                buffering_brace_tool_text = True
+                                brace_tool_buffer = pending[bidx:]
+                                pending = ""
+                                continue
+
                             backtick_tail_len = 2 if pending.endswith("``") else 1 if pending.endswith("`") else 0
                             marker_tail_len = _tool_call_marker_suffix_len(pending)
-                            tail_len = max(backtick_tail_len, marker_tail_len)
+                            # Hold a trailing bare '{'/'[' so a cross-delta '{"' is caught next chunk.
+                            brace_tail_len = 1 if pending.endswith(("{", "[")) else 0
+                            tail_len = max(backtick_tail_len, marker_tail_len, brace_tail_len)
                             if tail_len:
                                 emit_text = pending[:-tail_len]
                                 fence_probe = pending[-tail_len:]

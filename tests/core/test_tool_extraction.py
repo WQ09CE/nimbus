@@ -2,9 +2,19 @@
 
 from nimbus.adapters.direct_adapter import (
     _extract_tool_calls_from_text,
+    _find_closing_brace,
     _find_json_spans,
     _strip_tool_call_blocks,
 )
+
+
+def test_find_closing_brace():
+    assert _find_closing_brace('{"a": 1}') == 7
+    assert _find_closing_brace('{"a": {"b": 2}} tail') == 14
+    assert _find_closing_brace('[{"x": 1}]') == 9
+    assert _find_closing_brace('{"a": "} not closing"}') == 21  # brace in string ignored
+    assert _find_closing_brace('{"a": 1') is None  # unbalanced
+    assert _find_closing_brace('no brace') is None
 
 
 def test_find_json_spans_balanced():
