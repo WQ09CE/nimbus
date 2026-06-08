@@ -61,3 +61,50 @@ async def test_infinite_context_compaction():
 
 if __name__ == "__main__":
     asyncio.run(test_infinite_context_compaction())
+
+
+@pytest.mark.asyncio
+async def test_many_productive_compactions_do_not_error():
+    """A long run compacts well past the old fixed ceiling of 3 without a
+    spurious CTX_OVERFLOW, as long as each compaction makes progress."""
+    mmu = MMU(MMUConfig(max_context_tokens=400, compress_threshold=0.5, keep_recent_tokens=100))
+    mmu.set_pinned(PinnedContext(system_rules="bot"))
+    vcpu = DummyVCPU()
+    loop = RuntimeLoop(vcpu, mmu, LoopConfig(max_compactions=100))
+
+    compactions = 0
+    errored = False
+    async for event in loop.stream():
+        if event["type"] == "text_delta":
+            mmu.add_user_message("U " * 80)
+            mmu.add_assistant_message("A " * 80)
+            if vcpu.iteration >= 12:
+                loop.request_interruption()
+        elif event["type"] == "context_compacted":
+            compactions += 1
+        elif event["type"] == "final" and getattr(event["result"], "status", None) == "ERROR":
+            errored = True
+
+    assert compactions > 3, f"expected many compactions, got {compactions}"
+    assert not errored, "productive compaction must not raise CTX_OVERFLOW"
+
+
+@pytest.mark.asyncio
+async def test_genuine_exhaustion_bails_after_unproductive():
+    """A single message larger than the window can't be reduced; compaction must
+    bail (CTX_OVERFLOW) only after consecutive no-progress attempts."""
+    mmu = MMU(MMUConfig(max_context_tokens=300, compress_threshold=0.5, keep_recent_tokens=100))
+    mmu.set_pinned(PinnedContext(system_rules="bot"))
+    # Irreducible: one giant message far bigger than the whole window.
+    mmu.add_user_message("X" * 5000)
+    vcpu = DummyVCPU()
+    loop = RuntimeLoop(vcpu, mmu, LoopConfig(max_compactions=100, max_unproductive_compactions=2))
+
+    errored = False
+    async for event in loop.stream():
+        if event["type"] == "final" and getattr(event["result"], "status", None) == "ERROR":
+            errored = True
+        if vcpu.iteration >= 6:
+            loop.request_interruption()
+
+    assert errored, "irreducible giant message should trigger genuine-exhaustion error"

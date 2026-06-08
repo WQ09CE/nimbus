@@ -95,7 +95,8 @@ _OVERFLOW_ERROR_RE = re.compile(
 
 @dataclass
 class LoopConfig:
-    max_compactions: int = 3  # Max times we can compact before giving up
+    max_compactions: int = 100  # Absolute runaway ceiling (NOT a normal limit)
+    max_unproductive_compactions: int = 2  # Consecutive no-progress → genuine exhaustion
     compaction_cooldown: int = 5  # Min steps between compactions
     yield_interval: float = 0.0  # Yield control between steps (for cooperative scheduling)
 
@@ -276,6 +277,7 @@ class RuntimeLoop:
         self.metadata = metadata or {}
 
         self._compaction_count = 0
+        self._unproductive_compactions = 0
         self._steps_since_compaction = 0
         self._interrupted = False
         self._retry_count = 0
@@ -620,30 +622,52 @@ class RuntimeLoop:
         return response.content or ""
 
     async def _try_compaction(self) -> Optional[str]:
-        """Attempt to compact the context. Returns summary if successful, None otherwise."""
+        """Attempt to compact the context. Returns summary if successful, None otherwise.
+
+        A long agentic run legitimately compacts many times, so the limit is NOT a
+        fixed total — that turned a healthy long task into a spurious CTX_OVERFLOW
+        once compaction actually started firing. Instead we bail only on genuine
+        exhaustion: when compaction repeatedly fails to reduce the backlog (e.g. a
+        single message larger than the window). max_compactions remains a high
+        absolute runaway ceiling, not a normal operating limit.
+        """
         if self._compaction_count >= self.config.max_compactions:
-            logger.warning("Max compactions (%d) reached", self.config.max_compactions)
+            logger.warning(
+                "Absolute compaction ceiling (%d) reached — runaway guard",
+                self.config.max_compactions,
+            )
             return None
 
-        if self._steps_since_compaction < self.config.compaction_cooldown:
-            logger.warning(
-                "Compaction cooldown: %d steps since last (min %d)",
-                self._steps_since_compaction, self.config.compaction_cooldown,
-            )
-            pass
+        logger.info("Compacting context (attempt #%d)", self._compaction_count + 1)
 
-        logger.info("Compacting context (attempt %d/%d)",
-                     self._compaction_count + 1, self.config.max_compactions)
-
+        tokens_before = self.mmu.estimate_tokens()
         summarizer = self._llm_summarize if self._adapter else None
         summary = await self.mmu.archive_and_reset(summarizer=summarizer)
-        if summary:
-            self._compaction_count += 1
-            self._steps_since_compaction = 0
-            self._emit("CONTEXT_COMPACTED", {"summary_len": len(summary)})
-            return summary
+        if not summary:
+            return None
 
-        return None
+        self._compaction_count += 1
+        self._steps_since_compaction = 0
+
+        # Productivity check: did this compaction meaningfully shrink the backlog?
+        # Genuine exhaustion shows up as consecutive no-progress compactions; bail
+        # only then, not on a fixed count.
+        tokens_after = self.mmu.estimate_tokens()
+        if tokens_after < tokens_before * 0.95:
+            self._unproductive_compactions = 0
+        else:
+            self._unproductive_compactions += 1
+            logger.warning(
+                "Compaction made little progress (%d -> %d tokens), %d/%d consecutive",
+                tokens_before, tokens_after,
+                self._unproductive_compactions, self.config.max_unproductive_compactions,
+            )
+            if self._unproductive_compactions >= self.config.max_unproductive_compactions:
+                logger.error("Context genuinely exhausted: compaction cannot reduce the backlog further")
+                return None
+
+        self._emit("CONTEXT_COMPACTED", {"summary_len": len(summary)})
+        return summary
 
     # --- Fine-grained Events (pi-style) ---
 

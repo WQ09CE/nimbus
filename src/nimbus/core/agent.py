@@ -74,8 +74,10 @@ class AgentConfig:
     max_context_tokens: int = 0
     compress_threshold: float = 0.85
 
-    # Loop
-    max_compactions: int = 3
+    # Loop. Absolute runaway ceiling, NOT a normal operating limit — a long run
+    # legitimately compacts many times. Genuine exhaustion is detected via
+    # consecutive no-progress compactions (see RuntimeLoop._try_compaction).
+    max_compactions: int = 100
 
     # Gate
     tool_timeout: float = 60.0
