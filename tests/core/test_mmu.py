@@ -706,7 +706,9 @@ class TestCompactionWithFileOps:
     @pytest.mark.asyncio
     async def test_llm_summarizer_fallback_on_error(self):
         """When LLM summarizer fails, should fall back to deterministic."""
-        config = MMUConfig(max_context_tokens=200, keep_recent_tokens=100)
+        # Window small enough to force summarization, but large enough that the
+        # window-scaled summary budget doesn't trim away the tombstone header.
+        config = MMUConfig(max_context_tokens=2500, keep_recent_tokens=100)
         mmu = MMU(config)
         for i in range(10):
             mmu.add_user_message(f"msg {i} " + "x" * 100)
@@ -756,3 +758,67 @@ class TestCompactionWithFileOps:
         assert first_summary in received_prompts["user"]
         # Should use UPDATE prompt, not initial SUMMARIZATION prompt
         assert "UPDATE" in received_prompts["user"] or "Update" in received_prompts["user"]
+
+
+class TestSmallWindowRegression:
+    """Regression guards for the small-configured-window defect chain:
+    silent total truncation + dead compaction trigger (the 'amnesia' bug)."""
+
+    def test_small_window_keeps_some_history_not_zero(self):
+        # The original bug: window - anchor - fixed_4096_reserve went negative, so
+        # assemble_context dropped EVERY stream message. The scaled reserve must
+        # keep a non-empty suffix of real history.
+        mmu = MMU(MMUConfig(max_context_tokens=2500))
+        mmu.set_pinned(PinnedContext(system_rules="rules " * 20))
+        for i in range(20):
+            mmu.add_user_message(f"u{i} " + "x" * 80)
+            mmu.add_assistant_message(f"a{i} " + "y" * 80)
+        ctx = mmu.assemble_context()
+        stream = [m for m in ctx if m["role"] in ("user", "assistant")
+                  and "earlier message" not in str(m.get("content", ""))]
+        assert len(stream) > 0, "small window dropped ALL history (the amnesia bug)"
+
+    def test_compaction_triggers_on_full_backlog_not_last_send(self):
+        # needs_compaction() must read the FULL backlog, not the last (truncated)
+        # usage. Even with a stale tiny _last_usage, a large backlog must trigger.
+        mmu = MMU(MMUConfig(max_context_tokens=2500, compress_threshold=0.85))
+        mmu.set_pinned(PinnedContext(system_rules="r"))
+        for i in range(30):
+            mmu.add_user_message("x" * 400)
+
+        class _Usage:
+            total = 50  # pretend the last send was tiny (the old amnesia signal)
+        mmu.set_last_usage(_Usage())
+        assert mmu.needs_compaction(), "compaction blind to unsent backlog"
+
+    def test_summary_budget_scales_with_window(self):
+        small = MMU(MMUConfig(max_context_tokens=2000))
+        large = MMU(MMUConfig(max_context_tokens=200000))
+        assert small._summary_char_budget() < large._summary_char_budget()
+        # small window's summary must not exceed its own usable input budget
+        assert small._summary_char_budget() <= small.usable_input_budget() * 4
+
+    def test_output_reserve_never_exceeds_tiny_window(self):
+        # For a tiny window the reserve must stay below it (usable > 0), else the
+        # budget collapses to zero and everything is dropped.
+        mmu = MMU(MMUConfig(max_context_tokens=100))
+        assert mmu.usable_input_budget() > 0
+
+    def test_hardcap_never_splits_tool_call_and_result(self):
+        # Even under an emergency hard-cap, a tool_result must never appear without
+        # its preceding assistant tool_call (provider contract violation).
+        mmu = MMU(MMUConfig(max_context_tokens=1500))
+        mmu.set_pinned(PinnedContext(system_rules="r"))
+        for i in range(8):
+            tc = [{"id": f"tc{i}", "type": "function",
+                   "function": {"name": "Read", "arguments": '{"file_path":"' + "z" * 200 + '"}'}}]
+            mmu.add_assistant_with_tool_calls(None, tc)
+            mmu.add_tool_result(f"tc{i}", "Read", "r" * 200)
+        ctx = mmu.assemble_context()
+        seen_call_ids = set()
+        for m in ctx:
+            if m.get("tool_calls"):
+                for c in m["tool_calls"]:
+                    seen_call_ids.add(c["id"])
+            if m["role"] == "tool":
+                assert m["tool_call_id"] in seen_call_ids, "orphan tool_result (split atomic turn)"

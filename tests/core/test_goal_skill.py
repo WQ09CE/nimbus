@@ -94,7 +94,11 @@ def test_coerce_message_text_extracts_text_blocks():
     assert AgentOS._coerce_message_text(None) == ""
 
 
-def test_without_goal_skill_preserves_previous_latest_message_behavior():
+def test_without_goal_skill_pins_first_message_as_durable_goal():
+    # Without the goal skill, the FIRST message is pinned as the durable goal and
+    # MUST NOT be overwritten by later turns (the old behavior clobbered the
+    # original objective every turn, so the pinned goal reminder drifted to the
+    # latest side-request).
     agent = AgentOS(config=AgentConfig(), adapter=DummyAdapter(), system_prompt="Base rules.")
     agent.stream_with_queue("first goal", session_id="sess_no_skill")
     mmu = agent.get_mmu("sess_no_skill")
@@ -102,4 +106,4 @@ def test_without_goal_skill_preserves_previous_latest_message_behavior():
 
     agent.stream_with_queue("second message", session_id="sess_no_skill")
 
-    assert mmu.goal == "second message"
+    assert mmu.goal == "first goal"

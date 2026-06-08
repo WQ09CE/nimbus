@@ -664,8 +664,11 @@ class MMU:
             estimate_text_tokens(m.get("content", "") or "") + MESSAGE_OVERHEAD
             for m in messages
         )
-        reserve_tokens = 4096  # Reserve for LLM output
-        available_budget = self.config.max_context_tokens - anchor_tokens - reserve_tokens
+        # Output reserve scales with the window (see _output_reserve). The
+        # backward walk below is the LAST-RESORT hard cap only: the runtime runs
+        # compaction (needs_compaction) BEFORE assembly, so in the normal path the
+        # full backlog already fits and nothing is dropped here.
+        available_budget = self.usable_input_budget() - anchor_tokens
 
         # Walk backward from most recent message, accumulating tokens
         # until we hit the budget. This ensures the most recent context
@@ -690,12 +693,23 @@ class MMU:
             # Include only messages from cut_index onward
             included = self._messages[cut_index:]
 
-            # If we dropped messages, add a brief inline notice
-            if cut_index > 0 and not self._global_summary:
+            # Emergency drop happened (compaction should normally prevent this).
+            # ALWAYS leave an explicit notice — never silently lose history — so
+            # the degrade is visible to both the model and the logs.
+            if cut_index > 0:
                 dropped_count = cut_index
+                logger.warning(
+                    "assemble_context hard-cap: dropped %d message(s) that did not "
+                    "fit the usable budget (%d tok) even after compaction",
+                    dropped_count, self.usable_input_budget(),
+                )
                 messages.append({
                     "role": "user",
-                    "content": f"[{dropped_count} earlier messages omitted to fit context window]",
+                    "content": (
+                        f"[⚠ {dropped_count} earlier message(s) dropped: exceeded the "
+                        f"context budget even after compaction. See the summary above "
+                        f"for their content.]"
+                    ),
                 })
 
             for msg in included:
@@ -706,18 +720,31 @@ class MMU:
     # --- Token Estimation ---
 
     def set_last_usage(self, usage) -> None:
-        """Update with real usage data from LLM response (pi-style hybrid estimation)."""
+        """Record real usage from the last LLM response. TELEMETRY ONLY — this
+        MUST NOT drive compaction. usage.total reflects the already-assembled
+        (possibly truncated) payload; using it as the compaction trigger created a
+        feedback loop of amnesia: a truncated send under-reported the backlog, so
+        needs_compaction() never fired and history grew unsent forever.
+        needs_compaction()/estimate_tokens() now read the full backlog instead."""
         self._last_usage = usage
         self._message_count_at_usage = len(self._messages)
 
-    def estimate_tokens(self) -> int:
-        """Hybrid context token estimation (pi-style estimateContextTokens).
+    def _output_reserve(self) -> int:
+        """Tokens reserved for the model's output. Scales with the window (20%,
+        capped at 4096) so a small configured cap is not entirely consumed by a
+        fixed reserve (a fixed 4096 against a 2500 window yielded a negative input
+        budget → total drop). No lower floor: for tiny windows the reserve must
+        stay below the window or the usable budget collapses to zero."""
+        return min(4096, int(self.config.max_context_tokens * 0.2))
 
-        Strategy:
-        - If we have real usage data from the LLM: use usage.total as baseline,
-          then estimate only the new messages added since that LLM call.
-        - If no real usage: fall back to pure chars/4 estimation.
-        """
+    def usable_input_budget(self) -> int:
+        """Window minus the output reserve — the budget available for prompt tokens."""
+        return max(0, self.config.max_context_tokens - self._output_reserve())
+
+    def estimate_tokens(self) -> int:
+        """Estimate the FULL prompt tokens: anchor + goal + summary + the entire
+        message backlog. Always reflects the true backlog (never the last,
+        possibly-truncated, send) so compaction triggers correctly."""
         total = 0
         if self._pinned:
             total += self._pinned.token_estimate()
@@ -725,25 +752,15 @@ class MMU:
             total += estimate_text_tokens(self._goal) + MESSAGE_OVERHEAD
         if self._global_summary:
             total += estimate_text_tokens(self._global_summary) + MESSAGE_OVERHEAD
-
-        # Hybrid: use real LLM usage when available
-        if self._last_usage is not None and hasattr(self._last_usage, 'total'):
-            usage_total = self._last_usage.total
-            # Estimate only trailing messages added after the LLM response
-            trailing_estimate = 0
-            for msg in self._messages[self._message_count_at_usage:]:
-                trailing_estimate += msg.token_estimate()
-            # Real usage already includes pinned/summary tokens (system prompt),
-            # so use it directly plus the trailing estimate
-            return usage_total + trailing_estimate
-
-        # Fallback: pure estimation
         for msg in self._messages:
             total += msg.token_estimate()
         return total
 
     def needs_compaction(self) -> bool:
-        threshold = int(self.config.max_context_tokens * self.config.compress_threshold)
+        # Compact against the usable INPUT budget (window minus output reserve),
+        # not the raw window — otherwise we only trigger once the prompt already
+        # eats into the reserved output space.
+        threshold = int(self.usable_input_budget() * self.config.compress_threshold)
         return self.estimate_tokens() >= threshold
 
     # --- Token-Based Cut Point (pi-style) ---
@@ -839,7 +856,7 @@ class MMU:
 
             new_summary = "\n\n".join(summary_parts) if summary_parts else "(history compacted)"
 
-            max_summary_chars = self.config.summary_max_tokens * 4
+            max_summary_chars = self._summary_char_budget()
             if len(new_summary) > max_summary_chars:
                 new_summary = "..." + new_summary[-(max_summary_chars - 3):]
 
@@ -873,8 +890,8 @@ class MMU:
         # 4. Append file operations
         new_summary += _format_file_ops(read_files, modified_files)
 
-        # 5. Trim if too long
-        max_chars = self.config.summary_max_tokens * 4
+        # 5. Trim if too long (budget scales with the window)
+        max_chars = self._summary_char_budget()
         if len(new_summary) > max_chars:
             new_summary = "..." + new_summary[-(max_chars - 3):]
 
@@ -888,6 +905,16 @@ class MMU:
         )
 
         return new_summary
+
+    def _summary_char_budget(self) -> int:
+        """Max chars for the merged summary. Scales with the window so the summary
+        itself can't dwarf a small configured cap (a fixed 2000-token summary alone
+        overflows a 2500-token window). ~4 chars/token."""
+        budget_tokens = min(
+            self.config.summary_max_tokens,
+            max(256, int(self.usable_input_budget() * 0.25)),
+        )
+        return budget_tokens * 4
 
     def _deterministic_summary(self, messages: List["Message"]) -> str:
         """Fallback: create tombstone summary without LLM."""

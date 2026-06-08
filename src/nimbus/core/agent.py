@@ -481,7 +481,11 @@ class AgentOS:
             return
 
         if not self._goal_skill_enabled:
-            mmu.set_goal(text)
+            # Pin the FIRST message as the durable goal; do not overwrite it on
+            # every subsequent turn (that clobbered the original objective and let
+            # later side-requests masquerade as the goal in the pinned reminder).
+            if not mmu.goal:
+                mmu.set_goal(text)
             return
 
         explicit_goal = self._extract_explicit_goal(text)
