@@ -27,16 +27,6 @@ def test_registry_fallback():
     fallback_flash = ModelRegistry.get_same_provider_fallback("google/gemini-3-flash-preview")
     assert fallback_flash == "google/gemini-3.1-pro-preview"
 
-    # Test Generic Logic (Anthropic)
-    
-    # Sonnet (Pro) -> Haiku (Flash)
-    fallback_sonnet = ModelRegistry.get_same_provider_fallback("anthropic/claude-sonnet-4-6")
-    assert fallback_sonnet == "anthropic/claude-haiku-4"
-    
-    # Haiku (Flash) -> Sonnet (Pro)
-    fallback_haiku = ModelRegistry.get_same_provider_fallback("anthropic/claude-haiku-4")
-    assert fallback_haiku == "anthropic/claude-sonnet-4-6"
-
     # Test Generic Logic (OpenAI)
     # GPT-4o (Pro) -> GPT-4o-mini (Flash)
     fallback_gpt4o = ModelRegistry.get_same_provider_fallback("openai/gpt-4o")

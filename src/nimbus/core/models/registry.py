@@ -8,7 +8,7 @@ It handles ID normalization, provider mapping, and capability tiers.
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
-from nimbus.core.models.manifest import ModelManifest, GPT_FEATURES, GEMINI_FEATURES, CLAUDE_FEATURES, OLLAMA_FEATURES
+from nimbus.core.models.manifest import ModelManifest, GPT_FEATURES, GEMINI_FEATURES
 
 
 @dataclass
@@ -208,58 +208,6 @@ class ModelRegistry:
 # =============================================================================
 
 # ---------------------------------------------------------------------------
-# Anthropic
-# ---------------------------------------------------------------------------
-
-# Claude Sonnet 4.6 — primary workhorse, supports up to 1M context via [1m] alias
-ModelRegistry.register(ModelInfo(
-    model_id="claude-sonnet-4-6",
-    provider="anthropic",
-    tier="pro",
-    aliases=[
-        "sonnet",
-        "claude",
-        "claude-sonnet",
-        "claude-sonnet-4-6",
-        "sonnet-4-6",
-        "sonnet[1m]",        # 1M-context alias (modifier stripped during lookup)
-        # Backward-compatible aliases for old model names
-        "claude-3-5-sonnet",
-        "claude-3-5-sonnet-20241022",
-    ],
-    manifest=ModelManifest("claude-sonnet-4-6", CLAUDE_FEATURES),
-    context_window=1_000_000,
-    cost_per_million={"input": 3.0, "output": 15.0, "cache_read": 0.30, "cache_write": 3.75},
-))
-
-# Claude Haiku — lightweight / fast tier
-ModelRegistry.register(ModelInfo(
-    model_id="claude-haiku-4",
-    provider="anthropic",
-    tier="flash",
-    aliases=["haiku", "claude-haiku", "claude-haiku-4"],
-    manifest=ModelManifest("claude-haiku-4", CLAUDE_FEATURES),
-    context_window=200_000,
-    cost_per_million={"input": 0.80, "output": 4.0, "cache_read": 0.08, "cache_write": 1.0},
-))
-
-# Claude Opus — ultra/flagship tier
-ModelRegistry.register(ModelInfo(
-    model_id="claude-opus-4-6",
-    provider="anthropic",
-    tier="ultra",
-    aliases=[
-        "opus",
-        "claude-opus",
-        "claude-opus-4-6",
-        "opus-4-6"
-    ],
-    manifest=ModelManifest("claude-opus-4-6", CLAUDE_FEATURES),
-    context_window=1_000_000,
-    cost_per_million={"input": 15.0, "output": 75.0, "cache_read": 1.50, "cache_write": 18.75},
-))
-
-# ---------------------------------------------------------------------------
 # OpenAI
 # ---------------------------------------------------------------------------
 
@@ -410,59 +358,4 @@ ModelRegistry.register(ModelInfo(
     aliases=["codex", "gpt-5.4", "gpt-5.4-codex", "codex-latest"],
     manifest=ModelManifest("codex", GPT_FEATURES),
     context_window=128_000,
-))
-
-# ── Ollama / Local Models ──────────────────────────────────────
-ModelRegistry.register(ModelInfo(
-    model_id="gemma4:26b",
-    provider="ollama",
-    tier="pro",
-    aliases=[
-        "gemma4",
-        "gemma4-26b",
-        "gemma-4-26b",
-        "ollama-gemma4",
-        "ollama-gemma4-26b",
-    ],
-    manifest=ModelManifest("gemma4", OLLAMA_FEATURES),
-    context_window=128_000,
-))
-
-ModelRegistry.register(ModelInfo(
-    model_id="qwen3.5:9b",
-    provider="ollama",
-    tier="flash",
-    aliases=[
-        "qwen3.5",
-        "qwen",
-        "ollama",
-    ],
-    manifest=ModelManifest("qwen3.5", OLLAMA_FEATURES),
-    context_window=32_000,
-))
-
-ModelRegistry.register(ModelInfo(
-    model_id="qwen3.5:4b",
-    provider="ollama",
-    tier="flash",
-    aliases=[
-        "qwen4b",
-        "qwen3.5-4b",
-    ],
-    manifest=ModelManifest("qwen3.5", OLLAMA_FEATURES),
-    context_window=32_000,
-    basic_tools_only=True,  # 4B model: tool calling unreliable
-))
-
-ModelRegistry.register(ModelInfo(
-    model_id="qwen3.5:2b",
-    provider="ollama",
-    tier="flash",
-    aliases=[
-        "qwen2b",
-        "qwen3.5-2b",
-    ],
-    manifest=ModelManifest("qwen3.5", OLLAMA_FEATURES),
-    context_window=32_000,
-    basic_tools_only=True,  # 2B model: only Bash/Read/Write/Edit
 ))
