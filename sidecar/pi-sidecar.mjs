@@ -130,7 +130,11 @@ const server = http.createServer(async (req, res) => {
   if (typeof body.temperature === "number") opts.temperature = body.temperature;
   const created = Math.floor(Date.now() / 1000), id = "chatcmpl-pi-" + created;
 
-  if (body.stream === false) {
+  // OpenAI semantics: stream defaults to FALSE. Only stream when explicitly
+  // requested; treat undefined/false as non-streaming (the openai SDK omits the
+  // `stream` field on non-streaming .create(), which previously fell through to
+  // the SSE branch and broke standard clients).
+  if (body.stream !== true) {
     try {
       const r = await complete(model, ctx, opts); const msg = assistantToOpenAI(r);
       res.writeHead(200, { "Content-Type": "application/json" });
