@@ -13,6 +13,7 @@ import { TokenFooter } from "@/components/chat/TokenFooter";
 
 import { SessionPanel } from "@/components/session/SessionPanel";
 import { useSessionWatcher } from "@/hooks/useSessionWatcher";
+import { CloudMark, FileIcon, TerminalIcon, SearchIcon, SparkleIcon } from "@/components/icons";
 
 function Home() {
   // Fine-grained selectors — only subscribe to what Home actually needs
@@ -101,7 +102,7 @@ function Home() {
         <div className="md:max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <div className="w-10 h-10 rounded-xl bg-nimbus-surface backdrop-blur-lg border border-nimbus-border flex items-center justify-center shadow-lg shadow-sky-500/10">
-              <span className="text-xl">☁️</span>
+              <CloudMark className="w-6 h-6" />
             </div>
             <div>
               <h1 className="text-lg font-bold bg-gradient-to-r from-sky-100 to-sky-300 bg-clip-text text-transparent hidden md:inline font-display">Nimbus</h1>
@@ -235,7 +236,7 @@ function Home() {
             {/* Loading messages */}
             {isLoading && (
               <div className="flex flex-col items-center justify-center flex-1 text-center">
-                <div className="text-4xl mb-4 animate-pulse">☁️</div>
+                <CloudMark className="w-12 h-12 mb-4 animate-pulse" />
                 <p className="text-gray-500 text-sm">Loading session...</p>
               </div>
             )}
@@ -244,29 +245,29 @@ function Home() {
             {messages.length === 0 && !isStreaming && !isLoading && !isInitializing && !session?.name?.includes('Syncing') && (
               <div data-testid="welcome-screen" className="flex flex-col items-center justify-center flex-1 text-center animate-in zoom-in-95 duration-500">
                 <div className="w-16 h-16 bg-nimbus-surface backdrop-blur-lg border border-nimbus-border rounded-2xl flex items-center justify-center shadow-2xl shadow-sky-500/10 mb-6">
-                  <span className="text-3xl">☁️</span>
+                  <CloudMark className="w-9 h-9" />
                 </div>
                 <h2 className="text-2xl font-bold bg-gradient-to-br from-sky-100 to-slate-400 bg-clip-text text-transparent mb-3 font-display">
                   Nimbus Agent
                 </h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-lg mt-8">
                   <div className="p-4 bg-nimbus-surface border border-nimbus-border rounded-xl hover:bg-nimbus-surface-hover backdrop-blur-sm transition-colors cursor-default text-left">
-                    <div className="text-sky-400 mb-2">📄</div>
+                    <FileIcon className="w-5 h-5 text-sky-400 mb-2" />
                     <h3 className="text-sm font-medium text-gray-200 mb-1">File Operations</h3>
                     <p className="text-xs text-gray-500">Read, write, edit files workspace</p>
                   </div>
                   <div className="p-4 bg-nimbus-surface border border-nimbus-border rounded-xl hover:bg-nimbus-surface-hover backdrop-blur-sm transition-colors cursor-default text-left">
-                    <div className="text-violet-400/80 mb-2">⚡</div>
+                    <TerminalIcon className="w-5 h-5 text-violet-400/80 mb-2" />
                     <h3 className="text-sm font-medium text-gray-200 mb-1">Code Execution</h3>
                     <p className="text-xs text-gray-500">Run scripts and commands safely</p>
                   </div>
                   <div className="p-4 bg-nimbus-surface border border-nimbus-border rounded-xl hover:bg-nimbus-surface-hover backdrop-blur-sm transition-colors cursor-default text-left">
-                    <div className="text-emerald-400/80 mb-2">🔍</div>
+                    <SearchIcon className="w-5 h-5 text-emerald-400/80 mb-2" />
                     <h3 className="text-sm font-medium text-gray-200 mb-1">Search</h3>
                     <p className="text-xs text-gray-500">Web search and knowledge retrieval</p>
                   </div>
                   <div className="p-4 bg-nimbus-surface border border-nimbus-border rounded-xl hover:bg-nimbus-surface-hover backdrop-blur-sm transition-colors cursor-default text-left">
-                    <div className="text-amber-400/80 mb-2">🧠</div>
+                    <SparkleIcon className="w-5 h-5 text-amber-400/80 mb-2" />
                     <h3 className="text-sm font-medium text-gray-200 mb-1">Reasoning</h3>
                     <p className="text-xs text-gray-500">Complex task planning and execution</p>
                   </div>

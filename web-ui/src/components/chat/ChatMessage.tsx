@@ -5,6 +5,93 @@ import type { Message, MessagePart } from "@/stores/chat-store";
 import { useTypewriter } from "@/hooks/useTypewriter";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import { ToolCard } from './tools/ToolCard';
+import { CloudMark } from '@/components/icons';
+
+// Tools rendered as standalone rich cards (sub-agent timelines) — these break
+// a tool run instead of joining the compact step group.
+const STANDALONE_TOOLS = new Set([
+  "Dispatch", "Explore", "Implement", "Design", "Test", "ParallelDispatch", "spawn_agent",
+]);
+
+interface ResolvedTool {
+  id?: string;
+  name: string;
+  args: any;
+  result?: any;
+  error?: string;
+  status: "running" | "completed" | "failed";
+  duration?: number;
+  ui_detail?: Record<string, any>;
+  sub_events?: Record<string, any>[];
+}
+
+/** Resolve live tool call/result state from the message maps. */
+function resolveTool(message: Message, part: Extract<MessagePart, { type: "tool" }>): ResolvedTool {
+  const tcId = part.toolCall.id;
+  const liveTc = tcId ? message.toolCallsMap?.[tcId] : undefined;
+  const resolved = (tcId ? message.toolResultsMap?.[tcId] : undefined) || part.toolResult;
+  return {
+    id: tcId,
+    name: liveTc?.name || part.toolCall.name,
+    args: liveTc?.arguments || part.toolCall.arguments,
+    result: resolved?.result,
+    error: resolved?.error,
+    status: resolved ? (resolved.error ? "failed" : ((resolved as any)._streaming ? "running" : "completed")) : "running",
+    duration: resolved?.duration,
+    ui_detail: (resolved as any)?.ui_detail,
+    sub_events: (resolved as any)?.sub_events,
+  };
+}
+
+type RenderBlock =
+  | { kind: "text"; content: string; idx: number }
+  | { kind: "standalone"; tool: ResolvedTool; idx: number }
+  | { kind: "steps"; tools: ResolvedTool[]; idx: number };
+
+/** Group parts into text blocks, standalone agent cards, and runs of tool steps. */
+function buildBlocks(message: Message, parts: MessagePart[]): RenderBlock[] {
+  const blocks: RenderBlock[] = [];
+  parts.forEach((part, idx) => {
+    if (part.type === "text") {
+      blocks.push({ kind: "text", content: part.content, idx });
+      return;
+    }
+    const tool = resolveTool(message, part);
+    if (STANDALONE_TOOLS.has(tool.name)) {
+      blocks.push({ kind: "standalone", tool, idx });
+      return;
+    }
+    const last = blocks[blocks.length - 1];
+    if (last && last.kind === "steps") {
+      last.tools.push(tool);
+    } else {
+      blocks.push({ kind: "steps", tools: [tool], idx });
+    }
+  });
+  return blocks;
+}
+
+/** A run of consecutive tool calls rendered as one compact timeline. */
+function ToolStepsBlock({ tools }: { tools: ResolvedTool[] }) {
+  const doneCount = tools.filter(t => t.status !== "running").length;
+  const hasRunning = tools.some(t => t.status === "running");
+  const hasFailed = tools.some(t => t.status === "failed");
+  return (
+    <div className="w-full" data-testid="tool-steps">
+      <div className="flex items-center gap-2 px-1 mb-1.5 text-[11px] text-gray-500 select-none">
+        <span className={`w-1.5 h-1.5 rounded-full ${hasRunning ? "bg-amber-400 animate-pulse" : hasFailed ? "bg-red-400" : "bg-emerald-400/70"}`} />
+        <span className="font-mono tracking-wide">
+          {hasRunning ? `Working · step ${Math.min(doneCount + 1, tools.length)}/${tools.length}` : `${tools.length} ${tools.length === 1 ? "step" : "steps"}`}
+        </span>
+      </div>
+      <div className="flex flex-col gap-1 pl-2.5 border-l border-sky-400/15">
+        {tools.map((tool, i) => (
+          <ToolCard key={tool.id || `step-${i}`} tool={tool} />
+        ))}
+      </div>
+    </div>
+  );
+}
 
 interface ChatMessageProps {
   message: Message;
@@ -22,7 +109,7 @@ function UserAvatar() {
 function AiAvatar() {
   return (
     <div className="w-8 h-8 rounded-full bg-nimbus-surface backdrop-blur-lg border border-nimbus-border flex items-center justify-center shrink-0 shadow-lg shadow-sky-400/10 mt-1">
-      <span className="text-xs">☁️</span>
+      <CloudMark className="w-5 h-5" />
     </div>
   );
 }
@@ -181,41 +268,27 @@ export const ChatMessage = React.memo(function ChatMessage({ message, isStreamin
           <div className="flex flex-col gap-3 w-full">
             {hasParts ? (
               <>
-              {parts.map((part, idx) => {
-                if (part.type === "text") {
-                  const isLastPart = idx === parts.length - 1;
+              {buildBlocks(message, parts).map((block) => {
+                if (block.kind === "text") {
+                  const isLastPart = block.idx === parts.length - 1;
                   return (
-                    <div key={`part-${idx}`} className={`relative px-4 md:px-5 py-3 md:py-4 shadow-xl bg-nimbus-surface backdrop-blur-xl border border-nimbus-border text-gray-100 rounded-2xl rounded-tl-sm w-full ${isStreaming && isLastPart ? 'streaming-message' : ''}`}>
+                    <div key={`part-${block.idx}`} className={`relative px-4 md:px-5 py-3 md:py-4 shadow-xl bg-nimbus-surface backdrop-blur-xl border border-nimbus-border text-gray-100 rounded-2xl rounded-tl-sm w-full ${isStreaming && isLastPart ? 'streaming-message' : ''}`}>
                       <div className="text-[15px] leading-relaxed w-full">
                         <div className="flex flex-col gap-1 w-full overflow-hidden">
-                          <TextPart content={part.content} isStreaming={isStreaming && isLastPart} />
+                          <TextPart content={block.content} isStreaming={isStreaming && isLastPart} />
                         </div>
                       </div>
                     </div>
                   );
-                } else {
-                  const tcId = part.toolCall.id;
-                  const liveTc = tcId ? message.toolCallsMap?.[tcId] : undefined;
-                  const tcName = liveTc?.name || part.toolCall.name;
-                  const tcArgs = liveTc?.arguments || part.toolCall.arguments;
-                  const resolvedResult = (tcId ? message.toolResultsMap?.[tcId] : undefined) || part.toolResult;
-
+                }
+                if (block.kind === "standalone") {
                   return (
-                    <div key={`part-${idx}`} className="w-full mt-2">
-                      <ToolCard tool={{
-                        id: tcId,
-                        name: tcName,
-                        args: tcArgs,
-                        result: resolvedResult?.result,
-                        error: resolvedResult?.error,
-                        status: resolvedResult ? (resolvedResult.error ? "failed" : ((resolvedResult as any)._streaming ? "running" : "completed")) : "running",
-                        duration: resolvedResult?.duration,
-                        ui_detail: (resolvedResult as any)?.ui_detail,
-                        sub_events: (resolvedResult as any)?.sub_events,
-                      }} />
+                    <div key={`part-${block.idx}`} className="w-full">
+                      <ToolCard tool={block.tool} />
                     </div>
                   );
                 }
+                return <ToolStepsBlock key={`part-${block.idx}`} tools={block.tools} />;
               })}
               {isStreaming && parts[parts.length - 1]?.type !== "text" && (
                 <div className="flex items-center gap-1.5 px-4 py-2">

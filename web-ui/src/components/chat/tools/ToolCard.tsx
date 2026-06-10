@@ -43,17 +43,26 @@ interface ToolCardProps {
 
 export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: ToolCardProps) {
   // Hook must be called unconditionally (React Rules of Hooks)
-  // Default: always expanded for observability
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? true);
+  // Compact-by-default: running tools open live, settled tools stay one-line
+  // (failed tools open so the error is visible). Manual toggles always win.
+  const [isExpanded, setIsExpanded] = useState(
+    defaultExpanded ?? tool.status !== "completed"
+  );
+  const userToggled = useRef(false);
 
-  // Auto-expand when tool starts running (but don't auto-collapse on complete)
+  // Follow the lifecycle while the user hasn't taken over:
+  // expand on running, collapse on success, expand on failure.
   const prevStatus = useRef(tool.status);
   useEffect(() => {
-    if (prevStatus.current !== "running" && tool.status === "running") {
-      setIsExpanded(true);
+    if (prevStatus.current !== tool.status && !userToggled.current) {
+      if (tool.status === "running" || tool.status === "failed") {
+        setIsExpanded(true);
+      } else if (tool.status === "completed" && defaultExpanded === undefined) {
+        setIsExpanded(false);
+      }
     }
     prevStatus.current = tool.status;
-  }, [tool.status]);
+  }, [tool.status, defaultExpanded]);
 
   // Meta-tools (Dispatch/Explore/Implement/Design/Test) get the dedicated sub-agent card
   if (META_TOOLS.has(tool.name)) {
@@ -162,7 +171,7 @@ export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: To
       {/* Header */}
       <div
         className={`px-3 py-2.5 flex items-center justify-between cursor-pointer select-none ${isDispatch ? "pl-4" : ""}`}
-        onClick={() => setIsExpanded(!isExpanded)}
+        onClick={() => { userToggled.current = true; setIsExpanded(!isExpanded); }}
       >
         <div className="flex items-center gap-3 min-w-0">
           {/* Status Indicator */}

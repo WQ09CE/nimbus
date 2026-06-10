@@ -106,9 +106,9 @@ describe("ToolCard", () => {
     // Expand / Collapse
     // ----------------------------------------------------------
 
-    it("starts expanded for completed tools (observability default)", () => {
+    it("starts collapsed for completed tools (compact default)", () => {
         render(<ToolCard tool={baseTool} />);
-        expect(screen.getByTestId("tool-display")).toBeInTheDocument();
+        expect(screen.queryByTestId("tool-display")).toBeNull();
     });
 
     it("starts expanded for running tools", () => {
@@ -117,18 +117,47 @@ describe("ToolCard", () => {
         expect(screen.getByTestId("tool-display")).toBeInTheDocument();
     });
 
-    it("toggles expanded state on header click", () => {
-        render(<ToolCard tool={baseTool} />);
-        // Initially expanded (observability default)
+    it("starts expanded for failed tools (error visibility)", () => {
+        const tool = { ...baseTool, status: "failed" as const, error: "boom" };
+        render(<ToolCard tool={tool} />);
+        expect(screen.getByTestId("tool-display")).toBeInTheDocument();
+    });
+
+    it("auto-collapses when a running tool completes", () => {
+        const running = { ...baseTool, status: "running" as const };
+        const { rerender } = render(<ToolCard tool={running} />);
         expect(screen.getByTestId("tool-display")).toBeInTheDocument();
 
-        // Click to collapse
+        rerender(<ToolCard tool={{ ...baseTool, status: "completed" as const }} />);
+        expect(screen.queryByTestId("tool-display")).toBeNull();
+    });
+
+    it("keeps a user-expanded card open across completion", () => {
+        const running = { ...baseTool, status: "running" as const };
+        const { rerender } = render(<ToolCard tool={running} />);
+
+        // User collapses, then re-expands — manual state takes over
         fireEvent.click(screen.getByText("Bash"));
         expect(screen.queryByTestId("tool-display")).toBeNull();
-
-        // Click to expand again
         fireEvent.click(screen.getByText("Bash"));
         expect(screen.getByTestId("tool-display")).toBeInTheDocument();
+
+        rerender(<ToolCard tool={{ ...baseTool, status: "completed" as const }} />);
+        expect(screen.getByTestId("tool-display")).toBeInTheDocument();
+    });
+
+    it("toggles expanded state on header click", () => {
+        render(<ToolCard tool={baseTool} />);
+        // Initially collapsed (compact default for completed tools)
+        expect(screen.queryByTestId("tool-display")).toBeNull();
+
+        // Click to expand
+        fireEvent.click(screen.getByText("Bash"));
+        expect(screen.getByTestId("tool-display")).toBeInTheDocument();
+
+        // Click to collapse again
+        fireEvent.click(screen.getByText("Bash"));
+        expect(screen.queryByTestId("tool-display")).toBeNull();
     });
 
     it("respects defaultExpanded=true", () => {
