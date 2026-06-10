@@ -428,15 +428,66 @@ class SessionManagerV2:
                 logger.warning(f"⚠️ Failed to read memory file {memory_path}: {e}")
 
         # Strict Ordering Publisher Task:
-        # Prevents asyncio.create_task race conditions where tool events 
+        # Prevents asyncio.create_task race conditions where tool events
         # overtake text events due to lock acquisition.
         event_queue = asyncio.Queue()
 
+        # Coalescing window for high-frequency delta events. Token-level text
+        # deltas (and streamed tool output) arrive at 50-100 events/s; batching
+        # them for up to this window collapses bursts into single SSE events
+        # (fewer frames over the wire, smaller replay log) with imperceptible
+        # latency — the UI already buffers paints per animation frame.
+        COALESCE_WINDOW_S = 0.025
+
+        def _coalesce_key(payload):
+            """Events sharing a key are merged; None means never merge."""
+            etype, data = payload
+            if etype == "message":
+                return ("message",)
+            # ui_detail entries carry per-event structure — keep them atomic
+            if etype == "tool_output_chunk" and not data.get("ui_detail"):
+                return ("tool_output_chunk", data.get("action_id"))
+            return None
+
+        def _coalesce_merge(acc, nxt):
+            etype, data = acc
+            if etype == "message":
+                return (etype, {**data, "content": data["content"] + nxt[1]["content"]})
+            return (etype, {**data, "chunk": data.get("chunk", "") + nxt[1].get("chunk", "")})
+
         async def _publisher_task():
-            while True:
+            loop = asyncio.get_running_loop()
+            stopped = False
+            while not stopped:
                 try:
                     payload = await event_queue.get()
-                    if payload is None: break
+                    if payload is None:
+                        break
+                    key = _coalesce_key(payload)
+                    if key is not None:
+                        deadline = loop.time() + COALESCE_WINDOW_S
+                        while True:
+                            timeout = deadline - loop.time()
+                            if timeout <= 0:
+                                break
+                            try:
+                                nxt = await asyncio.wait_for(event_queue.get(), timeout)
+                            except asyncio.TimeoutError:
+                                break
+                            if nxt is None:
+                                stopped = True
+                                break
+                            if _coalesce_key(nxt) == key:
+                                payload = _coalesce_merge(payload, nxt)
+                            else:
+                                # Different event type: flush the batch, then the
+                                # interleaving event — order is preserved.
+                                await self._sse_hub.publish(session_id, payload[0], payload[1])
+                                payload = nxt
+                                key = _coalesce_key(payload)
+                                if key is None:
+                                    break
+                                deadline = loop.time() + COALESCE_WINDOW_S
                     await self._sse_hub.publish(session_id, payload[0], payload[1])
                 except Exception as e:
                     logger.error(f"Event publisher error: {e}")

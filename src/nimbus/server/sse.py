@@ -69,9 +69,13 @@ class SSEHub:
         self._closed_sessions.discard(session_id)
 
     async def start(self) -> None:
-        """Start the heartbeat task."""
-        if self._heartbeat_task is None:
-            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        """Start the hub.
+
+        Note: no global heartbeat broadcast — each subscriber generates its own
+        heartbeat on queue-idle timeout (see subscribe()), so idle connections
+        get exactly one keep-alive stream instead of two.
+        """
+        return None
 
     async def stop(self) -> None:
         """Stop the heartbeat task and close all connections."""
@@ -236,22 +240,6 @@ class SSEHub:
         """
         json_data = json.dumps(data, default=str, ensure_ascii=False)
         return f"event: {event_type}\ndata: {json_data}\n\n"
-
-    async def _heartbeat_loop(self) -> None:
-        """Background task to send heartbeats."""
-        while True:
-            try:
-                await asyncio.sleep(self._heartbeat_interval)
-
-                # Send heartbeat to all connections
-                heartbeat_data = {"timestamp": datetime.now(timezone.utc).isoformat()}
-                await self.broadcast(self.EVENT_HEARTBEAT, heartbeat_data)
-
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                # Log but don't crash
-                pass
 
     def get_connection_count(self, session_id: Optional[str] = None) -> int:
         """
