@@ -71,14 +71,21 @@ async def create_llm_client(
     if provider == "ollama":
         from nimbus.config import get_config
         config.base_url = get_config().ollama_base_url
-    elif provider == "pi-codex":
-        # GPT-5.x via the ChatGPT/Codex subscription, proxied by the local pi-ai
-        # sidecar (OpenAI-compatible). Route as openai/<id> at the sidecar URL.
+    elif provider in ("pi-codex", "pi-claude"):
+        # Models served by the local pi-ai sidecar (OpenAI-compatible; the
+        # sidecar holds and refreshes the OAuth credentials). Route via the
+        # LiteLLM channel at the sidecar URL, with the pi-style
+        # "provider/model" name so the sidecar selects the right backend —
+        # a bare id would hit its fallback model. The legacy codex-only
+        # sidecar strips the prefix, so both variants accept this form.
         import os
         from nimbus.config import get_config
         cfg = get_config()
+        sidecar_provider = "anthropic" if provider == "pi-claude" else "openai-codex"
         config.provider = "openai"
+        config.model_id = f"{sidecar_provider}/{model_id}"
         config.base_url = base_url or cfg.pi_sidecar_url
+        config.via_sidecar = True
         # litellm sends OPENAI_API_KEY as the Bearer. When the sidecar enforces a
         # shared secret (non-loopback bind), this must match PI_SIDECAR_TOKEN.
         if cfg.pi_sidecar_token:
@@ -88,6 +95,12 @@ async def create_llm_client(
 
     adapter = DirectAdapter(config)
     await adapter.__aenter__()
+
+    # Preserve the logical (pre-rewrite) model identity. Sidecar/ollama branches
+    # rewrite provider/model_id for the wire; anything that propagates the model
+    # (e.g. spawn_agent inheriting the parent model) must use this name so it
+    # re-enters this factory through the same branch.
+    adapter._logical_model = model
 
     logger.info(f"🤖 Created DirectLLM client: {provider}/{model_id}")
     return adapter

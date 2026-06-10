@@ -398,7 +398,11 @@ class AgentOS:
             on_tool_output=self._on_tool_output,
             abort_event=abort_event,
             path_context=path_context,
-            parent_model=getattr(self._adapter, "_model", self.config.model),
+            # Logical model name (pre-rewrite) — sidecar models rewrite _model
+            # for the wire; sub-agents must inherit the logical identity so
+            # llm_factory routes them through the same channel.
+            parent_model=getattr(self._adapter, "_logical_model", None)
+            or getattr(self._adapter, "_model", self.config.model),
             parent_base_url=getattr(getattr(self._adapter, "config", None), "base_url", None),
         )
 

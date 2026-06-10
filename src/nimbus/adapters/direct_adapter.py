@@ -896,7 +896,12 @@ class DirectAdapter:
             messages = mmu.assemble_context(compact_on_limit=compact_on_limit)
         
         # Stream Routing
-        if self._is_anthropic_model() and self._anthropic_auth is not None:
+        # Sidecar-served models must use LiteLLM with base_url — the routed
+        # model name ("anthropic/...", "openai-codex/...") would otherwise
+        # string-match the native channel checks below.
+        if self.config.via_sidecar:
+            streamer = self._stream_litellm(messages, tools)
+        elif self._is_anthropic_model() and self._anthropic_auth is not None:
             streamer = self._stream_anthropic_native(messages, tools)
         elif self._is_openai_codex_model() and self._codex_auth is not None:
             streamer = self._stream_openai_native(messages, tools)

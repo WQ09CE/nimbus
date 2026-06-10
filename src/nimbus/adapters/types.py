@@ -112,6 +112,10 @@ class LLMConfig:
     temperature: Optional[float] = None
     thinking: Optional[bool] = None
     stop: Optional[List[str]] = None
+    # Model is served by the local pi-ai sidecar (OpenAI-compatible). Always
+    # use the LiteLLM channel with base_url — never the native OAuth channels,
+    # even if the routed model name looks like claude/codex.
+    via_sidecar: bool = False
 
     def get_model(self) -> str:
         """Get full model name (provider/model_id)."""

@@ -48,9 +48,11 @@ class NimbusConfig:
 
     ollama_base_url: str = "http://localhost:11434"
 
-    # pi-ai sidecar (OpenAI-compatible) for GPT-5.x via the ChatGPT/Codex
-    # subscription. The pi-codex/* models route here.
-    pi_sidecar_url: str = "http://localhost:8799/v1"
+    # pi-ai sidecar (OpenAI-compatible). The pi-codex/* and pi-claude/* models
+    # route here with pi-style "provider/model" names. Default matches
+    # sidecar/pi-sidecar-anthropic.mjs (PI_SIDECAR_PORT=8798), the unified
+    # anthropic+codex sidecar. Override via NIMBUS_PI_SIDECAR_URL.
+    pi_sidecar_url: str = "http://localhost:8798/v1"
     # Shared secret sent as the Bearer to the sidecar (required when the sidecar
     # binds beyond loopback, e.g. Docker). Empty = loopback/no-auth.
     pi_sidecar_token: str = ""
