@@ -409,8 +409,17 @@ class AgentOS:
         # Decoder
         decoder = InstructionDecoder()
 
-        # Tool schemas
-        schema_format = "anthropic" if self.config.provider == "anthropic" else "openai"
+        # Tool schemas — key off the adapter's real wire channel, not
+        # config.provider (callers like `nimbus run` leave it at the default
+        # "anthropic" regardless of the model). Only the Anthropic native channel
+        # consumes anthropic-format tools (input_schema); LiteLLM (gemini/ollama/
+        # openai) and Codex both start from openai-format (parameters). Keying off
+        # config.provider silently fed input_schema tools to the LiteLLM path,
+        # whose converter only reads `parameters` — so tools reached the model
+        # with an empty schema and it had to guess every argument.
+        adapter_is_anthropic = getattr(self._adapter, "_is_anthropic_model", None)
+        use_anthropic = adapter_is_anthropic() if callable(adapter_is_anthropic) else (self.config.provider == "anthropic")
+        schema_format = "anthropic" if use_anthropic else "openai"
         tool_schemas = self._registry.get_schemas(format=schema_format)
 
         # VCPU (with steering callback)

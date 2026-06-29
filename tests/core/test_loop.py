@@ -66,10 +66,10 @@ def make_step(is_final=False, output=None, actions=None, fault=None):
     return result
 
 
-def make_tool_step(tool_name="Read", output="file contents"):
+def make_tool_step(tool_name="Read", output="file contents", args=None):
     """Create a step with a tool call result."""
     return StepResult(
-        actions=[ActionIR(kind="TOOL_CALL", name=tool_name)],
+        actions=[ActionIR(kind="TOOL_CALL", name=tool_name, args=args or {})],
         results=[ToolResult(status="OK", output=output)],
     )
 
@@ -116,6 +116,61 @@ class TestRuntimeLoopBasic:
         result = await loop.run()
         # Second call exhausts mock → returns Done
         assert result.status == "OK"
+
+
+class TestRuntimeLoopStallDetection:
+    """Stall detection: terminate on exact-repeat spinning, but never kill a
+    legitimate same-tool-different-args workflow (e.g. reading many files)."""
+
+    @pytest.mark.asyncio
+    async def test_exact_repeat_terminates(self):
+        """3 identical successful tool calls → forced clean completion."""
+        # Same tool, IDENTICAL args, never returns is_final → pure spin.
+        step = lambda: make_tool_step("Write", "wrote 5 bytes", {"file_path": "a.txt", "content": "hi"})
+        vcpu = MockVCPU([step() for _ in range(10)])
+        loop = RuntimeLoop(vcpu, MMU())
+        events = [e async for e in loop.stream()]
+        types = [e["type"] for e in events]
+        assert "stall_terminated" in types
+        # Must stop well before exhausting the 10 scripted steps.
+        assert vcpu._call_count <= 4
+        final = next(e["result"] for e in events if e["type"] == "final")
+        assert final.status == "OK"
+
+    @pytest.mark.asyncio
+    async def test_many_distinct_reads_not_killed(self):
+        """H001 regression: same tool, DIFFERENT args (reading 12 files) is a
+        legitimate workflow and must never be force-terminated as a stall."""
+        steps = [make_tool_step("Read", f"contents {i}", {"file_path": f"note{i}.txt"})
+                 for i in range(12)]
+        steps.append(make_step(is_final=True, output="Read all 12 files."))
+        vcpu = MockVCPU(steps)
+        loop = RuntimeLoop(vcpu, MMU())
+        events = [e async for e in loop.stream()]
+        types = [e["type"] for e in events]
+        # Never killed — the model's own is_final ends it.
+        assert "stall_terminated" not in types
+        assert vcpu._call_count == 13
+        final = next(e["result"] for e in events if e["type"] == "final")
+        assert "12 files" in final.output
+
+    @pytest.mark.asyncio
+    async def test_repeat_then_progress_resets(self):
+        """One repeat earns a nudge, but genuine progress afterward must not
+        accumulate toward termination."""
+        vcpu = MockVCPU([
+            make_tool_step("Write", "ok", {"file_path": "a.txt", "content": "x"}),
+            make_tool_step("Write", "ok", {"file_path": "a.txt", "content": "x"}),  # repeat → nudge
+            make_tool_step("Bash", "ran", {"command": "python a.txt"}),             # progress
+            make_step(is_final=True, output="All done."),
+        ])
+        loop = RuntimeLoop(vcpu, MMU())
+        events = [e async for e in loop.stream()]
+        types = [e["type"] for e in events]
+        assert "stall_nudge" in types
+        assert "stall_terminated" not in types
+        final = next(e["result"] for e in events if e["type"] == "final")
+        assert final.status == "OK" and "done" in final.output.lower()
 
 
 class TestRuntimeLoopInterrupt:
