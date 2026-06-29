@@ -26,6 +26,7 @@ Design notes (pi-coding-agent influence):
 """
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -310,6 +311,19 @@ class RuntimeLoop:
         # Pending steering messages to inject at top of next loop iteration
         self._pending_steering: List[str] = []
 
+        # Stall detection: weaker models can keep calling tools instead of
+        # finishing — either the exact same call (re-writing an identical file)
+        # or the same tool with reworded args (re-spawning a sub-agent whose
+        # result they already have). Track both: exact-signature repeats and the
+        # consecutive same-tool streak (args may vary).
+        self._last_tool_sig: Optional[str] = None
+        self._tool_repeat_count = 0
+        self._last_tool_name: Optional[str] = None
+        self._same_tool_streak = 0
+        # In contract mode, give a stalled sub-agent one forced submit_result
+        # nudge before terminating, so its structured deliverable isn't lost.
+        self._stall_forced_submit = False
+
         # Cumulative token usage across all LLM calls in this loop run (pi-style)
         self._cumulative_usage = TokenUsage()
 
@@ -517,6 +531,98 @@ class RuntimeLoop:
                     else:
                         logger.error("Max retries (%d) exhausted: %s", self._max_retries, step_result.fault.message)
 
+                # ---- Stall detection ----
+                # A weak model can keep calling tools instead of finishing. Two
+                # distinct signals, treated very differently:
+                #   • exact-signature repeat (identical tool + identical args,
+                #     succeeding over and over) — high confidence it is spinning.
+                #     This is the ONLY signal allowed to force termination.
+                #   • same-tool streak with VARYING args — NOT a stall on its own:
+                #     a reader legitimately reads many different files. This earns
+                #     only an occasional gentle nudge, never a kill.
+                if not step_result.is_final and not step_result.fault:
+                    sig = self._tool_call_signature(step_result)
+                    succeeded = bool(step_result.results) and all(
+                        r.status == "OK" for r in step_result.results
+                    )
+                    if sig and succeeded:
+                        tool_name = sig.split("::", 1)[0]
+                        self._tool_repeat_count = (
+                            self._tool_repeat_count + 1 if sig == self._last_tool_sig else 0
+                        )
+                        self._same_tool_streak = (
+                            self._same_tool_streak + 1 if tool_name == self._last_tool_name else 1
+                        )
+                        self._last_tool_sig = sig
+                        self._last_tool_name = tool_name
+
+                        if self._tool_repeat_count >= 2:
+                            # 3rd identical call → genuine spin. In contract mode a
+                            # sub-agent must exit via submit_result; give it one firm
+                            # nudge to do so before we force a tool-free completion,
+                            # so its structured deliverable isn't silently dropped.
+                            if self._in_contract_mode() and not self._stall_forced_submit:
+                                self._stall_forced_submit = True
+                                self._tool_repeat_count = 0
+                                self.mmu.add_user_message(
+                                    "⚠️ You keep repeating the same successful tool call. "
+                                    "Stop. You already have the result. Call submit_result "
+                                    "now with your findings to finish — this is the only "
+                                    "way to deliver your answer."
+                                )
+                                yield {"type": "stall_nudge", "signature": sig}
+                            else:
+                                summary = await self._final_summary()
+                                last = step_result.results[-1].output if step_result.results else None
+                                last_clean = str(last).split("\n\n[WARNING")[0].strip() if last else ""
+                                if not summary:
+                                    summary = last_clean or "Task completed."
+                                elif last_clean and last_clean not in summary and len(summary) < 80:
+                                    # Weak model summary — keep the concrete tool result
+                                    # so the actual answer isn't lost.
+                                    summary = f"{summary}\n\n{last_clean}"
+                                result = ToolResult(
+                                    status="OK", output=summary, is_final=True,
+                                    ui_detail={"terminated": "tool_call_stall"},
+                                )
+                                self._save_core_dump("completed")
+                                yield {"type": "stall_terminated", "signature": sig}
+                                yield {"type": "final", "result": result}
+                                return
+                        elif self._tool_repeat_count == 1:
+                            # 2nd identical call → re-anchor on the goal and point at
+                            # the next step. Goal-directed, not a generic "stop":
+                            # unsticks weak models (Write done → run it with Bash;
+                            # sub-agent answered → report the result).
+                            goal = getattr(self.mmu, "_goal", "") or "the stated goal"
+                            self.mmu.add_user_message(
+                                "⚠️ You already completed this step successfully — the "
+                                "tool call returned a result. Do NOT repeat it. Re-read "
+                                f"the GOAL:\n{goal}\n\nUse the results you already have. "
+                                "Perform the NEXT uncompleted step now (if the goal asks "
+                                "you to run or test something, call the Bash tool). If "
+                                "every part of the goal is already done, stop calling "
+                                "tools and reply with a brief summary of what you found."
+                            )
+                            yield {"type": "stall_nudge", "signature": sig}
+                        elif self._same_tool_streak and self._same_tool_streak % 8 == 0:
+                            # Long run of one tool with varying args — legitimate, but
+                            # check in: a gentle reminder that doesn't tell it to stop,
+                            # only to consider whether it has enough to finish.
+                            self.mmu.add_user_message(
+                                f"You've called {tool_name} many times. If you still need "
+                                "more data, continue — but if you already have enough to "
+                                "satisfy the goal, stop calling tools and reply with a "
+                                "summary of what you found."
+                            )
+                            yield {"type": "stall_nudge", "signature": sig}
+                    else:
+                        self._last_tool_sig = None
+                        self._last_tool_name = None
+                        self._tool_repeat_count = 0
+                        self._same_tool_streak = 0
+                        self._stall_forced_submit = False
+
                 # Check if done (inner loop)
                 if step_result.is_final:
                     break  # exit inner loop, check follow-up
@@ -593,6 +699,53 @@ class RuntimeLoop:
             logger.error(f"Failed to save Core Dump for session {self.session_id}: {e}")
 
     # --- Partial result collection (pi-style) ---
+
+    async def _final_summary(self) -> Optional[str]:
+        """Force a brief, tool-free final answer from the model. Used when the
+        agent has stalled re-issuing an identical successful tool call: replay the
+        full context with NO tools so the model must reply with text, not act.
+        Passes a pre-assembled message list (not the MMU) — the adapter only
+        accepts a list or re-assembles, and the latter path rejects kwargs."""
+        try:
+            messages = list(self.mmu.assemble_context())
+        except Exception:
+            messages = []
+        messages.append({
+            "role": "user",
+            "content": "The task appears complete. Do NOT call any tools. Reply with the "
+                       "concrete final answer the task asked for — state the specific "
+                       "result or value (e.g. the exact number, the command output, or "
+                       "the file contents) explicitly, not just that you finished.",
+        })
+        try:
+            resp = await self._adapter.chat(messages, [])
+            return (resp.content or "").strip() or None
+        except Exception as e:
+            logger.warning("Final-summary call failed: %s", e)
+            return None
+
+    def _in_contract_mode(self) -> bool:
+        """Whether this loop drives a contract-mode sub-agent (must exit via
+        submit_result). Defensive: tolerate mock VCPUs without a config."""
+        cfg = getattr(self.vcpu, "config", None)
+        return bool(getattr(cfg, "contract_mode", False))
+
+    @staticmethod
+    def _tool_call_signature(step_result: StepResult) -> Optional[str]:
+        """Canonical signature for a step that is exactly ONE tool call and
+        nothing else (no REPLY/text). Returns None otherwise — multi-tool or
+        text steps represent genuine progress and never count as a stall."""
+        tool_actions = [a for a in step_result.actions if a.kind == "TOOL_CALL"]
+        if len(tool_actions) != 1:
+            return None
+        if any(a.kind in ("REPLY", "RETURN") for a in step_result.actions):
+            return None
+        a = tool_actions[0]
+        try:
+            args = json.dumps(a.args, sort_keys=True, default=str)
+        except Exception:
+            args = str(a.args)
+        return f"{a.name}::{args}"
 
     def _collect_partial_output(self) -> str:
         """Collect all partial outputs into a summary string."""

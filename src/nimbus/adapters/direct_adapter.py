@@ -779,13 +779,15 @@ class DirectAdapter:
                     t["type"] = "function"
                 result.append(t)
             else:
-                # Simplified format -> OpenAI format
+                # Simplified format -> OpenAI format. Accept input_schema as an
+                # alias for parameters (anthropic-shaped tools) so a format
+                # mismatch never silently ships an empty schema.
                 result.append({
                     "type": "function",
                     "function": {
                         "name": t.get("name"),
                         "description": t.get("description", ""),
-                        "parameters": t.get("parameters", {}),
+                        "parameters": t.get("parameters") or t.get("input_schema") or {},
                         "strict": t.get("strict", True),
                     }
                 })
@@ -1795,6 +1797,15 @@ class DirectAdapter:
             elif "claude" in model and "anthropic/" not in model:
                 model = f"anthropic/{model}"
 
+        # Ollama tool-calling must go through the /api/chat endpoint. LiteLLM's
+        # `ollama/` provider hits /api/generate, which drops native tool_calls in
+        # streaming mode — they leak as plain text and then collapse to an empty
+        # decode. `ollama_chat/` streams native tool_calls correctly, the same
+        # path every other provider uses, so the gemma4 text-extraction
+        # workaround below stays inert.
+        if model.startswith("ollama/"):
+            model = "ollama_chat/" + model[len("ollama/"):]
+
         # Clean messages and convert image blocks to OpenAI format
         clean_messages = []
         for m in messages:
@@ -1885,7 +1896,7 @@ class DirectAdapter:
                 # Use reasoning_effort="none" instead of think=False because litellm's
                 # supported params list includes "reasoning_effort" but not "think".
                 # litellm maps reasoning_effort="none" to think=False for ollama models.
-                if current_model.startswith("ollama/"):
+                if current_model.startswith(("ollama/", "ollama_chat/")):
                     acompletion_kwargs["reasoning_effort"] = "none"
                 response = await acompletion(**acompletion_kwargs)
             except Exception as e:
@@ -1931,7 +1942,7 @@ class DirectAdapter:
                         # Disable thinking mode for ollama models (e.g. qwen3.5)
                         # Use reasoning_effort="none" instead of think=False because litellm's
                         # supported params list includes "reasoning_effort" but not "think".
-                        if current_model.startswith("ollama/"):
+                        if current_model.startswith(("ollama/", "ollama_chat/")):
                             acompletion_kwargs["reasoning_effort"] = "none"
                         response = await acompletion(**acompletion_kwargs)
                     else:
