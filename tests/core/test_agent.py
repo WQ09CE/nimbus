@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from nimbus.core.agent import AgentConfig, AgentOS, _register_default_tools
-from nimbus.core.adapter import LLMResponse
+from nimbus.adapters.types import VcpuLLMResponse as LLMResponse
 from nimbus.core.tools.registry import ToolRegistry, ToolParameter, tool
 
 
@@ -36,8 +36,8 @@ class MockAdapter:
 class TestAgentConfig:
     def test_defaults(self):
         c = AgentConfig()
-        assert c.model == "gpt-4o"
-        assert c.provider == "openai"
+        assert c.model == "anthropic/claude-sonnet-4-20250514"
+        assert c.provider == "anthropic"
         assert c.max_iterations == 200
 
     def test_anthropic_config(self):

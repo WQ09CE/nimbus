@@ -99,3 +99,4 @@ web-ui/src/app/test.tsx
 .gstack/
 .tmp/
 .env
+web-ui/playwright-report/

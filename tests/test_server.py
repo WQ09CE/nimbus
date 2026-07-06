@@ -326,7 +326,7 @@ class TestAPIRouter:
         app.include_router(router, prefix="/api/v1")
 
         # Check routes are registered
-        all_paths = [r.path for r in app.routes]
+        all_paths = list(app.openapi()["paths"].keys())
         assert "/api/v1/health" in all_paths
         assert "/api/v1/sessions" in all_paths
 
