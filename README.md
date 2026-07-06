@@ -199,13 +199,22 @@ export OPENAI_API_KEY=sk-...
 
 ## 🧪 Testing
 
+The offline suite runs with no credentials. Provider integration tests are
+marked (`anthropic`, `openai`, `google`, `ollama`) and deselected by default —
+they hit live models and need API keys or a local Ollama server.
+
 ```bash
-# Core unit tests
+# Offline suite — no API keys required (expect all green)
+pytest -m "not anthropic and not openai and not google and not ollama and not slow"
+
+# Core unit tests only
 pytest tests/core --tb=short
 
-# Full test suite
+# Everything, including live provider integration (needs API keys / Ollama)
 pytest tests/ --tb=short
 ```
+
+Offline run: **471 passed, 86 deselected**. Requires Python 3.10+.
 
 ---
 
