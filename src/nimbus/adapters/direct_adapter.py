@@ -272,59 +272,6 @@ def _tool_names_from_openai_tools(tools: Optional[List[Dict[str, Any]]]) -> set[
     return names
 
 
-def _build_gemma4_tool_prompt(
-    tools: Optional[List[Dict[str, Any]]],
-    *,
-    post_tool_turn: bool = False,
-) -> str | None:
-    """Describe tools in text without using LiteLLM's Ollama tools transformer."""
-    if not tools:
-        return None
-
-    lines = [
-        "Tool calling is available.",
-        "For normal conversational replies, answer in natural language and do not output JSON.",
-        "When tools are required, output one JSON object or a JSON array of objects and no extra prose:",
-        '{"name":"Bash","arguments":{"command":"pwd"}}',
-        "Available tools:",
-    ]
-    for tool in tools:
-        function = tool.get("function") if isinstance(tool, dict) else None
-        if not isinstance(function, dict):
-            continue
-        name = function.get("name")
-        if not name:
-            continue
-        description = function.get("description") or ""
-        lines.append(f"- {name}: {description}")
-        parameters = function.get("parameters") or {}
-        properties = parameters.get("properties") or {}
-        required = set(parameters.get("required") or [])
-        if properties:
-            lines.append("  Use exactly these parameter names:")
-            for param_name, schema in properties.items():
-                if not isinstance(schema, dict):
-                    schema = {}
-                param_type = schema.get("type") or "any"
-                requirement = "required" if param_name in required else "optional"
-                param_desc = schema.get("description") or ""
-                enum = schema.get("enum")
-                enum_text = f"; enum={json.dumps(enum, ensure_ascii=False)}" if enum else ""
-                lines.append(
-                    f"  - {param_name} ({param_type}, {requirement}{enum_text}): {param_desc}"
-                )
-        else:
-            lines.append("  Parameters: none")
-    if post_tool_turn:
-        lines.extend([
-            "Tool results were just returned.",
-            "Do not repeat a tool call that already appears in the conversation.",
-            "If the task still needs more tool work, call the next required tool.",
-            "If the task is complete, answer in natural language.",
-        ])
-    return "\n".join(lines)
-
-
 def _filter_tool_calls_for_schemas(
     tool_calls: list[dict] | None,
     tool_names: set[str],
@@ -1831,42 +1778,14 @@ class DirectAdapter:
                 )
             clean_messages.append(msg)
 
-        def _tools_for_request(current_model: str) -> Optional[List[Dict[str, Any]]]:
-            return openai_tools
-
-        def _is_post_tool_turn() -> bool:
-            last_non_system = next(
-                (msg for msg in reversed(clean_messages) if msg.get("role") != "system"),
-                None,
-            )
-            return bool(last_non_system and last_non_system.get("role") == "tool")
-
         def _request_payload_for_model(
             current_model: str,
         ) -> tuple[list[dict], Optional[List[Dict[str, Any]]], Optional[List[Dict[str, Any]]]]:
-            logical_tools = _tools_for_request(current_model)
-            if not current_model.startswith("ollama/gemma4") or not logical_tools:
-                return clean_messages, logical_tools, logical_tools
-
-            # LiteLLM's Ollama tool transformer forces format=json, which breaks
-            # ordinary Gemma4 chat by producing {"name":"None","arguments":{}}.
-            # Keep the logical tools for adapter-side extraction, but pass no
-            # provider tools and describe the schema in text ourselves.
-            tool_prompt = _build_gemma4_tool_prompt(
-                logical_tools,
-                post_tool_turn=_is_post_tool_turn(),
-            )
-            if not tool_prompt:
-                return clean_messages, None, logical_tools
-
-            request_messages = [msg.copy() for msg in clean_messages]
-            for msg in request_messages:
-                if msg.get("role") == "system":
-                    msg["content"] = f"{msg.get('content') or ''}\n\n{tool_prompt}"
-                    break
-            else:
-                request_messages.insert(0, {"role": "system", "content": tool_prompt})
-            return request_messages, None, logical_tools
+            # Gemma4 (and other ollama models) now stream native tool_calls via
+            # the ollama_chat/ endpoint, so provider tools are passed like any
+            # other model. Any JSON-as-text a weak model still leaks is caught by
+            # the text-extraction fallback below.
+            return clean_messages, openai_tools, openai_tools
 
         try:
             t_start = time.monotonic()
@@ -1964,8 +1883,11 @@ class DirectAdapter:
             brace_tool_buffer = ""
             fence_probe = ""
             tool_schema_names = _tool_names_from_openai_tools(active_tools_for_response)
+            # ollama models are rewritten to the ollama_chat/ endpoint above, so
+            # match both prefixes: the fallback stays live even though the model
+            # string no longer starts with plain "ollama/".
             gemma_text_tool_extract = (
-                current_model.startswith("ollama/gemma4")
+                current_model.startswith(("ollama/gemma4", "ollama_chat/gemma4"))
                 and active_tools_for_response is not None
             )
             last_usage = None  # Last chunk's usage data (LiteLLM/OpenAI)
@@ -2209,7 +2131,7 @@ class DirectAdapter:
             if full_text.strip():
                 content_to_check = full_text.strip()
                 gemma_post_tool_without_schemas = (
-                    current_model.startswith("ollama/gemma4")
+                    current_model.startswith(("ollama/gemma4", "ollama_chat/gemma4"))
                     and active_tools_for_response is None
                     and any(msg.get("role") == "tool" for msg in clean_messages)
                 )
@@ -2218,7 +2140,7 @@ class DirectAdapter:
                     and (
                         not text_streamed
                         or (
-                            current_model.startswith("ollama/")
+                            current_model.startswith(("ollama/", "ollama_chat/"))
                             and active_tools_for_response is not None
                         )
                     )
@@ -2230,7 +2152,7 @@ class DirectAdapter:
                     extracted_tcs = _extract_tool_calls_from_text(content_to_check)
                     if (
                         extracted_tcs
-                        and current_model.startswith("ollama/gemma4")
+                        and current_model.startswith(("ollama/gemma4", "ollama_chat/gemma4"))
                         and active_tools_for_response is not None
                     ):
                         extracted_tcs = _filter_tool_calls_for_schemas(

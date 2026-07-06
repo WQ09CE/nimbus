@@ -49,6 +49,10 @@ async def test_direct_adapter_fallback_on_429():
     mock_choice.delta.reasoning_content = None
     mock_choice.finish_reason = "stop"
     mock_response_chunk.choices = [mock_choice]
+    # Streaming usage is opt-in; without an explicit None the auto-MagicMock is
+    # truthy and poisons the TokenUsage-building path with mock arithmetic.
+    mock_response_chunk.usage = None
+    mock_response_chunk.model_extra = None
 
     async def async_gen():
         yield mock_response_chunk

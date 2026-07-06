@@ -201,166 +201,6 @@ class TestAdapterNormalization:
         assert events[1].type == "stop"
 
     @patch("nimbus.adapters.direct_adapter.acompletion", new_callable=AsyncMock)
-    async def test_gemma4_keeps_text_tools_after_tool_result(self, mock_acompletion):
-        """Post-tool Gemma4 turns can continue, without LiteLLM provider tools."""
-        adapter = _make_adapter("ollama/gemma4:26b")
-        mock_acompletion.return_value = MockAsyncStream([
-            MockChunk(MockDelta(content="done")),
-        ])
-        tools = [{
-            "type": "function",
-            "function": {
-                "name": "Bash",
-                "description": "Execute shell",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        }]
-        messages = [
-            {"role": "user", "content": "run command"},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [{
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {"name": "Bash", "arguments": "{}"},
-                }],
-            },
-            {"role": "tool", "tool_call_id": "call_1", "content": "OK"},
-        ]
-
-        events = []
-        async for event in adapter._stream_litellm(messages, tools=tools):
-            events.append(event)
-
-        assert mock_acompletion.call_args.kwargs["tools"] is None
-        request_messages = mock_acompletion.call_args.kwargs["messages"]
-        assert "Tool calling is available" in request_messages[0]["content"]
-        assert "Tool results were just returned" in request_messages[0]["content"]
-        assert events[0].type == "text"
-        assert events[0].text == "done"
-
-    @patch("nimbus.adapters.direct_adapter.acompletion", new_callable=AsyncMock)
-    async def test_gemma4_text_tool_prompt_includes_parameters(self, mock_acompletion):
-        """Gemma4 text-tool mode must expose parameter names for submit_result."""
-        adapter = _make_adapter("ollama/gemma4:26b")
-        tools = [{
-            "type": "function",
-            "function": {
-                "name": "submit_result",
-                "description": "Submit structured results",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "summary": {"type": "string", "description": "Brief summary"},
-                        "findings": {
-                            "type": "array",
-                            "description": "Key findings",
-                            "items": {"type": "string"},
-                        },
-                        "artifacts": {
-                            "type": "array",
-                            "description": "Artifact paths",
-                            "items": {"type": "string"},
-                        },
-                    },
-                    "required": ["summary", "findings"],
-                    "additionalProperties": False,
-                },
-            },
-        }]
-        mock_acompletion.return_value = MockAsyncStream([
-            MockChunk(MockDelta(content="done")),
-        ])
-
-        events = []
-        async for event in adapter._stream_litellm([{"role": "user", "content": "finish"}], tools=tools):
-            events.append(event)
-
-        assert mock_acompletion.call_args.kwargs["tools"] is None
-        request_messages = mock_acompletion.call_args.kwargs["messages"]
-        prompt = request_messages[0]["content"]
-        assert "- submit_result: Submit structured results" in prompt
-        assert "Use exactly these parameter names" in prompt
-        assert "- summary (string, required): Brief summary" in prompt
-        assert "- findings (array, required): Key findings" in prompt
-        assert "- artifacts (array, optional): Artifact paths" in prompt
-        assert events[0].type == "text"
-
-    @patch("nimbus.adapters.direct_adapter.acompletion", new_callable=AsyncMock)
-    async def test_gemma4_reenables_tools_after_new_user_message(self, mock_acompletion):
-        """A later user turn after tool finalization must get tools again."""
-        adapter = _make_adapter("ollama/gemma4:26b")
-        tools = [{
-            "type": "function",
-            "function": {
-                "name": "Bash",
-                "description": "Execute shell",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        }]
-        messages = [
-            {"role": "user", "content": "run command"},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [{
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {"name": "Bash", "arguments": "{}"},
-                }],
-            },
-            {"role": "tool", "tool_call_id": "call_1", "content": "OK"},
-            {"role": "assistant", "content": "done"},
-            {"role": "user", "content": "run another command"},
-        ]
-        mock_acompletion.return_value = MockAsyncStream([
-            MockChunk(MockDelta(content='{"name":"Bash","arguments":{"command":"pwd"}}')),
-        ])
-
-        events = []
-        async for event in adapter._stream_litellm(messages, tools=tools):
-            events.append(event)
-
-        assert mock_acompletion.call_args.kwargs["tools"] is None
-        request_messages = mock_acompletion.call_args.kwargs["messages"]
-        assert "Tool calling is available" in request_messages[0]["content"]
-        assert "Tool results were just returned" not in request_messages[0]["content"]
-        tool_events = [e for e in events if e.type == "tool_call"]
-        assert len(tool_events) == 1
-        assert tool_events[0].tool_call["name"] == "Bash"
-
-    @patch("nimbus.adapters.direct_adapter.acompletion", new_callable=AsyncMock)
-    async def test_gemma4_does_not_pass_tools_to_litellm_transformer(self, mock_acompletion):
-        """Gemma4 gets text tool instructions, not LiteLLM's JSON-only tools mode."""
-        adapter = _make_adapter("ollama/gemma4:26b")
-        tools = [{
-            "type": "function",
-            "function": {
-                "name": "Bash",
-                "description": "Execute shell",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        }]
-        messages = [{"role": "system", "content": "base"}, {"role": "user", "content": "hi"}]
-        mock_acompletion.return_value = MockAsyncStream([
-            MockChunk(MockDelta(content="NIMBUS_CHAT_OK")),
-        ])
-
-        events = []
-        async for event in adapter._stream_litellm(messages, tools=tools):
-            events.append(event)
-
-        assert mock_acompletion.call_args.kwargs["tools"] is None
-        request_messages = mock_acompletion.call_args.kwargs["messages"]
-        assert request_messages[0]["role"] == "system"
-        assert "Tool calling is available" in request_messages[0]["content"]
-        assert "For normal conversational replies" in request_messages[0]["content"]
-        assert events[0].type == "text"
-        assert events[0].text == "NIMBUS_CHAT_OK"
-        assert events[-1].type == "stop"
-
-    @patch("nimbus.adapters.direct_adapter.acompletion", new_callable=AsyncMock)
     async def test_gemma4_extracts_fenced_json_after_streamed_text(self, mock_acompletion):
         """Gemma4 can explain first, then emit a fenced JSON function call."""
         adapter = _make_adapter("ollama/gemma4:26b")
@@ -388,9 +228,6 @@ class TestAdapterNormalization:
         async for event in adapter._stream_litellm([], tools=tools):
             events.append(event)
 
-        assert mock_acompletion.call_args.kwargs["tools"] is None
-        request_messages = mock_acompletion.call_args.kwargs["messages"]
-        assert "Tool calling is available" in request_messages[0]["content"]
         streamed_text = "".join(e.text or "" for e in events if e.type == "text")
         tool_events = [e for e in events if e.type == "tool_call"]
 
@@ -469,9 +306,6 @@ class TestAdapterNormalization:
         async for event in adapter._stream_litellm(messages, tools=tools):
             events.append(event)
 
-        assert mock_acompletion.call_args.kwargs["tools"] is None
-        request_messages = mock_acompletion.call_args.kwargs["messages"]
-        assert "Tool results were just returned" in request_messages[0]["content"]
         tool_events = [e for e in events if e.type == "tool_call"]
         assert len(tool_events) == 1
         assert tool_events[0].tool_call["name"] == "Bash"

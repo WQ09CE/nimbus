@@ -243,7 +243,7 @@ nimbus/
 │   ├── skills/               # Prompt skill loading
 │   └── cli/                  # nimbus CLI (serve, run, config, session, acp)
 ├── web-ui/                   # Next.js frontend (21 components)
-├── tests/                    # Test suite (31 files, 540+ tests)
+├── tests/                    # Test suite (30 files, 550+ tests)
 ├── docs/                     # Architecture & design documents
 └── skills/                   # Pluggable skill packs
 ```

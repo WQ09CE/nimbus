@@ -52,8 +52,7 @@ class TestContractMode:
         vcpu = VCPU(MockALU(), MockDecoder(), MockGate(), mmu, tools=[], config=VCPUConfig(contract_mode=True))
         
         # Test step triggers termination
-        loop = asyncio.get_event_loop()
-        res = loop.run_until_complete(vcpu.step())
+        res = asyncio.run(vcpu.step())
         
         assert len(res.results) == 1
         assert res.results[0].status == "OK"
@@ -274,7 +273,7 @@ class TestCountdownSteering:
         vcpu._exec.iteration = 16  # will become 17 on next step
 
         import asyncio
-        asyncio.get_event_loop().run_until_complete(vcpu.step())
+        asyncio.run(vcpu.step())
 
         # Check that a countdown system message was added
         calls = [str(c) for c in mmu.add_system_message.call_args_list]
