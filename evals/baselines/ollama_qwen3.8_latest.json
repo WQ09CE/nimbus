@@ -1,0 +1,165 @@
+[
+  {
+    "task": "crash-resume",
+    "model": "ollama/qwen3.8:latest",
+    "mode": "interrupt_resume",
+    "recovery_injected": 0,
+    "interrupt_metrics": {
+      "events": 6,
+      "turns": 1,
+      "steps": 1,
+      "tool_results": 1,
+      "compactions": 0,
+      "turn_end_reasons": [
+        "aborted"
+      ],
+      "invariant_violations": []
+    },
+    "wall_sec": 71.4,
+    "status": "OK",
+    "metrics": {
+      "events": 17,
+      "turns": 1,
+      "steps": 4,
+      "tool_results": 3,
+      "compactions": 0,
+      "turn_end_reasons": [
+        "completed"
+      ],
+      "invariant_violations": []
+    },
+    "usage": {
+      "input": 6303,
+      "output": 309,
+      "cache_read": 0,
+      "cache_write": 0,
+      "total": 6612,
+      "cost": {
+        "input": 0.0,
+        "output": 0.0,
+        "cache_read": 0.0,
+        "cache_write": 0.0,
+        "total": 0.0
+      }
+    },
+    "passed": true,
+    "detail": "resumed and completed",
+    "artifacts": "/var/folders/x8/jshjxf7159z5ydqlhv5cc7jw0000gn/T/nimbus-eval-crash-resume-fidsrgip"
+  },
+  {
+    "task": "followup",
+    "model": "ollama/qwen3.8:latest",
+    "mode": "normal",
+    "wall_sec": 58.0,
+    "status": "OK",
+    "metrics": {
+      "events": 33,
+      "turns": 2,
+      "steps": 8,
+      "tool_results": 4,
+      "compactions": 0,
+      "turn_end_reasons": [
+        "completed",
+        "completed"
+      ],
+      "invariant_violations": []
+    },
+    "usage": {
+      "input": 12510,
+      "output": 399,
+      "cache_read": 0,
+      "cache_write": 0,
+      "total": 12909,
+      "cost": {
+        "input": 0.0,
+        "output": 0.0,
+        "cache_read": 0.0,
+        "cache_write": 0.0,
+        "total": 0.0
+      }
+    },
+    "passed": true,
+    "detail": "ok",
+    "artifacts": "/var/folders/x8/jshjxf7159z5ydqlhv5cc7jw0000gn/T/nimbus-eval-followup-iykfcmcg"
+  },
+  {
+    "task": "hello-tool",
+    "model": "ollama/qwen3.8:latest",
+    "mode": "normal",
+    "wall_sec": 11.8,
+    "status": "OK",
+    "metrics": {
+      "events": 9,
+      "turns": 1,
+      "steps": 2,
+      "tool_results": 1,
+      "compactions": 0,
+      "turn_end_reasons": [
+        "completed"
+      ],
+      "invariant_violations": []
+    },
+    "usage": {
+      "input": 2756,
+      "output": 54,
+      "cache_read": 0,
+      "cache_write": 0,
+      "total": 2810,
+      "cost": {
+        "input": 0.0,
+        "output": 0.0,
+        "cache_read": 0.0,
+        "cache_write": 0.0,
+        "total": 0.0
+      }
+    },
+    "passed": true,
+    "detail": "ok",
+    "artifacts": "/var/folders/x8/jshjxf7159z5ydqlhv5cc7jw0000gn/T/nimbus-eval-hello-tool-b30rqz_o"
+  },
+  {
+    "task": "long-context",
+    "model": "ollama/qwen3.8:latest",
+    "mode": "normal",
+    "wall_sec": 420.0,
+    "status": "TIMEOUT",
+    "passed": false,
+    "detail": "timed out after 420s",
+    "artifacts": "/var/folders/x8/jshjxf7159z5ydqlhv5cc7jw0000gn/T/nimbus-eval-long-context-ul5h996a"
+  },
+  {
+    "task": "write-verify",
+    "model": "ollama/qwen3.8:latest",
+    "mode": "normal",
+    "wall_sec": 49.6,
+    "status": "OK",
+    "metrics": {
+      "events": 13,
+      "turns": 1,
+      "steps": 3,
+      "tool_results": 2,
+      "compactions": 0,
+      "turn_end_reasons": [
+        "completed"
+      ],
+      "invariant_violations": []
+    },
+    "usage": {
+      "input": 4475,
+      "output": 258,
+      "cache_read": 0,
+      "cache_write": 0,
+      "total": 4733,
+      "cost": {
+        "input": 0.0,
+        "output": 0.0,
+        "cache_read": 0.0,
+        "cache_write": 0.0,
+        "total": 0.0
+      }
+    },
+    "passed": true,
+    "detail": "ok",
+    "artifacts": "/var/folders/x8/jshjxf7159z5ydqlhv5cc7jw0000gn/T/nimbus-eval-write-verify-impbsrj2"
+  }
+]
