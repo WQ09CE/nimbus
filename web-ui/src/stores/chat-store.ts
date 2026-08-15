@@ -147,6 +147,59 @@ function flushPendingSync(set: SetFn, get: GetFn, streamingId: string) {
   }
 }
 
+// --- Post-stream truth reconciliation ---
+// The live SSE stream is a best-effort projection; the session's persisted
+// messages (derived from the event log) are the truth. After a stream
+// finalizes, fetch the authoritative last assistant text and repair the
+// rendered message if delivery dropped chunks (observed: a reply rendered
+// truncated live but complete after reload).
+async function reconcileFinalAssistantText(
+  set: SetFn,
+  get: GetFn,
+  sessionId: string,
+  finalId: string
+) {
+  try {
+    const serverMessages = await getSessionMessages(sessionId);
+    const lastAssistant = [...serverMessages].reverse().find(
+      m => m.role === "assistant" && typeof m.content === "string" && m.content.trim()
+    );
+    if (!lastAssistant) return;
+    const serverText = lastAssistant.content as string;
+
+    if (get().session?.id !== sessionId) return;
+    const msgs = get().messages;
+    const idx = msgs.findIndex(m => m.id === finalId);
+    if (idx === -1) return;
+    const msg = msgs[idx];
+
+    // Only the trailing text part is reconciled — tool parts stay untouched.
+    const parts = [...(msg.parts || [])];
+    const lastPart = parts[parts.length - 1];
+    const streamedTail = lastPart?.type === "text" ? lastPart.content : "";
+    if (streamedTail === serverText) return;
+
+    console.warn(
+      `[Store] Stream text reconciled from server truth ` +
+      `(${streamedTail.length} → ${serverText.length} chars)`
+    );
+    if (lastPart?.type === "text") {
+      parts[parts.length - 1] = { ...lastPart, content: serverText };
+    } else {
+      parts.push({ type: "text", content: serverText });
+    }
+    const content = parts
+      .filter(p => p.type === "text")
+      .map(p => (p as { content: string }).content)
+      .join("");
+    const next = [...msgs];
+    next[idx] = { ...msg, parts, content, _rev: (msg._rev || 0) + 1 };
+    set({ messages: next });
+  } catch {
+    // reconcile is best-effort; the transcript is still recoverable by reload
+  }
+}
+
 // --- Unified SSE event reducer ---
 // Shared by sendMessage (POST /chat) and _attachToRunningSession (GET /events).
 // Mutates `targetMsg` in place for content/tool updates and persists usage to
@@ -367,6 +420,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       const parsedMessages: Message[] = serverMessages
         .filter(m => m.role !== 'tool')  // tool results are merged into assistant messages
+        // Framework steering messages (guard nudges, compaction notices) are
+        // sent as user-role "[System] …" for provider compatibility. They are
+        // internal — visible in the Trace panel, not in the chat transcript.
+        .filter(m => !(
+          m.role === 'user' && (
+            m.meta?.internal ||
+            (typeof m.content === 'string' && m.content.startsWith('[System] '))
+          )
+        ))
         .map(m => {
           const rawContent = m.content || "";
 
@@ -603,8 +665,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (get().session?.id === sessionId) {
           const finalMsgs = [...get().messages];
           const idx = finalMsgs.findIndex(m => m.id === STREAMING_ID);
-          if (idx !== -1) finalMsgs[idx] = { ...finalMsgs[idx], id: `assistant-${Date.now()}` };
+          let finalId: string | null = null;
+          if (idx !== -1) {
+            finalId = `assistant-${Date.now()}`;
+            finalMsgs[idx] = { ...finalMsgs[idx], id: finalId };
+          }
           set({ messages: finalMsgs, isStreaming: false, streamAbortController: null });
+          if (finalId) {
+            void reconcileFinalAssistantText(set, get, sessionId, finalId);
+          }
         }
       }
     })();
@@ -783,10 +852,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // Clean completion — finalize message
         const finalMsgs = [...get().messages];
         const streamingIdx = finalMsgs.findIndex(m => m.id === STREAMING_ID);
+        let finalId: string | null = null;
         if (streamingIdx !== -1) {
-          finalMsgs[streamingIdx].id = `assistant-${Date.now()}`;
+          finalId = `assistant-${Date.now()}`;
+          finalMsgs[streamingIdx].id = finalId;
         }
         set({ messages: finalMsgs, isStreaming: false, streamAbortController: null });
+        if (finalId) {
+          void reconcileFinalAssistantText(set, get, session.id, finalId);
+        }
       } else {
         // Stream dropped without done — try recovery
         console.warn("[Store] Stream ended without done event, attempting recovery...");

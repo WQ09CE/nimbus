@@ -150,8 +150,14 @@ class MMU:
         self._notify("tool/result", {"message": msg.to_dict()})
 
     def add_system_message(self, content: str) -> None:
-        """Inject a transient system message (e.g., compaction notice)."""
-        msg = Message(role="user", content=f"[System] {content}")
+        """Inject a transient system message (e.g., compaction notice, guard
+        nudge). Sent as a user-role message because most providers reject a
+        mid-conversation system role. meta.internal marks it as framework
+        steering so UIs can hide it from the chat transcript (it stays fully
+        visible in the session log / trace view)."""
+        msg = Message(
+            role="user", content=f"[System] {content}", meta={"internal": True},
+        )
         self._messages.append(msg)
         self._notify("user/message", {"message": msg.to_dict()})
 

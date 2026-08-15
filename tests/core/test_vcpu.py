@@ -214,6 +214,23 @@ class TestVCPULimits:
         assert f("接下来我将调用 Grep 工具扫描目录。")
         assert not f("The library has 4 features: sessions, auth, timeouts, JSON.")
         assert not f("Done. Wrote the summary to report.md and verified it.")
+        # Capability-listing answers mention tools mid-text but END on a plain
+        # closing sentence — must NOT trigger (real false positive: answering
+        # "你支持哪些工具" got nudged twice because the flat tail window matched
+        # "让我…运行…命令" inside list items).
+        assert not f(
+            "我支持以下工具：\n"
+            "1. Bash: 执行终端命令，您可以让我运行脚本、安装软件等命令。\n"
+            "2. Write / Edit / Read: 文件操作工具，我可以创建新文件、修改代码。\n"
+            "3. Grep / Glob: 文件搜索工具。\n"
+            "如果您需要我演示如何使用这些工具，请随时告诉我！"
+        )
+        assert not f(
+            "I support these tools: Bash lets me run commands and scripts; "
+            "Write lets me create files. Ask me anytime if you want a demo."
+        )
+        # But a reply that ENDS on the announcement is still caught.
+        assert f("好的，我了解了任务要求。让我先运行 ls 命令查看目录结构。")
 
     @pytest.mark.asyncio
     async def test_mutation_claim_without_evidence_is_nudged(self):

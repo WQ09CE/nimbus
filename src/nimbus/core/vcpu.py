@@ -58,12 +58,23 @@ _ANNOUNCE_PATTERNS = [
 ]
 
 
+_SENTENCE_SPLIT_RE = re.compile(r"[。.!?！？\n]+")
+
+
 def _announces_unfulfilled_tool(text: str) -> bool:
-    """True if a tool-call-less reply ENDS by announcing an unfulfilled action."""
+    """True if a tool-call-less reply ENDS by announcing an unfulfilled action.
+
+    Only the LAST TWO sentences are matched: a genuine premature stop ends on
+    the announcement itself, while a legitimate answer that merely mentions
+    tools mid-text (e.g. answering "what tools do you support?" with a list —
+    "让我…运行…命令" phrases inside list items) must not trigger the guard.
+    A wide flat tail window caused exactly that false positive."""
     if not text:
         return False
     tail = text[-_NARRATE_TAIL_CHARS:]
-    return any(p.search(tail) for p in _ANNOUNCE_PATTERNS)
+    sentences = [s for s in _SENTENCE_SPLIT_RE.split(tail) if s.strip()]
+    ending = "。".join(sentences[-2:]) if sentences else tail
+    return any(p.search(ending) for p in _ANNOUNCE_PATTERNS)
 
 
 # Catches the claim-without-evidence failure mode: a reply CLAIMING file
