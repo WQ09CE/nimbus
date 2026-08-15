@@ -1,0 +1,5 @@
+[task]
+goal = "Read notes.txt, then create summary.txt containing the word DONE on the first line, followed by a one-sentence summary of the main point of notes.txt."
+mode = "interrupt_resume"
+resume_goal = "You were interrupted mid-task. Continue: ensure summary.txt exists with DONE on the first line plus a one-sentence summary of notes.txt, then finish."
+timeout_sec = 300

@@ -1,0 +1,7 @@
+[task]
+goal = "Read every chapter_*.txt file in this directory one by one, in order (chapter_1.txt through chapter_8.txt). One of them contains a station access code marked SECRET-CODE. After reading ALL files, reply with exactly the access code."
+timeout_sec = 420
+
+[agent]
+max_context_tokens = 4000
+max_iterations = 40

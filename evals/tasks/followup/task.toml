@@ -1,0 +1,4 @@
+[task]
+goal = "Remember this: my project codename is BLUEFIN. Reply confirming you noted the codename."
+followups = ["What is my project codename? Reply with just the codename."]
+timeout_sec = 240

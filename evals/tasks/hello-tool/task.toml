@@ -1,0 +1,3 @@
+[task]
+goal = "Run `cat data.txt` in the current directory and report the exact content of the file."
+timeout_sec = 180

@@ -1,0 +1,190 @@
+[
+  {
+    "task": "crash-resume",
+    "model": "ollama/gemma4:12b-it-qat",
+    "mode": "interrupt_resume",
+    "recovery_injected": 0,
+    "interrupt_metrics": {
+      "events": 6,
+      "turns": 1,
+      "steps": 1,
+      "tool_results": 1,
+      "compactions": 0,
+      "turn_end_reasons": [
+        "aborted"
+      ],
+      "invariant_violations": []
+    },
+    "wall_sec": 13.7,
+    "status": "OK",
+    "metrics": {
+      "events": 27,
+      "turns": 1,
+      "steps": 6,
+      "tool_results": 5,
+      "compactions": 0,
+      "turn_end_reasons": [
+        "completed"
+      ],
+      "invariant_violations": []
+    },
+    "usage": {
+      "input": 7729,
+      "output": 137,
+      "cache_read": 0,
+      "cache_write": 0,
+      "total": 7866,
+      "cost": {
+        "input": 0.0,
+        "output": 0.0,
+        "cache_read": 0.0,
+        "cache_write": 0.0,
+        "total": 0.0
+      }
+    },
+    "passed": false,
+    "detail": "summary.txt not created after resume",
+    "artifacts": "/var/folders/x8/jshjxf7159z5ydqlhv5cc7jw0000gn/T/nimbus-eval-crash-resume-j0xhh6wy"
+  },
+  {
+    "task": "followup",
+    "model": "ollama/gemma4:12b-it-qat",
+    "mode": "normal",
+    "wall_sec": 5.3,
+    "status": "OK",
+    "metrics": {
+      "events": 11,
+      "turns": 2,
+      "steps": 2,
+      "tool_results": 0,
+      "compactions": 0,
+      "turn_end_reasons": [
+        "completed",
+        "completed"
+      ],
+      "invariant_violations": []
+    },
+    "usage": {
+      "input": 2240,
+      "output": 16,
+      "cache_read": 0,
+      "cache_write": 0,
+      "total": 2256,
+      "cost": {
+        "input": 0.0,
+        "output": 0.0,
+        "cache_read": 0.0,
+        "cache_write": 0.0,
+        "total": 0.0
+      }
+    },
+    "passed": true,
+    "detail": "ok",
+    "artifacts": "/var/folders/x8/jshjxf7159z5ydqlhv5cc7jw0000gn/T/nimbus-eval-followup-3tzz4inc"
+  },
+  {
+    "task": "hello-tool",
+    "model": "ollama/gemma4:12b-it-qat",
+    "mode": "normal",
+    "wall_sec": 9.7,
+    "status": "OK",
+    "metrics": {
+      "events": 15,
+      "turns": 1,
+      "steps": 3,
+      "tool_results": 3,
+      "compactions": 0,
+      "turn_end_reasons": [
+        "completed"
+      ],
+      "invariant_violations": []
+    },
+    "usage": {
+      "input": 3431,
+      "output": 48,
+      "cache_read": 0,
+      "cache_write": 0,
+      "total": 3479,
+      "cost": {
+        "input": 0.0,
+        "output": 0.0,
+        "cache_read": 0.0,
+        "cache_write": 0.0,
+        "total": 0.0
+      }
+    },
+    "passed": false,
+    "detail": "token from data.txt missing in final output",
+    "artifacts": "/var/folders/x8/jshjxf7159z5ydqlhv5cc7jw0000gn/T/nimbus-eval-hello-tool-nje4cumi"
+  },
+  {
+    "task": "long-context",
+    "model": "ollama/gemma4:12b-it-qat",
+    "mode": "normal",
+    "wall_sec": 10.3,
+    "status": "OK",
+    "metrics": {
+      "events": 15,
+      "turns": 1,
+      "steps": 3,
+      "tool_results": 3,
+      "compactions": 0,
+      "turn_end_reasons": [
+        "completed"
+      ],
+      "invariant_violations": []
+    },
+    "usage": {
+      "input": 3675,
+      "output": 48,
+      "cache_read": 0,
+      "cache_write": 0,
+      "total": 3723,
+      "cost": {
+        "input": 0.0,
+        "output": 0.0,
+        "cache_read": 0.0,
+        "cache_write": 0.0,
+        "total": 0.0
+      }
+    },
+    "passed": false,
+    "detail": "compaction never triggered — window config not exercised",
+    "artifacts": "/var/folders/x8/jshjxf7159z5ydqlhv5cc7jw0000gn/T/nimbus-eval-long-context-8sqqzb5t"
+  },
+  {
+    "task": "write-verify",
+    "model": "ollama/gemma4:12b-it-qat",
+    "mode": "normal",
+    "wall_sec": 53.3,
+    "status": "OK",
+    "metrics": {
+      "events": 48,
+      "turns": 1,
+      "steps": 13,
+      "tool_results": 5,
+      "compactions": 0,
+      "turn_end_reasons": [
+        "completed"
+      ],
+      "invariant_violations": []
+    },
+    "usage": {
+      "input": 21227,
+      "output": 1042,
+      "cache_read": 0,
+      "cache_write": 0,
+      "total": 22269,
+      "cost": {
+        "input": 0.0,
+        "output": 0.0,
+        "cache_read": 0.0,
+        "cache_write": 0.0,
+        "total": 0.0
+      }
+    },
+    "passed": true,
+    "detail": "ok",
+    "artifacts": "/var/folders/x8/jshjxf7159z5ydqlhv5cc7jw0000gn/T/nimbus-eval-write-verify-oef7yxh9"
+  }
+]

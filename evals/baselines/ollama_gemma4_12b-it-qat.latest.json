@@ -1,0 +1,37 @@
+[
+  {
+    "task": "hello-tool",
+    "model": "ollama/gemma4:12b-it-qat",
+    "mode": "normal",
+    "wall_sec": 15.3,
+    "status": "OK",
+    "metrics": {
+      "events": 15,
+      "turns": 1,
+      "steps": 3,
+      "tool_results": 3,
+      "compactions": 0,
+      "turn_end_reasons": [
+        "completed"
+      ],
+      "invariant_violations": []
+    },
+    "usage": {
+      "input": 3440,
+      "output": 48,
+      "cache_read": 0,
+      "cache_write": 0,
+      "total": 3488,
+      "cost": {
+        "input": 0.0,
+        "output": 0.0,
+        "cache_read": 0.0,
+        "cache_write": 0.0,
+        "total": 0.0
+      }
+    },
+    "passed": false,
+    "detail": "token from data.txt missing in final output",
+    "artifacts": "/var/folders/x8/jshjxf7159z5ydqlhv5cc7jw0000gn/T/nimbus-eval-hello-tool-s147e9dq"
+  }
+]
