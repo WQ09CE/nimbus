@@ -140,6 +140,7 @@ export interface ServerMessage {
   tool_calls?: Array<{ id: string; function?: { name: string; arguments: string }; name?: string; arguments?: any }>;
   tool_call_id?: string;
   name?: string;
+  meta?: { synthetic?: boolean; code?: string; [k: string]: any } | null;
 }
 
 export interface MessageListResponse {
@@ -185,6 +186,55 @@ export async function deleteSessions(ids: string[]): Promise<void> {
  */
 export async function updateSession(id: string, updates: Partial<SessionCreateRequest> & { llm_config?: Record<string, string> }): Promise<Session> {
   return apiPatch<Session>(`/api/v1/sessions/${id}`, updates);
+}
+
+// =============================================================================
+// Session event log (Phase 2/3: the authoritative session trace)
+// =============================================================================
+
+export interface SessionLogEvent {
+  seq: number;
+  type: string;
+  time: number; // epoch seconds
+  data: Record<string, any>;
+}
+
+export interface SessionLogStats {
+  events: number;
+  turns: number;
+  steps: number;
+  tool_results: number;
+  compactions: number;
+  turn_end_reasons: (string | null)[];
+}
+
+export interface SessionLogResponse {
+  events: SessionLogEvent[];
+  corrupt: string | null;
+  invariant_violations: string[];
+  stats: SessionLogStats;
+}
+
+/** Fetch the session's event log (turn/step brackets, messages, compactions). */
+export async function getSessionLog(id: string): Promise<SessionLogResponse> {
+  return apiGet<SessionLogResponse>(`/api/v1/sessions/${id}/log`);
+}
+
+/** Fork a session from its event log; at_seq replays from that point. */
+export async function forkSession(
+  id: string,
+  atSeq?: number,
+  name?: string
+): Promise<Session> {
+  return apiPost<Session>(`/api/v1/sessions/${id}/fork`, {
+    at_seq: atSeq ?? null,
+    name: name ?? null,
+  });
+}
+
+/** Static download link for the raw jsonl trace. */
+export function sessionLogDownloadUrl(id: string): string {
+  return `/api/v1/sessions/${id}/log/download`;
 }
 
 export interface Model {

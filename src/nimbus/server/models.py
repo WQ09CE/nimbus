@@ -67,6 +67,13 @@ class SessionCreate(BaseModel):
     plugins: Optional[List[str]] = None
 
 
+class SessionFork(BaseModel):
+    """Request model for forking a session from its event log."""
+
+    at_seq: Optional[int] = None  # replay point; None = full surface
+    name: Optional[str] = None
+
+
 class SessionUpdate(BaseModel):
     """Request model for updating a session."""
 
@@ -155,6 +162,7 @@ class MessageResponse(BaseModel):
     name: Optional[str] = None
     tool_call_id: Optional[str] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
+    meta: Optional[Dict[str, Any]] = None  # e.g. {"synthetic": true, "code": "TOOL_OUTCOME_UNKNOWN"}
 
 
 class MessageList(BaseModel):

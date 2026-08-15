@@ -103,6 +103,16 @@ export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: To
   const style = getStatusStyle();
   const isDispatch = tool.agentType === "dispatch";
 
+  // Graded crash-recovery detection: synthetic results injected on resume
+  // carry a fixed marker prefix (session_log grades: first unanswered call
+  // may have run → verify; later ones provably never started → safe retry).
+  const resultText = typeof tool.result === "string" ? tool.result : "";
+  const recoveryCode = resultText.startsWith("[TOOL_OUTCOME_UNKNOWN]")
+    ? "TOOL_OUTCOME_UNKNOWN"
+    : resultText.startsWith("[TOOL_NOT_STARTED]")
+      ? "TOOL_NOT_STARTED"
+      : null;
+
   // Media produced by the tool/sub-agent (image/video), surfaced via ui_detail.media
   const media = normalizeMedia(tool.ui_detail?.media);
 
@@ -198,6 +208,24 @@ export function ToolCard({ tool, defaultExpanded, defaultState, isParallel }: To
           {summary && (
             <span className="text-[12px] font-mono text-gray-500 truncate opacity-80 group-hover/card:opacity-100 transition-opacity">
               {summary}
+            </span>
+          )}
+
+          {/* Graded crash-recovery chip */}
+          {recoveryCode && (
+            <span
+              className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold border ${
+                recoveryCode === "TOOL_OUTCOME_UNKNOWN"
+                  ? "text-amber-400 bg-amber-400/10 border-amber-400/30"
+                  : "text-gray-400 bg-gray-400/10 border-gray-400/30"
+              }`}
+              title={
+                recoveryCode === "TOOL_OUTCOME_UNKNOWN"
+                  ? "会话崩溃时该调用可能已在执行——结果未知，先验证外部状态再重试"
+                  : "会话崩溃前该调用尚未开始执行——可以安全重试"
+              }
+            >
+              {recoveryCode === "TOOL_OUTCOME_UNKNOWN" ? "⚠ 崩溃恢复·结果未知" : "○ 崩溃恢复·未执行"}
             </span>
           )}
         </div>

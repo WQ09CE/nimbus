@@ -13,6 +13,9 @@ export interface ToolResult {
   name: string;
   result: unknown;
   error?: string;
+  ui_detail?: Record<string, any>;
+  sub_events?: Record<string, any>[];
+  _streaming?: boolean;
 }
 
 export interface Message {

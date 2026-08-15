@@ -10,6 +10,7 @@ import { FileExplorer } from "@/components/chat/FileExplorer";
 import { WorkingIndicator } from "@/components/chat/WorkingIndicator";
 import { ArtifactViewer } from "@/components/chat/ArtifactViewer";
 import { TokenFooter } from "@/components/chat/TokenFooter";
+import { TracePanel } from "@/components/chat/TracePanel";
 
 import { SessionPanel } from "@/components/session/SessionPanel";
 import { useSessionWatcher } from "@/hooks/useSessionWatcher";
@@ -41,6 +42,7 @@ function Home() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [showSessionPanel, setShowSessionPanel] = useState(false);
   const [showFilePanel, setShowFilePanel] = useState(false);
+  const [showTracePanel, setShowTracePanel] = useState(false);
 
   // Stable placeholder (only changes when isStreaming changes)
   const placeholder = useMemo(
@@ -145,6 +147,17 @@ function Home() {
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+              </svg>
+            </button>
+
+            <button
+              onClick={() => setShowTracePanel(!showTracePanel)}
+              className={`p-2 rounded-lg transition-all ${showTracePanel ? 'text-nimbus-accent bg-nimbus-surface' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}
+              title="Trace（执行轨迹）"
+            >
+              {/* pulse/activity icon */}
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12h4l2-7 4 14 2-7h6" />
               </svg>
             </button>
 
@@ -301,9 +314,25 @@ function Home() {
         </main>
 
         {/* Mobile backdrop */}
-        {showFilePanel && (
-          <div className="fixed inset-0 bg-black/50 z-20 md:hidden" onClick={() => setShowFilePanel(false)} />
+        {(showFilePanel || showTracePanel) && (
+          <div className="fixed inset-0 bg-black/50 z-20 md:hidden" onClick={() => { setShowFilePanel(false); setShowTracePanel(false); }} />
         )}
+
+        {/* Trace Sidebar */}
+        <div
+          className={`
+            ${showTracePanel
+              ? 'fixed inset-y-0 right-0 w-[90%] z-30 md:relative md:inset-auto md:w-[26rem] opacity-100 translate-x-0'
+              : 'w-0 opacity-0 overflow-hidden translate-x-full'}
+            bg-nimbus-bg/95 backdrop-blur-xl border-l border-nimbus-border transition-all duration-300 ease-in-out flex flex-col
+          `}
+        >
+          {session && showTracePanel && (
+            <div className="h-full w-full md:w-[26rem]">
+              <TracePanel sessionId={session.id} />
+            </div>
+          )}
+        </div>
 
         {/* File Explorer Sidebar */}
         <div

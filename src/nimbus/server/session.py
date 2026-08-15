@@ -236,6 +236,78 @@ class SessionManagerV2:
         # Sort is already handled by list_sessions
         return sessions[offset:offset+limit], len(sessions)
 
+    async def fork_session(
+        self,
+        parent_id: str,
+        at_seq: Optional[int] = None,
+        name: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Fork a session from its event log (Phase 3 seed primitive).
+
+        at_seq replays from that point (mid-turn cuts are closed with graded
+        synthetic results by the storage layer). Returns the new session's
+        metadata dict, or None if the parent doesn't exist.
+        """
+        new_id = f"sess_{uuid.uuid4().hex[:12]}"
+        dump = self._storage.fork_session(parent_id, new_id, at_seq=at_seq)
+        if dump is None:
+            return None
+
+        # Rebrand the copied parent metadata for the new session.
+        metadata = dict(dump.get("metadata", {}))
+        parent_name = metadata.get("name") or "Unknown"
+        metadata["name"] = name or f"{parent_name} (fork)"
+        metadata["created_at"] = datetime.now(timezone.utc).isoformat()
+        self._storage.save_session(
+            session_id=new_id,
+            status="active",
+            messages=dump.get("messages", []),
+            vcpu_state=dump.get("vcpu_state", {}),
+            vcpu_config=dump.get("vcpu_config", {}),
+            llm_config=dump.get("llm_config", {}),
+            metadata=metadata,
+        )
+        logger.info(f"🌱 Forked session {parent_id} → {new_id} (at_seq={at_seq})")
+        return await self.get_session(new_id)
+
+    async def get_session_log(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Read the session's event log: events + invariants + derived stats.
+
+        Returns None when no log exists. A corrupt log is reported, not
+        raised — the UI should surface it, not 500.
+        """
+        from nimbus.core.session_log import SessionLog, check_invariants
+
+        log_path = self._storage.base_dir / f"{session_id}.jsonl"
+        if not log_path.exists():
+            return None
+        try:
+            log = SessionLog.load(log_path)
+        except ValueError as e:
+            return {"events": [], "corrupt": str(e), "invariant_violations": [], "stats": {}}
+
+        events = log.events
+        counts: Dict[str, int] = {}
+        for e in events:
+            counts[e.type] = counts.get(e.type, 0) + 1
+        reasons = [
+            (e.data.get("reason") or {}).get("kind")
+            for e in events if e.type == "turn/end"
+        ]
+        return {
+            "events": [e.to_dict() for e in events],
+            "corrupt": None,
+            "invariant_violations": check_invariants(events, allow_open_tail=True),
+            "stats": {
+                "events": len(events),
+                "turns": counts.get("turn/start", 0),
+                "steps": counts.get("step/start", 0),
+                "tool_results": counts.get("tool/result", 0),
+                "compactions": counts.get("compaction/applied", 0),
+                "turn_end_reasons": reasons,
+            },
+        }
+
     async def delete_session(self, session_id: str) -> None:
         """Soft delete a session."""
         async with self._lock:

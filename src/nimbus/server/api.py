@@ -32,6 +32,7 @@ from .models import (
     ServerConfig,
     SessionCreate,
     SessionDetail,
+    SessionFork,
     SessionList,
     SessionResponse,
     SessionUpdate,
@@ -233,6 +234,52 @@ async def update_session(
     except Exception as e:
         logger.error(f"Failed to update session {session_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sessions/{session_id}/fork", response_model=SessionResponse, status_code=201)
+async def fork_session(
+    session_id: str,
+    data: SessionFork,
+    session_manager=Depends(get_session_manager),
+):
+    """Fork a session from its event log (optionally from a replay point)."""
+    session = await session_manager.fork_session(
+        session_id, at_seq=data.at_seq, name=data.name,
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return SessionResponse(**session)
+
+
+@router.get("/sessions/{session_id}/log")
+async def get_session_log(
+    session_id: str,
+    since_seq: int = 0,
+    session_manager=Depends(get_session_manager),
+):
+    """The session's event log: events + invariant check + derived stats."""
+    data = await session_manager.get_session_log(session_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="No event log for this session")
+    if since_seq:
+        data["events"] = [e for e in data["events"] if e["seq"] >= since_seq]
+    return data
+
+
+@router.get("/sessions/{session_id}/log/download")
+async def download_session_log(
+    session_id: str,
+    session_manager=Depends(get_session_manager),
+):
+    """Download the raw session event log (jsonl)."""
+    log_path = session_manager._storage.base_dir / f"{session_id}.jsonl"
+    if not log_path.exists():
+        raise HTTPException(status_code=404, detail="No event log for this session")
+    return FileResponse(
+        log_path,
+        media_type="application/x-ndjson",
+        filename=f"{session_id}.jsonl",
+    )
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
@@ -557,6 +604,7 @@ async def get_messages(
             "name": msg.get("name"),
             "tool_call_id": msg.get("tool_call_id"),
             "tool_calls": msg.get("tool_calls"),
+            "meta": msg.get("meta"),
         })
 
     return MessageList(items=items)

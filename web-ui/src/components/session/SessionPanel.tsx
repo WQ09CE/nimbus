@@ -6,6 +6,7 @@ import {
   listSessions,
   deleteSession,
   deleteSessions,
+  forkSession,
   interruptSession,
   resumeSession,
   updateSession,
@@ -412,6 +413,26 @@ export function SessionPanel({ isOpen, onClose }: SessionPanelProps) {
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                           </button>
                         )}
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            setActionLoading(session.id);
+                            try {
+                              await forkSession(session.id);
+                              await fetchSessions();
+                            } catch (err) {
+                              console.error("Fork failed:", err);
+                            } finally {
+                              setActionLoading(null);
+                            }
+                          }}
+                          disabled={actionLoading === session.id}
+                          className="p-1.5 text-gray-500 hover:text-violet-400 transition-colors rounded-md hover:bg-violet-500/10 disabled:opacity-50"
+                          title="Fork Session（从事件日志分叉）"
+                        >
+                          {/* branch icon */}
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 3v12m0 0a3 3 0 103 3m-3-3a3 3 0 013-3h6a3 3 0 003-3V6m0 0a3 3 0 10-.001-.001" /></svg>
+                        </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); setRenamingId(session.id); setRenameValue(displayName); }}
                           className="p-1.5 text-gray-500 hover:text-sky-400 transition-colors rounded-md hover:bg-sky-500/10"
