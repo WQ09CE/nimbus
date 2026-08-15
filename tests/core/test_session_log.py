@@ -4,6 +4,8 @@ every exit path, MMU message events, and snapshot equivalence."""
 
 from typing import List
 
+import pytest
+
 from nimbus.core.loop import RuntimeLoop
 from nimbus.core.mmu import MMU, MMUConfig
 from nimbus.core.session_log import (
@@ -170,6 +172,26 @@ class TestLoopBrackets:
         loop = RuntimeLoop(vcpu, mmu, storage=SessionStorage(str(tmp_path)))
         loop.request_interruption()
         await loop.run()
+        assert _turn_end_reasons(loop.session_log) == ["aborted"]
+
+    async def test_cancellation_closes_step_and_turn(self, tmp_path):
+        """A timeout/cancel escapes the step bracket's `except Exception`
+        (CancelledError is a BaseException); the backstop must close the
+        open STEP before the turn or the log violates its own invariant."""
+        import asyncio
+
+        class HangingVCPU(MockVCPU):
+            async def step(self):
+                await asyncio.sleep(60)
+
+        mmu = MMU()
+        loop = RuntimeLoop(HangingVCPU([]), mmu, storage=SessionStorage(str(tmp_path)))
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(loop.run(), timeout=0.1)
+        types = [e.type for e in loop.session_log.events]
+        assert types.count("step/start") == types.count("step/end") == 1
+        assert types[-1] == "turn/end"
+        assert check_invariants(loop.session_log.events) == []
         assert _turn_end_reasons(loop.session_log) == ["aborted"]
 
     async def test_real_run_passes_invariants(self, tmp_path):

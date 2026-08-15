@@ -152,6 +152,11 @@ async def run_task(task_dir: Path, model: str) -> dict:
         record["status"] = "TIMEOUT"
         record["passed"] = False
         record["detail"] = f"timed out after {timeout}s"
+        # Salvage harness metrics — a timeout run's log is often the most
+        # interesting one (e.g. compaction churn), and the cancellation
+        # backstop has closed its brackets.
+        if "loop" in locals():
+            record["metrics"] = _metrics(loop.session_log)
     except Exception as e:
         record["wall_sec"] = round(time.monotonic() - t0, 1)
         record["status"] = "CRASH"

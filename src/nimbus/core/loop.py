@@ -178,6 +178,7 @@ class RuntimeLoop:
         self._turn = 0
         self._step_in_turn = 0
         self._turn_open = False
+        self._step_open = False
         if hasattr(self.mmu, "event_sink"):
             self.mmu.event_sink = self.session_log.append
 
@@ -288,6 +289,7 @@ class RuntimeLoop:
         self._turn += 1
         self._step_in_turn = 0
         self._turn_open = True
+        self._step_open = False
         self.session_log.append("turn/start", {"turn": self._turn})
 
     def _turn_end(self, kind: str, **detail: Any) -> None:
@@ -295,9 +297,18 @@ class RuntimeLoop:
         closes with its own reason; the entry-point backstops close abandoned
         generators as 'aborted' and no-op when the turn is already closed.
         'interrupted' is reserved for crash-repair synthesis; never pass it here.
+
+        Closes an open step first: a cancellation (BaseException) can escape
+        the step bracket's `except Exception`, and turn/end with an open step
+        would violate the log invariant.
         """
         if not self._turn_open:
             return
+        if self._step_open:
+            self._step_open = False
+            self.session_log.append(
+                "step/end", {"turn": self._turn, "step": self._step_in_turn}
+            )
         self._turn_open = False
         self.session_log.append(
             "turn/end", {"turn": self._turn, "reason": {"kind": kind, **detail}}
@@ -372,6 +383,7 @@ class RuntimeLoop:
                 # ---- Execute one VCPU step ----
                 t0 = time.monotonic()
                 self._step_in_turn += 1
+                self._step_open = True
                 self.session_log.append(
                     "step/start", {"turn": self._turn, "step": self._step_in_turn}
                 )
@@ -379,6 +391,7 @@ class RuntimeLoop:
                     step_result = await self.vcpu.step()
                 except Exception as e:
                     logger.exception("Unexpected error in VCPU step")
+                    self._step_open = False
                     self.session_log.append(
                         "step/end", {"turn": self._turn, "step": self._step_in_turn}
                     )
@@ -391,6 +404,7 @@ class RuntimeLoop:
                     self._turn_end("error")
                     yield {"type": "final", "result": result}
                     return
+                self._step_open = False
                 self.session_log.append(
                     "step/end", {"turn": self._turn, "step": self._step_in_turn}
                 )
