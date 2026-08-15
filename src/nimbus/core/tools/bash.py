@@ -14,7 +14,16 @@ from typing import Any, Callable, Dict, Optional
 
 from nimbus.core.path_context import AgentPathContext
 
+from . import sandbox
 from .registry import ToolParameter, tool
+
+
+def _sandbox_flag_on() -> bool:
+    """Bash sandbox is opt-in via NIMBUS_BASH_SANDBOX (1/true/on). Default off
+    keeps the existing test suite (which writes to arbitrary tmp paths and
+    hits the network) green until callers opt in per-session."""
+    flag = os.environ.get("NIMBUS_BASH_SANDBOX", "").strip().lower()
+    return flag in ("1", "true", "on", "yes")
 
 MAX_OUTPUT_BYTES = 50 * 1024  # 50KB (aligned with pi-coding-agent)
 MAX_OUTPUT_LINES = 2000
@@ -77,17 +86,49 @@ async def bash_command(
     start_cwd = _path_context.execution_cwd
 
     # Wrap command with a cwd sentinel so we can track `cd` effects.
-    # The sentinel is printed on a unique line after the user's command completes.
+    # The sentinel is printed on a unique line after the user's command
+    # completes. The command's exit status is captured before the sentinel
+    # echo and re-raised at the end -- otherwise the echo masks it and every
+    # failing command would report exit 0.
     _CWD_SENTINEL = "__NIMBUS_CWD__:"
-    wrapped_command = f'{{ {command}\n}}; echo "{_CWD_SENTINEL}$(pwd)"'
-
-    process = await asyncio.create_subprocess_shell(
-        wrapped_command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        cwd=cwd,
-        preexec_fn=os.setsid,  # Create process group for clean kill
+    wrapped_command = (
+        f'{{ {command}\n}}; __nimbus_st=$?; '
+        f'echo "{_CWD_SENTINEL}$(pwd)"; exit $__nimbus_st'
     )
+
+    # Optionally confine execution to an OS-level trust boundary. When enabled,
+    # the child inherits only whitelisted env (no API keys), cannot reach the
+    # network, and can only write inside the agent's writable_roots.
+    #
+    # Three states, never silent: 'off' (not requested), 'active' (confined),
+    # 'unavailable' (requested but no platform mechanism -- runs UNsandboxed
+    # and says so in the result, so degradation is observable, not silent).
+    sb_tmp: Optional[str] = None
+    sandbox_state = "off"
+    if _sandbox_flag_on():
+        sandbox_state = "active" if sandbox.sandbox_available() else "unavailable"
+    if sandbox_state == "active":
+        writable = list(getattr(_path_context, "writable_roots", None) or [_path_context.target_root])
+        writable.append(start_cwd)
+        profile = sandbox.build_profile(writable, allow_network=False)
+        sb_tmp = tempfile.mkdtemp(prefix="nimbus-sb-")
+        argv = sandbox.wrap_argv(profile, sb_tmp) + ["/bin/sh", "-c", wrapped_command]
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=cwd,
+            env=sandbox.sandboxed_env(),
+            preexec_fn=os.setsid,
+        )
+    else:
+        process = await asyncio.create_subprocess_shell(
+            wrapped_command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=cwd,
+            preexec_fn=os.setsid,  # Create process group for clean kill
+        )
 
     # Stream output line-by-line if callback provided (pi-style)
     chunks: list[bytes] = []
@@ -187,6 +228,12 @@ async def bash_command(
                 timed_out = True
                 await _kill_process_tree(process)
 
+    # Sandbox profile has been consumed at exec time and the process is done;
+    # drop the temp dir regardless of which return path we take below.
+    if sb_tmp:
+        import shutil
+        shutil.rmtree(sb_tmp, ignore_errors=True)
+
     if aborted:
         output = b"".join(chunks).decode("utf-8", errors="replace") if chunks else ""
         return {
@@ -197,6 +244,7 @@ async def bash_command(
                 "exit_code": process.returncode,
                 "partial_bytes": total_bytes,
                 "executed_in": start_cwd,
+                "sandbox": sandbox_state,
             },
         }
 
@@ -211,6 +259,7 @@ async def bash_command(
                 "exit_code": process.returncode,
                 "partial_bytes": total_bytes,
                 "executed_in": start_cwd,
+                "sandbox": sandbox_state,
             },
         }
 
@@ -274,16 +323,44 @@ async def bash_command(
     if exit_code != 0:
         output += f"\n\nExit code: {exit_code}"
 
+    # Failure attribution (runner-failure checked before denial inside
+    # classify_output): the model must not mistake "sandbox broke, command
+    # never ran" or "sandbox blocked an effect" for an ordinary failure.
+    sandbox_verdict = None
+    if sandbox_state == "active" and exit_code != 0:
+        sandbox_verdict = sandbox.classify_output(output)
+    if sandbox_verdict == "runner-failure":
+        output = (
+            "[Sandbox runner failure: sandbox-exec itself failed -- "
+            "the command was NOT executed]\n" + output
+        )
+    elif sandbox_verdict == "denial":
+        output += (
+            "\n[Likely sandbox denial: an operation was blocked by the sandbox "
+            "(writes confined to workspace roots, network disabled). "
+            "Not necessarily a bug in the command.]"
+        )
+    if sandbox_state == "unavailable":
+        output += (
+            "\n\n[Sandbox requested via NIMBUS_BASH_SANDBOX but no mechanism "
+            "exists on this platform -- command ran UNSANDBOXED]"
+        )
+
+    ui_detail = {
+        "command": command,
+        "exit_code": exit_code,
+        "total_lines": original_lines,
+        "total_bytes": original_bytes,
+        "truncated": truncated,
+        "timed_out": False,
+        "executed_in": start_cwd,
+        "new_execution_cwd": _path_context.execution_cwd,
+        "sandbox": sandbox_state,
+    }
+    if sandbox_verdict:
+        ui_detail["sandbox_verdict"] = sandbox_verdict
+
     return {
         "output": output,
-        "ui_detail": {
-            "command": command,
-            "exit_code": exit_code,
-            "total_lines": original_lines,
-            "total_bytes": original_bytes,
-            "truncated": truncated,
-            "timed_out": False,
-            "executed_in": start_cwd,
-            "new_execution_cwd": _path_context.execution_cwd,
-        },
+        "ui_detail": ui_detail,
     }
