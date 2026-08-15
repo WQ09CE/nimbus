@@ -95,6 +95,17 @@ class MMU:
         self._goal: str = ""
         self._last_usage = None  # TokenUsage from last LLM response (for hybrid estimation)
         self._message_count_at_usage: int = 0  # message count when _last_usage was recorded
+        # Optional observer for live message mutations (Phase 0 dual-write:
+        # RuntimeLoop points this at its SessionLog). Restore paths that write
+        # _messages directly bypass it BY DESIGN — rehydration must not re-log.
+        self.event_sink: Optional[Callable[[str, Dict[str, Any]], None]] = None
+
+    def _notify(self, event_type: str, data: Dict[str, Any]) -> None:
+        if self.event_sink is not None:
+            try:
+                self.event_sink(event_type, data)
+            except Exception:
+                logger.exception("MMU event_sink failed (trace only; ignoring)")
 
     # --- Pinned Context (Anchor) ---
 
@@ -112,27 +123,37 @@ class MMU:
     # --- Message Management (Stream) ---
 
     def add_user_message(self, content: Any) -> None:
-        self._messages.append(Message(role="user", content=content))
+        msg = Message(role="user", content=content)
+        self._messages.append(msg)
+        self._notify("user/message", {"message": msg.to_dict()})
 
     def add_assistant_message(self, content: str) -> None:
-        self._messages.append(Message(role="assistant", content=content))
+        msg = Message(role="assistant", content=content)
+        self._messages.append(msg)
+        self._notify("assistant/message", {"message": msg.to_dict()})
 
     def add_assistant_with_tool_calls(self, content: Optional[str], tool_calls: List[Dict]) -> None:
-        self._messages.append(Message(role="assistant", content=content, tool_calls=tool_calls))
+        msg = Message(role="assistant", content=content, tool_calls=tool_calls)
+        self._messages.append(msg)
+        self._notify("assistant/message", {"message": msg.to_dict()})
 
     def add_tool_result(
         self, tool_call_id: str, name: str, content: str,
         ui_detail: Optional[Dict[str, Any]] = None,
     ) -> None:
         meta = {"ui_detail": ui_detail} if ui_detail else {}
-        self._messages.append(Message(
+        msg = Message(
             role="tool", content=content, name=name, tool_call_id=tool_call_id,
             meta=meta,
-        ))
+        )
+        self._messages.append(msg)
+        self._notify("tool/result", {"message": msg.to_dict()})
 
     def add_system_message(self, content: str) -> None:
         """Inject a transient system message (e.g., compaction notice)."""
-        self._messages.append(Message(role="user", content=f"[System] {content}"))
+        msg = Message(role="user", content=f"[System] {content}")
+        self._messages.append(msg)
+        self._notify("user/message", {"message": msg.to_dict()})
 
     @property
     def message_count(self) -> int:
@@ -377,6 +398,10 @@ class MMU:
 
             self._global_summary = new_summary
             self._messages = surviving
+            self._notify("compaction/applied", {
+                "mode": "smart-drop", "kept": len(surviving),
+                "summary": new_summary,
+            })
             return new_summary
 
         # 2. Extract file operations from messages being summarized
@@ -413,6 +438,10 @@ class MMU:
         # 6. Update state
         self._global_summary = new_summary
         self._messages = to_keep
+        self._notify("compaction/applied", {
+            "mode": "summarize", "kept": len(to_keep),
+            "summary": new_summary,
+        })
 
         logger.info(
             "Compaction: summarized %d messages, kept %d, summary %d chars",

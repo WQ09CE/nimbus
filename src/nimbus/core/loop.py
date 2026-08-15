@@ -42,6 +42,7 @@ from .queues import (  # noqa: F401  (re-exported for compat)
     MessageQueue,
     SteeringQueue,
 )
+from .session_log import SessionLog
 from .storage import SessionStorage
 
 logger = logging.getLogger("nimbus.loop")
@@ -167,6 +168,19 @@ class RuntimeLoop:
         self.storage = storage or SessionStorage()
         self.metadata = metadata or {}
 
+        # Phase 0 dual-write event log: an auditable trace beside the snapshot.
+        # The snapshot (sess_*.json) REMAINS authoritative; nothing reads the
+        # log yet. Mock storages without base_dir get an in-memory log.
+        log_dir = getattr(self.storage, "base_dir", None)
+        self.session_log = SessionLog(
+            log_dir / f"{self.session_id}.jsonl" if log_dir is not None else None
+        )
+        self._turn = 0
+        self._step_in_turn = 0
+        self._turn_open = False
+        if hasattr(self.mmu, "event_sink"):
+            self.mmu.event_sink = self.session_log.append
+
         self._compaction_count = 0
         self._unproductive_compactions = 0
         self._steps_since_compaction = 0
@@ -239,9 +253,14 @@ class RuntimeLoop:
     async def run(self) -> ToolResult:
         """Run the loop until completion. Returns the final ToolResult."""
         final_result = None
-        async for event in self._loop():
-            if event.get("type") == "final":
-                final_result = event["result"]
+        try:
+            async for event in self._loop():
+                if event.get("type") == "final":
+                    final_result = event["result"]
+        finally:
+            # Backstop: if _loop raised mid-turn, close the bracket. No-op
+            # when the turn already closed with its own reason.
+            self._turn_end("aborted", backstop=True)
 
         return final_result or ToolResult(
             status="ERROR", output="Loop ended without result.",
@@ -259,6 +278,30 @@ class RuntimeLoop:
         finally:
             self._running = False
             self._idle_event.set()
+            # Backstop: an abandoned/failed generator closes its open turn as
+            # aborted; no-op when the turn already closed with its own reason.
+            self._turn_end("aborted", backstop=True)
+
+    # --- Turn/step brackets (Phase 0 event log) ---
+
+    def _turn_start(self) -> None:
+        self._turn += 1
+        self._step_in_turn = 0
+        self._turn_open = True
+        self.session_log.append("turn/start", {"turn": self._turn})
+
+    def _turn_end(self, kind: str, **detail: Any) -> None:
+        """Close the open turn with a reason. Idempotent — every exit path
+        closes with its own reason; the entry-point backstops close abandoned
+        generators as 'aborted' and no-op when the turn is already closed.
+        'interrupted' is reserved for crash-repair synthesis; never pass it here.
+        """
+        if not self._turn_open:
+            return
+        self._turn_open = False
+        self.session_log.append(
+            "turn/end", {"turn": self._turn, "reason": {"kind": kind, **detail}}
+        )
 
     # --- Core loop (pi-style two-loop structure) ---
 
@@ -277,6 +320,7 @@ class RuntimeLoop:
         - Follow-up messages re-enter the loop after completion
         """
         while True:  # OUTER: follow-up loop
+            self._turn_start()
             while True:  # INNER: step loop
                 # Check interrupt -- return partial results (pi-style)
                 if self._interrupted:
@@ -291,6 +335,7 @@ class RuntimeLoop:
                         "partial_results_count": len(self.partial_results),
                     })
                     self._save_core_dump("suspended")
+                    self._turn_end("aborted")
                     yield {"type": "interrupted", "result": result, "partial_results": self.partial_results}
                     yield {"type": "final", "result": result}
                     return
@@ -319,24 +364,36 @@ class RuntimeLoop:
                                         message="Context exhausted", retryable=False),
                         )
                         self._save_core_dump("error")
+                        self._turn_end("error", cause="context-exhausted")
                         yield {"type": "final", "result": result}
                         return
                     yield {"type": "context_compacted", "compaction_count": self._compaction_count, "summary": summary}
 
                 # ---- Execute one VCPU step ----
                 t0 = time.monotonic()
+                self._step_in_turn += 1
+                self.session_log.append(
+                    "step/start", {"turn": self._turn, "step": self._step_in_turn}
+                )
                 try:
                     step_result = await self.vcpu.step()
                 except Exception as e:
                     logger.exception("Unexpected error in VCPU step")
+                    self.session_log.append(
+                        "step/end", {"turn": self._turn, "step": self._step_in_turn}
+                    )
                     result = ToolResult(
                         status="ERROR", output=f"Runtime error: {e}",
                         fault=Fault(domain="KERNEL", code="SYSTEM_ERROR",
                                     message=str(e), retryable=False),
                     )
                     self._save_core_dump("error")
+                    self._turn_end("error")
                     yield {"type": "final", "result": result}
                     return
+                self.session_log.append(
+                    "step/end", {"turn": self._turn, "step": self._step_in_turn}
+                )
 
                 elapsed_ms = int((time.monotonic() - t0) * 1000)
                 self._steps_since_compaction += 1
@@ -380,6 +437,7 @@ class RuntimeLoop:
                         step_result.is_final = False
                         continue
                     else:
+                        self._turn_end("error", cause="context-overflow")
                         yield {"type": "final", "result": step_result.final_result}
                         return
 
@@ -396,6 +454,7 @@ class RuntimeLoop:
                         continue
                     else:
                         # Compaction failed -- hard stop
+                        self._turn_end("max-iterations")
                         yield {"type": "final", "result": step_result.final_result}
                         return
 
@@ -476,6 +535,7 @@ class RuntimeLoop:
                                     ui_detail={"terminated": "tool_call_stall"},
                                 )
                                 self._save_core_dump("completed")
+                                self._turn_end("completed", stalled=True)
                                 yield {"type": "stall_terminated", "signature": sig}
                                 yield {"type": "final", "result": result}
                                 return
@@ -524,6 +584,10 @@ class RuntimeLoop:
             # OUTER: Check follow-up queue
             follow_ups = self.followup_queue.drain()
             if follow_ups:
+                # Close this turn before injecting: the follow-up messages
+                # belong to the NEXT turn (they land between the brackets as
+                # log-only prelude, claimed by the turn/start that follows).
+                self._turn_end("completed")
                 for msg in follow_ups:
                     self.mmu.add_user_message(msg)
                     yield {"type": "followup_injected", "content": msg}
@@ -531,6 +595,7 @@ class RuntimeLoop:
 
             # No follow-ups -- done
             self._save_core_dump("completed")
+            self._turn_end("completed")
             yield {"type": "final", "result": step_result.final_result}
             return
 
