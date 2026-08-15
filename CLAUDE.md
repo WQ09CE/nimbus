@@ -17,13 +17,15 @@
 
 | Component | File | Lines | Role |
 |-----------|------|-------|------|
-| **AgentOS** | `core/agent.py` | 367 | Facade: wires VCPU + MMU + Gate + Loop |
-| **VCPU** | `core/vcpu.py` | 326 | FSM engine: IDLE → THINKING → ACTING → OBSERVING → COMPRESSING → ERROR → DEAD |
-| **MMU** | `core/mmu.py` | 486 | Context management: Pinned anchors + dynamic stream + compression |
-| **KernelGate** | `core/gate.py` | 202 | Tool execution: permissions, timeout, SIGKILL isolation |
-| **RuntimeLoop** | `core/loop.py` | 593 | Drives VCPU steps, manages SteeringQueue and FollowUpQueue |
-| **InstructionDecoder** | `core/decoder.py` | 154 | Validates/decodes LLM output into ActionIR |
-| **Protocol** | `core/protocol.py` | 149 | Event / ActionIR / ToolResult / Fault types |
+| **AgentOS** | `core/agent.py` | 552 | Facade: wires VCPU + MMU + Gate + Loop |
+| **VCPU** | `core/vcpu.py` | 476 | FSM engine: IDLE → THINKING → ACTING → OBSERVING → COMPRESSING → ERROR → DEAD |
+| **MMU** | `core/mmu.py` | 934 | Context management: Pinned anchors + dynamic stream + compression |
+| **KernelGate** | `core/gate.py` | 281 | Tool execution: permissions, timeout, SIGKILL isolation |
+| **RuntimeLoop** | `core/loop.py` | 906 | Drives VCPU steps, manages SteeringQueue and FollowUpQueue |
+| **InstructionDecoder** | `core/decoder.py` | 208 | Validates/decodes LLM output into ActionIR |
+| **Protocol** | `core/protocol.py` | 178 | Event / ActionIR / ToolResult / Fault types |
+
+(Line counts as of 2026-08-15 — refresh with `wc -l src/nimbus/core/*.py` when they drift.)
 
 ### ALU / Adapter — Three LLM Channels
 
@@ -40,7 +42,7 @@ Auto-selected based on model name and available credentials.
 - **FastAPI** server (`nimbus serve`) with SSE streaming (`/api/v1/sessions/{id}/events`)
 - **SessionManagerV2** (`server/session.py`): Per-session `AgentOS` instances, cached between turns
 - **SSEHub** (`server/sse.py`): Fan-out event broadcasting to connected web clients
-- **PermissionManager** (`server/permission.py`): Runtime tool permission rules
+- **PermissionManager** (`server/permission.py`): Runtime tool permission rules — **management half only**: the rule/resolve/pending API endpoints are live, but the enforcement half (`check_permission` / `execute_with_permission`) has no caller in the tool-execution chain (rules are stored but nothing reads them)
 - **LogHub** (`server/log_hub.py`): Real-time log streaming to UI
 
 ---
@@ -51,12 +53,13 @@ Registered via `ToolRegistry` (`core/tools/registry.py`). Built-in tools:
 
 | Tool | File | Key Detail |
 |------|------|------------|
-| `bash` | `tools/bash.py` | Streaming output, 60s timeout, auto-truncation (50KB / 2000 lines) |
+| `bash` | `tools/bash.py` | Streaming output, 60s timeout, auto-truncation (50KB / 2000 lines); opt-in Seatbelt sandbox via `NIMBUS_BASH_SANDBOX` with failure attribution (off/active/unavailable in ui_detail) |
+| — | `tools/sandbox.py` | Seatbelt profile builder + env whitelist + denial/runner-failure classifiers (macOS only; other platforms report `unavailable`) |
 | `read` | `tools/read.py` | Line-based offset/limit, byte truncation |
 | `write` | `tools/write.py` | Auto-creates parent dirs |
 | `edit` | `tools/edit.py` | Exact match + fuzzy fallback |
 | `grep` | `tools/grep.py` | Regex with glob filter, per-line truncation |
-| `spawn_agent` | `tools/spawn_agent.py` | **421 lines** — Full multi-agent orchestration (see below) |
+| `spawn_agent` | `tools/spawn_agent.py` | **516 lines** — Full multi-agent orchestration (see below) |
 | `submit_result` | `tools/submit_result.py` | Sub-agent result delivery in contract mode |
 
 ---
@@ -122,8 +125,10 @@ Registered via `ToolRegistry` (`core/tools/registry.py`). Built-in tools:
 
 ## Known Issues / Tech Debt
 
-1. **`mmu.py` coupling** (486 lines) — Context management, compression, and pinned store are in one file; should be split into modules
-2. **`loop.py` size** (593 lines) — `SteeringHandler` logic should be extracted
+1. **`mmu.py` coupling** (934 lines) — Message storage, context assembly, and compression are one class; split direction (dsh-shaped): storage → event log, assembly → per-step projection, compression → separate module (see `~/.wukong/concepts/deepseek-harness.md` Applicability)
+2. **`loop.py` size** (906 lines) — `SteeringHandler` logic should be extracted
 3. **Semantic compression degradation** — Silently falls back to Sliding Window when no embedding service; should emit warning log
-4. **asyncio teardown warnings** — `Task was destroyed but it is pending!` on session teardown; benign but noisy
+4. **asyncio teardown warnings** — `Task was destroyed but it is pending!` on session teardown; benign but noisy — likely unordered teardown; fix shape is `AsyncExitStack`-style reverse-order unwind
 5. **async spawn_agent polling** — Background sub-agents lack `wait_agent(pid)` / `kill_agent(pid)` query tools
+6. **PermissionManager enforcement not wired** — `server/permission.py` rule storage + API live, but no tool-execution path consults `check_permission`; wire it through KernelGate or remove the enforcement half
+7. **Result contract parked** — `wip/subagent-result-contract` branch holds Pydantic `SubAgentResult` scaffolding + red tests; implementation plan in `docs/design/subagent-result-contract-implementation-plan.md`
