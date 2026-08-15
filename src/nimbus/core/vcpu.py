@@ -66,6 +66,28 @@ def _announces_unfulfilled_tool(text: str) -> bool:
     return any(p.search(tail) for p in _ANNOUNCE_PATTERNS)
 
 
+# Catches the claim-without-evidence failure mode: a reply CLAIMING file
+# mutations ("I created summary.txt", "已创建 summary.txt…") in a session whose
+# history shows no successful mutating tool call. Fabricated completion is
+# worse than no completion — the caller acts on files that don't exist
+# (found by eval: crash-resume). The guard is evidence-conditional: once any
+# Write/Edit/Bash succeeded, mutation claims are legitimate and pass freely.
+_MUTATING_TOOLS = frozenset({"Write", "Edit", "Bash", "write_file", "edit_file"})
+_MUTATION_CLAIM_RE = re.compile(
+    r"(?:creat|wrot|writt|sav|generat|updat|modif|"
+    r"(?:已经?|刚|成功)?(?:创建|写入|保存|生成|更新|修改)[了好]?)\w*"
+    r"[^。.!?\n]{0,60}?"
+    r"(?:\bfiles?\b|文件|`[^`]{1,60}\.\w{1,5}`|"
+    r"\b[\w./-]+\.(?:txt|py|md|json|ya?ml|csv|sh|js|ts|html?)\b)",
+    re.IGNORECASE,
+)
+
+
+def _claims_mutation(text: str) -> bool:
+    """True if the text claims files were created/modified."""
+    return bool(text) and bool(_MUTATION_CLAIM_RE.search(text))
+
+
 # =============================================================================
 # Configuration
 # =============================================================================
@@ -376,6 +398,29 @@ class VCPU:
                         )
                         return result  # non-final, retry
 
+                # claim-without-evidence guard: a REPLY claiming file mutations
+                # is only final if the session history contains a successful
+                # mutating tool call. Bounded like the narrate guard; RETURN
+                # (explicit final) is never second-guessed.
+                if (
+                    action.kind == "REPLY"
+                    and not has_tool_action
+                    and _claims_mutation(content or text)
+                    and not self._has_mutation_evidence()
+                ):
+                    errs = self._exec.on_error()
+                    if errs < self.config.max_consecutive_errors:
+                        if content or text:
+                            self.mmu.add_assistant_message(content or text)
+                        self.mmu.add_system_message(
+                            "You claim to have created or modified files, but no "
+                            "Write/Edit/Bash call has succeeded in this session. "
+                            "A claim is not an action. Perform the file operation "
+                            "now with the proper tool, or correct your answer to "
+                            "describe only what you actually did."
+                        )
+                        return result  # non-final, retry
+
                 # Persist to MMU
                 if content:
                     self.mmu.add_assistant_message(content)
@@ -469,6 +514,25 @@ class VCPU:
                 return result
 
         return result
+
+    def _has_mutation_evidence(self) -> bool:
+        """Whether session history holds a successful mutating tool result.
+
+        Reads the MMU message history (not per-VCPU state) so evidence from a
+        restored/rehydrated session counts — a resumed agent that DID write
+        files before the crash may legitimately say so.
+        """
+        messages = getattr(self.mmu, "_messages", None)
+        if not messages:
+            return False
+        for m in messages:
+            if (
+                getattr(m, "role", None) == "tool"
+                and getattr(m, "name", None) in _MUTATING_TOOLS
+                and not getattr(m, "is_error", False)
+            ):
+                return True
+        return False
 
     def _error_step(self, result: StepResult, message: str, retryable: bool = False) -> StepResult:
         result.is_final = True

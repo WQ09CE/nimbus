@@ -216,6 +216,48 @@ class TestVCPULimits:
         assert not f("Done. Wrote the summary to report.md and verified it.")
 
     @pytest.mark.asyncio
+    async def test_mutation_claim_without_evidence_is_nudged(self):
+        """A REPLY claiming file creation in a session with no successful
+        Write/Edit/Bash is fabrication — nudged, not accepted as final."""
+        config = VCPUConfig(max_consecutive_errors=2, max_iterations=100)
+        responses = [
+            MockResponse(content="I have already completed the task and created summary.txt.")
+            for _ in range(5)
+        ]
+        mmu = MMU()
+        mmu.add_user_message("Create summary.txt")
+        vcpu = VCPU(MockALU(responses), InstructionDecoder(), MockGate(), mmu, [],
+                    config=config, text_is_final=True)
+        r1 = await vcpu.step()
+        assert not r1.is_final  # claim without evidence → nudged
+        r2 = await vcpu.step()
+        assert r2.is_final  # bounded: 2nd fabrication hits the cap → finalize
+
+    @pytest.mark.asyncio
+    async def test_mutation_claim_with_evidence_finalizes(self):
+        """The same claim passes freely once the history holds a successful
+        mutating tool result (incl. rehydrated sessions)."""
+        mmu = MMU()
+        mmu.add_user_message("Create summary.txt")
+        mmu.add_tool_result("c0", "Write", "File written: summary.txt")
+        vcpu = VCPU(
+            MockALU([MockResponse(content="Done — I created summary.txt with the main point.")]),
+            InstructionDecoder(), MockGate(), mmu, [],
+            config=VCPUConfig(max_iterations=100), text_is_final=True,
+        )
+        r = await vcpu.step()
+        assert r.is_final
+
+    def test_mutation_claim_detector_phrasings(self):
+        from nimbus.core.vcpu import _claims_mutation as f
+        assert f("I have already created summary.txt as requested.")
+        assert f("Saved the results to `output.json`.")
+        assert f("已创建 summary.txt，任务完成。")
+        assert not f("The answer is 42.")
+        assert not f("The file config.py contains the settings loader.")
+        assert not f("I read notes.txt and the main point is daily releases.")
+
+    @pytest.mark.asyncio
     async def test_plain_final_answer_not_nudged(self):
         """An ordinary text answer (no tool announcement) finalizes immediately."""
         vcpu, _ = make_vcpu([MockResponse(content="The answer is 42.")], text_is_final=True)
