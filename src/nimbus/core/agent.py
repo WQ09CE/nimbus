@@ -364,7 +364,6 @@ class AgentOS:
 
         if goal:
             self._update_mmu_goal(mmu, goal)
-            mmu.add_user_message(goal)
 
         # Create steering/followup queues and abort event first
         wakeup_event = asyncio.Event()
@@ -448,7 +447,7 @@ class AgentOS:
 
         # Loop (with both queues and abort event)
         loop_config = LoopConfig(max_compactions=self.config.max_compactions)
-        return RuntimeLoop(
+        loop = RuntimeLoop(
             vcpu=vcpu,
             mmu=mmu,
             config=loop_config,
@@ -461,6 +460,13 @@ class AgentOS:
             storage=storage,
             metadata=metadata,
         )
+        # Add the goal AFTER the loop wires mmu.event_sink → session_log:
+        # added earlier, the goal message would never reach the log, leaving
+        # every log one message behind its snapshot — which permanently
+        # disarms the log-authoritative load path (completeness guard).
+        if goal:
+            mmu.add_user_message(goal)
+        return loop
 
     # --- Registry access ---
 

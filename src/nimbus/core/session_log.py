@@ -19,10 +19,13 @@ Design notes (dsh-aligned):
 """
 
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger("nimbus.session_log")
 
 # Every reason a live loop may assign to turn/end. 'interrupted' is absent
 # by design: it is reserved for crash-repair synthesis (see module docstring).
@@ -69,16 +72,26 @@ class SessionLog:
             time=time.time(),
             data=data or {},
         )
+        self._append_event(event)
+        return event
+
+    def _append_event(self, event: SessionEvent) -> None:
+        """Append a pre-built event verbatim (crash-repair closers carry their
+        own deterministic timestamps — repair must not restamp them)."""
+        if event.seq != len(self._events):
+            raise ValueError(
+                f"seq contract violated: appending {event.seq} at {len(self._events)}"
+            )
         self._events.append(event)
         if self.path is not None:
             try:
                 with open(self.path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
             except OSError:
-                # The log is a trace, not the truth (snapshot is authoritative
-                # in Phase 0) — never let trace I/O kill the loop.
+                # A failed trace write must never kill the loop; the snapshot
+                # still exists as fallback (load_session's completeness guard
+                # detects a log that fell behind it).
                 pass
-        return event
 
     @classmethod
     def load(cls, path: Path) -> "SessionLog":
@@ -108,18 +121,81 @@ class SessionLog:
         log.path = Path(path)
         return log
 
+    @classmethod
+    def open(cls, path: Path) -> "SessionLog":
+        """Load (or create) the log at path, repairing a crashed tail in place.
 
-def derive_messages(events: List[SessionEvent]) -> List[Dict[str, Any]]:
-    """Project message events back into the MMU message-dict shape.
+        Continuing a session appends to the SAME file, so seq and turn
+        numbering must resume from the recorded events — a bare
+        SessionLog(path) restarts seq at 0 and corrupts the file. If the log
+        ends inside an open turn (the crash signature), the synthetic closers
+        are appended to disk here (repair-on-open) so the log satisfies
+        invariants before any new turn starts.
 
-    This is the Phase 0 equivalence check: for a session without compaction,
-    derive_messages(log.events) must equal [m.to_dict() for m in mmu._messages].
+        A corrupt log cannot be continued and must never kill the loop:
+        it is quarantined (renamed *.corrupt — evidence, never truncation)
+        and the session starts a fresh log; the snapshot fallback in
+        load_session covers the messages.
+        """
+        path = Path(path)
+        try:
+            log = cls.load(path)
+        except ValueError as e:
+            quarantine = path.with_name(path.name + ".corrupt")
+            path.replace(quarantine)
+            logger.warning(
+                "Corrupt session log quarantined to %s (%s); starting fresh",
+                quarantine, e,
+            )
+            log = cls(path)
+        for event in interrupted_turn_closers(log._events):
+            log._append_event(event)
+        return log
+
+    @property
+    def last_turn(self) -> int:
+        """Highest turn number recorded (0 for a fresh log). A resuming
+        RuntimeLoop continues numbering from here."""
+        for event in reversed(self._events):
+            if event.type in ("turn/start", "turn/end"):
+                turn = event.data.get("turn")
+                if isinstance(turn, int):
+                    return turn
+        return 0
+
+
+def derive_state(events: List[SessionEvent]) -> Dict[str, Any]:
+    """Project the log into the MMU's live state: {"messages", "summary"}.
+
+    Phase 2 equivalence contract: for ANY session — compacted or not —
+    derive_state(log.events) must equal
+    ([m.to_dict() for m in mmu._messages], mmu._global_summary).
+
+    compaction/applied is a surface replace: kept_indices are the survivors'
+    positions in the pre-compaction surface (non-contiguous under smart-drop),
+    and the event's summary becomes the new merged summary. Phase 0 logs
+    predate kept_indices; for those the best effort is keeping the last
+    `kept` messages (exact for summarize mode, approximate for smart-drop).
     """
-    messages: List[Dict[str, Any]] = []
+    surface: List[Dict[str, Any]] = []
+    summary = ""
     for event in events:
         if event.type in ("user/message", "assistant/message", "tool/result"):
-            messages.append(event.data["message"])
-    return messages
+            surface.append(event.data["message"])
+        elif event.type == "compaction/applied":
+            kept_indices = event.data.get("kept_indices")
+            if kept_indices is None:
+                kept = event.data.get("kept", len(surface))
+                surface = surface[len(surface) - kept:] if kept else []
+            else:
+                surface = [surface[i] for i in kept_indices]
+            summary = event.data.get("summary", summary)
+    return {"messages": surface, "summary": summary}
+
+
+def derive_messages(events: List[SessionEvent]) -> List[Dict[str, Any]]:
+    """Project the post-compaction message surface (see derive_state)."""
+    return derive_state(events)["messages"]
 
 
 # =============================================================================
@@ -301,6 +377,7 @@ def interrupted_turn_closers(events: List[SessionEvent]) -> List[SessionEvent]:
                     "content": text,
                     "name": tc.get("function", {}).get("name"),
                     "tool_call_id": tc.get("id"),
+                    "meta": {"synthetic": True, "code": code},
                 },
                 "synthetic": True,
                 "code": code,

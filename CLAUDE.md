@@ -17,15 +17,24 @@
 
 | Component | File | Lines | Role |
 |-----------|------|-------|------|
-| **AgentOS** | `core/agent.py` | 552 | Facade: wires VCPU + MMU + Gate + Loop |
-| **VCPU** | `core/vcpu.py` | 476 | FSM engine: IDLE → THINKING → ACTING → OBSERVING → COMPRESSING → ERROR → DEAD |
-| **MMU** | `core/mmu.py` | 934 | Context management: Pinned anchors + dynamic stream + compression |
-| **KernelGate** | `core/gate.py` | 281 | Tool execution: permissions, timeout, SIGKILL isolation |
-| **RuntimeLoop** | `core/loop.py` | 906 | Drives VCPU steps, manages SteeringQueue and FollowUpQueue |
+| **AgentOS** | `core/agent.py` | 558 | Facade: wires VCPU + MMU + Gate + Loop |
+| **VCPU** | `core/vcpu.py` | 543 | FSM engine: IDLE → THINKING → ACTING → OBSERVING → COMPRESSING → ERROR → DEAD |
+| **MMU** | `core/mmu.py` | 485 | Context orchestrator: Pinned anchors + dynamic stream (messages.py 164, compaction.py 370) |
+| **SessionLog** | `core/session_log.py` | 391 | **Authoritative** append-only event log: turn/step brackets, derive_state projection, crash repair, repair-on-open |
+| **KernelGate** | `core/gate.py` | 292 | Tool execution: permissions, timeout, SIGKILL isolation |
+| **RuntimeLoop** | `core/loop.py` | 883 | Drives VCPU steps, brackets turns/steps into the log (queues.py 125) |
+| **Storage** | `core/storage.py` | 211 | Snapshot = metadata + fallback; `load_session` derives messages/summary from the log (Phase 2 authority inversion) |
 | **InstructionDecoder** | `core/decoder.py` | 208 | Validates/decodes LLM output into ActionIR |
-| **Protocol** | `core/protocol.py` | 178 | Event / ActionIR / ToolResult / Fault types |
+| **Protocol** | `core/protocol.py` | 183 | Event / ActionIR / ToolResult / Fault types |
 
 (Line counts as of 2026-08-15 — refresh with `wc -l src/nimbus/core/*.py` when they drift.)
+
+**Session truth model (Phase 2)**: `sess_{id}.jsonl` is the authoritative record of the
+message surface — compaction is a logged surface replace (`kept_indices`), a rebuilt
+loop continues seq/turn numbering via `SessionLog.open()` (repairing a crashed tail on
+disk), and a corrupt log is quarantined to `*.corrupt`, never truncated. The JSON
+snapshot supplies vcpu_state/metadata and is the messages fallback when the log is
+absent or incomplete.
 
 ### ALU / Adapter — Three LLM Channels
 

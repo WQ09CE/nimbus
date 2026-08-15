@@ -168,14 +168,17 @@ class RuntimeLoop:
         self.storage = storage or SessionStorage()
         self.metadata = metadata or {}
 
-        # Phase 0 dual-write event log: an auditable trace beside the snapshot.
-        # The snapshot (sess_*.json) REMAINS authoritative; nothing reads the
-        # log yet. Mock storages without base_dir get an in-memory log.
+        # Phase 2 event log: the authoritative record of the session's message
+        # surface (load_session derives from it; the snapshot is metadata +
+        # fallback). open() continues an existing file — seq and turn numbers
+        # resume, and a crashed tail is repaired in place before new turns.
+        # Mock storages without base_dir get an in-memory log.
         log_dir = getattr(self.storage, "base_dir", None)
-        self.session_log = SessionLog(
-            log_dir / f"{self.session_id}.jsonl" if log_dir is not None else None
-        )
-        self._turn = 0
+        if log_dir is not None:
+            self.session_log = SessionLog.open(log_dir / f"{self.session_id}.jsonl")
+        else:
+            self.session_log = SessionLog(None)
+        self._turn = self.session_log.last_turn
         self._step_in_turn = 0
         self._turn_open = False
         self._step_open = False

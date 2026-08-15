@@ -396,10 +396,16 @@ class MMU:
             if len(new_summary) > max_summary_chars:
                 new_summary = "..." + new_summary[-(max_summary_chars - 3):]
 
+            # kept_indices: survivors' positions in the PRE-compaction surface
+            # (smart-drop survivors are non-contiguous). Lets the event log
+            # replay compaction as a deterministic surface replace.
+            surviving_ids = {id(m) for m in surviving}
+            kept_indices = [i for i, m in enumerate(self._messages) if id(m) in surviving_ids]
             self._global_summary = new_summary
             self._messages = surviving
             self._notify("compaction/applied", {
                 "mode": "smart-drop", "kept": len(surviving),
+                "kept_indices": kept_indices,
                 "summary": new_summary,
             })
             return new_summary
@@ -440,6 +446,7 @@ class MMU:
         self._messages = to_keep
         self._notify("compaction/applied", {
             "mode": "summarize", "kept": len(to_keep),
+            "kept_indices": list(range(cut_index, cut_index + len(to_keep))),
             "summary": new_summary,
         })
 

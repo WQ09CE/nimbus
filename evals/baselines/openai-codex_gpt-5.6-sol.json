@@ -1,0 +1,190 @@
+[
+  {
+    "task": "crash-resume",
+    "model": "openai-codex/gpt-5.6-sol",
+    "mode": "interrupt_resume",
+    "recovery_injected": 0,
+    "interrupt_metrics": {
+      "events": 6,
+      "turns": 1,
+      "steps": 1,
+      "tool_results": 1,
+      "compactions": 0,
+      "turn_end_reasons": [
+        "aborted"
+      ],
+      "invariant_violations": []
+    },
+    "wall_sec": 9.2,
+    "status": "OK",
+    "metrics": {
+      "events": 9,
+      "turns": 1,
+      "steps": 2,
+      "tool_results": 1,
+      "compactions": 0,
+      "turn_end_reasons": [
+        "completed"
+      ],
+      "invariant_violations": []
+    },
+    "usage": {
+      "input": 1999,
+      "output": 142,
+      "cache_read": 0,
+      "cache_write": 0,
+      "total": 2141,
+      "cost": {
+        "input": 0.0,
+        "output": 0.0,
+        "cache_read": 0.0,
+        "cache_write": 0.0,
+        "total": 0.0
+      }
+    },
+    "passed": true,
+    "detail": "resumed and completed",
+    "artifacts": "/var/folders/x8/jshjxf7159z5ydqlhv5cc7jw0000gn/T/nimbus-eval-crash-resume-9xjq0vhn"
+  },
+  {
+    "task": "followup",
+    "model": "openai-codex/gpt-5.6-sol",
+    "mode": "normal",
+    "wall_sec": 4.4,
+    "status": "OK",
+    "metrics": {
+      "events": 11,
+      "turns": 2,
+      "steps": 2,
+      "tool_results": 0,
+      "compactions": 0,
+      "turn_end_reasons": [
+        "completed",
+        "completed"
+      ],
+      "invariant_violations": []
+    },
+    "usage": {
+      "input": 1541,
+      "output": 23,
+      "cache_read": 0,
+      "cache_write": 0,
+      "total": 1564,
+      "cost": {
+        "input": 0.0,
+        "output": 0.0,
+        "cache_read": 0.0,
+        "cache_write": 0.0,
+        "total": 0.0
+      }
+    },
+    "passed": true,
+    "detail": "ok",
+    "artifacts": "/var/folders/x8/jshjxf7159z5ydqlhv5cc7jw0000gn/T/nimbus-eval-followup-zznkm_vt"
+  },
+  {
+    "task": "hello-tool",
+    "model": "openai-codex/gpt-5.6-sol",
+    "mode": "normal",
+    "wall_sec": 4.3,
+    "status": "OK",
+    "metrics": {
+      "events": 9,
+      "turns": 1,
+      "steps": 2,
+      "tool_results": 1,
+      "compactions": 0,
+      "turn_end_reasons": [
+        "completed"
+      ],
+      "invariant_violations": []
+    },
+    "usage": {
+      "input": 1546,
+      "output": 36,
+      "cache_read": 0,
+      "cache_write": 0,
+      "total": 1582,
+      "cost": {
+        "input": 0.0,
+        "output": 0.0,
+        "cache_read": 0.0,
+        "cache_write": 0.0,
+        "total": 0.0
+      }
+    },
+    "passed": true,
+    "detail": "ok",
+    "artifacts": "/var/folders/x8/jshjxf7159z5ydqlhv5cc7jw0000gn/T/nimbus-eval-hello-tool-gaj889ra"
+  },
+  {
+    "task": "long-context",
+    "model": "openai-codex/gpt-5.6-sol",
+    "mode": "normal",
+    "wall_sec": 233.8,
+    "status": "OK",
+    "metrics": {
+      "events": 166,
+      "turns": 1,
+      "steps": 37,
+      "tool_results": 36,
+      "compactions": 17,
+      "turn_end_reasons": [
+        "completed"
+      ],
+      "invariant_violations": []
+    },
+    "usage": {
+      "input": 53105,
+      "output": 5403,
+      "cache_read": 6144,
+      "cache_write": 0,
+      "total": 64652,
+      "cost": {
+        "input": 0.0,
+        "output": 0.0,
+        "cache_read": 0.0,
+        "cache_write": 0.0,
+        "total": 0.0
+      }
+    },
+    "passed": true,
+    "detail": "code survived 17 compaction(s)",
+    "artifacts": "/var/folders/x8/jshjxf7159z5ydqlhv5cc7jw0000gn/T/nimbus-eval-long-context-4ps0fw29"
+  },
+  {
+    "task": "write-verify",
+    "model": "openai-codex/gpt-5.6-sol",
+    "mode": "normal",
+    "wall_sec": 8.9,
+    "status": "OK",
+    "metrics": {
+      "events": 13,
+      "turns": 1,
+      "steps": 3,
+      "tool_results": 2,
+      "compactions": 0,
+      "turn_end_reasons": [
+        "completed"
+      ],
+      "invariant_violations": []
+    },
+    "usage": {
+      "input": 2876,
+      "output": 245,
+      "cache_read": 0,
+      "cache_write": 0,
+      "total": 3121,
+      "cost": {
+        "input": 0.0,
+        "output": 0.0,
+        "cache_read": 0.0,
+        "cache_write": 0.0,
+        "total": 0.0
+      }
+    },
+    "passed": true,
+    "detail": "ok",
+    "artifacts": "/var/folders/x8/jshjxf7159z5ydqlhv5cc7jw0000gn/T/nimbus-eval-write-verify-g4pv7bmv"
+  }
+]

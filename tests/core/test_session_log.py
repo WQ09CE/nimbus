@@ -12,6 +12,7 @@ from nimbus.core.session_log import (
     SessionLog,
     check_invariants,
     derive_messages,
+    derive_state,
     interrupted_turn_closers,
 )
 from nimbus.core.storage import SessionStorage
@@ -292,3 +293,160 @@ class TestCrashRepair:
         assert check_invariants(repaired) == []
         # idempotent: repairing a repaired log is a no-op
         assert interrupted_turn_closers(repaired) == []
+
+
+# =============================================================================
+# Phase 2: derive_state — surface-replace equivalence for compacted sessions
+# =============================================================================
+
+
+def _mmu_with_log(config: MMUConfig) -> tuple:
+    log = SessionLog()
+    mmu = MMU(config)
+    mmu.event_sink = log.append
+    return mmu, log
+
+
+def _compaction_mode(log: SessionLog) -> str:
+    return next(e.data["mode"] for e in log.events if e.type == "compaction/applied")
+
+
+class TestDeriveState:
+    async def test_equivalence_after_summarize_compaction(self):
+        mmu, log = _mmu_with_log(MMUConfig(max_context_tokens=2000))
+        for i in range(30):
+            mmu.add_user_message(f"message {i} " + "x" * 200)
+        await mmu.archive_and_reset()
+        assert _compaction_mode(log) == "summarize"
+        state = derive_state(log.events)
+        assert state["messages"] == [m.to_dict() for m in mmu._messages]
+        assert state["summary"] == mmu._global_summary
+
+    async def test_equivalence_after_smart_drop_compaction(self):
+        mmu, log = _mmu_with_log(
+            MMUConfig(max_context_tokens=400, keep_recent_tokens=50)
+        )
+        for i in range(8):
+            mmu.add_user_message(f"m{i} " + "y" * 100)
+        mmu.add_user_message("big1 " + "z" * 1200)
+        mmu.add_user_message("big2 " + "z" * 1200)
+        await mmu.archive_and_reset()
+        assert _compaction_mode(log) == "smart-drop"
+        state = derive_state(log.events)
+        assert state["messages"] == [m.to_dict() for m in mmu._messages]
+        assert state["summary"] == mmu._global_summary
+
+    async def test_equivalence_survives_repeated_compaction(self):
+        """Two rounds: surface replace must compose (post-compaction surface
+        is itself the base of the next kept_indices)."""
+        mmu, log = _mmu_with_log(MMUConfig(max_context_tokens=2000))
+        for i in range(30):
+            mmu.add_user_message(f"round1 {i} " + "x" * 200)
+        await mmu.archive_and_reset()
+        for i in range(30):
+            mmu.add_user_message(f"round2 {i} " + "x" * 200)
+        await mmu.archive_and_reset()
+        assert sum(1 for e in log.events if e.type == "compaction/applied") == 2
+        state = derive_state(log.events)
+        assert state["messages"] == [m.to_dict() for m in mmu._messages]
+        assert state["summary"] == mmu._global_summary
+
+    def test_legacy_event_without_kept_indices_keeps_tail(self):
+        log = SessionLog()
+        for i in range(4):
+            log.append("user/message", {"message": {"role": "user", "content": f"m{i}"}})
+        log.append("compaction/applied", {"mode": "summarize", "kept": 2, "summary": "s"})
+        state = derive_state(log.events)
+        assert [m["content"] for m in state["messages"]] == ["m2", "m3"]
+        assert state["summary"] == "s"
+
+
+# =============================================================================
+# Phase 2: SessionLog.open — continuation + repair-on-open
+# =============================================================================
+
+
+class TestSessionLogOpen:
+    def test_open_missing_file_starts_fresh(self, tmp_path):
+        log = SessionLog.open(tmp_path / "new.jsonl")
+        assert log.events == []
+        assert log.last_turn == 0
+        log.append("turn/start", {"turn": 1})
+        assert (tmp_path / "new.jsonl").exists()
+
+    def test_open_continues_seq_and_turn(self, tmp_path):
+        path = tmp_path / "s.jsonl"
+        first = SessionLog(path)
+        first.append("turn/start", {"turn": 1})
+        first.append("turn/end", {"turn": 1, "reason": {"kind": "completed"}})
+
+        reopened = SessionLog.open(path)
+        assert reopened.last_turn == 1
+        e = reopened.append("turn/start", {"turn": 2})
+        assert e.seq == 2  # continues, does NOT restart at 0
+        reopened.append("turn/end", {"turn": 2, "reason": {"kind": "completed"}})
+        assert check_invariants(SessionLog.load(path).events) == []
+
+    def test_open_repairs_crashed_tail_on_disk(self, tmp_path):
+        path = tmp_path / "s.jsonl"
+        crashed = SessionLog(path)
+        for e in _crashed_log(answered=1).events:
+            crashed.append(e.type, e.data)
+
+        reopened = SessionLog.open(path)
+        assert check_invariants(reopened.events) == []
+        reasons = [e.data["reason"]["kind"] for e in reopened.events if e.type == "turn/end"]
+        assert reasons == ["interrupted"]
+        # repair is durable, and the synthetic marker lives in the message meta
+        reloaded = SessionLog.load(path)
+        assert check_invariants(reloaded.events) == []
+        synthetic = [
+            e.data["message"] for e in reloaded.events
+            if e.type == "tool/result" and e.data.get("synthetic")
+        ]
+        assert {m["meta"]["code"] for m in synthetic} == {
+            "TOOL_OUTCOME_UNKNOWN", "TOOL_NOT_STARTED",
+        }
+
+    def test_open_is_idempotent(self, tmp_path):
+        path = tmp_path / "s.jsonl"
+        crashed = SessionLog(path)
+        for e in _crashed_log(answered=0).events:
+            crashed.append(e.type, e.data)
+        n = len(SessionLog.open(path).events)
+        assert len(SessionLog.open(path).events) == n
+
+
+class TestLoopContinuation:
+    async def test_rebuilt_loop_continues_turn_numbering(self, tmp_path):
+        """Regression: a rebuilt RuntimeLoop (same session_id) used to restart
+        seq at 0 and corrupt the shared jsonl."""
+        storage = SessionStorage(str(tmp_path))
+        loop1 = RuntimeLoop(
+            MockVCPU([make_step(is_final=True, output="a")]), MMU(),
+            storage=storage, session_id="sess_x",
+        )
+        await loop1.run()
+
+        loop2 = RuntimeLoop(
+            MockVCPU([make_step(is_final=True, output="b")]), MMU(),
+            storage=storage, session_id="sess_x",
+        )
+        await loop2.run()
+
+        merged = SessionLog.load(tmp_path / "sess_x.jsonl")
+        assert check_invariants(merged.events) == []
+        turns = [e.data["turn"] for e in merged.events if e.type == "turn/start"]
+        assert turns == [1, 2]
+
+    def test_open_quarantines_corrupt_log(self, tmp_path):
+        path = tmp_path / "s.jsonl"
+        path.write_text(
+            '{"seq": 0, "type": "turn/start", "time": 1, "data": {"turn": 1}}\n'
+            '{"seq": 0, "type": "turn/start", "time": 2, "data": {"turn": 1}}\n'
+        )
+        log = SessionLog.open(path)
+        assert log.events == []  # fresh start
+        assert (tmp_path / "s.jsonl.corrupt").exists()  # evidence kept
+        log.append("turn/start", {"turn": 1})
+        assert len(SessionLog.load(path).events) == 1

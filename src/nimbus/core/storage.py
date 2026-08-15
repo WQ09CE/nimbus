@@ -6,7 +6,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .session_log import grade_unanswered_calls
+from .session_log import (
+    SessionLog,
+    derive_state,
+    grade_unanswered_calls,
+    interrupted_turn_closers,
+)
 
 logger = logging.getLogger("nimbus.core.storage")
 
@@ -65,17 +70,69 @@ class SessionStorage:
                 temp_path.unlink()
             raise
 
+    def _state_from_log(
+        self, session_id: str, snapshot_messages: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Derive {"messages", "summary"} from the session's event log.
+
+        Phase 2 authority inversion: the log is the truth for the message
+        surface. Returns None (→ snapshot fallback) when the log is absent,
+        corrupt, or has fallen behind the snapshot (append swallows I/O
+        errors, so a log can be incomplete — it may claim authority only
+        when it is at least as complete as the snapshot).
+
+        Read-only: a crashed open tail is repaired as a VIEW here; the
+        closers are written to disk by SessionLog.open() when a loop
+        actually resumes the session.
+        """
+        log_path = self.base_dir / f"{session_id}.jsonl"
+        if not log_path.exists():
+            return None
+        try:
+            log = SessionLog.load(log_path)
+            events = log.events + interrupted_turn_closers(log.events)
+            state = derive_state(events)
+        except Exception as e:
+            logger.warning(
+                f"Session log for '{session_id}' unusable ({e}); using snapshot"
+            )
+            return None
+
+        def _real_count(msgs: List[Dict[str, Any]]) -> int:
+            return sum(
+                1 for m in msgs if not (m.get("meta") or {}).get("synthetic")
+            )
+
+        if _real_count(state["messages"]) < _real_count(snapshot_messages):
+            logger.warning(
+                f"Session log for '{session_id}' is behind the snapshot "
+                f"({_real_count(state['messages'])} < "
+                f"{_real_count(snapshot_messages)} messages); using snapshot"
+            )
+            return None
+        return state
+
     def load_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Load a session JSON Core Dump, injecting recovery messages if needed."""
+        """Load a session Core Dump. The event log, when present and complete,
+        is the authoritative source for messages + summary (Phase 2); the
+        snapshot supplies metadata/vcpu_state and is the messages fallback."""
         path = self._get_path(session_id)
         if not path.exists():
             return None
-            
+
         try:
             with open(path, "r", encoding="utf-8") as f:
                 dump = json.load(f)
-                
+
             messages = dump.get("messages", [])
+
+            log_state = self._state_from_log(session_id, messages)
+            if log_state is not None:
+                messages = log_state["messages"]
+                dump["messages"] = messages
+                # Summary flows to the restore path via metadata.mmu_state.
+                mmu_state = dump.setdefault("metadata", {}).setdefault("mmu_state", {})
+                mmu_state["global_summary"] = log_state["summary"]
 
             # --- Syscall Interruption Recovery ---
             # A crash can leave the latest assistant tool_calls batch with some
