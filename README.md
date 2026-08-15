@@ -214,7 +214,7 @@ pytest tests/core --tb=short
 pytest tests/ --tb=short
 ```
 
-Offline run: **471 passed, 86 deselected**. Requires Python 3.10+.
+Offline run: **484 passed, 86 deselected**. Requires Python 3.10+.
 
 ---
 
