@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .session_log import grade_unanswered_calls
+
 logger = logging.getLogger("nimbus.core.storage")
 
 class SessionStorage:
@@ -74,30 +76,41 @@ class SessionStorage:
                 dump = json.load(f)
                 
             messages = dump.get("messages", [])
-            
+
             # --- Syscall Interruption Recovery ---
-            # If the last message is from the assistant and contains tool_calls,
-            # but there are no corresponding tool results following it, it means
-            # the process was interrupted during an in-flight syscall.
-            # The LLM API requires exactly N tool results for N tool calls.
-            if messages:
-                last_msg = messages[-1]
-                if last_msg.get("role") == "assistant" and "tool_calls" in last_msg:
-                    tool_calls = last_msg["tool_calls"]
-                    if tool_calls:
-                        # Inject one recovery message per tool call
-                        for tc in tool_calls:
-                            tc_id = tc.get("id", "unknown")
-                            tc_name = tc.get("function", {}).get("name", "unknown_tool")
-                            recovery_msg = {
-                                "role": "tool",
-                                "tool_call_id": tc_id,
-                                "name": tc_name,
-                                "content": "[System Alert]: Execution was interrupted by process suspension or crash before completion. State unknown. Please verify the environment via view_file or other tools before proceeding.",
-                            }
-                            messages.append(recovery_msg)
-                        dump["messages"] = messages
-                        logger.info(f"Injected {len(tool_calls)} synthetic recovery message(s) for interrupted session {session_id}")
+            # A crash can leave the latest assistant tool_calls batch with some
+            # or all results missing (the LLM API requires exactly N results
+            # for N calls). Scan back to the latest batch — not just the last
+            # message — so partially-answered batches are repaired too. Grades
+            # (serial gate execution): first unanswered call may have been in
+            # flight (TOOL_OUTCOME_UNKNOWN — verify before retrying); later
+            # ones provably never started (TOOL_NOT_STARTED — safe to retry).
+            idx = None
+            for i in range(len(messages) - 1, -1, -1):
+                if messages[i].get("role") == "assistant" and messages[i].get("tool_calls"):
+                    idx = i
+                    break
+            if idx is not None:
+                answered = {
+                    m.get("tool_call_id")
+                    for m in messages[idx + 1:]
+                    if m.get("role") == "tool"
+                }
+                graded = grade_unanswered_calls(messages[idx]["tool_calls"], answered)
+                for tc, code, text in graded:
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", "unknown"),
+                        "name": tc.get("function", {}).get("name", "unknown_tool"),
+                        "content": text,
+                        "meta": {"synthetic": True, "code": code},
+                    })
+                if graded:
+                    dump["messages"] = messages
+                    logger.info(
+                        f"Injected {len(graded)} graded recovery message(s) "
+                        f"for interrupted session {session_id}"
+                    )
 
             return dump
         except Exception as e:

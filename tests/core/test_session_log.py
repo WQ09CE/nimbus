@@ -6,7 +6,12 @@ from typing import List
 
 from nimbus.core.loop import RuntimeLoop
 from nimbus.core.mmu import MMU, MMUConfig
-from nimbus.core.session_log import SessionLog, derive_messages
+from nimbus.core.session_log import (
+    SessionLog,
+    check_invariants,
+    derive_messages,
+    interrupted_turn_closers,
+)
 from nimbus.core.storage import SessionStorage
 
 from .test_loop import MockVCPU, make_step
@@ -167,6 +172,14 @@ class TestLoopBrackets:
         await loop.run()
         assert _turn_end_reasons(loop.session_log) == ["aborted"]
 
+    async def test_real_run_passes_invariants(self, tmp_path):
+        mmu = MMU()
+        vcpu = MockVCPU([make_step(), make_step(is_final=True, output="done")])
+        loop = RuntimeLoop(vcpu, mmu, storage=SessionStorage(str(tmp_path)))
+        loop.followup_queue.follow_up("more")
+        await loop.run()
+        assert check_invariants(loop.session_log.events) == []
+
     async def test_log_written_to_disk_and_equivalent(self, tmp_path):
         """End-to-end: run, reload the jsonl from disk, project messages,
         compare with the MMU (Phase 0 equivalence, no compaction)."""
@@ -180,3 +193,80 @@ class TestLoopBrackets:
         assert derive_messages(loaded.events) == [m.to_dict() for m in mmu._messages]
         # every event on disk, in order, with contiguous seq
         assert [e.seq for e in loaded.events] == list(range(len(loaded.events)))
+
+
+# =============================================================================
+# Invariants & crash repair (Phase 1)
+# =============================================================================
+
+
+def _crashed_log(answered: int = 1) -> SessionLog:
+    """A log that dies mid-step: 3 tool calls requested, `answered` results in."""
+    log = SessionLog()
+    log.append("turn/start", {"turn": 1})
+    log.append("step/start", {"turn": 1, "step": 1})
+    calls = [
+        {"id": f"c{i}", "function": {"name": "Bash", "arguments": "{}"}}
+        for i in range(1, 4)
+    ]
+    log.append("assistant/message", {"message": {
+        "role": "assistant", "content": None, "tool_calls": calls,
+    }})
+    for i in range(1, answered + 1):
+        log.append("tool/result", {"message": {
+            "role": "tool", "content": "ok", "name": "Bash", "tool_call_id": f"c{i}",
+        }})
+    return log  # crash: no step/end, no turn/end
+
+
+class TestInvariants:
+    def test_open_tail_flagged_unless_allowed(self):
+        log = _crashed_log()
+        violations = check_invariants(log.events)
+        assert any("open" in v for v in violations)
+        assert check_invariants(log.events, allow_open_tail=True) == []
+
+    def test_detects_bad_structure(self):
+        log = SessionLog()
+        log.append("step/start", {"turn": 1, "step": 1})       # step outside turn
+        log.append("turn/start", {"turn": 5})                  # non-monotonic turn
+        log.append("turn/end", {"turn": 5, "reason": {"kind": "whatever"}})  # bad reason
+        violations = check_invariants(log.events)
+        assert len(violations) >= 3
+
+    def test_tool_result_must_match_a_request(self):
+        log = SessionLog()
+        log.append("turn/start", {"turn": 1})
+        log.append("tool/result", {"message": {"role": "tool", "tool_call_id": "ghost"}})
+        assert any("ghost" in v for v in check_invariants(log.events, allow_open_tail=True))
+
+
+class TestCrashRepair:
+    def test_balanced_log_needs_no_repair(self):
+        log = SessionLog()
+        log.append("turn/start", {"turn": 1})
+        log.append("turn/end", {"turn": 1, "reason": {"kind": "completed"}})
+        assert interrupted_turn_closers(log.events) == []
+
+    def test_closers_grade_by_serial_order(self):
+        log = _crashed_log(answered=1)  # c1 answered; c2 in flight; c3 not started
+        closers = interrupted_turn_closers(log.events)
+        results = [e for e in closers if e.type == "tool/result"]
+        assert [e.data["message"]["tool_call_id"] for e in results] == ["c2", "c3"]
+        assert results[0].data["code"] == "TOOL_OUTCOME_UNKNOWN"
+        assert results[1].data["code"] == "TOOL_NOT_STARTED"
+        assert closers[-2].type == "step/end"
+        assert closers[-1].type == "turn/end"
+        assert closers[-1].data["reason"]["kind"] == "interrupted"
+
+    def test_repaired_log_is_balanced_and_deterministic(self):
+        log = _crashed_log(answered=0)
+        closers = interrupted_turn_closers(log.events)
+        # deterministic: synthetic events reuse the last real timestamp
+        assert all(e.time == log.events[-1].time for e in closers)
+        # seq continues the run
+        assert [e.seq for e in closers] == list(range(len(log.events), len(log.events) + len(closers)))
+        repaired = log.events + closers
+        assert check_invariants(repaired) == []
+        # idempotent: repairing a repaired log is a no-op
+        assert interrupted_turn_closers(repaired) == []
