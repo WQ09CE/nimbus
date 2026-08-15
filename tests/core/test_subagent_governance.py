@@ -41,7 +41,9 @@ class TestContractMode:
                 
         class MockGate:
             async def syscall_tool(self, *args, **kwargs):
-                return ToolResult(status="OK", output="delivered")
+                # Real chain: submit_result returns {"concludes_turn": True},
+                # KernelGate carries it onto the ToolResult (see test_gate).
+                return ToolResult(status="OK", output="delivered", concludes_turn=True)
         
         mmu = MMU(MMUConfig())
         # Mock mmu.set_last_usage

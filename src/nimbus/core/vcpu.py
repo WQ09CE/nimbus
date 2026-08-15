@@ -432,8 +432,11 @@ class VCPU:
                         ui_detail=tool_result.ui_detail,
                     )
                     
-                    # Intercept submit_result: Immediately terminate VCPU loop
-                    if action.name == "submit_result" and tool_result.status == "OK":
+                    # Declarative turn conclusion (dsh concludesTurn): any tool
+                    # result may declare it ends the turn — evidence-carrying
+                    # termination instead of a framework-kept name list.
+                    # (submit_result is the first declarer.)
+                    if tool_result.concludes_turn and tool_result.status == "OK":
                         result.is_final = True
                         result.final_result = ToolResult(
                             status="OK",

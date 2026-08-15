@@ -540,10 +540,15 @@ class RuntimeLoop:
                                 last_clean = str(last).split("\n\n[WARNING")[0].strip() if last else ""
                                 if not summary:
                                     summary = last_clean or "Task completed."
-                                elif last_clean and last_clean not in summary and len(summary) < 80:
-                                    # Weak model summary — keep the concrete tool result
-                                    # so the actual answer isn't lost.
-                                    summary = f"{summary}\n\n{last_clean}"
+                                elif last_clean and last_clean not in summary:
+                                    # Truth gate: the summary is a model
+                                    # paraphrase; the tool output is ground
+                                    # truth. Append it whenever it is not
+                                    # already contained — gating on summary
+                                    # LENGTH lost the actual answer whenever a
+                                    # verbose model wrote a long wrong summary
+                                    # (found by eval: hello-tool).
+                                    summary = f"{summary}\n\n[Last tool output]\n{last_clean[:2000]}"
                                 result = ToolResult(
                                     status="OK", output=summary, is_final=True,
                                     ui_detail={"terminated": "tool_call_stall"},

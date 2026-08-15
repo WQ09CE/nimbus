@@ -72,6 +72,11 @@ class ToolResult:
     fault: Optional["Fault"] = None
     timing_ms: Dict[str, int] = field(default_factory=dict)
     cost: Dict[str, Any] = field(default_factory=dict)
+    # Declarative turn conclusion (dsh concludesTurn): a tool result may
+    # declare that it ends the turn — evidence-carrying termination, instead
+    # of the framework keeping a name list of terminal tools. Set by a tool
+    # returning {"concludes_turn": True} (see KernelGate).
+    concludes_turn: bool = False
 
 
 @dataclass

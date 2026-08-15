@@ -27,8 +27,11 @@ DOOM_LOOP_THRESHOLD = 3
 
 DOOM_GUIDANCE = {
     "Edit": "Read the file first to get current content, then retry with exact text.",
-    "Read": "File may not exist. Use Bash to find the correct path.",
-    "Bash": "Same command keeps failing. Try a different approach.",
+    # Repetition-neutral wording: the detector fires on REPETITION, not on
+    # failure — a command may repeat while succeeding every time. Telling the
+    # model it "keeps failing" then would be misinformation (found by eval).
+    "Read": "You have read this exact file repeatedly. You already have its content — use it. If the read failed, locate the correct path with Bash instead of retrying.",
+    "Bash": "You have run this exact command repeatedly. You already have its result — use it and take the next step instead of re-running it.",
     "spawn_agent": "Same sub-agent goal keeps repeating. Revise your approach or handle the goal directly.",
 }
 
@@ -208,11 +211,15 @@ class KernelGate:
             else:
                 raw_output = await coro
 
-            # Handle split tool results (pi-style: output + ui_detail)
+            # Handle split tool results (pi-style: output + ui_detail).
+            # A tool may also declare {"concludes_turn": True} — carried onto
+            # the ToolResult so the VCPU ends the turn on tool-side evidence.
             ui_detail = {}
+            concludes_turn = False
             if isinstance(raw_output, dict) and "output" in raw_output:
                 raw_text = raw_output["output"]
                 ui_detail = raw_output.get("ui_detail", {})
+                concludes_turn = bool(raw_output.get("concludes_turn", False))
             else:
                 raw_text = raw_output
             
@@ -223,7 +230,11 @@ class KernelGate:
             if len(output) != len(raw_text) and isinstance(raw_text, str):
                 ui_detail["raw_text_output"] = raw_text
                 
-            result = ToolResult(status="OK", output=output, ui_detail=ui_detail if ui_detail else None)
+            result = ToolResult(
+                status="OK", output=output,
+                ui_detail=ui_detail if ui_detail else None,
+                concludes_turn=concludes_turn,
+            )
 
             # Append doom loop guidance if first warning
             if doom_msg:

@@ -117,6 +117,29 @@ class TestKernelGate:
         assert "executed Bash" in result.output
 
     @pytest.mark.asyncio
+    async def test_concludes_turn_carried_from_tool_dict(self):
+        """A tool declaring {"concludes_turn": True} must see the flag carried
+        onto the ToolResult — the evidence chain for declarative termination."""
+        async def executor(name, args):
+            return {"output": "delivered", "concludes_turn": True}
+
+        gate = KernelGate("p1", executor)
+        action = ActionIR(kind="TOOL_CALL", name="submit_result", args={})
+        result = await gate.syscall_tool(action)
+        assert result.status == "OK"
+        assert result.concludes_turn is True
+
+    @pytest.mark.asyncio
+    async def test_concludes_turn_defaults_false(self):
+        async def executor(name, args):
+            return {"output": "plain result"}
+
+        gate = KernelGate("p1", executor)
+        action = ActionIR(kind="TOOL_CALL", name="Read", args={"file_path": "x"})
+        result = await gate.syscall_tool(action)
+        assert result.concludes_turn is False
+
+    @pytest.mark.asyncio
     async def test_timeout(self):
         async def slow_executor(name, args):
             await asyncio.sleep(10)

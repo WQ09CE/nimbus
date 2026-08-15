@@ -112,4 +112,6 @@ async def submit_result(
     return {
         "output": f"✅ Results delivered. ({len(findings)} findings, {len(artifacts)} artifacts)",
         "ui_detail": result,
+        # Declarative termination: this delivery IS the evidence the turn is done.
+        "concludes_turn": True,
     }
