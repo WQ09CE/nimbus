@@ -29,12 +29,17 @@
 
 (Line counts as of 2026-08-15 — refresh with `wc -l src/nimbus/core/*.py` when they drift.)
 
-**Session truth model (Phase 2)**: `sess_{id}.jsonl` is the authoritative record of the
+**Session truth model (Phase 2/3)**: `sess_{id}.jsonl` is the authoritative record of the
 message surface — compaction is a logged surface replace (`kept_indices`), a rebuilt
 loop continues seq/turn numbering via `SessionLog.open()` (repairing a crashed tail on
 disk), and a corrupt log is quarantined to `*.corrupt`, never truncated. The JSON
 snapshot supplies vcpu_state/metadata and is the messages fallback when the log is
-absent or incomplete.
+absent or incomplete. Fork/resume/replay share one primitive:
+`storage.fork_session(parent, new, at_seq)` seeds the new log with a `seed/applied`
+event (mid-turn cuts are closed with graded synthetic results first); lineage lives in
+snapshot metadata. Disk writes are batched (bounded write-behind, 200ms window) with
+flush barriers at causal points — an assistant message carrying tool_calls is durable
+before its side effects run.
 
 ### ALU / Adapter — Three LLM Channels
 

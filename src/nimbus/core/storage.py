@@ -112,6 +112,82 @@ class SessionStorage:
             return None
         return state
 
+    def fork_session(
+        self,
+        parent_id: str,
+        new_id: str,
+        at_seq: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Create a new session seeded from a parent — the one primitive
+        behind fork, resume-as-new, and replay-from-point (dsh seed).
+
+        The parent's repaired log view (truncated to at_seq when given, with
+        synthetic closers so a mid-turn cut still yields a balanced surface)
+        is derived into a single seed/applied event at seq 0 of the NEW
+        session's log, plus a snapshot carrying lineage in metadata. Falls
+        back to the parent snapshot's messages when the parent has no usable
+        log. Returns the new session's dump (via load_session), or None if
+        the parent doesn't exist.
+        """
+        parent = self.load_session(parent_id)
+        if parent is None:
+            return None
+
+        state = None
+        log_path = self.base_dir / f"{parent_id}.jsonl"
+        if log_path.exists():
+            try:
+                log = SessionLog.load(log_path)
+                events = log.events if at_seq is None else log.events[:at_seq]
+                events = events + interrupted_turn_closers(events)
+                state = derive_state(events)
+            except Exception as e:
+                logger.warning(
+                    f"fork_session: parent log unusable ({e}); seeding from snapshot"
+                )
+        if state is None:
+            state = {
+                "messages": parent.get("messages", []),
+                "summary": parent.get("metadata", {})
+                .get("mmu_state", {})
+                .get("global_summary", ""),
+            }
+
+        lineage = {
+            "parent": parent_id,
+            "at_seq": at_seq,
+            "forked_at": datetime.now().isoformat(),
+        }
+
+        # Seed is the new log's first event; a stale log at new_id must not
+        # be merged into, so it is replaced outright.
+        new_log_path = self.base_dir / f"{new_id}.jsonl"
+        if new_log_path.exists():
+            new_log_path.unlink()
+        new_log = SessionLog(new_log_path)
+        new_log.append("seed/applied", {
+            "messages": state["messages"],
+            "summary": state["summary"],
+            "lineage": lineage,
+        })
+
+        metadata = dict(parent.get("metadata", {}))
+        mmu_state = dict(metadata.get("mmu_state", {}))
+        mmu_state["global_summary"] = state["summary"]
+        metadata["mmu_state"] = mmu_state
+        metadata["lineage"] = lineage
+
+        self.save_session(
+            session_id=new_id,
+            status="forked",
+            messages=state["messages"],
+            vcpu_state={},
+            vcpu_config=parent.get("vcpu_config", {}),
+            llm_config=parent.get("llm_config", {}),
+            metadata=metadata,
+        )
+        return self.load_session(new_id)
+
     def load_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Load a session Core Dump. The event log, when present and complete,
         is the authoritative source for messages + summary (Phase 2); the

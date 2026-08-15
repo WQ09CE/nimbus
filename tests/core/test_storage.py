@@ -70,6 +70,7 @@ def _write_log(tmp_path, events):
     log = SessionLog(tmp_path / "sess_t.jsonl")
     for etype, data in events:
         log.append(etype, data)
+    log.flush()
     return log
 
 
@@ -148,3 +149,62 @@ class TestLogAuthority:
         synthetic = [m for m in dump["messages"] if (m.get("meta") or {}).get("synthetic")]
         assert [m["tool_call_id"] for m in synthetic] == ["c2"]
         assert synthetic[0]["meta"]["code"] == "TOOL_OUTCOME_UNKNOWN"
+
+
+# =============================================================================
+# Phase 3: fork_session — seed a new session from a parent
+# =============================================================================
+
+
+class TestForkSession:
+    def _parent(self, tmp_path):
+        storage = _dump_with([{"role": "user", "content": "go"}], tmp_path)
+        _write_log(tmp_path, [
+            ("turn/start", {"turn": 1}),
+            ("user/message", {"message": {"role": "user", "content": "go"}}),
+            ("assistant/message", {"message": {"role": "assistant", "content": "done"}}),
+            ("turn/end", {"turn": 1, "reason": {"kind": "completed"}}),
+        ])
+        return storage
+
+    def test_fork_seeds_full_parent_surface(self, tmp_path):
+        storage = self._parent(tmp_path)
+        dump = storage.fork_session("sess_t", "sess_fork")
+        assert [m["content"] for m in dump["messages"]] == ["go", "done"]
+        assert dump["metadata"]["lineage"]["parent"] == "sess_t"
+        # New log: exactly one seed event at seq 0, invariants clean
+        from nimbus.core.session_log import check_invariants
+        log = SessionLog.load(tmp_path / "sess_fork.jsonl")
+        assert log.events[0].type == "seed/applied"
+        assert check_invariants(log.events) == []
+
+    def test_fork_missing_parent_returns_none(self, tmp_path):
+        storage = SessionStorage(str(tmp_path))
+        assert storage.fork_session("sess_ghost", "sess_fork") is None
+
+    def test_fork_mid_turn_cut_is_balanced(self, tmp_path):
+        # Replay-from-point: cut inside an open step — the seed must carry
+        # graded synthetic results so the surface honors the API contract.
+        storage = _dump_with([{"role": "user", "content": "go"}], tmp_path)
+        _write_log(tmp_path, [
+            ("turn/start", {"turn": 1}),
+            ("user/message", {"message": {"role": "user", "content": "go"}}),
+            ("step/start", {"turn": 1, "step": 1}),
+            ("assistant/message", {"message": {
+                "role": "assistant", "content": None, "tool_calls": _calls(2),
+            }}),
+            ("tool/result", {"message": {
+                "role": "tool", "content": "ok", "name": "Bash", "tool_call_id": "c1",
+            }}),
+        ])
+        dump = storage.fork_session("sess_t", "sess_fork", at_seq=5)
+        synthetic = [m for m in dump["messages"] if (m.get("meta") or {}).get("synthetic")]
+        assert [m["tool_call_id"] for m in synthetic] == ["c2"]
+        assert synthetic[0]["meta"]["code"] == "TOOL_OUTCOME_UNKNOWN"
+
+    def test_forked_session_reloads_with_log_authority(self, tmp_path):
+        storage = self._parent(tmp_path)
+        storage.fork_session("sess_t", "sess_fork")
+        dump = storage.load_session("sess_fork")
+        assert [m["content"] for m in dump["messages"]] == ["go", "done"]
+        assert dump["metadata"]["mmu_state"]["global_summary"] == ""

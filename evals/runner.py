@@ -115,7 +115,9 @@ async def run_task(task_dir: Path, model: str) -> dict:
 
         if mode == "interrupt_resume":
             await asyncio.wait_for(_interrupt_after_first_tool(loop), timeout=timeout)
-            dump = storage.load_session(loop.session_id) or {"messages": []}
+            # Fork primitive (Phase 3): seed a new session from the parent's
+            # log instead of hand-carrying initial_messages.
+            dump = storage.fork_session(loop.session_id, "eval-resume") or {"messages": []}
             record["recovery_injected"] = sum(
                 1 for m in dump["messages"] if m.get("meta", {}).get("synthetic")
             )

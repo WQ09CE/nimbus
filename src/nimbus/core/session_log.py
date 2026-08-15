@@ -56,9 +56,15 @@ class SessionLog:
     A torn final line on crash is skipped at load time.
     """
 
+    # Bounded write-behind (dsh-style): non-causal events may sit in the
+    # buffer for at most this long before the next append forces a flush.
+    FLUSH_WINDOW_SEC = 0.2
+
     def __init__(self, path: Optional[Path] = None):
         self.path = Path(path) if path else None
         self._events: List[SessionEvent] = []
+        self._pending: List[SessionEvent] = []
+        self._pending_since: float = 0.0
 
     @property
     def events(self) -> List[SessionEvent]:
@@ -77,21 +83,57 @@ class SessionLog:
 
     def _append_event(self, event: SessionEvent) -> None:
         """Append a pre-built event verbatim (crash-repair closers carry their
-        own deterministic timestamps — repair must not restamp them)."""
+        own deterministic timestamps — repair must not restamp them).
+
+        Disk writes are batched (bounded write-behind): the flush barrier sits
+        at CAUSAL points — an event that must be durable before what follows
+        it (the decision record before its side effects, tool outcomes, turn
+        boundaries, surface replaces, seeds) flushes immediately; anything
+        else waits at most FLUSH_WINDOW_SEC for the next append, plus the
+        explicit flush() at loop exit."""
         if event.seq != len(self._events):
             raise ValueError(
                 f"seq contract violated: appending {event.seq} at {len(self._events)}"
             )
         self._events.append(event)
-        if self.path is not None:
-            try:
-                with open(self.path, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
-            except OSError:
-                # A failed trace write must never kill the loop; the snapshot
-                # still exists as fallback (load_session's completeness guard
-                # detects a log that fell behind it).
-                pass
+        if self.path is None:
+            return
+        if not self._pending:
+            self._pending_since = time.monotonic()
+        self._pending.append(event)
+        if (
+            self._is_causal(event)
+            or time.monotonic() - self._pending_since >= self.FLUSH_WINDOW_SEC
+        ):
+            self.flush()
+
+    @staticmethod
+    def _is_causal(event: SessionEvent) -> bool:
+        t = event.type
+        if t in ("turn/end", "tool/result", "compaction/applied", "seed/applied"):
+            return True
+        # The assistant's decision record must hit disk BEFORE its tool calls
+        # execute (side effects) — dsh's checkpoint-before-effects barrier.
+        if t == "assistant/message" and event.data.get("message", {}).get("tool_calls"):
+            return True
+        return False
+
+    def flush(self) -> None:
+        """Write all buffered events in one append. Safe to call any time."""
+        if not self._pending or self.path is None:
+            return
+        lines = "".join(
+            json.dumps(e.to_dict(), ensure_ascii=False) + "\n" for e in self._pending
+        )
+        self._pending.clear()
+        try:
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(lines)
+        except OSError:
+            # A failed trace write must never kill the loop; the snapshot
+            # still exists as fallback (load_session's completeness guard
+            # detects a log that fell behind it).
+            pass
 
     @classmethod
     def load(cls, path: Path) -> "SessionLog":
@@ -180,7 +222,12 @@ def derive_state(events: List[SessionEvent]) -> Dict[str, Any]:
     surface: List[Dict[str, Any]] = []
     summary = ""
     for event in events:
-        if event.type in ("user/message", "assistant/message", "tool/result"):
+        if event.type == "seed/applied":
+            # Fork/resume seed: the initial surface of a forked session
+            # (see SessionStorage.fork_session). Always the first event.
+            surface = list(event.data.get("messages", []))
+            summary = event.data.get("summary", "")
+        elif event.type in ("user/message", "assistant/message", "tool/result"):
             surface.append(event.data["message"])
         elif event.type == "compaction/applied":
             kept_indices = event.data.get("kept_indices")
@@ -261,6 +308,11 @@ def check_invariants(events: List[SessionEvent], allow_open_tail: bool = False) 
             if open_step is None:
                 violations.append(f"seq {event.seq}: step/end without open step")
             open_step = None
+        elif t == "seed/applied":
+            if i != 0:
+                violations.append(
+                    f"seq {event.seq}: seed/applied only allowed as the first event"
+                )
         elif t == "assistant/message":
             msg = event.data.get("message", {})
             for tc in msg.get("tool_calls") or []:

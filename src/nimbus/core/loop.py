@@ -265,6 +265,7 @@ class RuntimeLoop:
             # Backstop: if _loop raised mid-turn, close the bracket. No-op
             # when the turn already closed with its own reason.
             self._turn_end("aborted", backstop=True)
+            self.session_log.flush()
 
         return final_result or ToolResult(
             status="ERROR", output="Loop ended without result.",
@@ -285,6 +286,7 @@ class RuntimeLoop:
             # Backstop: an abandoned/failed generator closes its open turn as
             # aborted; no-op when the turn already closed with its own reason.
             self._turn_end("aborted", backstop=True)
+            self.session_log.flush()
 
     # --- Turn/step brackets (Phase 0 event log) ---
 

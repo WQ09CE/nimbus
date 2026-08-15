@@ -46,6 +46,7 @@ class TestSessionLog:
         log = SessionLog(path)
         log.append("turn/start", {"turn": 1})
         log.append("user/message", {"message": {"role": "user", "content": "中文"}})
+        log.flush()  # user/message is non-causal — buffered until flushed
         loaded = SessionLog.load(path)
         assert [e.to_dict() for e in loaded.events] == [e.to_dict() for e in log.events]
 
@@ -372,6 +373,7 @@ class TestSessionLogOpen:
         assert log.events == []
         assert log.last_turn == 0
         log.append("turn/start", {"turn": 1})
+        log.flush()
         assert (tmp_path / "new.jsonl").exists()
 
     def test_open_continues_seq_and_turn(self, tmp_path):
@@ -449,4 +451,81 @@ class TestLoopContinuation:
         assert log.events == []  # fresh start
         assert (tmp_path / "s.jsonl.corrupt").exists()  # evidence kept
         log.append("turn/start", {"turn": 1})
+        log.flush()
         assert len(SessionLog.load(path).events) == 1
+
+
+# =============================================================================
+# Phase 3: bounded write-behind — flush barriers at causal points
+# =============================================================================
+
+
+class TestWriteBehind:
+    def test_non_causal_events_are_buffered(self, tmp_path):
+        path = tmp_path / "s.jsonl"
+        log = SessionLog(path)
+        log.append("turn/start", {"turn": 1})
+        log.append("user/message", {"message": {"role": "user", "content": "hi"}})
+        on_disk = path.read_text() if path.exists() else ""
+        assert on_disk == ""  # nothing durable yet
+        log.flush()
+        assert len(SessionLog.load(path).events) == 2
+
+    def test_causal_events_flush_immediately(self, tmp_path):
+        path = tmp_path / "s.jsonl"
+        log = SessionLog(path)
+        log.append("turn/start", {"turn": 1})
+        log.append("step/start", {"turn": 1, "step": 1})
+        # The decision record (assistant + tool_calls) must be durable BEFORE
+        # its side effects run — and it carries the whole buffer with it.
+        log.append("assistant/message", {"message": {
+            "role": "assistant", "content": None,
+            "tool_calls": [{"id": "c1", "function": {"name": "Bash", "arguments": "{}"}}],
+        }})
+        assert len(SessionLog.load(path).events) == 3
+
+    def test_plain_assistant_text_is_not_causal(self, tmp_path):
+        path = tmp_path / "s.jsonl"
+        log = SessionLog(path)
+        log.append("assistant/message", {"message": {"role": "assistant", "content": "just text"}})
+        assert not path.exists() or path.read_text() == ""
+
+    def test_window_forces_flush_on_next_append(self, tmp_path):
+        path = tmp_path / "s.jsonl"
+        log = SessionLog(path)
+        log.append("turn/start", {"turn": 1})
+        log._pending_since -= SessionLog.FLUSH_WINDOW_SEC  # age the buffer
+        log.append("user/message", {"message": {"role": "user", "content": "hi"}})
+        assert len(SessionLog.load(path).events) == 2
+
+    def test_turn_end_flushes(self, tmp_path):
+        path = tmp_path / "s.jsonl"
+        log = SessionLog(path)
+        log.append("turn/start", {"turn": 1})
+        log.append("turn/end", {"turn": 1, "reason": {"kind": "completed"}})
+        assert len(SessionLog.load(path).events) == 2
+
+
+# =============================================================================
+# Phase 3: seed/applied — fork/resume/replay as one primitive
+# =============================================================================
+
+
+class TestSeed:
+    def test_derive_state_starts_from_seed(self):
+        log = SessionLog()
+        log.append("seed/applied", {
+            "messages": [{"role": "user", "content": "seeded"}],
+            "summary": "prior work",
+            "lineage": {"parent": "sess_p", "at_seq": None},
+        })
+        log.append("user/message", {"message": {"role": "user", "content": "new"}})
+        state = derive_state(log.events)
+        assert [m["content"] for m in state["messages"]] == ["seeded", "new"]
+        assert state["summary"] == "prior work"
+
+    def test_seed_must_be_first_event(self):
+        log = SessionLog()
+        log.append("turn/start", {"turn": 1})
+        log.append("seed/applied", {"messages": [], "summary": ""})
+        assert any("seed" in v for v in check_invariants(log.events, allow_open_tail=True))
