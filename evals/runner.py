@@ -159,6 +159,9 @@ async def run_task(task_dir: Path, model: str, thinking_effort=None) -> dict:
         # backstop has closed its brackets.
         if "loop" in locals():
             record["metrics"] = _metrics(loop.session_log)
+            usage = getattr(loop, "_cumulative_usage", None)
+            if usage is not None and hasattr(usage, "to_dict"):
+                record["usage"] = usage.to_dict()
     except Exception as e:
         record["wall_sec"] = round(time.monotonic() - t0, 1)
         record["status"] = "CRASH"
