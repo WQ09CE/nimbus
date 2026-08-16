@@ -1,41 +1,47 @@
+"""Registry trimmed to the models actually in use (2026-08):
+openai-codex (subscription OAuth) + local ollama qwen3.8 / gemma4.
+"""
 
-import pytest
-from nimbus.core.models.registry import ModelRegistry, ModelInfo, ModelManifest
+from nimbus.core.models.registry import ModelRegistry
 
 
-def test_codex_latest_aliases():
-    assert ModelRegistry.normalize("codex") == "openai-codex/gpt-5.4"
-    assert ModelRegistry.normalize("codex-latest") == "openai-codex/gpt-5.4"
+def test_codex_aliases_point_to_sol():
+    # The generic "codex" alias tracks the newest subscription model.
+    assert ModelRegistry.normalize("codex") == "openai-codex/gpt-5.6-sol"
+    assert ModelRegistry.normalize("codex-latest") == "openai-codex/gpt-5.6-sol"
+    assert ModelRegistry.normalize("sol") == "openai-codex/gpt-5.6-sol"
     assert ModelRegistry.normalize("gpt-5.4") == "openai-codex/gpt-5.4"
-    assert ModelRegistry.normalize("gpt-5.4-codex") == "openai-codex/gpt-5.4"
-    assert ModelRegistry.normalize("gpt-5.3") == "openai-codex/gpt-5.3"
-    assert ModelRegistry.normalize("gpt-5.3-codex") == "openai-codex/gpt-5.3"
 
 
-def test_registry_fallback():
-    # Test Google Logic
-    
-    # 3.1 Pro -> 3 Pro
-    fallback_31 = ModelRegistry.get_same_provider_fallback("google/gemini-3.1-pro-preview")
-    assert fallback_31 == "google/gemini-3-pro-preview"
-    
-    # 3 Pro -> 3 Flash
-    fallback_3 = ModelRegistry.get_same_provider_fallback("google/gemini-3-pro-preview")
-    assert fallback_3 == "google/gemini-3-flash-preview"
-    
-    # 3 Flash -> 3.1 Pro
-    fallback_flash = ModelRegistry.get_same_provider_fallback("google/gemini-3-flash-preview")
-    assert fallback_flash == "google/gemini-3.1-pro-preview"
+def test_ollama_models_registered_with_context_windows():
+    qwen = ModelRegistry.get("qwen")
+    assert qwen is not None
+    assert qwen.full_name == "ollama/qwen3.8:latest"
+    assert qwen.context_window == 262_144
 
-    # Test Generic Logic (OpenAI)
-    # GPT-4o (Pro) -> GPT-4o-mini (Flash)
-    fallback_gpt4o = ModelRegistry.get_same_provider_fallback("openai/gpt-4o")
-    assert fallback_gpt4o == "openai/gpt-4o-mini"
-    
-    # GPT-4o-mini (Flash) -> GPT-4o (Pro)
-    fallback_mini = ModelRegistry.get_same_provider_fallback("openai/gpt-4o-mini")
-    assert fallback_mini == "openai/gpt-4o"
+    gemma = ModelRegistry.get("gemma4")
+    assert gemma is not None
+    assert gemma.full_name == "ollama/gemma4:12b-it-qat"
 
-if __name__ == "__main__":
-    test_registry_fallback()
-    print("All tests passed!")
+
+def test_removed_providers_pass_through_unregistered():
+    # Gemini / plain-OpenAI / pi-codex registrations were removed; their
+    # names normalize as-is (litellm can still be pointed at them manually).
+    assert ModelRegistry.get("gemini") is None
+    assert ModelRegistry.get("gpt-4o") is None
+    assert (
+        ModelRegistry.normalize("google/gemini-3-flash-preview")
+        == "google/gemini-3-flash-preview"
+    )
+
+
+def test_same_provider_fallback_within_ollama():
+    # qwen (pro) ↔ gemma4 (flash)
+    assert (
+        ModelRegistry.get_same_provider_fallback("ollama/qwen3.8:latest")
+        == "ollama/gemma4:12b-it-qat"
+    )
+    assert (
+        ModelRegistry.get_same_provider_fallback("ollama/gemma4:12b-it-qat")
+        == "ollama/qwen3.8:latest"
+    )

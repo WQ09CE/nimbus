@@ -8,7 +8,7 @@ It handles ID normalization, provider mapping, and capability tiers.
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
-from nimbus.core.models.manifest import ModelManifest, GPT_FEATURES, GEMINI_FEATURES
+from nimbus.core.models.manifest import ModelManifest, GPT_FEATURES, OLLAMA_FEATURES
 
 
 @dataclass
@@ -204,158 +204,54 @@ class ModelRegistry:
 
 
 # =============================================================================
-# Default Registrations  (2026 model standard)
+# Default Registrations — trimmed to the models actually in use (2026-08):
+# openai-codex (ChatGPT subscription, native OAuth channel) + local ollama
+# (qwen3.8 / gemma4). The registry is the UI model list AND the context-window
+# source; ollama routing itself keys off the "ollama/" prefix in llm_factory,
+# so unregistered ollama tags still work (they just fall back to the default
+# context window and won't appear in the picker).
 # =============================================================================
 
 # ---------------------------------------------------------------------------
-# OpenAI
+# OpenAI Codex (ChatGPT subscription OAuth)
 # ---------------------------------------------------------------------------
 
 ModelRegistry.register(ModelInfo(
-    model_id="gpt-4o",
-    provider="openai",
-    tier="pro",
-    aliases=["gpt", "gpt-4o", "4o"],
-    manifest=ModelManifest("gpt-4o", GPT_FEATURES),
-    context_window=128_000,
-    cost_per_million={"input": 2.50, "output": 10.0, "cache_read": 1.25, "cache_write": 0.0},
-))
-
-ModelRegistry.register(ModelInfo(
-    model_id="gpt-4o-mini",
-    provider="openai",
-    tier="flash",
-    aliases=["gpt-mini", "mini"],
-    manifest=ModelManifest("gpt-4o-mini", GPT_FEATURES),
-    context_window=128_000,
-    cost_per_million={"input": 0.15, "output": 0.60, "cache_read": 0.075, "cache_write": 0.0},
-))
-
-ModelRegistry.register(ModelInfo(
-    model_id="gpt-4.5-preview",
-    provider="openai",
-    tier="ultra",
-    aliases=["gpt-4.5", "gpt-5"],
-    manifest=ModelManifest("gpt-4.5", GPT_FEATURES),
-    context_window=128_000,
-    cost_per_million={"input": 75.0, "output": 150.0, "cache_read": 37.5, "cache_write": 0.0},
-))
-
-# ---------------------------------------------------------------------------
-# pi-codex — GPT-5.x via the ChatGPT/Codex subscription, served by the local
-# pi-ai sidecar (OpenAI-compatible). Routed in llm_factory to openai/<id> at
-# config.pi_sidecar_url. No per-token cost (subscription).
-# ---------------------------------------------------------------------------
-
-ModelRegistry.register(ModelInfo(
-    model_id="gpt-5.5",
-    provider="pi-codex",
-    tier="ultra",
-    aliases=["gpt-5.5", "pi-codex/gpt-5.5"],
-    manifest=ModelManifest("gpt-5.5", GPT_FEATURES),
-    context_window=272_000,
-))
-
-ModelRegistry.register(ModelInfo(
-    model_id="gpt-5.4",
-    provider="pi-codex",
-    tier="pro",
-    aliases=["gpt-5.4", "pi-codex/gpt-5.4"],
-    manifest=ModelManifest("gpt-5.4", GPT_FEATURES),
-    context_window=272_000,
-))
-
-ModelRegistry.register(ModelInfo(
-    model_id="gpt-5.4-mini",
-    provider="pi-codex",
-    tier="flash",
-    aliases=["gpt-5.4-mini", "pi-codex/gpt-5.4-mini"],
-    manifest=ModelManifest("gpt-5.4-mini", GPT_FEATURES),
-    context_window=272_000,
-))
-
-# ---------------------------------------------------------------------------
-# Google
-# ---------------------------------------------------------------------------
-
-# Gemini 3.1 Pro — current flagship pro tier (2026)
-ModelRegistry.register(ModelInfo(
-    model_id="gemini-3.1-pro-preview",
-    provider="google",
-    tier="pro",
-    aliases=[
-        "gemini",
-        "pro",
-        "gemini-pro",
-        "gemini-3.1-pro",
-        "gemini-3.1-pro-preview",
-    ],
-    manifest=ModelManifest("gemini-pro", GEMINI_FEATURES),
-    context_window=2_000_000,  # Gemini 3.x series supports 2M context
-))
-
-# Gemini 3 Pro — previous flagship pro tier (2026)
-ModelRegistry.register(ModelInfo(
-    model_id="gemini-3-pro-preview",
-    provider="google",
-    tier="pro",
-    aliases=[
-        "gemini-3-pro",
-        "gemini-3-pro-preview",
-    ],
-    manifest=ModelManifest("gemini-pro", GEMINI_FEATURES),
-    context_window=2_000_000,
-))
-
-# Gemini 3 Flash — fast/cheap tier (2026)
-ModelRegistry.register(ModelInfo(
-    model_id="gemini-3-flash-preview",
-    provider="google",
-    tier="flash",
-    aliases=[
-        "flash",
-        "gemini-flash",
-        "gemini-3-flash",
-        "gemini-3-flash-preview",
-    ],
-    manifest=ModelManifest("gemini-flash", GEMINI_FEATURES),
-    context_window=1_000_000,
-))
-
-# Gemini 3.1 Flash Lite — ultra-cheap flash tier (2026)
-ModelRegistry.register(ModelInfo(
-    model_id="gemini-3.1-flash-lite-preview",
-    provider="google",
-    tier="flash",
-    aliases=[
-        "flash-lite",
-        "gemini-flash-lite",
-        "gemini-3.1-flash-lite",
-        "gemini-3.1-flash-lite-preview",
-    ],
-    manifest=ModelManifest("gemini-flash-lite", GEMINI_FEATURES),
-    context_window=1_000_000,
-))
-
-# ---------------------------------------------------------------------------
-# Codex (Special — coding tier)
-# ---------------------------------------------------------------------------
-# Keep the previous model registered for backward compatibility, but move the
-# generic "codex" alias to the newest supported version.
-ModelRegistry.register(ModelInfo(
-    model_id="gpt-5.3",
+    model_id="gpt-5.6-sol",
     provider="openai-codex",
     tier="coding",
-    aliases=["gpt-5.3", "gpt-5.3-codex"],
+    aliases=["sol", "gpt-5.6-sol", "codex", "codex-latest"],
     manifest=ModelManifest("codex", GPT_FEATURES),
-    context_window=128_000,
+    context_window=272_000,
 ))
 
 ModelRegistry.register(ModelInfo(
     model_id="gpt-5.4",
     provider="openai-codex",
     tier="coding",
-    aliases=["codex", "gpt-5.4", "gpt-5.4-codex", "codex-latest"],
+    aliases=["gpt-5.4", "gpt-5.4-codex"],
     manifest=ModelManifest("codex", GPT_FEATURES),
+    context_window=128_000,
+))
+
+# ---------------------------------------------------------------------------
+# Local ollama (smoke rail / offline work)
+# ---------------------------------------------------------------------------
+
+ModelRegistry.register(ModelInfo(
+    model_id="qwen3.8:latest",
+    provider="ollama",
+    tier="pro",
+    aliases=["qwen", "qwen3.8"],
+    manifest=ModelManifest("qwen3.8", OLLAMA_FEATURES),
+    context_window=262_144,
+))
+
+ModelRegistry.register(ModelInfo(
+    model_id="gemma4:12b-it-qat",
+    provider="ollama",
+    tier="flash",
+    aliases=["gemma", "gemma4"],
+    manifest=ModelManifest("gemma4", OLLAMA_FEATURES),
     context_window=128_000,
 ))

@@ -5,10 +5,11 @@ from nimbus.core.models.registry import ModelRegistry
 NIMBUS_GEMMA4_MODEL = "ollama/gemma4:26b"
 
 
-def test_ollama_models_are_not_registered():
-    # Registry was trimmed to gemini + gpt series only. Ollama models are no
-    # longer registered — full "ollama/<tag>" names pass through normalize
-    # unchanged (llm_factory routes them by provider prefix, not registry).
+def test_unregistered_ollama_tags_pass_through():
+    # Only the tags in daily use (qwen3.8:latest, gemma4:12b-it-qat) are
+    # registered. Any OTHER "ollama/<tag>" still works: it passes through
+    # normalize unchanged (llm_factory routes by provider prefix, not
+    # registry) and falls back to the ollama manifest.
     assert ModelRegistry.get(NIMBUS_GEMMA4_MODEL) is None
     assert ModelRegistry.normalize(NIMBUS_GEMMA4_MODEL) == NIMBUS_GEMMA4_MODEL
 
