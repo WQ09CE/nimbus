@@ -238,6 +238,33 @@ class TestKernelGate:
         assert result.ui_detail == {"exit_code": 0, "lines": 5}
 
     @pytest.mark.asyncio
+    async def test_split_result_top_level_error_is_real_tool_failure(self):
+        async def executor(name, args):
+            return {
+                "status": "ERROR",
+                "output": "missing deliverable",
+                "ui_detail": {"status": "ERROR", "error": "Missing contract deliverable"},
+            }
+
+        gate = KernelGate("p1", executor)
+        result = await gate.syscall_tool(
+            ActionIR(kind="TOOL_CALL", name="spawn_agent", args={"role": "reader", "goal": "g"})
+        )
+        assert result.status == "ERROR"
+        assert result.fault is not None
+        assert result.fault.code == "TOOL_FAILURE"
+        assert result.concludes_turn is False
+
+    @pytest.mark.asyncio
+    async def test_legacy_ui_status_error_is_not_rewritten_to_ok(self):
+        async def executor(name, args):
+            return {"output": "failed", "ui_detail": {"status": "ERROR"}}
+
+        gate = KernelGate("p1", executor)
+        result = await gate.syscall_tool(ActionIR(kind="TOOL_CALL", name="spawn_agent", args={}))
+        assert result.status == "ERROR"
+
+    @pytest.mark.asyncio
     async def test_plain_result_no_ui_detail(self):
         """Plain string results should have ui_detail=None."""
         async def executor(name, args):

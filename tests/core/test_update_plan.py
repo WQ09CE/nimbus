@@ -6,10 +6,14 @@ for trace/restore.
 """
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
-from nimbus.core.mmu import MMU, MMUConfig
+from nimbus.core.agent import AgentOS
+from nimbus.core.mmu import MESSAGE_OVERHEAD, MMU, MMUConfig, estimate_text_tokens
+from nimbus.core.path_context import AgentPathContext
+from nimbus.core.storage import SessionStorage
 from nimbus.core.session_log import SessionLog, derive_state
 from nimbus.core.tools.update_plan import update_plan
 
@@ -35,6 +39,31 @@ class TestUpdatePlanTool:
         out = await update_plan(todos=["[ ] a"])
         assert "0/1 done" in out
 
+    def test_mirror_path_uses_workspace_not_process_cwd(self, tmp_path, monkeypatch):
+        workspace = tmp_path / "workspace"
+        elsewhere = tmp_path / "server-cwd"
+        workspace.mkdir()
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        context = AgentPathContext(
+            workspace_root=str(workspace), target_root=str(workspace),
+            execution_cwd=str(workspace),
+        )
+        path = Path(AgentOS._plan_mirror_path("sess_ok", context, None))
+        assert path == workspace / ".nimbus" / "sessions" / "sess_ok" / "scratchpad.md"
+
+    def test_mirror_path_uses_storage_and_session_cannot_escape(self, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        context = AgentPathContext(
+            workspace_root=str(workspace), target_root=str(workspace),
+            execution_cwd=str(workspace),
+        )
+        storage = SessionStorage(str(tmp_path / "storage"))
+        path = Path(AgentOS._plan_mirror_path("../../escape", context, storage))
+        assert path.is_relative_to(storage.base_dir.resolve())
+        assert ".." not in path.relative_to(storage.base_dir.resolve()).parts
+
 
 class TestPlanAnchor:
     def test_plan_is_assembled_and_logged(self):
@@ -45,6 +74,25 @@ class TestPlanAnchor:
         assembled = mmu.assemble_context()
         assert any("CURRENT PLAN" in str(m.get("content")) for m in assembled)
         assert [e.type for e in log.events] == ["plan/updated"]
+
+    async def test_archive_budget_accounts_for_plan(self, monkeypatch):
+        mmu = MMU(MMUConfig(max_context_tokens=1000, keep_recent_tokens=50))
+        mmu.set_plan("p" * 800)  # ~200 tokens plus message overhead
+        for i in range(8):
+            mmu.add_user_message(f"m{i} " + "x" * 180)
+        captured = {}
+
+        def fake_drop(messages, target_tokens, keep_recent_tokens):
+            captured["target"] = target_tokens
+            return list(messages), ""
+
+        monkeypatch.setattr("nimbus.core.mmu._smart_drop", fake_drop)
+        monkeypatch.setattr(mmu, "_find_cut_point", lambda keep_recent_tokens: 0)
+        await mmu.archive_and_reset()
+        expected = int(1000 * 0.7) - (
+            estimate_text_tokens(mmu.plan) + MESSAGE_OVERHEAD
+        )
+        assert captured["target"] <= expected
 
     def test_plan_survives_compaction(self):
         mmu = MMU(MMUConfig(max_context_tokens=2000))

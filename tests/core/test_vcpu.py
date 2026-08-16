@@ -168,6 +168,9 @@ class TestVCPULimits:
         # Second thought → should terminate
         r2 = await vcpu.step()
         assert r2.is_final
+        assert r2.final_result.status == "ERROR"
+        assert r2.fault.code == "DELIVERABLE_MISSING"
+        assert "submit_result" in r2.final_result.output
 
     @pytest.mark.asyncio
     async def test_plain_text_ends_turn_even_in_run_mode(self):
@@ -320,6 +323,37 @@ class TestVCPULimits:
         result = await vcpu.step()
         assert result.is_final
         assert result.final_result.status == "CANCELLED"
+
+    @pytest.mark.asyncio
+    async def test_wakeup_cancels_real_hanging_llm_step(self):
+        """Regression: RuntimeLoop's wakeup must cancel an actually suspended
+        ALU coroutine, rather than waiting for the provider timeout."""
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        class HangingALU:
+            async def chat(self, messages, tools, on_chunk=None):
+                started.set()
+                try:
+                    await asyncio.Future()
+                finally:
+                    cancelled.set()
+
+        mmu = MMU()
+        mmu.add_user_message("Go")
+        vcpu = VCPU(
+            HangingALU(), InstructionDecoder(), MockGate(), mmu, [],
+            config=VCPUConfig(llm_call_timeout=30.0), text_is_final=True,
+        )
+        wakeup = asyncio.Event()
+        vcpu.set_wakeup_event(wakeup)
+        task = asyncio.create_task(vcpu.step())
+        await asyncio.wait_for(started.wait(), 1)
+        wakeup.set()
+
+        result = await asyncio.wait_for(task, 1)
+        assert not result.is_final
+        await asyncio.wait_for(cancelled.wait(), 1)
 
 
 class TestVCPUMemoryIntegrity:

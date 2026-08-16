@@ -1,5 +1,7 @@
 """Tests for nimbus_next.loop — the RuntimeLoop execution driver."""
 
+import asyncio
+from types import SimpleNamespace
 from typing import List
 
 import pytest
@@ -476,6 +478,141 @@ class TestFineGrainedEvents:
 
 
 class TestAbortCutsLLMCall:
+    @pytest.mark.asyncio
+    async def test_abort_cancels_hanging_final_summary(self):
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        class HangingAdapter:
+            async def chat(self, messages, tools):
+                started.set()
+                try:
+                    await asyncio.Future()
+                finally:
+                    cancelled.set()
+
+        vcpu = MockVCPU([])
+        vcpu.config = SimpleNamespace(llm_call_timeout=30.0)
+        loop = RuntimeLoop(vcpu, MMU(), adapter=HangingAdapter())
+        task = asyncio.create_task(loop._final_summary())
+        await asyncio.wait_for(started.wait(), 1)
+        loop.abort()
+        assert await asyncio.wait_for(task, 1) is None
+        await asyncio.wait_for(cancelled.wait(), 1)
+
+    @pytest.mark.asyncio
+    async def test_steering_cancels_summary_without_losing_message(self):
+        started = asyncio.Event()
+
+        class HangingAdapter:
+            async def chat(self, messages, tools):
+                started.set()
+                await asyncio.Future()
+
+        vcpu = MockVCPU([])
+        vcpu.config = SimpleNamespace(llm_call_timeout=30.0)
+        loop = RuntimeLoop(vcpu, MMU(), adapter=HangingAdapter())
+        task = asyncio.create_task(loop._final_summary())
+        await asyncio.wait_for(started.wait(), 1)
+        loop.steering_queue.steer("change course")
+        assert await asyncio.wait_for(task, 1) is None
+        assert loop.steering_queue.drain_all() == ["change course"]
+
+    @pytest.mark.asyncio
+    async def test_auxiliary_chat_obeys_vcpu_timeout(self):
+        class HangingAdapter:
+            async def chat(self, messages, tools):
+                await asyncio.Future()
+
+        vcpu = MockVCPU([])
+        vcpu.config = SimpleNamespace(llm_call_timeout=0.01)
+        loop = RuntimeLoop(vcpu, MMU(), adapter=HangingAdapter())
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(loop._llm_summarize("system", "history"), 1)
+
+    @pytest.mark.asyncio
+    async def test_abort_during_compaction_stays_inside_stream_and_is_cancelled(self):
+        started = asyncio.Event()
+
+        class HangingAdapter:
+            async def chat(self, messages, tools):
+                started.set()
+                await asyncio.Future()
+
+        class CompactingMMU(MMU):
+            def needs_compaction(self):
+                return True
+
+            async def archive_and_reset(self, summarizer=None):
+                return await summarizer("system", "history")
+
+        mmu = CompactingMMU()
+        vcpu = MockVCPU([make_step(is_final=True, output="must not complete")])
+        vcpu.config = SimpleNamespace(llm_call_timeout=30.0)
+        loop = RuntimeLoop(vcpu, mmu, adapter=HangingAdapter())
+
+        async def collect():
+            return [event async for event in loop.stream()]
+
+        task = asyncio.create_task(collect())
+        await asyncio.wait_for(started.wait(), 1)
+        loop.abort()
+        events = await asyncio.wait_for(task, 1)
+        final = next(e["result"] for e in events if e["type"] == "final")
+        assert final.status == "CANCELLED"
+        assert final.fault is None
+        assert not any(
+            e.get("result") and getattr(e["result"].fault, "code", None) == "CTX_OVERFLOW"
+            for e in events
+        )
+
+    @pytest.mark.asyncio
+    async def test_steering_during_compaction_is_injected_not_overflow(self):
+        started = asyncio.Event()
+
+        class HangingAdapter:
+            async def chat(self, messages, tools):
+                started.set()
+                await asyncio.Future()
+
+        class CompactingMMU(MMU):
+            def needs_compaction(self):
+                return True
+
+            async def archive_and_reset(self, summarizer=None):
+                return await summarizer("system", "history")
+
+        mmu = CompactingMMU()
+        vcpu = MockVCPU([make_step(is_final=True, output="done")])
+        vcpu.config = SimpleNamespace(llm_call_timeout=30.0)
+        loop = RuntimeLoop(vcpu, mmu, adapter=HangingAdapter())
+        stream = loop.stream()
+        task = asyncio.create_task(stream.__anext__())
+        await asyncio.wait_for(started.wait(), 1)
+        loop.steering_queue.steer("change course")
+        first = await asyncio.wait_for(task, 1)
+        assert first["type"] == "message_queued"
+        assert first["content"] == "change course"
+        await stream.aclose()
+
+    @pytest.mark.asyncio
+    async def test_abort_cancels_hanging_compaction_summarizer(self):
+        started = asyncio.Event()
+
+        class HangingAdapter:
+            async def chat(self, messages, tools):
+                started.set()
+                await asyncio.Future()
+
+        vcpu = MockVCPU([])
+        vcpu.config = SimpleNamespace(llm_call_timeout=30.0)
+        loop = RuntimeLoop(vcpu, MMU(), adapter=HangingAdapter())
+        task = asyncio.create_task(loop._llm_summarize("system", "history"))
+        await asyncio.wait_for(started.wait(), 1)
+        loop.abort()
+        with pytest.raises(BaseException):
+            await asyncio.wait_for(task, 1)
+
     def test_abort_sets_wakeup_event(self, tmp_path):
         """Stop must cut an in-flight LLM call: abort()/request_interruption()
         set the wakeup event the VCPU races its LLM call against. Without

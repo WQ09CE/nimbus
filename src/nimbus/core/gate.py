@@ -214,26 +214,45 @@ class KernelGate:
             # Handle split tool results (pi-style: output + ui_detail).
             # A tool may also declare {"concludes_turn": True} — carried onto
             # the ToolResult so the VCPU ends the turn on tool-side evidence.
-            ui_detail = {}
+            ui_detail: Dict[str, Any] = {}
             concludes_turn = False
+            declared_status = "OK"
             if isinstance(raw_output, dict) and "output" in raw_output:
                 raw_text = raw_output["output"]
-                ui_detail = raw_output.get("ui_detail", {})
+                ui_detail = raw_output.get("ui_detail") or {}
                 concludes_turn = bool(raw_output.get("concludes_turn", False))
+                # Split-result tools declare contract status at the top level.
+                # Accept ui_detail.status as a compatibility path because older
+                # tools (notably spawn_agent) exposed failure only to the UI.
+                declared_status = raw_output.get("status", ui_detail.get("status", "OK"))
             else:
                 raw_text = raw_output
-            
+
+            valid_statuses = {"OK", "ERROR", "CANCELLED", "TIMEOUT", "SKIPPED"}
+            status = str(declared_status).upper()
+            if status not in valid_statuses:
+                raise ValueError(f"Tool '{tool_name}' returned invalid status {declared_status!r}")
+
             output = _truncate_output(raw_text)
-            
-            # If truncation occurred (string lengths differ), store the full raw text in ui_detail 
-            # so the frontend SSE stream still renders the massive payload cleanly.
-            if len(output) != len(raw_text) and isinstance(raw_text, str):
+
+            # If truncation occurred, store the full raw text in ui_detail so
+            # frontend SSE still receives it. Non-string outputs are unchanged.
+            if isinstance(raw_text, str) and output != raw_text:
                 ui_detail["raw_text_output"] = raw_text
-                
+
+            fault = None
+            if status != "OK":
+                fault = Fault(
+                    domain="TOOL",
+                    code="TIMEOUT" if status == "TIMEOUT" else "TOOL_FAILURE",
+                    message=str(raw_text),
+                    retryable=status == "TIMEOUT",
+                )
             result = ToolResult(
-                status="OK", output=output,
+                status=status, output=output,
                 ui_detail=ui_detail if ui_detail else None,
-                concludes_turn=concludes_turn,
+                fault=fault,
+                concludes_turn=concludes_turn and status == "OK",
             )
 
             # Append doom loop guidance if first warning
@@ -260,12 +279,12 @@ class KernelGate:
     def _finish(self, action: ActionIR, t0: float, result: ToolResult) -> ToolResult:
         elapsed = int((time.monotonic() - t0) * 1000)
         result.timing_ms = {"exec": elapsed}
-        
-        # The event emitted here goes straight to the SSE stream. 
+
+        # The event emitted here goes straight to the SSE stream.
         # We check if `raw_text_output` was stashed in ui_detail (meaning LLM context was truncated).
         # Prioritize sending the raw unfettered output to the UI, otherwise default to context output.
         full_output = (result.ui_detail or {}).get("raw_text_output", result.output)
-        
+
         event_data: Dict[str, Any] = {
             "tool": action.name, "status": result.status,
             "call_id": action.id,
@@ -278,13 +297,13 @@ class KernelGate:
             # Drop the raw_text_output from ui_detail payload itself to avoid duplicate fat JSON
             safe_ui_detail = {k: v for k, v in result.ui_detail.items() if k != "raw_text_output"}
             event_data["ui_detail"] = safe_ui_detail
-            
+
         self._emit("TOOL_FINISHED", event_data)
-        
+
         # Now remove raw_text_output entirely from the returned Result so the LLM doesn't see it
         if result.ui_detail and "raw_text_output" in result.ui_detail:
             del result.ui_detail["raw_text_output"]
-            
+
         return result
 
     def _emit(self, event_type: str, data: Dict) -> None:

@@ -2,6 +2,10 @@
 authoritative JSON snapshot: seq contract, turn/step brackets with reasons on
 every exit path, MMU message events, and snapshot equivalence."""
 
+import asyncio
+import json
+import threading
+import time
 from typing import List
 
 import pytest
@@ -9,6 +13,7 @@ import pytest
 from nimbus.core.loop import RuntimeLoop
 from nimbus.core.mmu import MMU, MMUConfig
 from nimbus.core.session_log import (
+    SessionEvent,
     SessionLog,
     check_invariants,
     derive_messages,
@@ -410,6 +415,36 @@ class TestSessionLogOpen:
             "TOOL_OUTCOME_UNKNOWN", "TOOL_NOT_STARTED",
         }
 
+    def test_open_truncates_torn_tail_before_continuation(self, tmp_path):
+        path = tmp_path / "torn.jsonl"
+        first = SessionLog(path)
+        first.append("turn/start", {"turn": 1})
+        first.append("turn/end", {"turn": 1, "reason": {"kind": "completed"}})
+        first.close()
+        with path.open("ab") as f:
+            f.write(b'{"seq":2,"type":"turn/start"')
+
+        reopened = SessionLog.open(path)
+        reopened.append("turn/start", {"turn": 2})
+        reopened.append("turn/end", {"turn": 2, "reason": {"kind": "completed"}})
+        reopened.close()
+
+        loaded = SessionLog.load(path)
+        assert [e.seq for e in loaded.events] == [0, 1, 2, 3]
+        assert check_invariants(loaded.events) == []
+
+    def test_open_appends_after_valid_final_line_without_newline(self, tmp_path):
+        path = tmp_path / "no-newline.jsonl"
+        event = SessionEvent(0, "turn/start", 1.0, {"turn": 1})
+        path.write_text(json.dumps(event.to_dict()), encoding="utf-8")
+        reopened = SessionLog.open(path)
+        # open() first repairs the crashed open turn, then continuation appends
+        # on a separate line despite the original missing newline.
+        reopened.append("turn/start", {"turn": 2})
+        reopened.append("turn/end", {"turn": 2, "reason": {"kind": "completed"}})
+        reopened.close()
+        assert check_invariants(SessionLog.load(path).events) == []
+
     def test_open_is_idempotent(self, tmp_path):
         path = tmp_path / "s.jsonl"
         crashed = SessionLog(path)
@@ -490,13 +525,56 @@ class TestWriteBehind:
         log.append("assistant/message", {"message": {"role": "assistant", "content": "just text"}})
         assert not path.exists() or path.read_text() == ""
 
-    def test_window_forces_flush_on_next_append(self, tmp_path):
+    def test_idle_event_flushes_within_bounded_window(self, tmp_path):
         path = tmp_path / "s.jsonl"
         log = SessionLog(path)
-        log.append("turn/start", {"turn": 1})
-        log._pending_since -= SessionLog.FLUSH_WINDOW_SEC  # age the buffer
+        started = time.monotonic()
         log.append("user/message", {"message": {"role": "user", "content": "hi"}})
-        assert len(SessionLog.load(path).events) == 2
+        deadline = started + SessionLog.FLUSH_WINDOW_SEC + 0.15
+        while time.monotonic() < deadline and (
+            not path.exists() or path.stat().st_size == 0
+        ):
+            time.sleep(0.005)
+        assert path.exists() and path.stat().st_size > 0
+        assert time.monotonic() - started <= SessionLog.FLUSH_WINDOW_SEC + 0.15
+        assert len(SessionLog.load(path).events) == 1
+        log.close()
+
+    @pytest.mark.asyncio
+    async def test_idle_flush_inside_running_asyncio_loop(self, tmp_path):
+        path = tmp_path / "async.jsonl"
+        log = SessionLog(path)
+        log.append("user/message", {"message": {"role": "user", "content": "hi"}})
+        await asyncio.sleep(SessionLog.FLUSH_WINDOW_SEC + 0.08)
+        assert len(SessionLog.load(path).events) == 1
+        log.close()
+
+    def test_concurrent_append_and_close_are_serialized(self, tmp_path):
+        path = tmp_path / "threaded.jsonl"
+        log = SessionLog(path)
+        threads = [
+            threading.Thread(target=lambda n=i: [log.append("x", {"n": n}) for _ in range(20)])
+            for i in range(4)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        log.close()
+        loaded = SessionLog.load(path)
+        assert len(loaded.events) == 80
+        assert [e.seq for e in loaded.events] == list(range(80))
+        with pytest.raises(RuntimeError):
+            log.append("x")
+
+    def test_close_cancels_timer_and_flushes(self, tmp_path):
+        path = tmp_path / "closed.jsonl"
+        log = SessionLog(path)
+        log.append("user/message", {"message": {"role": "user", "content": "hi"}})
+        timer = log._flush_timer
+        log.close()
+        assert timer is not None and not timer.is_alive()
+        assert len(SessionLog.load(path).events) == 1
 
     def test_turn_end_flushes(self, tmp_path):
         path = tmp_path / "s.jsonl"

@@ -532,11 +532,21 @@ class VCPU:
                 self.mmu.set_last_usage(result.usage)
 
             if count >= self.config.max_consecutive_thoughts:
+                # In contract mode text is explicitly *not* a deliverable.  Hitting
+                # this guard therefore means the sub-agent failed its protocol;
+                # reporting OK here turns an absent submit_result into a false
+                # success at the parent boundary.
+                message = (
+                    "Contract failed: agent produced too many consecutive text-only "
+                    "responses without calling submit_result."
+                )
                 result.is_final = True
+                result.fault = Fault(
+                    domain="CONTRACT", code="DELIVERABLE_MISSING",
+                    message=message, retryable=False,
+                )
                 result.final_result = ToolResult(
-                    status="OK",
-                    output=thought_text or "Agent stopped after too many thoughts without action.",
-                    is_final=True,
+                    status="ERROR", output=message, fault=result.fault, is_final=True,
                 )
                 return result
 

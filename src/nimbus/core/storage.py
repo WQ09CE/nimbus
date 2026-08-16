@@ -24,6 +24,12 @@ class SessionStorage:
     def __init__(self, base_dir: Optional[str] = None):
         if base_dir:
             self.base_dir = Path(base_dir)
+        elif env_dir := os.environ.get("NIMBUS_SESSIONS_DIR"):
+            # Overrides the default location. Set by the test suite to keep
+            # test-created loops out of the real ~/.nimbus/sessions (running
+            # pytest used to litter it with orphan session logs), and usable
+            # in containers/deployments to relocate session storage.
+            self.base_dir = Path(env_dir)
         else:
             self.base_dir = Path.home() / ".nimbus" / "sessions"
         

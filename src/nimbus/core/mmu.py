@@ -400,6 +400,8 @@ class MMU:
             anchor_tokens += self._pinned.token_estimate()
         if self._goal:
             anchor_tokens += estimate_text_tokens(self._goal) + MESSAGE_OVERHEAD
+        if self._plan:
+            anchor_tokens += estimate_text_tokens(self._plan) + MESSAGE_OVERHEAD
         if self._global_summary:
             anchor_tokens += estimate_text_tokens(self._global_summary) + MESSAGE_OVERHEAD
 

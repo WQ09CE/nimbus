@@ -28,10 +28,12 @@ Usage:
 """
 
 import asyncio
+import hashlib
 import logging
 import re
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
 from .decoder import InstructionDecoder
@@ -224,6 +226,30 @@ class AgentOS:
             "Use the available tools to accomplish the user's goal. "
             "Think step by step. When the goal is complete, provide a concise summary."
         )
+
+    @staticmethod
+    def _plan_mirror_path(
+        session_id: str,
+        path_context: AgentPathContext,
+        storage: Optional[Any],
+    ) -> str:
+        """Return a trusted, session-scoped path for update_plan's mirror.
+
+        Storage-backed runs keep all session artifacts under storage.base_dir;
+        standalone runs keep them under the agent workspace.  The directory
+        component is sanitized so an untrusted session id cannot traverse out
+        of either trusted base.
+        """
+        safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id).strip(".")
+        if not safe_id or safe_id != session_id:
+            digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:12]
+            safe_id = f"session_{digest}"
+        storage_base = getattr(storage, "base_dir", None) if storage is not None else None
+        if storage_base is not None:
+            base = Path(storage_base).expanduser().resolve()
+        else:
+            base = Path(path_context.target_root).resolve() / ".nimbus" / "sessions"
+        return str(base / safe_id / "scratchpad.md")
         
     def get_mmu(self, session_id: str = "default") -> Optional[MMU]:
         """Get the MMU for a specific session_id, if it has been instantiated via stream_with_queue or run."""
@@ -396,9 +422,10 @@ class AgentOS:
             # update_plan writes the MMU plan anchor + a human-readable mirror
             if name == "update_plan":
                 args.setdefault("_mmu", mmu)
-                args.setdefault(
-                    "_plan_mirror_path",
-                    f".nimbus/sessions/{session_id}/scratchpad.md",
+                # Internal arguments are authoritative: model-supplied values
+                # must not redirect the mirror outside this session's scope.
+                args["_plan_mirror_path"] = self._plan_mirror_path(
+                    session_id, path_context, storage
                 )
             return await self._registry.execute(name, args)
 

@@ -47,6 +47,16 @@ from .storage import SessionStorage
 
 logger = logging.getLogger("nimbus.loop")
 
+
+class _AuxiliaryChatInterrupted(BaseException):
+    """Internal control-flow signal for an interrupted auxiliary LLM call.
+
+    This deliberately derives from BaseException: MMU's summarizer fallback catches
+    ordinary Exceptions, but abort/steering must not be mistaken for a failed
+    summarizer and converted into a successful deterministic compaction.
+    """
+
+
 # Pi-style retryable error classification (cross-provider)
 _RETRYABLE_ERROR_RE = re.compile(
     r"overloaded|rate.?limit|too many requests|429|500|502|503|504|"
@@ -163,7 +173,7 @@ class RuntimeLoop:
         self.config = config or LoopConfig()
         self._event_cb = event_callback
         self._adapter = adapter
-        
+
         self.session_id = session_id or uuid.uuid4().hex
         self.storage = storage or SessionStorage()
         self.metadata = metadata or {}
@@ -382,7 +392,13 @@ class RuntimeLoop:
 
                 # Check if context needs compaction before next step
                 if self.mmu.needs_compaction():
-                    summary = await self._try_compaction()
+                    try:
+                        summary = await self._try_compaction()
+                    except _AuxiliaryChatInterrupted:
+                        # Abort/steering interrupted only the helper call. Return to
+                        # the loop boundary so cancellation wins or steering drains;
+                        # this is not context exhaustion.
+                        continue
                     if not summary:
                         result = ToolResult(
                             status="ERROR",
@@ -461,7 +477,10 @@ class RuntimeLoop:
 
                 # Handle context overflow fault (retry after compaction)
                 if step_result.fault and step_result.fault.code == "CTX_OVERFLOW":
-                    summary = await self._try_compaction()
+                    try:
+                        summary = await self._try_compaction()
+                    except _AuxiliaryChatInterrupted:
+                        continue
                     if summary:
                         yield {"type": "context_compacted", "compaction_count": self._compaction_count, "summary": summary}
                         step_result.is_final = False
@@ -473,7 +492,10 @@ class RuntimeLoop:
 
                 # Handle iteration budget exceeded (retry after compaction + counter reset)
                 if step_result.fault and step_result.fault.code == "BUDGET_EXCEEDED":
-                    summary = await self._try_compaction()
+                    try:
+                        summary = await self._try_compaction()
+                    except _AuxiliaryChatInterrupted:
+                        continue
                     if summary:
                         # Reset VCPU iteration counter after successful compaction
                         if hasattr(self.vcpu, '_exec'):
@@ -552,6 +574,14 @@ class RuntimeLoop:
                                 yield {"type": "stall_nudge", "signature": sig}
                             else:
                                 summary = await self._final_summary()
+                                # An auxiliary summary can be interrupted by either
+                                # abort or steering.  Do not convert that wakeup into
+                                # a stall-completed result; return to the loop so abort
+                                # wins or queued steering is injected normally.
+                                if self._wakeup_event.is_set():
+                                    self._tool_repeat_count = 0
+                                    self._last_tool_sig = None
+                                    continue
                                 last = step_result.results[-1].output if step_result.results else None
                                 last_clean = str(last).split("\n\n[WARNING")[0].strip() if last else ""
                                 if not summary:
@@ -635,7 +665,7 @@ class RuntimeLoop:
             return
 
     # --- Core Dump (pi-style minimalism) ---
-    
+
     def _save_core_dump(self, status: str) -> None:
         """Serialize the complete agent state to disk (Core Dump)."""
         messages = [m.to_dict() for m in self.mmu._messages]
@@ -691,6 +721,40 @@ class RuntimeLoop:
 
     # --- Partial result collection (pi-style) ---
 
+    async def _chat_auxiliary(self, messages: List[Dict[str, Any]]) -> Any:
+        """Run a tool-free helper chat with the same lifecycle guarantees as VCPU.
+
+        Wakeup is shared by steering and interruption.  We cancel promptly in
+        either case; the normal loop then gives interruption priority, or drains
+        and injects steering on its next iteration.  This avoids consuming a
+        steering message here and preserves the existing queue semantics.
+        """
+        if self._interrupted or self._abort_event.is_set():
+            raise _AuxiliaryChatInterrupted()
+
+        timeout = float(getattr(getattr(self.vcpu, "config", None), "llm_call_timeout", 300.0))
+        chat_task = asyncio.create_task(self._adapter.chat(messages, []))
+        wakeup_task = asyncio.create_task(self._wakeup_event.wait())
+        done, pending = await asyncio.wait(
+            (chat_task, wakeup_task), timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        if wakeup_task in done or self._interrupted or self._abort_event.is_set():
+            if not chat_task.done():
+                chat_task.cancel()
+                await asyncio.gather(chat_task, return_exceptions=True)
+            raise _AuxiliaryChatInterrupted()
+        if chat_task not in done:
+            chat_task.cancel()
+            await asyncio.gather(chat_task, return_exceptions=True)
+            raise asyncio.TimeoutError("Auxiliary LLM call timed out")
+        return chat_task.result()
+
     async def _final_summary(self) -> Optional[str]:
         """Force a brief, tool-free final answer from the model. Used when the
         agent has stalled re-issuing an identical successful tool call: replay the
@@ -709,9 +773,11 @@ class RuntimeLoop:
                        "the file contents) explicitly, not just that you finished.",
         })
         try:
-            resp = await self._adapter.chat(messages, [])
+            resp = await self._chat_auxiliary(messages)
             return (resp.content or "").strip() or None
-        except Exception as e:
+        except _AuxiliaryChatInterrupted:
+            return None
+        except (asyncio.TimeoutError, Exception) as e:
             logger.warning("Final-summary call failed: %s", e)
             return None
 
@@ -762,11 +828,15 @@ class RuntimeLoop:
         ]
         # Pass messages list as first positional arg (not keyword).
         # DirectAdapter.chat(mmu, tools) → stream(mmu) handles isinstance(mmu, list).
-        response = await self._adapter.chat(messages, [])
+        response = await self._chat_auxiliary(messages)
         return response.content or ""
 
     async def _try_compaction(self) -> Optional[str]:
         """Attempt to compact the context. Returns summary if successful, None otherwise.
+
+        Auxiliary interruption is control flow, not compaction failure: propagate it
+        to the loop call sites, which resume normal abort/steering handling instead
+        of manufacturing CTX_OVERFLOW.
 
         A long agentic run legitimately compacts many times, so the limit is NOT a
         fixed total — that turned a healthy long task into a spurious CTX_OVERFLOW

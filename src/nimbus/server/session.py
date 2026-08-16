@@ -460,18 +460,16 @@ class SessionManagerV2:
         # Our context-window cap (0 = use the model's full window; compaction is ours).
         agent_config.max_context_tokens = nimbus_config.max_context_tokens
 
-        scratchpad_path = f".nimbus/sessions/{session_id}/scratchpad.md"
         system_prompt = (
             "You are a capable AI assistant. Use tools to solve the user's tasks. Think step by step.\n"
             "Always reply in the same language the user uses (请使用与用户相同的语言回复)。\n"
             "If you say you will call a tool or spawn an agent, emit that tool call in the SAME "
             "response — never stop at a plan. A plain-text reply with no tool call is your FINAL answer.\n\n"
-            "# Task Management & Scratchpad\n"
-            f"You have a dedicated scratchpad at `{scratchpad_path}`.\n"
-            "For any task requiring multiple steps, you MUST use the `Write`, `Edit`, and `Read` tools to maintain this file.\n"
-            "1. **Plan First**: Write a TODO list in the scratchpad before executing complex actions.\n"
-            "2. **Update Frequently**: Append intermediate findings, error logs, and checked-off TODOs.\n"
-            "3. **State Recovery**: If you lose track of your progress, `Read` your scratchpad to recover your state.\n\n"
+            "# Task Management\n"
+            "Use `update_plan` as working memory for tasks requiring multiple steps. Call it once "
+            "at the start with a concise TODO list, and replace the full plan as work completes or "
+            "key findings change. Do not create a scratchpad with Write/Edit/Read unless the task "
+            "itself genuinely needs a separate artifact.\n\n"
             "# Agent Collaboration\n"
             "You are an **orchestrator**. Prefer delegating execution to sub-agents; "
             "reserve direct tool use for trivial one-shot actions (single Read, quick Bash).\n\n"
@@ -623,7 +621,6 @@ class SessionManagerV2:
             skill_context={
                 "session_id": session_id,
                 "workspace": str(path_ctx.target_root),
-                "scratchpad": scratchpad_path,
             },
             plugin_snapshot=plugin_snapshot,
             event_callback=_gate_event_cb,

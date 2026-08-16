@@ -37,14 +37,14 @@ DEFAULT_TIMEOUT = 600
 
 def _build_sub_agent_tools(role: str) -> ToolRegistry:
     """Build a restricted ToolRegistry for the given role."""
-    from nimbus.core.tools.read import read_file
-    from nimbus.core.tools.write import write_file
-    from nimbus.core.tools.edit import edit_file
     from nimbus.core.tools.bash import bash_command
-    from nimbus.core.tools.grep import grep_search
+    from nimbus.core.tools.edit import edit_file
     from nimbus.core.tools.glob import glob_search
+    from nimbus.core.tools.grep import grep_search
+    from nimbus.core.tools.read import read_file
     from nimbus.core.tools.submit_result import submit_result
     from nimbus.core.tools.update_plan import update_plan
+    from nimbus.core.tools.write import write_file
 
     allowed = _ROLE_TOOLS.get(role, [])
     registry = ToolRegistry()
@@ -217,16 +217,25 @@ async def _run_sub_agent(
         path_context=path_context,
     )
 
-    # 6. Run with timeout, using stream_with_queue to capture partial_results
-    loop = agent_os.stream_with_queue(goal, session_id=sub_session_id)
+    # 6. Run with timeout, using stream_with_queue to capture partial_results.
+    # The batching reminder rides on the goal tail (models weight the end of
+    # the user message far more than a system-prompt section — audit showed
+    # sub-agents at 1.8 calls/step vs the parent's 2.7 with the same guidance
+    # in the system prompt).
+    goal_with_reminder = (
+        f"{goal}\n\n"
+        "(Efficiency: batch independent Read/Grep/Glob calls into ONE step; "
+        "read whole files instead of paging.)"
+    )
+    loop = agent_os.stream_with_queue(goal_with_reminder, session_id=sub_session_id)
 
-    # Propagate parent abort event to sub-agent loop so bash processes get killed
-    # P2 fix: also set up an abort watcher that fully aborts the child loop
-    # (sets _interrupted + interrupts child VCPU), not just the abort event
+    # Bridge parent abort into the child loop's own abort path.  Do not replace
+    # loop._abort_event after AgentOS construction: the child KernelGate/Bash
+    # already hold the original event, and replacing only the loop field breaks
+    # that identity chain.  loop.abort() sets the original child event and wakes
+    # the child VCPU, so every consumer observes the same cancellation.
     abort_watcher = None
     if _abort_event is not None:
-        loop._abort_event = _abort_event
-
         async def _watch_parent_abort():
             await _abort_event.wait()
             logger.info(f"[spawn] Parent abort detected, aborting sub-agent [{role}]")
@@ -256,10 +265,10 @@ async def _run_sub_agent(
                 status = data.get("status", "OK")
                 # tool_call_done uses "output_preview" not "output"
                 output_preview = str(data.get("output_preview") or data.get("output") or "")[:200]
-                
+
                 # Channel 1 (agent): concise one-liner
                 chunk = f"[{role}] 🔧 {tool_name}: {status}\n"
-                
+
                 # Channel 2 (UI): structured detail with args from preceding tool_call_start
                 ui_detail = {
                     "sub_session_id": sub_session_id,
@@ -284,7 +293,7 @@ async def _run_sub_agent(
                         v_str = v_str[:97] + "..."
                     args_summary += f"{k}={v_str} "
                 args_summary = args_summary.strip()[:200]
-                
+
                 ui_detail = {
                     "sub_session_id": sub_session_id,
                     "role": role,
@@ -332,12 +341,14 @@ async def _run_sub_agent(
             artifacts = deliverable.get("artifacts", [])
             findings_text = "\n".join(f"  - {f}" for f in findings) if findings else "  (none)"
             return {
+                "status": "OK",
                 "output": (
                     f"Sub-agent [{role}] delivered structured results.\n\n"
                     f"**Summary:** {summary}\n\n"
                     f"**Findings:**\n{findings_text}\n\n"
                     f"**Artifacts:** {artifacts}\n"
-                    f"**Scratchpad:** `{scratchpad_path}`"
+                    "(This deliverable is complete — do NOT read the sub-agent's "
+                    "scratchpad file; it is only a mirror of the plan.)"
                 ),
                 "ui_detail": {
                     "role": role,
@@ -350,13 +361,14 @@ async def _run_sub_agent(
                 },
             }
 
-        # Fallback: no deliverable.json, use raw text output
+        # Contract-mode completion requires submit_result's durable deliverable.
+        # A loop result (including an accidental OK) is not evidence of delivery.
         output_text = str(result.output) if result.output else "(no output)"
 
         # Prevent massive sub-agent outputs from blowing up parent context
         if len(output_text) > 4000:
             output_text = (
-                output_text[:4000] 
+                output_text[:4000]
                 + "\n\n...(Output truncated to 4000 chars to protect parent context. "
                 f"Full details are in the scratchpad: {scratchpad_path})"
             )
@@ -367,8 +379,10 @@ async def _run_sub_agent(
         # it's a missing-capability mismatch.
         role_tools = ", ".join(_ROLE_TOOLS.get(role, [])) or "(none)"
         return {
+            "status": "ERROR",
             "output": (
-                f"Sub-agent [{role}] completed (no structured deliverable).\n\n"
+                f"Sub-agent [{role}] failed its result contract: no structured "
+                f"deliverable was produced.\n\n"
                 f"**Result:**\n{output_text}\n\n"
                 f"**Sub-agent role/tools:** `{role}` had only [{role_tools}]. "
                 f"If the task needed a tool this role lacks (e.g. running shell "
@@ -380,7 +394,8 @@ async def _run_sub_agent(
                 "role": role,
                 "model": full_model,
                 "model_source": "parent" if inherited_parent_model else "configured",
-                "status": "completed",
+                "status": "ERROR",
+                "error": "Missing contract deliverable",
                 "sub_session_id": sub_session_id,
                 "scratchpad": scratchpad_path,
             },
@@ -408,6 +423,7 @@ async def _run_sub_agent(
         partial_section = _collect_partial(loop, scratchpad_path)
 
         return {
+            "status": status,
             "output": (
                 f"Sub-agent [{role}] {reason}.\n\n"
                 f"{partial_section}\n\n"
@@ -485,6 +501,7 @@ async def spawn_agent(
     goal = goal or kwargs.get("task")
     if not goal:
         return {
+            "status": "ERROR",
             "output": "Missing required parameter 'goal'.",
             "ui_detail": {"status": "ERROR", "error": "Missing goal"},
         }
@@ -492,6 +509,7 @@ async def spawn_agent(
     # Validate role
     if role not in _ROLE_TOOLS:
         return {
+            "status": "ERROR",
             "output": f"Invalid role '{role}'. Must be one of: {list(_ROLE_TOOLS.keys())}",
             "ui_detail": {"status": "ERROR", "error": f"Invalid role: {role}"},
         }
@@ -499,8 +517,9 @@ async def spawn_agent(
     # Check abort early
     if _abort_event and _abort_event.is_set():
         return {
+            "status": "CANCELLED",
             "output": f"Sub-agent [{role}] aborted before starting.",
-            "ui_detail": {"status": "aborted"},
+            "ui_detail": {"status": "CANCELLED"},
         }
 
     # Derive child path context from parent (injected by Gate via kwargs)

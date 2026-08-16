@@ -20,6 +20,7 @@ Design notes (dsh-aligned):
 
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -49,15 +50,15 @@ class SessionEvent:
 
 
 class SessionLog:
-    """Append-only event log, one JSON line per event.
+    """Append-only event log with bounded synchronous write-behind.
 
-    Appends write through to disk immediately (open/write/close per event —
-    bounded batching is a later-phase concern; Phase 0 event rates are low).
-    A torn final line on crash is skipped at load time.
+    Non-causal events are flushed by a short daemon timer even when no later
+    append occurs.  A re-entrant lock serializes append/flush/close and timer
+    callbacks, so this synchronous class is safe in threads and both with and
+    without a running asyncio loop.  ``close`` is the lifecycle barrier that
+    cancels the timer and durably drains pending events.
     """
 
-    # Bounded write-behind (dsh-style): non-causal events may sit in the
-    # buffer for at most this long before the next append forces a flush.
     FLUSH_WINDOW_SEC = 0.2
 
     def __init__(self, path: Optional[Path] = None):
@@ -65,32 +66,42 @@ class SessionLog:
         self._events: List[SessionEvent] = []
         self._pending: List[SessionEvent] = []
         self._pending_since: float = 0.0
+        self._lock = threading.RLock()
+        self._flush_timer: Optional[threading.Timer] = None
+        self._timer_generation = 0
+        self._closed = False
+        # Set by load(): open() repairs a torn tail before appending, and a
+        # valid final JSON record without LF needs one separator before append.
+        self._truncate_at: Optional[int] = None
+        self._needs_separator = False
 
     @property
     def events(self) -> List[SessionEvent]:
-        return self._events
+        with self._lock:
+            return list(self._events)
 
     def append(self, event_type: str, data: Optional[Dict[str, Any]] = None) -> SessionEvent:
         """Append one event. seq == len(log) before the append (contiguous)."""
-        event = SessionEvent(
-            seq=len(self._events),
-            type=event_type,
-            time=time.time(),
-            data=data or {},
-        )
-        self._append_event(event)
-        return event
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("cannot append to a closed SessionLog")
+            event = SessionEvent(
+                seq=len(self._events),
+                type=event_type,
+                time=time.time(),
+                data=data or {},
+            )
+            self._append_event_locked(event)
+            return event
 
     def _append_event(self, event: SessionEvent) -> None:
-        """Append a pre-built event verbatim (crash-repair closers carry their
-        own deterministic timestamps — repair must not restamp them).
+        """Append a pre-built event verbatim (used by crash repair)."""
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("cannot append to a closed SessionLog")
+            self._append_event_locked(event)
 
-        Disk writes are batched (bounded write-behind): the flush barrier sits
-        at CAUSAL points — an event that must be durable before what follows
-        it (the decision record before its side effects, tool outcomes, turn
-        boundaries, surface replaces, seeds) flushes immediately; anything
-        else waits at most FLUSH_WINDOW_SEC for the next append, plus the
-        explicit flush() at loop exit."""
+    def _append_event_locked(self, event: SessionEvent) -> None:
         if event.seq != len(self._events):
             raise ValueError(
                 f"seq contract violated: appending {event.seq} at {len(self._events)}"
@@ -101,11 +112,28 @@ class SessionLog:
         if not self._pending:
             self._pending_since = time.monotonic()
         self._pending.append(event)
-        if (
-            self._is_causal(event)
-            or time.monotonic() - self._pending_since >= self.FLUSH_WINDOW_SEC
-        ):
-            self.flush()
+        if self._is_causal(event):
+            self._flush_locked()
+        elif self._flush_timer is None:
+            self._schedule_flush_locked()
+
+    def _schedule_flush_locked(self) -> None:
+        self._timer_generation += 1
+        generation = self._timer_generation
+        timer = threading.Timer(self.FLUSH_WINDOW_SEC, self._timer_flush, (generation,))
+        timer.daemon = True
+        self._flush_timer = timer
+        timer.start()
+
+    def _timer_flush(self, generation: int) -> None:
+        with self._lock:
+            # A cancelled callback may already be running. Generation guards
+            # it from clearing or flushing on behalf of a replacement timer.
+            if generation != self._timer_generation:
+                return
+            self._flush_timer = None
+            if not self._closed:
+                self._flush_locked()
 
     @staticmethod
     def _is_causal(event: SessionEvent) -> bool:
@@ -119,40 +147,90 @@ class SessionLog:
         return False
 
     def flush(self) -> None:
-        """Write all buffered events in one append. Safe to call any time."""
+        """Synchronously write all buffered events; safe from any thread."""
+        with self._lock:
+            self._cancel_timer_locked()
+            self._flush_locked()
+
+    def _flush_locked(self) -> None:
         if not self._pending or self.path is None:
             return
         lines = "".join(
             json.dumps(e.to_dict(), ensure_ascii=False) + "\n" for e in self._pending
         )
-        self._pending.clear()
         try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.path, "a", encoding="utf-8") as f:
+                if self._needs_separator:
+                    f.write("\n")
+                    self._needs_separator = False
                 f.write(lines)
         except OSError:
-            # A failed trace write must never kill the loop; the snapshot
-            # still exists as fallback (load_session's completeness guard
-            # detects a log that fell behind it).
-            pass
+            # Keep pending events for a later retry. A failed trace write must
+            # never kill the loop; snapshot completeness guards remain fallback.
+            if self._flush_timer is None and not self._closed:
+                self._schedule_flush_locked()
+            return
+        del self._pending[:]
+        self._pending_since = 0.0
+
+    def _cancel_timer_locked(self) -> None:
+        timer = self._flush_timer
+        self._flush_timer = None
+        self._timer_generation += 1
+        if timer is not None and timer is not threading.current_thread():
+            timer.cancel()
+
+    def close(self) -> None:
+        """Cancel background work and synchronously drain pending events."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._cancel_timer_locked()
+            self._flush_locked()
+
+    def __enter__(self) -> "SessionLog":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.close()
 
     @classmethod
     def load(cls, path: Path) -> "SessionLog":
         """Load a log from disk. A torn (undecodable) final line is dropped;
         a torn line anywhere else is corruption and raises."""
         log = cls(path=None)  # don't re-append to the file while loading
+        path = Path(path)
         try:
-            raw_lines = Path(path).read_text(encoding="utf-8").splitlines()
+            raw = path.read_bytes()
         except FileNotFoundError:
-            log.path = Path(path)
+            log.path = path
             return log
-        for i, line in enumerate(raw_lines):
+
+        # Keep byte offsets: open() must physically remove a torn tail before
+        # continuation. Merely ignoring it here makes every later append part of
+        # the same malformed line and permanently poisons the log.
+        lines = raw.splitlines(keepends=True)
+        offset = 0
+        for i, raw_line in enumerate(lines):
+            line_start = offset
+            offset += len(raw_line)
+            try:
+                line = raw_line.decode("utf-8").rstrip("\r\n")
+            except UnicodeDecodeError:
+                if i == len(lines) - 1:
+                    log._truncate_at = line_start
+                    break
+                raise ValueError(f"corrupt session log at line {i + 1}: {path}")
             if not line.strip():
                 continue
             try:
                 event = SessionEvent.from_dict(json.loads(line))
-            except (json.JSONDecodeError, KeyError):
-                if i == len(raw_lines) - 1:
-                    break  # torn tail from a crash mid-write: drop it
+            except (json.JSONDecodeError, KeyError, TypeError):
+                if i == len(lines) - 1:
+                    log._truncate_at = line_start
+                    break
                 raise ValueError(f"corrupt session log at line {i + 1}: {path}")
             if event.seq != len(log._events):
                 raise ValueError(
@@ -160,7 +238,8 @@ class SessionLog:
                     f"expected {len(log._events)}, got {event.seq}"
                 )
             log._events.append(event)
-        log.path = Path(path)
+        log.path = path
+        log._needs_separator = bool(raw and log._truncate_at is None and not raw.endswith((b"\n", b"\r")))
         return log
 
     @classmethod
@@ -190,6 +269,14 @@ class SessionLog:
                 quarantine, e,
             )
             log = cls(path)
+        if log._truncate_at is not None:
+            # Repair the physical file before any synthetic closer/new event is
+            # appended. The offset always starts the malformed final record.
+            with open(path, "r+b") as f:
+                f.truncate(log._truncate_at)
+            log._truncate_at = None
+            # line_start follows the prior record's newline (or is zero).
+            log._needs_separator = False
         for event in interrupted_turn_closers(log._events):
             log._append_event(event)
         return log
