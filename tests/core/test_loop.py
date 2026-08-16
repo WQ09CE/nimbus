@@ -473,3 +473,27 @@ class TestFineGrainedEvents:
         done_events = [e for e in events if e.get("type") == "tool_call_done"]
         assert len(done_events) >= 1
         assert done_events[0]["ui_detail"] == {"exit_code": 0, "lines": 3}
+
+
+class TestAbortCutsLLMCall:
+    def test_abort_sets_wakeup_event(self, tmp_path):
+        """Stop must cut an in-flight LLM call: abort()/request_interruption()
+        set the wakeup event the VCPU races its LLM call against. Without
+        this, a stop request waits out the full generation (observed as
+        interrupt timeouts while a sub-agent's model call ran on)."""
+        from nimbus.core.storage import SessionStorage
+        loop = RuntimeLoop(
+            MockVCPU([make_step(is_final=True, output="x")]), MMU(),
+            storage=SessionStorage(str(tmp_path)),
+        )
+        assert not loop._wakeup_event.is_set()
+        loop.abort()
+        assert loop._wakeup_event.is_set()
+        assert loop._abort_event.is_set()
+
+        loop2 = RuntimeLoop(
+            MockVCPU([make_step(is_final=True, output="x")]), MMU(),
+            storage=SessionStorage(str(tmp_path)),
+        )
+        loop2.request_interruption()
+        assert loop2._wakeup_event.is_set()

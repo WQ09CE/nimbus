@@ -99,6 +99,19 @@ const initialState = {
   errorInfo: null,
 };
 
+// --- User-initiated stop window ---
+// After the user clicks Stop, the backend can take seconds to actually halt
+// (an in-flight LLM call must be cut first). During that window the session
+// still reports running — the stream-drop recovery and the session watcher
+// must NOT re-attach, or the UI appears to "restart" the task the user just
+// stopped. Cleared when the user sends a new message.
+let _userInterruptedAt = 0;
+const USER_INTERRUPT_WINDOW_MS = 30000;
+
+export function isWithinUserInterruptWindow(): boolean {
+  return Date.now() - _userInterruptedAt < USER_INTERRUPT_WINDOW_MS;
+}
+
 // --- rAF batching for streaming updates ---
 // Instead of calling set() on every SSE chunk, buffer the latest message
 // and flush at most once per animation frame (~60fps).
@@ -560,6 +573,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   /** Attach to an already-running session's SSE stream (multi-client / reconnect). */
   _attachToRunningSession: (sessionId: string) => {
+    // The user just clicked Stop — the backend is winding down and still
+    // reports running. Attaching now would visually restart the stopped task
+    // (both the recovery path and the session watcher route through here).
+    if (isWithinUserInterruptWindow()) {
+      console.info("[Store] User interrupt in progress — skipping attach");
+      return;
+    }
     const STREAMING_ID = "streaming-assistant";
     const abortController = new AbortController();
 
@@ -719,6 +739,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
 
+    // A new send supersedes any pending stop — recovery/attach work normally.
+    _userInterruptedAt = 0;
+
     // Upload any url-backed media (video) to the server before sending, so the
     // request references it by URL instead of inlining bytes. Images stay base64.
     // Standard send.
@@ -867,7 +890,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         let recovered = false;
         try {
           const status = await getSessionStatus(session.id);
-          if (status.running && get().session?.id === session.id) {
+          if (status.running && isWithinUserInterruptWindow()) {
+            // The user just clicked Stop; the backend is still winding down.
+            // Re-attaching here would visually "restart" the stopped task.
+            console.info("[Store] User interrupt in progress — not re-attaching");
+            recovered = true;
+          } else if (status.running && get().session?.id === session.id) {
             console.info("[Store] Agent still running, re-attaching to session...");
             await get().switchSession(session);
             recovered = true;
@@ -959,6 +987,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   interruptMessage: async () => {
     const { streamAbortController, session, isStreaming } = get();
+
+    // Open the no-reattach window BEFORE anything else — the stream-drop
+    // recovery fires as soon as the abort lands.
+    _userInterruptedAt = Date.now();
 
     // 1. Abort SSE immediately — instant UI feedback
     if (streamAbortController) {

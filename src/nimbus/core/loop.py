@@ -239,12 +239,23 @@ class RuntimeLoop:
         """Signal the loop to stop after the current step."""
         self._interrupted = True
         self.vcpu.request_interruption()
+        # Wake the VCPU's LLM-call race so an in-flight generation is
+        # cancelled NOW — without this, a stop request waits for the full
+        # LLM stream to finish (observed: interrupt timing out twice while
+        # a sub-agent's model call ran on). The inner loop checks
+        # _interrupted before consuming steering, so a set wakeup with an
+        # empty queue is safe.
+        self._wakeup_event.set()
 
     def abort(self) -> None:
         """Hard stop -- cancel everything including running bash processes."""
         self._interrupted = True
         self._abort_event.set()
         self.vcpu.request_interruption()
+        # Same as request_interruption: cut the in-flight LLM call. The
+        # sub-agent abort watcher calls this on the CHILD loop too, so a
+        # parent abort now propagates all the way into a child's model call.
+        self._wakeup_event.set()
 
     async def wait_for_idle(self) -> None:
         """Wait until the loop finishes. Used after abort()."""
