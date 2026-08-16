@@ -83,7 +83,9 @@ class AgentConfig:
     tool_timeout: float = 60.0
 
     # Behavior
-    text_is_final: bool = False  # In goal mode, pure text != done
+    # DEPRECATED no-op: the decoder now treats pure text as final everywhere
+    # (termination inversion). Kept so stored configs / call sites don't break.
+    text_is_final: bool = False
     contract_mode: bool = False  # Sub-agent only: must exit via submit_result, not text
 
 

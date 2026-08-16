@@ -147,9 +147,13 @@ class TestVCPULimits:
         assert r3.fault.code == "BUDGET_EXCEEDED"
 
     @pytest.mark.asyncio
-    async def test_max_consecutive_thoughts(self):
-        """Too many thoughts without action → forced termination."""
-        config = VCPUConfig(max_consecutive_thoughts=2, max_iterations=100)
+    async def test_max_consecutive_thoughts_contract_mode(self):
+        """Post termination-inversion, pure THOUGHT loops exist only in
+        contract mode (a sub-agent talking instead of delivering). The
+        counter still bounds them."""
+        config = VCPUConfig(
+            max_consecutive_thoughts=2, max_iterations=100, contract_mode=True,
+        )
         responses = [MockResponse(content=f"Let me think about step {i} next and figure out the approach") for i in range(5)]
         alu = MockALU(responses)
         decoder = InstructionDecoder()
@@ -164,6 +168,19 @@ class TestVCPULimits:
         # Second thought → should terminate
         r2 = await vcpu.step()
         assert r2.is_final
+
+    @pytest.mark.asyncio
+    async def test_plain_text_ends_turn_even_in_run_mode(self):
+        """Termination inversion: pure text is final regardless of the
+        deprecated text_is_final flag — no THOUGHT loop, no regeneration."""
+        responses = [MockResponse(content="任务分析如下：" + "详细说明。" * 100)]
+        mmu = MMU()
+        mmu.add_user_message("Go")
+        vcpu = VCPU(MockALU(responses), InstructionDecoder(), MockGate(), mmu, [],
+                    config=VCPUConfig(max_iterations=100), text_is_final=False)
+        r = await vcpu.step()
+        assert r.is_final
+        assert r.final_result.status == "OK"
 
     @pytest.mark.asyncio
     async def test_max_consecutive_empty_responses(self):
@@ -231,6 +248,13 @@ class TestVCPULimits:
         )
         # But a reply that ENDS on the announcement is still caught.
         assert f("好的，我了解了任务要求。让我先运行 ls 命令查看目录结构。")
+        # A capability list ENDING on a spawn_agent item is a description,
+        # not an announcement (the bare tool name must not trigger either).
+        assert not f(
+            "6. **Grep** — 在文件中搜索正则模式。\n"
+            "7. **spawn_agent** — 启动子代理来并行处理复杂任务。"
+        )
+        assert f("我将启动 researcher 子代理来收集资料")
 
     @pytest.mark.asyncio
     async def test_mutation_claim_without_evidence_is_nudged(self):
@@ -270,9 +294,16 @@ class TestVCPULimits:
         assert f("I have already created summary.txt as requested.")
         assert f("Saved the results to `output.json`.")
         assert f("已创建 summary.txt，任务完成。")
+        assert f("我已经成功将内容写入到文件 output.txt 中。")
+        assert f("写入了 config.json，配置已更新。")
         assert not f("The answer is 42.")
         assert not f("The file config.py contains the settings loader.")
         assert not f("I read notes.txt and the main point is daily releases.")
+        # Capability descriptions are not claims (found by eval: tool listings
+        # like "Write：可创建新文件" got nudged as fabricated completions).
+        assert not f("**Write**：向指定路径写入内容，可创建新文件及所需的父目录。")
+        assert not f("Write can create files and parent directories as needed.")
+        assert not f("Edit 工具用于修改现有文件，支持精确匹配替换。")
 
     @pytest.mark.asyncio
     async def test_plain_final_answer_not_nudged(self):

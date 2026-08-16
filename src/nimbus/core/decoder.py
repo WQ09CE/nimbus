@@ -51,42 +51,29 @@ class InstructionDecoder:
         re.IGNORECASE | re.VERBOSE | re.DOTALL,
     )
 
-    # Patterns indicating the LLM considers its goal complete
-    _DONE_PATTERNS = re.compile(
-        r"""
-        (?:^|\W)
-        (?:
-            已完成|已解答|已回答|
-            done|finished|complete|completed|
-            that(?:'s|\s+is)\s+all|
-            no\s+(?:further|more)\s+(?:action|step|tool)s?\s+(?:needed|required)
-        )
-        (?:\W|$)
-        """,
-        re.IGNORECASE | re.VERBOSE,
-    )
-
-    _PLANNING_WORDS = (
-        "next", "now i", "let me", "i will", "i'll", "i need to",
-        "first", "then", "step", "接下来", "首先", "然后",
-    )
-
     def decode(
         self,
         content: Optional[str],
         tool_calls: Optional[List[Any]],
-        text_is_final: bool = True,
+        text_is_final: bool = True,  # accepted for compat; text always ends the turn
         contract_mode: bool = False,
     ) -> List[ActionIR]:
         """Decode LLM output into a list of ActionIR instructions.
 
+        Termination inversion (see docs/design/termination-inversion.md):
+        pure text ALWAYS ends the turn (REPLY) — termination is the model's
+        decision, and the evidence-based guards in the VCPU (narrate / claim)
+        are the only exit gates. The old run-mode `_is_done()` lexical
+        heuristic penalized long complete answers into THOUGHT loops
+        (measured: the same answer regenerated 8x before stall forced an end).
+
         Args:
             content: Text content from LLM response.
             tool_calls: Native tool call objects from the API.
-            text_is_final: If True, pure text → REPLY; if False, use heuristics.
-            contract_mode: If True, pure text is ALWAYS THOUGHT, never RETURN.
-                Used by sub-agents to prevent premature exit from _is_done() heuristics.
-                Sub-agent can only exit via submit_result tool or max_iterations.
+            text_is_final: Ignored (kept so existing call sites don't break).
+            contract_mode: If True, pure text is ALWAYS THOUGHT, never REPLY.
+                A sub-agent's exit is a structured contract (submit_result),
+                not a guess — speaking does not end its turn.
         """
         actions: List[ActionIR] = []
 
@@ -109,19 +96,10 @@ class InstructionDecoder:
         # 3. Pure text, no tool calls
         if content and content.strip():
             text = content.strip()
-
-            if text_is_final:
-                # Interactive mode: text is always a reply
-                actions.append(ActionIR(kind="REPLY", args={"text": text}))
-            elif contract_mode:
-                # Contract mode: pure text is ALWAYS a thought, never a return.
-                # Sub-agent must exit via submit_result tool, not by speaking.
+            if contract_mode:
                 actions.append(ActionIR(kind="THOUGHT", args={"text": text}))
-            elif self._is_done(text):
-                # Agent thinks it's done
-                actions.append(ActionIR(kind="RETURN", args={"text": text}))
             else:
-                actions.append(ActionIR(kind="THOUGHT", args={"text": text}))
+                actions.append(ActionIR(kind="REPLY", args={"text": text}))
 
         return actions
 
@@ -177,32 +155,29 @@ class InstructionDecoder:
                 message=f"Unknown tool call format: {type(tool_call)}",
             )
 
-        # Parse arguments JSON
+        # Parse arguments JSON. Weak models routinely append trailing junk
+        # after a valid object ("{...} extra", two objects glued together) —
+        # salvage the FIRST valid JSON value instead of failing the call
+        # (observed: qwen failed a 3-step task with three straight
+        # "Extra data" decode faults while genuinely trying to act).
         try:
             args = json.loads(args_str) if isinstance(args_str, str) else (args_str or {})
         except json.JSONDecodeError as e:
-            raise Fault(
-                domain="LLM", code="ILL_INSTRUCTION",
-                message=f"Invalid JSON in tool arguments: {e}",
-                retryable=True,
-                context={"tool": name, "raw_args": str(args_str)[:200]},
-            )
+            salvaged = None
+            if isinstance(args_str, str):
+                try:
+                    salvaged, _ = json.JSONDecoder().raw_decode(args_str.strip())
+                except json.JSONDecodeError:
+                    salvaged = None
+            if isinstance(salvaged, dict):
+                args = salvaged
+            else:
+                raise Fault(
+                    domain="LLM", code="ILL_INSTRUCTION",
+                    message=f"Invalid JSON in tool arguments: {e}",
+                    retryable=True,
+                    context={"tool": name, "raw_args": str(args_str)[:200]},
+                )
 
         return ActionIR(kind="TOOL_CALL", name=name, id=tc_id, args=args)
 
-    @classmethod
-    def _is_done(cls, text: str) -> bool:
-        """Heuristic: is this text a final answer rather than an intermediate thought?"""
-        stripped = text.strip()
-
-        # Short text with done-pattern
-        if len(stripped) <= 300 and cls._DONE_PATTERNS.search(stripped):
-            return True
-
-        # Very short text without planning language
-        if len(stripped) <= 120:
-            lower = stripped.lower()
-            if not any(w in lower for w in cls._PLANNING_WORDS):
-                return True
-
-        return False

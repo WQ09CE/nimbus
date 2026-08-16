@@ -1,0 +1,3 @@
+[task]
+goal = "读取 a.txt 和 b.txt，把两个文件里的项目代号合并写入 c.txt，每行一个代号。"
+timeout_sec = 180

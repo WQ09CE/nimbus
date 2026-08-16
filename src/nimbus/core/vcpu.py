@@ -49,9 +49,14 @@ _ANNOUNCE_PATTERNS = [
     ),
     # explicit "next action" / 下一步 execution markers (strong premature-stop signal)
     re.compile(r"(next\s+action|下一步(行动|动作|操作)?|下一个动作|接下来(我)?(要|将|需要|准备))", re.IGNORECASE),
-    # "spawning the X agent" / 分派/启动 … agent
+    # "spawning the X agent" / 我将启动 … 子代理. The Chinese branch requires
+    # an intent/progressive prefix — a capability list ending on a bare
+    # "spawn_agent：启动子代理…" item is a description, not an announcement
+    # (found by eval: meta-question on qwen).
     re.compile(
-        r"(spawn(ing|ed)?|dispatch(ing)?|分派|派遣|启动)\s*[a-z一-鿿_ ]{0,24}"
+        r"(spawn(?!_)(ing|ed)?|dispatch(ing)?|"
+        r"(?:我将|我会|我现在|正在|现在|即将|马上)[^。.!?\n]{0,12}?(?:分派|派遣|启动))"
+        r"\s*[a-z一-鿿_ ]{0,24}"
         r"(agent|researcher|worker|reader|子?智能体|子?代理)",
         re.IGNORECASE,
     ),
@@ -84,9 +89,17 @@ def _announces_unfulfilled_tool(text: str) -> bool:
 # (found by eval: crash-resume). The guard is evidence-conditional: once any
 # Write/Edit/Bash succeeded, mutation claims are legitimate and pass freely.
 _MUTATING_TOOLS = frozenset({"Write", "Edit", "Bash", "write_file", "edit_file"})
+# A CLAIM requires completed-action phrasing (past/perfective): "created",
+# "已创建", "写入了". Capability descriptions ("可创建新文件", "Write can
+# create files") must NOT match — answering "你支持哪些工具" tripped the old
+# optional-prefix pattern on every tool listing (found by eval: meta-question
+# after termination inversion put all plain text on the guarded REPLY path).
 _MUTATION_CLAIM_RE = re.compile(
-    r"(?:creat|wrot|writt|sav|generat|updat|modif|"
-    r"(?:已经?|刚|成功)?(?:创建|写入|保存|生成|更新|修改)[了好]?)\w*"
+    r"(?:"
+    r"\b(?:creat|generat|updat|modifi|sav)ed\b|\bwrote\b|\bwritten\b|"
+    r"(?:已经?|刚刚?|成功|顺利)[^。.!?\n]{0,12}?(?:创建|写入|保存|生成|更新|修改)|"
+    r"(?:创建|写入|保存|生成|更新|修改)[了好]"
+    r")"
     r"[^。.!?\n]{0,60}?"
     r"(?:\bfiles?\b|文件|`[^`]{1,60}\.\w{1,5}`|"
     r"\b[\w./-]+\.(?:txt|py|md|json|ya?ml|csv|sh|js|ts|html?)\b)",
@@ -507,7 +520,10 @@ class VCPU:
                     if steering:
                         result.steering_messages = steering
         else:
-            # Pure thought — no tool calls
+            # Pure thought — no tool calls. Post termination-inversion this is
+            # reachable ONLY in contract mode (sub-agents: text never ends the
+            # turn; submit_result does). The counter bounds a sub-agent that
+            # talks instead of delivering.
             count = self._exec.on_thought()
             if thought_text:
                 self.mmu.add_assistant_message(thought_text)

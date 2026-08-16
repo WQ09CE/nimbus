@@ -133,31 +133,32 @@ class TestPureTextDecoding:
     def setup_method(self):
         self.decoder = InstructionDecoder()
 
-    def test_text_is_final_reply(self):
-        """When text_is_final=True, pure text becomes REPLY."""
-        actions = self.decoder.decode(content="The answer is 42.", tool_calls=None, text_is_final=True)
+    def test_pure_text_is_reply(self):
+        """Termination inversion: pure text ALWAYS ends the turn as REPLY —
+        regardless of the (deprecated, ignored) text_is_final flag."""
+        for flag in (True, False):
+            actions = self.decoder.decode(
+                content="The answer is 42.", tool_calls=None, text_is_final=flag,
+            )
+            assert actions[0].kind == "REPLY"
+
+    def test_long_answer_is_reply_not_thought(self):
+        """The old _is_done() heuristic classified long complete answers as
+        THOUGHT (>300 chars never matched), forcing 8x regeneration loops.
+        Length must not affect termination."""
+        long_answer = "工具列表如下：" + "；".join(f"工具{i}的用途说明" for i in range(40)) + "。"
+        assert len(long_answer) > 300
+        actions = self.decoder.decode(content=long_answer, tool_calls=None, text_is_final=False)
         assert actions[0].kind == "REPLY"
 
-    def test_short_text_becomes_return(self):
-        """Short, non-planning text in non-final mode → RETURN (done)."""
-        actions = self.decoder.decode(content="Done!", tool_calls=None, text_is_final=False)
-        assert actions[0].kind == "RETURN"
-
-    def test_planning_text_becomes_thought(self):
-        """Text with planning language in non-final mode → THOUGHT."""
+    def test_contract_mode_text_is_thought(self):
+        """A sub-agent's exit is a structured contract (submit_result) —
+        speaking never ends its turn."""
         actions = self.decoder.decode(
-            content="Let me first check the configuration file.",
-            tool_calls=None, text_is_final=False,
+            content="任务已完成。", tool_calls=None,
+            text_is_final=False, contract_mode=True,
         )
         assert actions[0].kind == "THOUGHT"
-
-    def test_done_pattern_chinese(self):
-        actions = self.decoder.decode(content="任务已完成。", tool_calls=None, text_is_final=False)
-        assert actions[0].kind == "RETURN"
-
-    def test_done_pattern_english(self):
-        actions = self.decoder.decode(content="Task is complete.", tool_calls=None, text_is_final=False)
-        assert actions[0].kind == "RETURN"
 
     def test_empty_content(self):
         actions = self.decoder.decode(content="", tool_calls=None)
@@ -170,3 +171,30 @@ class TestPureTextDecoding:
     def test_whitespace_only(self):
         actions = self.decoder.decode(content="   \n  ", tool_calls=None)
         assert actions == []
+
+
+class TestArgsSalvage:
+    """Weak models append trailing junk after valid JSON arguments —
+    salvage the first valid object instead of failing the tool call."""
+
+    def setup_method(self):
+        self.decoder = InstructionDecoder()
+
+    def _decode_call(self, args_str):
+        return self.decoder.decode(
+            content=None,
+            tool_calls=[{"id": "c1", "function": {"name": "Read", "arguments": args_str}}],
+        )[0]
+
+    def test_trailing_junk_is_salvaged(self):
+        action = self._decode_call('{"path": "a.txt"} 然后读取 b.txt')
+        assert action.kind == "TOOL_CALL"
+        assert action.args == {"path": "a.txt"}
+
+    def test_two_glued_objects_take_first(self):
+        action = self._decode_call('{"path": "a.txt"}{"path": "b.txt"}')
+        assert action.args == {"path": "a.txt"}
+
+    def test_hopeless_garbage_still_faults(self):
+        with pytest.raises(Fault):
+            self._decode_call('not json at all')

@@ -7,15 +7,20 @@ mistook for an unfulfilled tool announcement and nudged twice.
 
 
 def verify(workspace, output, log):
+    guard_markers = (
+        "described a tool action",       # narrate-not-act guard
+        "claim to have created",         # claim-without-evidence guard
+    )
     nudges = [
         e for e in log.events
         if e.type == "user/message"
-        and "described a tool action" in str(
-            e.data.get("message", {}).get("content", "")
+        and any(
+            marker in str(e.data.get("message", {}).get("content", ""))
+            for marker in guard_markers
         )
     ]
     if nudges:
-        return False, f"narrate guard false-fired {len(nudges)}x on a capability question"
+        return False, f"guard false-fired {len(nudges)}x on a capability question"
     text = (output or "").lower()
     # On-topic sanity only — models may describe tools in English names or
     # Chinese descriptors; the load-bearing assertion is the nudge check above.

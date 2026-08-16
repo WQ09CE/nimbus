@@ -100,13 +100,14 @@ class TestContractMode:
         assert actions[0].kind == "THOUGHT"
         assert actions[1].kind == "TOOL_CALL"
 
-    def test_contract_mode_false_preserves_existing_behavior(self):
-        """Default (contract_mode=False) should still produce RETURN for short done-text."""
+    def test_contract_mode_false_text_ends_turn(self):
+        """Outside contract mode, pure text ends the turn as REPLY
+        (termination inversion — no lexical done-detection)."""
         actions = self.decoder.decode(
             content="Done!", tool_calls=None,
             text_is_final=False, contract_mode=False,
         )
-        assert actions[0].kind == "RETURN"
+        assert actions[0].kind == "REPLY"
 
     def test_hallucination_detection_still_works(self):
         """contract_mode should not bypass hallucination firewall."""
