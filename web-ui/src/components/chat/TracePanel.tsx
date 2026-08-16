@@ -156,6 +156,44 @@ function EventRow({ event }: { event: SessionLogEvent }) {
     );
   }
 
+  if (t === "plan/updated") {
+    const plan: string = event.data?.plan || "";
+    const items = plan.split("\n").filter((l) => l.startsWith("- ["));
+    const done = items.filter((l) => l.startsWith("- [x]") || l.startsWith("- [X]")).length;
+    return (
+      <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/5 p-2.5 text-xs">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="flex items-center gap-2 text-emerald-300 font-semibold w-full text-left"
+        >
+          📋 计划更新
+          <span className="text-[10px] font-normal text-gray-500">
+            {done}/{items.length} 完成
+          </span>
+          <span className="ml-auto text-gray-600">{expanded ? "▾" : "▸"}</span>
+        </button>
+        {(expanded || items.length <= 6) && (
+          <div className="mt-1.5 space-y-0.5">
+            {items.map((l, i) => {
+              const isDone = l.startsWith("- [x]") || l.startsWith("- [X]");
+              return (
+                <div key={i} className={`flex items-start gap-1.5 ${isDone ? "text-gray-600 line-through" : "text-gray-400"}`}>
+                  <span className="shrink-0">{isDone ? "☑" : "☐"}</span>
+                  <span>{l.replace(/^- \[.\] /, "")}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {expanded && plan.includes("### Notes") && (
+          <div className="mt-2 text-gray-500 whitespace-pre-wrap border-t border-emerald-400/10 pt-2">
+            {plan.split("### Notes")[1]?.trim()}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   if (t === "compaction/applied") {
     return (
       <div className="rounded-lg border border-sky-400/20 bg-sky-400/5 p-2.5 text-xs">

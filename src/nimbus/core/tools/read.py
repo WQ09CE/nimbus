@@ -13,11 +13,17 @@ MAX_BYTES = 50 * 1024  # 50KB (aligned with pi-coding-agent)
 
 @tool(
     name="Read",
-    description="Read file contents. Supports offset/limit for large files.",
+    description=(
+        "Read file contents. Reads the WHOLE file by default (up to 2000 "
+        "lines) — do not page through normal-sized files with small limits; "
+        "one full read costs one step, many small reads cost many. Use "
+        "offset/limit only to continue past 2000 lines or to jump to a "
+        "known region of a huge file."
+    ),
     parameters=[
         ToolParameter("file_path", "string", "Path to the file to read", required=True),
-        ToolParameter("offset", "integer", "Line number to start from (1-indexed)", required=False),
-        ToolParameter("limit", "integer", "Maximum number of lines to read", required=False),
+        ToolParameter("offset", "integer", "Line number to start from (1-indexed); only for files beyond 2000 lines", required=False),
+        ToolParameter("limit", "integer", "Maximum lines to read (default 2000 — omit unless you need less)", required=False),
     ],
 )
 async def read_file(file_path: str, offset: Optional[int] = None, limit: Optional[int] = None, **kwargs: Any) -> str:

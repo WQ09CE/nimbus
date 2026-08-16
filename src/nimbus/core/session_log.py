@@ -221,12 +221,14 @@ def derive_state(events: List[SessionEvent]) -> Dict[str, Any]:
     """
     surface: List[Dict[str, Any]] = []
     summary = ""
+    plan = ""
     for event in events:
         if event.type == "seed/applied":
             # Fork/resume seed: the initial surface of a forked session
             # (see SessionStorage.fork_session). Always the first event.
             surface = list(event.data.get("messages", []))
             summary = event.data.get("summary", "")
+            plan = event.data.get("plan", "")
         elif event.type in ("user/message", "assistant/message", "tool/result"):
             surface.append(event.data["message"])
         elif event.type == "compaction/applied":
@@ -237,7 +239,11 @@ def derive_state(events: List[SessionEvent]) -> Dict[str, Any]:
             else:
                 surface = [surface[i] for i in kept_indices]
             summary = event.data.get("summary", summary)
-    return {"messages": surface, "summary": summary}
+        elif event.type == "plan/updated":
+            # Agent-authored plan anchor (update_plan tool) — anchor state,
+            # last write wins.
+            plan = event.data.get("plan", plan)
+    return {"messages": surface, "summary": summary, "plan": plan}
 
 
 def derive_messages(events: List[SessionEvent]) -> List[Dict[str, Any]]:

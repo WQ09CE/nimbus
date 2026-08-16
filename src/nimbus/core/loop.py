@@ -664,6 +664,7 @@ class RuntimeLoop:
         mmu_state = {
             "global_summary": self.mmu._global_summary,
             "goal": self.mmu._goal,
+            "plan": getattr(self.mmu, "_plan", ""),
         }
 
         # Merge mmu_state into metadata so it persists across restarts

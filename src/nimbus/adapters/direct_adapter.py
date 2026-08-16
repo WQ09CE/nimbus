@@ -2064,9 +2064,21 @@ class DirectAdapter:
                                 "arguments": tc.function.arguments or ""
                             }
                         else:
-                            if tc.id: tool_call_chunks[idx]["id"] += tc.id
-                            if tc.function.name: tool_call_chunks[idx]["name"] += tc.function.name
-                            if tc.function.arguments: tool_call_chunks[idx]["arguments"] += tc.function.arguments
+                            # id/name are identifiers, not deltas. Some backends
+                            # (ollama via litellm) RESEND the full value in later
+                            # chunks — blind += produced "ReadRead" and every
+                            # call failed as an unknown tool. Skip exact resends;
+                            # append only genuine fragments. Arguments are true
+                            # deltas and always append.
+                            if tc.id and tc.id != tool_call_chunks[idx]["id"]:
+                                tool_call_chunks[idx]["id"] += tc.id
+                            if tc.function.name and tc.function.name != tool_call_chunks[idx]["name"]:
+                                tool_call_chunks[idx]["name"] += tc.function.name
+                            # Full-resend also happens for arguments on this
+                            # channel (produced '{...}{...}' glued objects — the
+                            # decoder's raw_decode salvage stays as the backstop).
+                            if tc.function.arguments and tc.function.arguments != tool_call_chunks[idx]["arguments"]:
+                                tool_call_chunks[idx]["arguments"] += tc.function.arguments
 
                 reason = chunk.choices[0].finish_reason
                 if reason == "malformed_function_call":

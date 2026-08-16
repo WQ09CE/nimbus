@@ -93,6 +93,7 @@ class MMU:
         self._messages: List[Message] = []
         self._global_summary: str = ""  # merged summary (NOT a list — prevents growth)
         self._goal: str = ""
+        self._plan: str = ""  # agent-authored plan anchor (update_plan tool)
         self._last_usage = None  # TokenUsage from last LLM response (for hybrid estimation)
         self._message_count_at_usage: int = 0  # message count when _last_usage was recorded
         # Optional observer for live message mutations (Phase 0 dual-write:
@@ -119,6 +120,20 @@ class MMU:
     @property
     def goal(self) -> str:
         return self._goal
+
+    def set_plan(self, plan: str) -> None:
+        """Pin the agent-authored task plan (update_plan tool).
+
+        Anchor state, not stream state: always assembled near the top of the
+        context, immune to compaction, restated on every step. Each update is
+        logged as a plan/updated event so the trace shows plan evolution and
+        restore paths can recover it."""
+        self._plan = plan
+        self._notify("plan/updated", {"plan": plan})
+
+    @property
+    def plan(self) -> str:
+        return self._plan
 
     # --- Message Management (Stream) ---
 
@@ -191,6 +206,14 @@ class MMU:
             messages.append({
                 "role": "user",
                 "content": f"### 🎯 CURRENT GOAL\n{self._goal}\n\n---\n"
+            })
+
+        # 2b. Agent-authored plan anchor (update_plan) — recitation against
+        # goal drift; survives compaction because it is not stream state.
+        if self._plan:
+            messages.append({
+                "role": "user",
+                "content": f"### 📋 CURRENT PLAN (yours — keep it updated)\n{self._plan}\n\n---\n",
             })
 
         # 3. Global summary (single merged string, not a growing list)
@@ -292,6 +315,8 @@ class MMU:
             total += self._pinned.token_estimate()
         if self._goal:
             total += estimate_text_tokens(self._goal) + MESSAGE_OVERHEAD
+        if self._plan:
+            total += estimate_text_tokens(self._plan) + MESSAGE_OVERHEAD
         if self._global_summary:
             total += estimate_text_tokens(self._global_summary) + MESSAGE_OVERHEAD
         for msg in self._messages:
@@ -487,5 +512,6 @@ class MMU:
         self._messages.clear()
         self._global_summary = ""
         self._goal = ""
+        self._plan = ""
         self._last_usage = None
         self._message_count_at_usage = 0

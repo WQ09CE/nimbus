@@ -168,12 +168,14 @@ class SessionStorage:
         new_log.append("seed/applied", {
             "messages": state["messages"],
             "summary": state["summary"],
+            "plan": state.get("plan", ""),
             "lineage": lineage,
         })
 
         metadata = dict(parent.get("metadata", {}))
         mmu_state = dict(metadata.get("mmu_state", {}))
         mmu_state["global_summary"] = state["summary"]
+        mmu_state["plan"] = state.get("plan", "")
         metadata["mmu_state"] = mmu_state
         metadata["lineage"] = lineage
 
@@ -206,9 +208,10 @@ class SessionStorage:
             if log_state is not None:
                 messages = log_state["messages"]
                 dump["messages"] = messages
-                # Summary flows to the restore path via metadata.mmu_state.
+                # Summary + plan flow to the restore path via metadata.mmu_state.
                 mmu_state = dump.setdefault("metadata", {}).setdefault("mmu_state", {})
                 mmu_state["global_summary"] = log_state["summary"]
+                mmu_state["plan"] = log_state.get("plan", "")
 
             # --- Syscall Interruption Recovery ---
             # A crash can leave the latest assistant tool_calls batch with some

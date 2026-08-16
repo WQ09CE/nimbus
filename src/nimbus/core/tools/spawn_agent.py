@@ -44,6 +44,7 @@ def _build_sub_agent_tools(role: str) -> ToolRegistry:
     from nimbus.core.tools.grep import grep_search
     from nimbus.core.tools.glob import glob_search
     from nimbus.core.tools.submit_result import submit_result
+    from nimbus.core.tools.update_plan import update_plan
 
     allowed = _ROLE_TOOLS.get(role, [])
     registry = ToolRegistry()
@@ -64,6 +65,9 @@ def _build_sub_agent_tools(role: str) -> ToolRegistry:
 
     # All sub-agents get submit_result — it's their only exit in contract_mode
     registry.register_decorated(submit_result)
+    # ...and update_plan — the pinned working-memory anchor (in-memory, safe
+    # for read-only roles too)
+    registry.register_decorated(update_plan)
 
     return registry
 
@@ -88,12 +92,18 @@ def _resolve_model_for_role(role: str, parent_model: Optional[str] = None) -> tu
 
 
 def _collect_partial(loop: Any, scratchpad_path: str) -> str:
-    """Collect partial results from a sub-agent loop + scratchpad on disk.
+    """Collect partial results from a sub-agent: plan anchor + tool results +
+    scratchpad mirror.
 
     Called on timeout or exception so the parent agent gets everything
     the sub-agent accomplished without needing an extra Read tool call.
     """
     sections: List[str] = []
+
+    # 0. Plan anchor (update_plan) — the sub-agent's own progress checklist
+    plan = getattr(getattr(loop, "mmu", None), "_plan", "")
+    if plan:
+        sections.append(f"**Sub-agent plan at interruption:**\n{plan}")
 
     # 1. RuntimeLoop.partial_results (tool call outputs accumulated so far)
     partial = getattr(loop, "partial_results", [])
@@ -168,12 +178,17 @@ async def _run_sub_agent(
         f"You are a sub-agent with the role of '{role}'. "
         "Complete the goal given to you using ONLY the tools available. "
         "Think step by step. Be concise and precise.\n\n"
-        f"# Scratchpad\n"
-        f"You have a dedicated scratchpad at `{scratchpad_path}`.\n"
-        "**Write progress incrementally** — after each meaningful step, "
-        "append your findings and checked-off TODOs to the scratchpad immediately. "
-        "Do NOT wait until the end. If you are interrupted at any point, "
-        "the scratchpad should already contain all progress so far.\n\n"
+        f"# Task Plan\n"
+        "Use the `update_plan` tool as your working memory: call it once at "
+        "the start with your TODO list, and update it when items complete or "
+        "the plan changes. It stays pinned at the top of your context — you "
+        "do NOT need to write progress files; every tool result is already "
+        "durably recorded by the framework.\n\n"
+        f"# Efficiency\n"
+        "Batch independent operations into ONE step: issue multiple "
+        "Read/Grep/Glob calls together instead of one per step. Read whole "
+        "files (the Read tool returns up to 2000 lines) — do not page "
+        "through normal-sized files with small limits.\n\n"
         "# Delivering Results\n"
         "When your work is complete, you MUST call `submit_result` to deliver structured results. "
         "Do NOT just say 'done' in text — call the tool.\n\n"

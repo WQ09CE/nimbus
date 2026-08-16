@@ -102,6 +102,7 @@ def _register_default_tools(registry: ToolRegistry):
     from .tools.grep import grep_search
     from .tools.read import read_file
     from .tools.spawn_agent import spawn_agent
+    from .tools.update_plan import update_plan
     from .tools.write import write_file
 
     registry.register_decorated(read_file)
@@ -111,6 +112,7 @@ def _register_default_tools(registry: ToolRegistry):
     registry.register_decorated(grep_search)
     registry.register_decorated(glob_search)
     registry.register_decorated(spawn_agent)
+    registry.register_decorated(update_plan)
 
 
 # =============================================================================
@@ -336,6 +338,7 @@ class AgentOS:
                 if mmu_state:
                     mmu._global_summary = mmu_state.get("global_summary", "")
                     mmu._goal = mmu_state.get("goal", "")
+                    mmu._plan = mmu_state.get("plan", "")
 
             self._mmus[session_id] = mmu
         else:
@@ -361,6 +364,7 @@ class AgentOS:
                     if mmu_state:
                         existing_mmu._global_summary = mmu_state.get("global_summary", "")
                         existing_mmu._goal = mmu_state.get("goal", "")
+                        existing_mmu._plan = mmu_state.get("plan", "")
 
         mmu = self._mmus[session_id]
 
@@ -389,6 +393,13 @@ class AgentOS:
                 args.setdefault("_sub_session_id", session_id)
                 if vcpu_ref[0] is not None:
                     args.setdefault("_vcpu", vcpu_ref[0])
+            # update_plan writes the MMU plan anchor + a human-readable mirror
+            if name == "update_plan":
+                args.setdefault("_mmu", mmu)
+                args.setdefault(
+                    "_plan_mirror_path",
+                    f".nimbus/sessions/{session_id}/scratchpad.md",
+                )
             return await self._registry.execute(name, args)
 
         gate = KernelGate(
