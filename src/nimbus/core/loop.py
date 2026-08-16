@@ -701,6 +701,12 @@ class RuntimeLoop:
         metadata = dict(self.metadata) if self.metadata else {}
         metadata["mmu_state"] = mmu_state
 
+        # Persist cumulative token usage — without it a session's cache hit
+        # rate and cost are unrecoverable after the fact (the audit could not
+        # answer "what was the hit rate of that 46-minute session").
+        if hasattr(self._cumulative_usage, "to_dict"):
+            metadata["cumulative_usage"] = self._cumulative_usage.to_dict()
+
         # Preserve llm_config from metadata (set at session creation)
         # so it doesn't get lost when vcpu_config is overwritten with runtime state
         llm_config = metadata.get("llm_config", {})

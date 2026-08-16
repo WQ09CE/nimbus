@@ -1550,6 +1550,12 @@ class DirectAdapter:
                 "reasoning.encrypted_content",
             ],
         }
+        # Stable cache routing: identical prefixes only hit the prompt cache
+        # when they land on the same backend node. Keyed per adapter instance —
+        # the server builds one adapter per session, so this approximates a
+        # session-stable key. (Measured 0% cache hits without it, even for
+        # byte-identical back-to-back requests.)
+        body["prompt_cache_key"] = f"nimbus-{id(self)}"
         # Reasoning effort (Responses API). None → API default; "off" maps to
         # the lowest supported level ("minimal" — Responses can't fully disable).
         if self.config.thinking_effort is not None:

@@ -208,14 +208,6 @@ class MMU:
                 "content": f"### 🎯 CURRENT GOAL\n{self._goal}\n\n---\n"
             })
 
-        # 2b. Agent-authored plan anchor (update_plan) — recitation against
-        # goal drift; survives compaction because it is not stream state.
-        if self._plan:
-            messages.append({
-                "role": "user",
-                "content": f"### 📋 CURRENT PLAN (yours — keep it updated)\n{self._plan}\n\n---\n",
-            })
-
         # 3. Global summary (single merged string, not a growing list)
         if self._global_summary:
             messages.append({
@@ -279,6 +271,17 @@ class MMU:
 
             for msg in included:
                 messages.append(msg.to_dict(include_meta=False))  # LLM API: no meta
+
+        # 5. Agent-authored plan anchor (update_plan) — injected at the TAIL:
+        # recitation puts the plan at the model's most-attended position
+        # (recency), and a changing plan no longer invalidates the prompt
+        # cache for the entire message stream (measured 12.4% hit rate with
+        # the plan in the prefix). Still anchor state: survives compaction.
+        if self._plan:
+            messages.append({
+                "role": "user",
+                "content": f"### 📋 CURRENT PLAN (yours — keep it updated)\n{self._plan}\n\n---\n",
+            })
 
         return messages
 
