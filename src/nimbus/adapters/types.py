@@ -111,6 +111,11 @@ class LLMConfig:
     timeout: float = 120.0
     temperature: Optional[float] = None
     thinking: Optional[bool] = None
+    # Reasoning effort: "off" | "low" | "medium" | "high". None = channel
+    # default (ollama: off — reasoning-heavy local models stall the agent
+    # loop; codex native: let the API default apply). Per-channel mapping
+    # lives in DirectAdapter.
+    thinking_effort: Optional[str] = None
     stop: Optional[List[str]] = None
     # Model is served by the local pi-ai sidecar (OpenAI-compatible). Always
     # use the LiteLLM channel with base_url — never the native OAuth channels,

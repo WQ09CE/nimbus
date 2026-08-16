@@ -382,20 +382,34 @@ class SessionManagerV2:
                     except (ValueError, TypeError):
                         timeout = None
 
-                # Construct full model name (provider/model_id)
-                provider = model_config.get("provider", "google")
-                if provider:
-                    full_model = f"{provider}/{model_id}"
+                # Construct full model name (provider/model_id). A missing or
+                # "default" model_id means "use the configured default model" —
+                # composing "provider/default" would hit a nonexistent model
+                # (e.g. after the UI PATCHes only thinking_effort on a
+                # default-model session).
+                if model_id in ("default", "", None):
+                    from nimbus.config import get_config
+                    full_model = get_config().default_model
                 else:
-                    full_model = model_id
+                    provider = model_config.get("provider", "google")
+                    if provider:
+                        full_model = f"{provider}/{model_id}"
+                    else:
+                        full_model = model_id
 
                 # Use factory to create DirectAdapter
                 from nimbus.adapters.llm_factory import create_llm_client
+
+                thinking_effort = model_config.get("thinking_effort")
+                if thinking_effort not in (None, "off", "low", "medium", "high"):
+                    logger.warning(f"Ignoring invalid thinking_effort: {thinking_effort!r}")
+                    thinking_effort = None
 
                 llm_client = await create_llm_client(
                     model=full_model,
                     temperature=temperature,
                     thinking=thinking,
+                    thinking_effort=thinking_effort,
                     timeout=timeout if timeout is not None else 120.0,
                 )
             else:

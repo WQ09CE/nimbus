@@ -600,6 +600,22 @@ class DirectAdapter:
             self._codex_client_token = token
         return self._codex_client
 
+    def _litellm_reasoning_kwargs(self, current_model: str) -> dict:
+        """Map config.thinking_effort onto litellm's reasoning_effort param.
+
+        Ollama models default to OFF (reasoning-heavy local models used to
+        stall the agent loop with everything in reasoning_content); other
+        litellm providers default to the API's own behavior. "off" maps to
+        litellm's "none" (→ think=False for ollama).
+        """
+        effort = self.config.thinking_effort
+        is_ollama = current_model.startswith(("ollama/", "ollama_chat/"))
+        if effort is None:
+            return {"reasoning_effort": "none"} if is_ollama else {}
+        if effort == "off":
+            return {"reasoning_effort": "none"}
+        return {"reasoning_effort": effort}
+
     def _is_anthropic_model(self) -> bool:
         """Check if current model is an Anthropic model."""
         info = ModelRegistry.get(self._model)
@@ -1534,6 +1550,13 @@ class DirectAdapter:
                 "reasoning.encrypted_content",
             ],
         }
+        # Reasoning effort (Responses API). None → API default; "off" maps to
+        # the lowest supported level ("minimal" — Responses can't fully disable).
+        if self.config.thinking_effort is not None:
+            effort = self.config.thinking_effort
+            body["reasoning"] = {
+                "effort": "minimal" if effort == "off" else effort,
+            }
         body["instructions"] = instructions if instructions else "You are a helpful assistant."
         # Note: Codex Responses API does not support temperature parameter
 
@@ -1810,13 +1833,7 @@ class DirectAdapter:
                 )
                 if self.config.base_url:
                     acompletion_kwargs["api_base"] = self.config.base_url
-                # Disable thinking mode for ollama models (e.g. qwen3.5)
-                # to avoid empty responses where all content goes to reasoning_content
-                # Use reasoning_effort="none" instead of think=False because litellm's
-                # supported params list includes "reasoning_effort" but not "think".
-                # litellm maps reasoning_effort="none" to think=False for ollama models.
-                if current_model.startswith(("ollama/", "ollama_chat/")):
-                    acompletion_kwargs["reasoning_effort"] = "none"
+                acompletion_kwargs.update(self._litellm_reasoning_kwargs(current_model))
                 response = await acompletion(**acompletion_kwargs)
             except Exception as e:
                 # Check for rate limit (429) or resource exhausted
@@ -1858,11 +1875,7 @@ class DirectAdapter:
                         )
                         if self.config.base_url:
                             acompletion_kwargs["api_base"] = self.config.base_url
-                        # Disable thinking mode for ollama models (e.g. qwen3.5)
-                        # Use reasoning_effort="none" instead of think=False because litellm's
-                        # supported params list includes "reasoning_effort" but not "think".
-                        if current_model.startswith(("ollama/", "ollama_chat/")):
-                            acompletion_kwargs["reasoning_effort"] = "none"
+                        acompletion_kwargs.update(self._litellm_reasoning_kwargs(current_model))
                         response = await acompletion(**acompletion_kwargs)
                     else:
                         raise e

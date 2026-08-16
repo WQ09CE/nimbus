@@ -26,6 +26,7 @@ async def create_llm_client(
     timeout: float = 120.0,
     temperature: Optional[float] = None,
     thinking: Optional[bool] = None,
+    thinking_effort: Optional[str] = None,
 ):
     """
     Create and start a DirectAdapter (LiteLLM) for the given model.
@@ -62,6 +63,7 @@ async def create_llm_client(
         timeout=timeout,
         temperature=temperature,
         thinking=thinking,
+        thinking_effort=thinking_effort,
     )
 
     # Set Ollama base_url from global config. Key off the provider parsed from

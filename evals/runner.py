@@ -79,7 +79,7 @@ async def _interrupt_after_first_tool(loop) -> None:
             loop.request_interruption()
 
 
-async def run_task(task_dir: Path, model: str) -> dict:
+async def run_task(task_dir: Path, model: str, thinking_effort=None) -> dict:
     cfg = tomllib.loads((task_dir / "task.toml").read_text())
     goal = cfg["task"]["goal"]
     mode = cfg["task"].get("mode", "normal")
@@ -99,7 +99,7 @@ async def run_task(task_dir: Path, model: str) -> dict:
     record: dict = {"task": task_dir.name, "model": model, "mode": mode}
     original_cwd = os.getcwd()
     os.chdir(workspace)
-    llm = await create_llm_client(model=model)
+    llm = await create_llm_client(model=model, thinking_effort=thinking_effort)
     await llm.start()
     t0 = time.monotonic()
     try:
@@ -196,6 +196,9 @@ async def main() -> int:
     parser.add_argument("--tasks", default="", help="comma-separated task names")
     parser.add_argument("--baseline", action="store_true",
                         help="save results as the baseline for this model")
+    parser.add_argument("--thinking-effort", default=None,
+                        choices=["off", "low", "medium", "high"],
+                        help="reasoning effort passed to the adapter (default: channel default)")
     args = parser.parse_args()
 
     wanted = [t.strip() for t in args.tasks.split(",") if t.strip()]
@@ -210,7 +213,7 @@ async def main() -> int:
     records = []
     for task_dir in task_dirs:
         print(f"→ {task_dir.name} ...", flush=True)
-        records.append(await run_task(task_dir, args.model))
+        records.append(await run_task(task_dir, args.model, args.thinking_effort))
 
     _print_report(records)
 

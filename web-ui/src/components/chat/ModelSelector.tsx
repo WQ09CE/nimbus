@@ -51,6 +51,7 @@ export function ModelSelector({ session, onChange }: ModelSelectorProps) {
     const currentConfig = session.llm_config || {};
     const sessionModelId = currentConfig.model_id || "default";
     const currentModelId = optimisticModelId || sessionModelId;
+    const currentEffort = (currentConfig as Record<string, string>).thinking_effort || "auto";
 
     // Display name logic
     const displayName = currentModelId.split('/').pop() || currentModelId;
@@ -84,6 +85,8 @@ export function ModelSelector({ session, onChange }: ModelSelectorProps) {
                 llm_config: {
                     provider,
                     model_id: modelId,
+                    // Preserve the session's thinking effort across model switches
+                    ...(currentEffort !== "auto" ? { thinking_effort: currentEffort } : {}),
                 }
             });
             console.log("[ModelSelector] Update success");
@@ -99,6 +102,25 @@ export function ModelSelector({ session, onChange }: ModelSelectorProps) {
             console.error("[ModelSelector] Failed to update model", err);
             setError("Failed to update model");
             setOptimisticModelId(null); // Revert on error
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleSelectEffort = async (effort: string) => {
+        setLoading(true);
+        try {
+            await updateSession(session.id, {
+                llm_config: {
+                    provider: currentConfig.provider || "openai-codex",
+                    model_id: currentConfig.model_id || "default",
+                    ...(effort !== "auto" ? { thinking_effort: effort } : {}),
+                }
+            });
+            onChange();
+        } catch (err) {
+            console.error("[ModelSelector] Failed to update thinking effort", err);
+            setError("Failed to update thinking effort");
         } finally {
             setLoading(false);
         }
@@ -165,6 +187,28 @@ export function ModelSelector({ session, onChange }: ModelSelectorProps) {
                                 );
                             })
                         )}
+                    </div>
+
+                    {/* Thinking effort — flows llm_config.thinking_effort →
+                        create_llm_client → per-channel reasoning mapping */}
+                    <div className="sticky bottom-0 bg-nimbus-bg/95 backdrop-blur px-3 py-2 border-t border-nimbus-border">
+                        <div className="text-[10px] font-bold text-gray-500 uppercase mb-1.5">Thinking</div>
+                        <div className="flex gap-1">
+                            {["auto", "off", "low", "medium", "high"].map((level) => (
+                                <button
+                                    key={level}
+                                    onClick={() => handleSelectEffort(level)}
+                                    className={`flex-1 px-1.5 py-1 rounded text-[10px] font-medium transition-colors border ${
+                                        currentEffort === level
+                                            ? "bg-violet-400/15 text-violet-300 border-violet-400/30"
+                                            : "text-gray-500 border-transparent hover:bg-nimbus-surface-hover hover:text-gray-300"
+                                    }`}
+                                    title={level === "auto" ? "通道默认（ollama 关闭 / codex API 默认）" : level}
+                                >
+                                    {level}
+                                </button>
+                            ))}
+                        </div>
                     </div>
                 </div>
             )}
