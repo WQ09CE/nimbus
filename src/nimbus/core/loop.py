@@ -203,6 +203,13 @@ class RuntimeLoop:
         self._max_retries = 3
         self._base_retry_delay = 2.0  # seconds
 
+        # No-progress (plan-churn) watchdog: a weak model can burn the whole
+        # iteration budget on update_plan/reads without ever executing. Track
+        # deliverable-producing calls and nudge at 40% / 70% of the budget.
+        self._observed_steps = 0
+        self._productive_calls = 0
+        self._noprogress_nudges = 0
+
         # Pi-style steering + wakeup for LLM call interruption
         self._wakeup_event = asyncio.Event()
         self.steering_queue = steering_queue or SteeringQueue(self._wakeup_event)
@@ -554,6 +561,33 @@ class RuntimeLoop:
                 #     a reader legitimately reads many different files. This earns
                 #     only an occasional gentle nudge, never a kill.
                 if not step_result.is_final and not step_result.fault:
+                    # ---- No-progress watchdog ----
+                    self._observed_steps += 1
+                    tool_actions = [a for a in step_result.actions if a.kind == "TOOL_CALL"]
+                    for act, res in zip(tool_actions, step_result.results):
+                        if res.status == "OK" and act.name.lower() not in (
+                            "read", "grep", "glob", "update_plan"
+                        ):
+                            self._productive_calls += 1
+                    max_iters = getattr(
+                        getattr(self.vcpu, "config", None), "max_iterations", 200
+                    )
+                    nudge_at = int(max_iters * (0.4 if self._noprogress_nudges == 0 else 0.7))
+                    if (
+                        self._productive_calls == 0
+                        and self._noprogress_nudges < 2
+                        and self._observed_steps >= max(nudge_at, 5)
+                    ):
+                        self._noprogress_nudges += 1
+                        self.mmu.add_system_message(
+                            f"⚠️ {self._observed_steps} of {max_iters} steps used with no "
+                            "deliverable-producing action yet (no file written or edited, "
+                            "no command run, nothing submitted). Stop planning and "
+                            "re-reading — start executing the task now and write outputs "
+                            "incrementally."
+                        )
+                        yield {"type": "noprogress_nudge", "steps": self._observed_steps}
+
                     sig = self._tool_call_signature(step_result)
                     succeeded = bool(step_result.results) and all(
                         r.status == "OK" for r in step_result.results
