@@ -501,6 +501,18 @@ class RuntimeLoop:
                         if hasattr(self.vcpu, '_exec'):
                             self.vcpu._exec.iteration = 0
                             self.vcpu._exec.consecutive_thoughts = 0
+                        # Re-arm the countdown for the fresh budget, and tell the
+                        # model its earlier messages were compacted — otherwise it
+                        # may "finish" by pointing at analysis no longer in context.
+                        if hasattr(self.vcpu, '_countdown_warning_sent'):
+                            self.vcpu._countdown_warning_sent = False
+                        self.mmu.add_system_message(
+                            "Context was compacted after hitting the iteration limit: "
+                            "earlier messages are now summarized. Any deliverable must "
+                            "be restated in full when you finish — do not refer to "
+                            "content 'above'. If the task asked for files, verify they "
+                            "are written."
+                        )
                         yield {"type": "context_compacted", "compaction_count": self._compaction_count, "summary": summary}
                         step_result.is_final = False
                         continue

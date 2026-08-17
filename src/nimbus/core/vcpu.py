@@ -266,15 +266,26 @@ class VCPU:
 
         # Countdown steering: inject one-time warning near iteration limit
         if (
-            self.config.contract_mode
-            and not self._countdown_warning_sent
+            not self._countdown_warning_sent
             and self._exec.iteration >= int(self.config.max_iterations * 0.85)
         ):
             remaining = self.config.max_iterations - self._exec.iteration
-            self.mmu.add_system_message(
-                f"⚠️ You only have {remaining} steps left. "
-                "Immediately write all findings to Scratchpad and call submit_result to deliver your results."
-            )
+            if self.config.contract_mode:
+                warning = (
+                    f"⚠️ You only have {remaining} steps left. "
+                    "Immediately write all findings to Scratchpad and call submit_result to deliver your results."
+                )
+            else:
+                # No submit_result outside contract mode: the deliverable is the
+                # final message plus any files the task asked for, and earlier
+                # messages may be compacted away — the wrap-up must be self-contained.
+                warning = (
+                    f"⚠️ You only have {remaining} steps left. "
+                    "Wrap up now: write any files the task requires, then produce the "
+                    "complete deliverable in your final message — full content, "
+                    "self-contained, without referring back to earlier messages."
+                )
+            self.mmu.add_system_message(warning)
             self._countdown_warning_sent = True
 
         # ---- THINK (Reasoning) ----
