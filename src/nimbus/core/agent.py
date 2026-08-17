@@ -89,6 +89,9 @@ class AgentConfig:
     # (termination inversion). Kept so stored configs / call sites don't break.
     text_is_final: bool = False
     contract_mode: bool = False  # Sub-agent only: must exit via submit_result, not text
+    # Tool allowlist for confined runs (e.g. air-gapped analysis without Bash,
+    # which is otherwise an unconfined read escape hatch). None = all tools.
+    allowed_tools: Optional[List[str]] = None
 
 
 # =============================================================================
@@ -182,6 +185,8 @@ class AgentOS:
         if self._plugin_snapshot:
             for contribution in getattr(self._plugin_snapshot, "tools", []):
                 self._registry.register_plugin_tool(contribution)
+        if self.config.allowed_tools is not None:
+            self._registry.restrict(self.config.allowed_tools)
 
         # 3. System prompt
         self._system_prompt = system_prompt or self._default_system_prompt()

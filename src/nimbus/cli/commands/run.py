@@ -38,6 +38,12 @@ def run_command(
         "--max-iterations",
         help="Maximum number of iterations",
     ),
+    tools: str = typer.Option(
+        "",
+        "--tools",
+        help="Comma-separated tool allowlist (e.g. 'read,grep,write'); "
+        "empty = all tools. Use to confine analysis runs (no bash).",
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -94,6 +100,7 @@ def run_command(
             workspace=work_dir,
             max_iterations=max_iterations,
             verbose=verbose,
+            allowed_tools=[t.strip() for t in tools.split(",") if t.strip()] or None,
         )
     )
 
@@ -123,6 +130,7 @@ async def _run_task(
     workspace: Path,
     max_iterations: int,
     verbose: bool,
+    allowed_tools: Optional[list] = None,
 ) -> dict:
     """Run a single task asynchronously."""
     import os
@@ -147,7 +155,9 @@ async def _run_task(
 
         try:
             # Create AgentOS config with max_iterations
-            config = AgentConfig(max_iterations=max_iterations)
+            config = AgentConfig(
+                max_iterations=max_iterations, allowed_tools=allowed_tools
+            )
 
             # Create agent with the LLM adapter
             agent = AgentOS(config=config, adapter=llm)

@@ -114,6 +114,14 @@ class ToolRegistry:
             origin=f"plugin:{contribution.plugin_name}",
         )
 
+    def restrict(self, allowed: List[str]) -> None:
+        """Drop every registered tool whose name is not in *allowed* (case-insensitive)."""
+        keep = {n.strip().lower() for n in allowed}
+        for name in list(self._tools.keys()):
+            if name.lower() not in keep:
+                del self._tools[name]
+                self._origins.pop(name, None)
+
     def get(self, name: str) -> Optional[tuple[ToolDefinition, Callable[..., Any]]]:
         return self._tools.get(name)
 

@@ -34,9 +34,14 @@ class PathOutOfScopeError(Exception):
         self.allowed_roots = allowed_roots
         self.operation = operation
         roots_display = ", ".join(allowed_roots) if allowed_roots else "(none)"
+        # The hint matters: without it, models retry by stripping the leading
+        # '/' from the absolute path, burying files under e.g. '.data/...'.
         super().__init__(
             f"Path out of scope for {operation}: {path!r}. "
-            f"Allowed roots: [{roots_display}]"
+            f"Allowed roots: [{roots_display}]. "
+            "Retry with a path inside an allowed root — e.g. a plain "
+            "workspace-relative path like 'subdir/file.md'; do NOT just strip "
+            "the leading '/' from the absolute path."
         )
 
 
