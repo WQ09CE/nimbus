@@ -787,6 +787,16 @@ class DirectAdapter:
                 raise
             raise _classify_llm_exception(e)
 
+        if assembler.dropped_after_terminal:
+            # A provider loop emitted substantive events AFTER its stop/error —
+            # the documented contract is usage-before-stop (see _stream_litellm
+            # tail). Dropped by terminal closure; loud so billing loss is seen.
+            logger.warning(
+                "[chat] provider emitted %d event(s) after terminal — dropped "
+                "(usage-before-stop contract violation)",
+                assembler.dropped_after_terminal,
+            )
+
         collected_usage = None
         if assembler.usage is not None:
             u = assembler.usage

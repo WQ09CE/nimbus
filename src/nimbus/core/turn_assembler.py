@@ -39,12 +39,19 @@ class TurnAssembler:
         self._usage: Optional[Dict[str, Any]] = None
         self._error: Optional[str] = None
         self.state: AssemblyState = "streaming"
+        # Provider contract: every substantive event (usage above all — it is
+        # billing data) must arrive BEFORE the terminal stop/error. Terminal
+        # closure drops late arrivals; this counter makes a contract
+        # violation observable instead of a silent usage loss.
+        self.dropped_after_terminal: int = 0
 
     # --- consumption ---
 
     def consume(self, event: Any) -> None:
         """Consume one event. No-op once the assembly is terminal."""
         if self.state != "streaming":
+            if getattr(event, "type", None) in ("text", "tool_call", "usage"):
+                self.dropped_after_terminal += 1
             return
         etype = getattr(event, "type", None)
         if etype == "text":
