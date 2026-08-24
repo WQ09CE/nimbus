@@ -24,6 +24,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
+from .fault_semantics import ORIGIN_INTERRUPTED, marked_partial_text
 from .protocol import ActionIR, Fault, StepResult, ToolResult
 
 logger = logging.getLogger("nimbus.vcpu")
@@ -209,6 +210,10 @@ class VCPU:
         self._wakeup_event: Optional[asyncio.Event] = None
         self._get_steering = get_steering
         self._on_text_delta = on_text_delta
+        # Step-scoped accumulation of streamed text, so a terminal stream
+        # failure can preserve what the user already saw (fault_semantics:
+        # provider_error keeps marked text; retries/steering keep none).
+        self._streamed_text: List[str] = []
         self._countdown_warning_sent = False
 
     def set_wakeup_event(self, event: asyncio.Event) -> None:
@@ -291,7 +296,10 @@ class VCPU:
         # ---- THINK (Reasoning) ----
         try:
             messages = self.mmu.assemble_context()
-            chat_coro = self.alu.chat(messages, self.tools, on_chunk=self._on_text_delta)
+            # Fresh attempt streams from scratch: drop any half-stream from a
+            # retried/preempted previous attempt (hax EV_RETRY semantics).
+            self._streamed_text.clear()
+            chat_coro = self.alu.chat(messages, self.tools, on_chunk=self._tap_text_delta)
 
             if self._wakeup_event:
                 # Race LLM call against wakeup event (steering message arrived).
@@ -320,6 +328,17 @@ class VCPU:
                             await chat_task
                         except asyncio.CancelledError:
                             pass
+                    # Two wakeup causes, two fates for the half-stream
+                    # (fault_semantics): user_interrupt preserves what the
+                    # user watched arrive (marked); steering_preempt keeps
+                    # none — the re-issued request regenerates it.
+                    if self._interrupted:
+                        preserved = marked_partial_text("".join(self._streamed_text))
+                        if preserved is not None:
+                            self.mmu.add_assistant_message(
+                                preserved, meta={"origin": ORIGIN_INTERRUPTED},
+                            )
+                    self._streamed_text.clear()
                     # Don't add system message -- the loop will inject the steering
                     # message as a user message at the top of the next iteration.
                     result.actions = []
@@ -582,7 +601,23 @@ class VCPU:
                 return True
         return False
 
+    def _tap_text_delta(self, text: str) -> None:
+        """Accumulate streamed text for fault preservation, then forward for
+        display. The buffer is cleared at each fresh stream attempt."""
+        self._streamed_text.append(text)
+        if self._on_text_delta:
+            self._on_text_delta(text)
+
     def _error_step(self, result: StepResult, message: str, retryable: bool = False) -> StepResult:
+        # Terminal failure: text the user already watched arrive must not
+        # silently vanish from history (fault_semantics 'provider_error':
+        # keep marked). Stamped via meta, never recognized by content.
+        preserved = marked_partial_text("".join(self._streamed_text))
+        if preserved is not None:
+            self.mmu.add_assistant_message(
+                preserved, meta={"origin": ORIGIN_INTERRUPTED},
+            )
+            self._streamed_text.clear()
         result.is_final = True
         result.fault = Fault(domain="LLM", code="SYSTEM_ERROR", message=message, retryable=retryable)
         result.final_result = ToolResult(

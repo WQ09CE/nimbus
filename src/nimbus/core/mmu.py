@@ -142,8 +142,10 @@ class MMU:
         self._messages.append(msg)
         self._notify("user/message", {"message": msg.to_dict()})
 
-    def add_assistant_message(self, content: str) -> None:
-        msg = Message(role="assistant", content=content)
+    def add_assistant_message(
+        self, content: str, meta: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        msg = Message(role="assistant", content=content, meta=meta or {})
         self._messages.append(msg)
         self._notify("assistant/message", {"message": msg.to_dict()})
 
