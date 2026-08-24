@@ -347,21 +347,10 @@ class AgentOS:
                 skill_instructions=self._skill_instructions,
             ))
             
-            # Rehydrate initial messages directly into MMU from Dict cache
+            # Rehydrate initial messages into MMU via the named restore
+            # bypass (no re-logging; see MMU.restore_messages).
             if initial_messages:
-                from nimbus.core.mmu import Message
-                mmu._messages = []
-                for m_dict in initial_messages:
-                    mmu._messages.append(
-                        Message(
-                            role=m_dict.get("role", "user"),
-                            content=m_dict.get("content", ""),
-                            name=m_dict.get("name"),
-                            tool_call_id=m_dict.get("tool_call_id"),
-                            tool_calls=m_dict.get("tool_calls"),
-                            meta=m_dict.get("meta", {})
-                        )
-                    )
+                mmu.restore_messages(initial_messages)
 
             # Restore MMU critical state (global_summary + goal) from metadata
             if metadata:
@@ -377,18 +366,7 @@ class AgentOS:
             # (fixes H002: prewarm creates empty MMU, then stream_chat skips restoration)
             existing_mmu = self._mmus[session_id]
             if initial_messages and existing_mmu.message_count == 0:
-                from nimbus.core.mmu import Message
-                for m_dict in initial_messages:
-                    existing_mmu._messages.append(
-                        Message(
-                            role=m_dict.get("role", "user"),
-                            content=m_dict.get("content", ""),
-                            name=m_dict.get("name"),
-                            tool_call_id=m_dict.get("tool_call_id"),
-                            tool_calls=m_dict.get("tool_calls"),
-                            meta=m_dict.get("meta", {})
-                        )
-                    )
+                existing_mmu.restore_messages(initial_messages)
                 # Also restore MMU state if available
                 if metadata:
                     mmu_state = metadata.get("mmu_state")

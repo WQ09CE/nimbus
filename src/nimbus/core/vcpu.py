@@ -608,16 +608,27 @@ class VCPU:
         if self._on_text_delta:
             self._on_text_delta(text)
 
-    def _error_step(self, result: StepResult, message: str, retryable: bool = False) -> StepResult:
-        # Terminal failure: text the user already watched arrive must not
-        # silently vanish from history (fault_semantics 'provider_error':
-        # keep marked). Stamped via meta, never recognized by content.
+    def preserve_streamed_text(self) -> bool:
+        """Land the current attempt's streamed-but-unabsorbed text in history
+        as a marked assistant message (fault_semantics 'provider_error').
+        Returns True when something was preserved. Called internally on
+        terminal failures; the loop calls it when ITS retry budget exhausts
+        (the last attempt's half-stream is still buffered here)."""
         preserved = marked_partial_text("".join(self._streamed_text))
-        if preserved is not None:
-            self.mmu.add_assistant_message(
-                preserved, meta={"origin": ORIGIN_INTERRUPTED},
-            )
-            self._streamed_text.clear()
+        if preserved is None:
+            return False
+        self.mmu.add_assistant_message(
+            preserved, meta={"origin": ORIGIN_INTERRUPTED},
+        )
+        self._streamed_text.clear()
+        return True
+
+    def _error_step(self, result: StepResult, message: str, retryable: bool = False) -> StepResult:
+        # Terminal failure keeps marked text (fault_semantics 'provider_error');
+        # a retryable one is 'provider_retry' — keep none, the loop's retry
+        # re-streams from scratch (preserving here would duplicate on success).
+        if not retryable:
+            self.preserve_streamed_text()
         result.is_final = True
         result.fault = Fault(domain="LLM", code="SYSTEM_ERROR", message=message, retryable=retryable)
         result.final_result = ToolResult(

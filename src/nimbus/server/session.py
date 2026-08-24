@@ -677,8 +677,8 @@ class SessionManagerV2:
                 # For nimbus-next, yank the goal from the MMU via public API
                 title = "Conversation"
                 mmu = agent_os.get_mmu(session_id)
-                if mmu and mmu._messages:
-                    for msg in mmu._messages:
+                if mmu and mmu.message_count:
+                    for msg in mmu.messages_view():
                         if msg.role == "user" and msg.content:
                             title = str(msg.content)[:30].replace("\n", " ").strip()
                             break

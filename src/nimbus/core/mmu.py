@@ -182,6 +182,34 @@ class MMU:
     def message_count(self) -> int:
         return len(self._messages)
 
+    # --- Write-path arbitration ---
+    # Every LIVE mutation of the message surface goes through the add_*
+    # methods above (which notify the session log). The two entry points
+    # below are the only sanctioned exceptions, each named for its reason.
+
+    def restore_messages(self, message_dicts: List[Dict[str, Any]]) -> None:
+        """Rehydrate the surface from persisted dicts WITHOUT notifying the
+        log — these messages came FROM the log/snapshot, re-logging them
+        would duplicate history. Replaces any existing surface. This is the
+        named form of the restore bypass; nothing else may write _messages
+        directly."""
+        self._messages = [
+            Message(
+                role=d.get("role", "user"),
+                content=d.get("content", ""),
+                name=d.get("name"),
+                tool_call_id=d.get("tool_call_id"),
+                tool_calls=d.get("tool_calls"),
+                meta=d.get("meta", {}) or {},
+            )
+            for d in message_dicts
+        ]
+
+    def messages_view(self) -> List[Message]:
+        """Read-only view of the live surface (shallow copy: callers may
+        iterate/serialize freely but must not mutate messages through it)."""
+        return list(self._messages)
+
     # --- Context Assembly ---
 
     def assemble_context(self) -> List[Dict[str, Any]]:

@@ -298,7 +298,7 @@ def derive_state(events: List[SessionEvent]) -> Dict[str, Any]:
 
     Phase 2 equivalence contract: for ANY session — compacted or not —
     derive_state(log.events) must equal
-    ([m.to_dict() for m in mmu._messages], mmu._global_summary).
+    ([m.to_dict() for m in mmu.messages_view()], mmu._global_summary).
 
     compaction/applied is a surface replace: kept_indices are the survivors'
     positions in the pre-compaction surface (non-contiguous under smart-drop),

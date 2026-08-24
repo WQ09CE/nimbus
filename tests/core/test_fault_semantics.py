@@ -200,6 +200,21 @@ class TestVCPUPreservation:
         assert kept[0].content == f"Partial thought\n{INTERRUPT_MARKER}"
 
     @pytest.mark.asyncio
+    async def test_preserve_streamed_text_direct(self):
+        """Loop-facing API for retries-exhausted: preserves once, then no-op."""
+        alu = StreamingFailALU(
+            ["half "],
+            Fault(domain="LLM", code="RATE_LIMIT", message="429", retryable=True),
+        )
+        vcpu, mmu = make_vcpu(alu, max_errors=5)
+        r = await vcpu.step()  # retryable → keeps nothing, buffer still holds
+        assert not r.is_final
+        assert vcpu.preserve_streamed_text() is True
+        kept = marked_messages(mmu)
+        assert len(kept) == 1 and kept[0].content == f"half \n{INTERRUPT_MARKER}"
+        assert vcpu.preserve_streamed_text() is False  # buffer cleared
+
+    @pytest.mark.asyncio
     async def test_steering_preempt_mid_stream_keeps_nothing(self):
         """steering_preempt row: wakeup WITHOUT interrupt drops the half-stream
         (the re-issued request regenerates it)."""
@@ -217,3 +232,40 @@ class TestVCPUPreservation:
         assert not result.actions
         assert marked_messages(mmu) == []
         assert all("Partial thought" not in (m.content or "") for m in mmu._messages)
+
+
+# =============================================================================
+# Write-path arbitration (MMU single write gate)
+# =============================================================================
+
+
+class TestWritePathArbitration:
+    def test_restore_messages_bypasses_log_by_name(self):
+        """The named restore bypass replaces the surface without notifying —
+        these messages came FROM the log; re-logging would duplicate."""
+        mmu = MMU()
+        seen = []
+        mmu.event_sink = lambda t, d: seen.append(t)
+        mmu.restore_messages([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello", "meta": {"x": 1}},
+        ])
+        assert mmu.message_count == 2
+        assert seen == []  # no notifications
+        view = mmu.messages_view()
+        assert view[1].meta == {"x": 1}
+
+    def test_live_appends_notify(self):
+        mmu = MMU()
+        seen = []
+        mmu.event_sink = lambda t, d: seen.append(t)
+        mmu.add_user_message("q")
+        mmu.add_assistant_message("a")
+        assert seen == ["user/message", "assistant/message"]
+
+    def test_messages_view_is_a_copy(self):
+        mmu = MMU()
+        mmu.add_user_message("q")
+        view = mmu.messages_view()
+        view.clear()
+        assert mmu.message_count == 1

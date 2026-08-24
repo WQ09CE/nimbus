@@ -538,18 +538,22 @@ class RuntimeLoop:
                             "Retryable error (attempt %d/%d), backing off %.1fs: %s",
                             self._retry_count, self._max_retries, delay, step_result.fault.message,
                         )
-                        # Remove error assistant message from MMU to avoid confusing LLM on retry
-                        if hasattr(self.mmu, '_messages') and self.mmu._messages:
-                            last = self.mmu._messages[-1]
-                            if hasattr(last, 'role') and last.role == 'assistant':
-                                self.mmu._messages.pop()
-                                logger.debug("Removed error assistant message before retry")
+                        # No surface mutation here (fault_semantics
+                        # 'provider_retry': keep none — and nothing was added).
+                        # The old blind pop of the last assistant message could
+                        # eat a legitimate prior THOUGHT and, being un-notified,
+                        # silently diverged surface from the append-only log.
                         await asyncio.sleep(delay)
                         step_result.is_final = False
                         yield {"type": "retry", "attempt": self._retry_count, "delay": delay}
                         continue
                     else:
                         logger.error("Max retries (%d) exhausted: %s", self._max_retries, step_result.fault.message)
+                        # Now terminal: the last attempt's half-stream (still
+                        # buffered in the VCPU) is preserved marked, per
+                        # fault_semantics 'provider_error'.
+                        if hasattr(self.vcpu, "preserve_streamed_text"):
+                            self.vcpu.preserve_streamed_text()
 
                 # ---- Stall detection ----
                 # A weak model can keep calling tools instead of finishing. Two
@@ -714,7 +718,7 @@ class RuntimeLoop:
 
     def _save_core_dump(self, status: str) -> None:
         """Serialize the complete agent state to disk (Core Dump)."""
-        messages = [m.to_dict() for m in self.mmu._messages]
+        messages = [m.to_dict() for m in self.mmu.messages_view()]
 
         # Pull vcpu state (Registers) -- defensive for mock VCPUs in tests
         vcpu_state = {}
