@@ -36,6 +36,7 @@ FaultClass = Literal[
     "provider_retry",   # LLM stream failed, silent retry upcoming
     "steering_preempt", # In-flight stream cancelled to inject steering
     "user_interrupt",   # Explicit interrupt/abort from the user
+    "pause",            # Soft stop at the next step seam (in-flight work completes)
     "budget_exceeded",  # Iteration/token budget hit (soft, recoverable)
     "crash",            # Process died; log ends inside an open turn
     "fork_cut",         # fork_session cut a parent log mid-turn
@@ -112,6 +113,17 @@ SEMANTICS: Dict[str, FaultPolicy] = {
         turn_end_reason="aborted",
         resumability="continuation",
         enforced_by="loop interrupt branch + vcpu ACT skip results",
+    ),
+    # Soft stop sampled ONLY at step seams (hax PAUSE): the in-flight step —
+    # LLM response and its whole tool batch — completes first, so history is
+    # balanced with every call paired, no marker owed, and a resume continues
+    # verbatim. Abort wins over pause when both are requested.
+    "pause": FaultPolicy(
+        keep_streamed_text="none",   # nothing is in flight at a seam
+        close_open_calls="none",     # the batch completed; nothing to close
+        turn_end_reason="paused",
+        resumability="verbatim",
+        enforced_by="loop seam check (top of inner step loop)",
     ),
     # Soft budget stop: nothing is lost, the loop compacts and continues, or
     # ends the turn as 'max-iterations' when recovery is off the table.

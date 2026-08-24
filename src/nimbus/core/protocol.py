@@ -51,7 +51,7 @@ class ActionIR:
 # 2. Tool & Execution Results (ABI)
 # =============================================================================
 
-ResultStatus = Literal["OK", "ERROR", "CANCELLED", "TIMEOUT", "SKIPPED"]
+ResultStatus = Literal["OK", "ERROR", "CANCELLED", "TIMEOUT", "SKIPPED", "PAUSED"]
 
 
 @dataclass
@@ -154,6 +154,7 @@ EventType = Literal[
     "TOOL_FINISHED",     # Tool execution completed (Gate-level)
     "FAULT_RAISED",      # Fault occurred
     "INTERRUPTED",       # Execution interrupted with partial results
+    "PAUSED",            # Execution paused at a clean step seam (verbatim-resumable)
     "CONTEXT_COMPACTED", # MMU compaction triggered
 ]
 

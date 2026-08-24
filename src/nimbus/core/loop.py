@@ -199,6 +199,7 @@ class RuntimeLoop:
         self._unproductive_compactions = 0
         self._steps_since_compaction = 0
         self._interrupted = False
+        self._pause_requested = False
         self._retry_count = 0
         self._max_retries = 3
         self._base_retry_delay = 2.0  # seconds
@@ -263,6 +264,16 @@ class RuntimeLoop:
         # _interrupted before consuming steering, so a set wakeup with an
         # empty queue is safe.
         self._wakeup_event.set()
+
+    def request_pause(self) -> None:
+        """Soft stop at the next step seam (fault_semantics 'pause').
+
+        Unlike request_interruption this cuts NOTHING in flight: the current
+        LLM response and its entire tool batch complete first, then the loop
+        stops between steps with balanced history — every call paired, no
+        marker — so a later run resumes verbatim. Deliberately does not touch
+        the wakeup event or the VCPU."""
+        self._pause_requested = True
 
     def abort(self) -> None:
         """Hard stop -- cancel everything including running bash processes."""
@@ -381,6 +392,25 @@ class RuntimeLoop:
                     self._save_core_dump("suspended")
                     self._turn_end("aborted")
                     yield {"type": "interrupted", "result": result, "partial_results": self.partial_results}
+                    yield {"type": "final", "result": result}
+                    return
+
+                # Pause seam (fault_semantics 'pause'): sampled only here,
+                # BETWEEN steps, so the previous step's LLM round-trip and
+                # tool batch are fully paired. Abort/interrupt wins (checked
+                # above). History is balanced — no marker, verbatim resume.
+                if self._pause_requested:
+                    self._pause_requested = False
+                    result = ToolResult(
+                        status="PAUSED",
+                        output="Paused at a clean step seam; all tool calls "
+                               "are paired and a resume continues verbatim.",
+                        is_final=True,
+                    )
+                    self._emit("PAUSED", {"steps_completed": self._step_in_turn})
+                    self._save_core_dump("paused")
+                    self._turn_end("paused")
+                    yield {"type": "paused", "result": result}
                     yield {"type": "final", "result": result}
                     return
 

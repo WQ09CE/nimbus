@@ -634,3 +634,95 @@ class TestAbortCutsLLMCall:
         )
         loop2.request_interruption()
         assert loop2._wakeup_event.is_set()
+
+
+# =============================================================================
+# Pause primitive (fault_semantics 'pause' — hax checkpoint-at-seams)
+# =============================================================================
+
+
+class PausingVCPU(MockVCPU):
+    """MockVCPU that requests a pause on its owning loop mid-step, simulating
+    a user pressing pause while the LLM/tools are running."""
+
+    def __init__(self, steps, pause_during_step: int):
+        super().__init__(steps)
+        self.loop = None  # wired by the test after RuntimeLoop construction
+        self._pause_during_step = pause_during_step
+
+    async def step(self):
+        current = self._call_count + 1
+        result = await super().step()
+        if current == self._pause_during_step and self.loop is not None:
+            self.loop.request_pause()  # arrives while the step is "running"
+        return result
+
+
+class TestPausePrimitive:
+    @pytest.mark.asyncio
+    async def test_pause_lets_inflight_step_complete_then_stops_at_seam(self):
+        """Pause during step 1 of 3: step 1 finishes fully (its results are
+        kept), the loop stops at the seam, later steps never run."""
+        vcpu = PausingVCPU(
+            [
+                make_tool_step("Read", "contents"),
+                make_tool_step("Bash", "should never run"),
+                make_step(is_final=True, output="never reached"),
+            ],
+            pause_during_step=1,
+        )
+        mmu = MMU()
+        loop = RuntimeLoop(vcpu, mmu)
+        vcpu.loop = loop
+        result = await loop.run()
+        assert result.status == "PAUSED"
+        assert vcpu._call_count == 1  # in-flight step completed, no further step
+        # The completed step's results were tracked, nothing was cut.
+        assert len(loop.partial_results) == 1
+        assert loop.partial_results[0].output == "contents"
+
+    @pytest.mark.asyncio
+    async def test_pause_history_is_balanced_no_marker(self):
+        """The paused surface owes no interrupt marker: nothing was cut."""
+        from nimbus.core.fault_semantics import ORIGIN_INTERRUPTED
+        vcpu = PausingVCPU([make_tool_step("Read", "x")], pause_during_step=1)
+        mmu = MMU()
+        loop = RuntimeLoop(vcpu, mmu)
+        vcpu.loop = loop
+        await loop.run()
+        marked = [
+            m for m in mmu.messages_view()
+            if m.meta.get("origin") == ORIGIN_INTERRUPTED
+        ]
+        assert marked == []
+
+    @pytest.mark.asyncio
+    async def test_pause_before_start_stops_before_any_step(self):
+        vcpu = MockVCPU([make_step(is_final=True, output="never")])
+        loop = RuntimeLoop(vcpu, MMU())
+        loop.request_pause()
+        result = await loop.run()
+        assert result.status == "PAUSED"
+        assert vcpu._call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_interrupt_wins_over_pause(self):
+        """Both signals raised: abort semantics take precedence (hax rule)."""
+        vcpu = MockVCPU([make_step(is_final=True, output="never")])
+        loop = RuntimeLoop(vcpu, MMU())
+        loop.request_pause()
+        loop.request_interruption()
+        result = await loop.run()
+        assert result.status == "CANCELLED"
+
+    @pytest.mark.asyncio
+    async def test_pause_turn_ends_with_paused_reason(self):
+        """The session log's turn/end carries reason 'paused' (fault table)."""
+        vcpu = PausingVCPU([make_tool_step("Read", "x")], pause_during_step=1)
+        mmu = MMU()
+        loop = RuntimeLoop(vcpu, mmu)
+        vcpu.loop = loop
+        await loop.run()
+        turn_ends = [e for e in loop.session_log.events if e.type == "turn/end"]
+        assert turn_ends, "expected a closed turn"
+        assert turn_ends[-1].data.get("reason", {}).get("kind") == "paused"
