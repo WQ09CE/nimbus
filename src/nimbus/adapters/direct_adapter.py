@@ -36,6 +36,7 @@ from nimbus.adapters.types import LLMConfig, LLMStreamEvent, TokenUsage, VcpuLLM
 from nimbus.config import get_config
 from nimbus.core.models.registry import ModelRegistry
 from nimbus.core.protocol import Fault
+from nimbus.core.turn_assembler import TurnAssembler
 
 logger = logging.getLogger(__name__)
 
@@ -765,41 +766,20 @@ class DirectAdapter:
         """
         Non-streaming chat (simulated via stream to support on_chunk).
         """
-        full_content = []
-        collected_tool_calls = []
-        collected_usage = None  # TokenUsage from stream
+        # Assembly is a pure state machine (core.turn_assembler, hax turn.c
+        # shape); this loop only drives events into it and forwards display
+        # chunks. Error classification stays here (adapter concern).
+        assembler = TurnAssembler()
 
         try:
             async for event in self.stream(mmu, tools):
-                if event.type == "text":
-                    text = event.text
-                    full_content.append(text)
-                    if on_chunk:
-                        on_chunk(text)
-                elif event.type == "tool_call" and event.tool_call:
-                    collected_tool_calls.append(event.tool_call)
-                elif event.type == "usage" and event.usage:
-                    logger.info("[chat] Received usage event: %s", event.usage)
-                    # Build TokenUsage from stream usage data (pi-style)
-                    u = event.usage
-                    collected_usage = TokenUsage(
-                        input=u.get("input", 0),
-                        output=u.get("output", 0),
-                        cache_read=u.get("cache_read", 0),
-                        cache_write=u.get("cache_write", 0),
-                        total=u.get("total", 0),
-                    )
-                    # Compute cost if model pricing is available
-                    model_key = self._model
-                    if '/' in model_key:
-                        model_key = model_key.split('/', 1)[1]
-                    info = ModelRegistry.get(model_key)
-                    if info and hasattr(info, 'cost_per_million'):
-                        collected_usage.compute_cost(info.cost_per_million)
+                assembler.consume(event)
+                if event.type == "text" and event.text and on_chunk:
+                    on_chunk(event.text)
                 elif event.type == "error":
-                     logger.error(f"Stream error: {event.error}")
-                     # Classify it properly so VCPU can catch and retry it via StateErrorRecovery
-                     raise _classify_llm_exception(RuntimeError(str(event.error)))
+                    logger.error(f"Stream error: {event.error}")
+                    # Classify it properly so VCPU can catch and retry it via StateErrorRecovery
+                    raise _classify_llm_exception(RuntimeError(str(event.error)))
 
         except Exception as e:
             logger.error(f"DirectAdapter chat failed: {e}")
@@ -807,7 +787,27 @@ class DirectAdapter:
                 raise
             raise _classify_llm_exception(e)
 
-        content = "".join(full_content)
+        collected_usage = None
+        if assembler.usage is not None:
+            u = assembler.usage
+            logger.info("[chat] Received usage event: %s", u)
+            collected_usage = TokenUsage(
+                input=u.get("input", 0),
+                output=u.get("output", 0),
+                cache_read=u.get("cache_read", 0),
+                cache_write=u.get("cache_write", 0),
+                total=u.get("total", 0),
+            )
+            # Compute cost if model pricing is available
+            model_key = self._model
+            if '/' in model_key:
+                model_key = model_key.split('/', 1)[1]
+            info = ModelRegistry.get(model_key)
+            if info and hasattr(info, 'cost_per_million'):
+                collected_usage.compute_cost(info.cost_per_million)
+
+        collected_tool_calls = assembler.raw_tool_calls
+        content = assembler.text
 
         # If the model inlined tool-call JSON into its prose (gemma/ollama text
         # protocol), strip it so the JSON doesn't leak into the stored message
@@ -817,18 +817,7 @@ class DirectAdapter:
             content = _strip_tool_call_blocks(content)
 
         # Format tool calls for VcpuLLMResponse
-        tool_calls = []
-        for tc in collected_tool_calls:
-             tool_calls.append({
-                 "id": tc.get("id"),
-                 "type": "function",
-                 "function": {
-                     "name": tc.get("name"),
-                     "arguments": json.dumps(tc.get("arguments"))
-                                  if isinstance(tc.get("arguments"), dict)
-                                  else tc.get("arguments")
-                 }
-             })
+        tool_calls = assembler.openai_tool_calls()
 
         logger.debug("chat() returning: content_len=%d tool_calls=%d usage=%s",
                      len(content), len(tool_calls),
