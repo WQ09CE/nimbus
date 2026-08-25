@@ -15,7 +15,7 @@ import os
 import uuid
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
-from nimbus.core.tools.registry import ToolParameter, ToolRegistry, tool
+from nimbus.core.tools.registry import ToolParameter, ToolRegistry, ToolTraits, tool
 
 if TYPE_CHECKING:
     from nimbus.core.path_context import AgentPathContext
@@ -199,6 +199,8 @@ async def _run_sub_agent(
     )
 
     # 5. Configure AgentOS
+    from nimbus.config import get_config
+
     agent_config = AgentConfig(
         model=full_model,
         provider=provider,
@@ -207,6 +209,9 @@ async def _run_sub_agent(
         llm_call_timeout=120.0,
         text_is_final=False,
         contract_mode=True,  # Must exit via submit_result, not text
+        # Parent approval of a worker grants the role capability, but every
+        # child Bash still executes under the product's OS sandbox posture.
+        sandbox_mode=get_config().sandbox_mode,
     )
 
     agent_os = AgentOS(
@@ -485,6 +490,7 @@ async def _run_sub_agent(
             required=False,
         ),
     ],
+    traits=ToolTraits(side_effects="write"),
 )
 async def spawn_agent(
     role: str,

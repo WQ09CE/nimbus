@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
 from .decoder import InstructionDecoder
-from .gate import KernelGate
+from .gate import KernelGate, ToolAuthorizer
 from .loop import FollowUpQueue, LoopConfig, RuntimeLoop, SteeringQueue
 from .mmu import MMU, MMUConfig, PinnedContext
 from .path_context import AgentPathContext
@@ -83,6 +83,8 @@ class AgentConfig:
 
     # Gate
     tool_timeout: float = 60.0
+    # Inherited by sub-agents even when no human authorizer is attached.
+    sandbox_mode: str = "off"
 
     # Behavior
     # DEPRECATED no-op: the decoder now treats pure text as final everywhere
@@ -147,6 +149,7 @@ class AgentOS:
         on_tool_output: Optional[Callable[[str, str], None]] = None,
         on_text_delta: Optional[Callable[[str], None]] = None,
         path_context: Optional[AgentPathContext] = None,
+        tool_authorizer: Optional[ToolAuthorizer] = None,
     ):
         self.config = config or AgentConfig()
         self._event_cb = event_callback
@@ -156,6 +159,9 @@ class AgentOS:
         self._on_text_delta = on_text_delta
         # Optional path context override (used by sub-agents to inherit parent scope)
         self._path_context = path_context
+        # Product policy hook. Core/CLI runs remain allow-by-default when it is
+        # absent; the server wires PermissionManager here.
+        self._tool_authorizer = tool_authorizer
 
         # 1. Adapter (ALU)
         if adapter:
@@ -265,7 +271,13 @@ class AgentOS:
     async def run(self, goal: str, session_id: str = "default") -> ToolResult:
         """Run the agent on a goal until completion. Returns final ToolResult."""
         loop = self._build_loop(goal, session_id=session_id)
-        return await loop.run()
+        try:
+            return await loop.run()
+        finally:
+            # One-shot callers expose this as smoke/run telemetry. The old CLI
+            # read an attribute that AgentOS never populated and always printed
+            # zero even after a multi-step tool turn.
+            self._iterations = loop.vcpu.iteration
 
     async def stream(self, goal: str, session_id: str = "default") -> AsyncIterator[Dict[str, Any]]:
         """Run the agent, streaming fine-grained events (pi-style)."""
@@ -426,6 +438,9 @@ class AgentOS:
             parent_model=getattr(self._adapter, "_logical_model", None)
             or getattr(self._adapter, "_model", self.config.model),
             parent_base_url=getattr(getattr(self._adapter, "config", None), "base_url", None),
+            authorizer=self._tool_authorizer,
+            session_id=session_id,
+            sandbox_mode=self.config.sandbox_mode,
         )
 
         # Decoder
@@ -483,6 +498,10 @@ class AgentOS:
             storage=storage,
             metadata=metadata,
         )
+        # Gate policy/sandbox events share the same authoritative append-only
+        # trace as messages and turn brackets. Wiring happens here because the
+        # RuntimeLoop owns opening/repairing that log.
+        gate.set_audit_sink(loop.session_log.append)
         # Add the goal AFTER the loop wires mmu.event_sink → session_log:
         # added earlier, the goal message would never reach the log, leaving
         # every log one message behind its snapshot — which permanently

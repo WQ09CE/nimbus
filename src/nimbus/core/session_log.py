@@ -30,7 +30,15 @@ logger = logging.getLogger("nimbus.session_log")
 
 # Every reason a live loop may assign to turn/end. 'interrupted' is absent
 # by design: it is reserved for crash-repair synthesis (see module docstring).
-LIVE_TURN_END_KINDS = ("completed", "aborted", "error", "max-iterations")
+# Keep lifecycle additions explicit here so the invariant checker remains a
+# strict compatibility boundary for persisted logs.
+LIVE_TURN_END_KINDS = (
+    "completed",
+    "aborted",
+    "error",
+    "max-iterations",
+    "paused",
+)
 
 
 @dataclass
@@ -138,7 +146,17 @@ class SessionLog:
     @staticmethod
     def _is_causal(event: SessionEvent) -> bool:
         t = event.type
-        if t in ("turn/end", "tool/result", "compaction/applied", "seed/applied"):
+        if t in (
+            "turn/end",
+            "tool/result",
+            "compaction/applied",
+            "seed/applied",
+            # Authorization must be durable before an approved side effect
+            # starts; permission requests must survive refresh/restart while a
+            # human decision is pending.
+            "policy/requested",
+            "policy/decision",
+        ):
             return True
         # The assistant's decision record must hit disk BEFORE its tool calls
         # execute (side effects) — dsh's checkpoint-before-effects barrier.

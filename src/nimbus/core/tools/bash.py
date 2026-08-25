@@ -15,15 +15,7 @@ from typing import Any, Callable, Dict, Optional
 from nimbus.core.path_context import AgentPathContext
 
 from . import sandbox
-from .registry import ToolParameter, tool
-
-
-def _sandbox_flag_on() -> bool:
-    """Bash sandbox is opt-in via NIMBUS_BASH_SANDBOX (1/true/on). Default off
-    keeps the existing test suite (which writes to arbitrary tmp paths and
-    hits the network) green until callers opt in per-session."""
-    flag = os.environ.get("NIMBUS_BASH_SANDBOX", "").strip().lower()
-    return flag in ("1", "true", "on", "yes")
+from .registry import ToolParameter, ToolTraits, tool
 
 MAX_OUTPUT_BYTES = 50 * 1024  # 50KB (aligned with pi-coding-agent)
 MAX_OUTPUT_LINES = 2000
@@ -54,6 +46,7 @@ async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
         ToolParameter("command", "string", "The bash command to execute", required=True),
         ToolParameter("timeout", "number", "Timeout in seconds (default: 60)", required=False),
     ],
+    traits=ToolTraits(side_effects="execute"),
 )
 async def bash_command(
     command: str,
@@ -96,23 +89,55 @@ async def bash_command(
         f'echo "{_CWD_SENTINEL}$(pwd)"; exit $__nimbus_st'
     )
 
-    # Optionally confine execution to an OS-level trust boundary. When enabled,
-    # the child inherits only whitelisted env (no API keys), cannot reach the
-    # network, and can only write inside the agent's writable_roots.
-    #
-    # Three states, never silent: 'off' (not requested), 'active' (confined),
-    # 'unavailable' (requested but no platform mechanism -- runs UNsandboxed
-    # and says so in the result, so degradation is observable, not silent).
+    # Effective sandbox capability comes from KernelGate's authorization
+    # decision. Direct callers fall back to env configuration for compatibility.
+    supplied_policy = kwargs.get("_sandbox_policy")
+    explicit_mode = supplied_policy.get("mode") if isinstance(supplied_policy, dict) else None
+    sandbox_mode = sandbox.configured_mode(explicit_mode)
+    writable = list(
+        getattr(_path_context, "writable_roots", None)
+        or [_path_context.target_root]
+    )
+    writable.append(start_cwd)
+    allow_network = bool(
+        supplied_policy.get("allow_network", False)
+        if isinstance(supplied_policy, dict) else False
+    )
+    sandbox_details = sandbox.sandbox_plan(
+        sandbox_mode, writable, allow_network=allow_network,
+    )
+    sandbox_state = str(sandbox_details["state"])
+    sandbox_backend = str(sandbox_details["backend"])
+
+    # Required means fail closed: an unavailable kernel boundary is a policy
+    # denial, never an unconfined fallback.
+    if sandbox_state == "unavailable" and sandbox_mode == "required":
+        return {
+            "status": "ERROR",
+            "output": (
+                "Sandbox is required for Bash, but no supported backend is "
+                "available. The command was NOT executed."
+            ),
+            "ui_detail": {
+                "command": command,
+                "executed": False,
+                "executed_in": start_cwd,
+                "sandbox": sandbox_state,
+                "sandbox_backend": sandbox_backend,
+                "sandbox_mode": sandbox_mode,
+                "sandbox_details": sandbox_details,
+            },
+        }
+
     sb_tmp: Optional[str] = None
-    sandbox_state = "off"
-    if _sandbox_flag_on():
-        sandbox_state = "active" if sandbox.sandbox_available() else "unavailable"
     if sandbox_state == "active":
-        writable = list(getattr(_path_context, "writable_roots", None) or [_path_context.target_root])
-        writable.append(start_cwd)
-        profile = sandbox.build_profile(writable, allow_network=False)
         sb_tmp = tempfile.mkdtemp(prefix="nimbus-sb-")
-        argv = sandbox.wrap_argv(profile, sb_tmp) + ["/bin/sh", "-c", wrapped_command]
+        argv = sandbox.wrap_command(
+            ["/bin/sh", "-c", wrapped_command],
+            writable_roots=writable,
+            tmp_dir=sb_tmp,
+            allow_network=allow_network,
+        )
         process = await asyncio.create_subprocess_exec(
             *argv,
             stdout=asyncio.subprocess.PIPE,
@@ -127,6 +152,9 @@ async def bash_command(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=cwd,
+            # A requested-but-unavailable sandbox still strips credentials;
+            # only syscall confinement degraded.
+            env=sandbox.sandboxed_env() if sandbox_mode != "off" else None,
             preexec_fn=os.setsid,  # Create process group for clean kill
         )
 
@@ -237,6 +265,7 @@ async def bash_command(
     if aborted:
         output = b"".join(chunks).decode("utf-8", errors="replace") if chunks else ""
         return {
+            "status": "CANCELLED",
             "output": f"[Aborted] {output[:2000]}",
             "ui_detail": {
                 "command": command,
@@ -245,12 +274,16 @@ async def bash_command(
                 "partial_bytes": total_bytes,
                 "executed_in": start_cwd,
                 "sandbox": sandbox_state,
+                "sandbox_backend": sandbox_backend,
+                "sandbox_mode": sandbox_mode,
+                "sandbox_details": sandbox_details,
             },
         }
 
     if timed_out:
         output = b"".join(chunks).decode("utf-8", errors="replace") if chunks else ""
         return {
+            "status": "TIMEOUT",
             "output": f"Command timed out after {timeout}s: {command[:100]}\n\nPartial output:\n{output[:2000]}",
             "ui_detail": {
                 "command": command,
@@ -260,23 +293,25 @@ async def bash_command(
                 "partial_bytes": total_bytes,
                 "executed_in": start_cwd,
                 "sandbox": sandbox_state,
+                "sandbox_backend": sandbox_backend,
+                "sandbox_mode": sandbox_mode,
+                "sandbox_details": sandbox_details,
             },
         }
 
     output = b"".join(chunks).decode("utf-8", errors="replace")
 
-    # Extract cwd sentinel and update path context
+    # Extract the final cwd sentinel without changing the command's own
+    # newline semantics. ``rfind`` selects our trailing marker even if command
+    # output happened to contain the marker text earlier.
     if _path_context and _CWD_SENTINEL in output:
-        lines = output.split("\n")
-        clean_lines = []
-        for line in lines:
-            if line.startswith(_CWD_SENTINEL):
-                new_cwd = line[len(_CWD_SENTINEL):].strip()
-                if new_cwd:
-                    _path_context.update_cwd(new_cwd)
-            else:
-                clean_lines.append(line)
-        output = "\n".join(clean_lines)
+        marker_at = output.rfind(_CWD_SENTINEL)
+        trailer = output[marker_at + len(_CWD_SENTINEL):]
+        new_cwd, separator, remainder = trailer.partition("\n")
+        new_cwd = new_cwd.strip()
+        if new_cwd:
+            _path_context.update_cwd(new_cwd)
+        output = output[:marker_at] + (remainder if separator else "")
 
     original_lines = output.count("\n") + 1
     original_bytes = len(output.encode("utf-8"))
@@ -328,10 +363,10 @@ async def bash_command(
     # never ran" or "sandbox blocked an effect" for an ordinary failure.
     sandbox_verdict = None
     if sandbox_state == "active" and exit_code != 0:
-        sandbox_verdict = sandbox.classify_output(output)
+        sandbox_verdict = sandbox.classify_output(output, backend=sandbox_backend)
     if sandbox_verdict == "runner-failure":
         output = (
-            "[Sandbox runner failure: sandbox-exec itself failed -- "
+            f"[Sandbox runner failure: {sandbox_backend} failed -- "
             "the command was NOT executed]\n" + output
         )
     elif sandbox_verdict == "denial":
@@ -342,8 +377,9 @@ async def bash_command(
         )
     if sandbox_state == "unavailable":
         output += (
-            "\n\n[Sandbox requested via NIMBUS_BASH_SANDBOX but no mechanism "
-            "exists on this platform -- command ran UNSANDBOXED]"
+            "\n\n[UNSANDBOXED: sandbox was requested but no supported kernel "
+            "backend exists on this platform -- credentials were stripped, but "
+            "the command ran without filesystem/network confinement]"
         )
 
     ui_detail = {
@@ -356,11 +392,18 @@ async def bash_command(
         "executed_in": start_cwd,
         "new_execution_cwd": _path_context.execution_cwd,
         "sandbox": sandbox_state,
+        "sandbox_backend": sandbox_backend,
+        "sandbox_mode": sandbox_mode,
+        "sandbox_details": {
+            **sandbox_details,
+            **({"verdict": sandbox_verdict} if sandbox_verdict else {}),
+        },
     }
     if sandbox_verdict:
         ui_detail["sandbox_verdict"] = sandbox_verdict
 
     return {
+        "status": "OK" if exit_code == 0 else "ERROR",
         "output": output,
         "ui_detail": ui_detail,
     }

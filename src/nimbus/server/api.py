@@ -24,6 +24,7 @@ from .models import (
     HealthResponse,
     LogBatch,
     MessageList,
+    PermissionRequest,
     PermissionRespond,
     PermissionResponseResult,
     PermissionRule,
@@ -225,7 +226,7 @@ async def update_session(
         update_data["model_config"] = update_data.pop("llm_config")
 
     try:
-        session = await session_manager.update_session(session_id, update_data)
+        await session_manager.update_session(session_id, update_data)
 
         updated = await session_manager.get_session(session_id)
         return SessionResponse(**updated)
@@ -289,7 +290,7 @@ async def delete_session(
     session_manager=Depends(get_session_manager),
 ):
     """Delete a session.
-    
+
     Args:
         session_id: Session to delete
     """
@@ -302,6 +303,32 @@ async def delete_session(
     return None
 
 
+@router.post("/sessions/{session_id}/pause")
+async def pause_session(
+    session_id: str,
+    session_manager=Depends(get_session_manager),
+):
+    """Soft-stop a running agent at the next clean step seam."""
+    result = await session_manager.pause_session(session_id)
+    if not result["success"]:
+        raise HTTPException(status_code=409, detail=result.get("error", "Failed to pause"))
+    return result
+
+
+@router.post("/sessions/{session_id}/resume")
+async def resume_session(
+    session_id: str,
+    session_manager=Depends(get_session_manager),
+):
+    """Resume a durable PAUSED checkpoint without adding a user message."""
+    result = await session_manager.resume_session(session_id)
+    if not result["success"]:
+        error = result.get("error", "Failed to resume")
+        status_code = 404 if error == "Session not found" else 409
+        raise HTTPException(status_code=status_code, detail=error)
+    return result
+
+
 @router.post("/sessions/{session_id}/interrupt")
 async def interrupt_session(
     session_id: str,
@@ -310,10 +337,9 @@ async def interrupt_session(
     """
     Interrupt a running session.
 
-    This will:
-    1. Request the vCPU to pause at next step
-    2. Hibernate the session (save checkpoint to DB)
-    3. Return the checkpoint info
+    This is the hard-stop path: it aborts the in-flight LLM/tool operation,
+    balances open tool calls with cancellation results, and persists a
+    suspended checkpoint. Use /pause for a clean seam stop.
 
     Returns:
         Interrupt status and checkpoint info
@@ -504,7 +530,8 @@ async def chat(
                         "error_id": _error_id,
                     },
                 )
-                await sse_hub.publish(session_id, "done", {"status": "ERROR"})
+                # SessionManager.stream_chat owns the single terminal done
+                # event even on exceptions; publish only the classified error.
             except Exception as pub_err:
                 error_logger.error(f"❌ Failed to publish error event: {pub_err}")
         finally:
@@ -620,9 +647,16 @@ async def get_session_status(
     session_id: str,
     session_manager=Depends(get_session_manager),
 ):
-    """Check if a session has an active running task."""
+    """Check runtime activity plus the durable lifecycle status."""
+    session = await session_manager.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
     running = session_manager.is_session_running(session_id)
-    return {"session_id": session_id, "running": running}
+    return {
+        "session_id": session_id,
+        "running": running,
+        "status": "running" if running else session.get("status", "unknown"),
+    }
 
 
 @router.get("/sessions/{session_id}/events")
@@ -871,6 +905,18 @@ async def serve_upload(
 # =============================================================================
 # Permission APIs
 # =============================================================================
+
+
+@router.get("/permissions/pending", response_model=List[PermissionRequest])
+async def get_pending_permissions(
+    session_id: str | None = None,
+    permission_manager=Depends(get_permission_manager),
+):
+    """List unresolved approvals, used to recover the UI after refresh."""
+    return [
+        PermissionRequest(**item)
+        for item in permission_manager.get_pending_requests(session_id)
+    ]
 
 
 @router.post("/permissions/{request_id}/respond", response_model=PermissionResponseResult)

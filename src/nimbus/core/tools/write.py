@@ -5,7 +5,7 @@ from typing import Any
 
 from nimbus.core.path_context import AgentPathContext, PathResolver
 
-from .registry import ToolParameter, tool
+from .registry import ToolParameter, ToolTraits, tool
 
 
 @tool(
@@ -15,6 +15,7 @@ from .registry import ToolParameter, tool
         ToolParameter("file_path", "string", "Path to the file to write", required=True),
         ToolParameter("content", "string", "Content to write", required=True),
     ],
+    traits=ToolTraits(side_effects="write"),
 )
 async def write_file(file_path: str, content: str, **kwargs: Any) -> str:
     _path_context: AgentPathContext = kwargs.get("_path_context") or AgentPathContext.from_cwd()

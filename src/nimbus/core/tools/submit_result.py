@@ -9,7 +9,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from nimbus.core.tools.registry import ToolParameter, tool
+from nimbus.core.tools.registry import ToolParameter, ToolTraits, tool
 
 logger = logging.getLogger("nimbus.submit_result")
 
@@ -81,6 +81,7 @@ def submit_result_impl(
             items={"type": "string"},
         ),
     ],
+    traits=ToolTraits(side_effects="none"),
 )
 async def submit_result(
     summary: str = "",

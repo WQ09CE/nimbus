@@ -48,6 +48,32 @@ class ActionIR:
 
 
 # =============================================================================
+# 1b. Tool Traits (catalog-level policy contract)
+# =============================================================================
+
+SideEffects = Literal["none", "read", "write", "execute"]
+LatencyClass = Literal["local", "network", "batch"]
+DataPlane = Literal["inline", "by_reference"]
+
+
+@dataclass(frozen=True)
+class ToolTraits:
+    """Declared behavior class of a tool, carried by its catalog entry.
+
+    Policy derives from traits instead of name-matching (design:
+    docs/design/toolcall-gate-execution-backend.md §6): ``side_effects``
+    selects the sandbox/approval class, ``needs_auth`` marks connector-class
+    tools running on user credentials, ``latency_class`` and ``data_plane``
+    inform dispatch. Name-specific rules remain possible as overrides.
+    """
+
+    side_effects: SideEffects
+    needs_auth: bool = False
+    latency_class: LatencyClass = "local"
+    data_plane: DataPlane = "inline"
+
+
+# =============================================================================
 # 2. Tool & Execution Results (ABI)
 # =============================================================================
 
@@ -96,7 +122,7 @@ class StepResult:
 # 3. Fault Taxonomy
 # =============================================================================
 
-FaultDomain = Literal["LLM", "TOOL", "KERNEL", "PERMISSION", "RESOURCE"]
+FaultDomain = Literal["LLM", "TOOL", "KERNEL", "PERMISSION", "RESOURCE", "BACKEND"]
 
 FaultCode = Literal[
     "ILL_INSTRUCTION",   # Hallucination detected
@@ -110,6 +136,12 @@ FaultCode = Literal[
     "TIMEOUT",           # Execution timed out
     "BUDGET_EXCEEDED",   # Token/cost budget exceeded
     "SYSTEM_ERROR",      # Unexpected kernel error
+    # BACKEND domain — the execution channel failed, not the tool itself
+    "BACKEND_UNAVAILABLE",  # Channel down/unreachable after retries
+    "LEASE_LOST",           # Stateful backend lost session state
+    "NETWORK",              # Transient transport failure (retryable class)
+    "AUTH_REQUIRED",        # Connector-class backend needs user authorization
+    "AUTH_EXPIRED",         # Credential expired; silent refresh failed
 ]
 
 
@@ -152,6 +184,10 @@ EventType = Literal[
     # Lifecycle
     "TOOL_STARTED",      # Tool execution began (Gate-level)
     "TOOL_FINISHED",     # Tool execution completed (Gate-level)
+    "POLICY_REQUESTED",  # Human authorization is required before execution
+    "POLICY_DECIDED",    # Durable allow/deny decision for a proposed action
+    "AUTH_REQUESTED",    # Connector-class backend needs the user to authorize
+    "SANDBOX_STATUS",    # Effective sandbox backend/posture and verdict
     "FAULT_RAISED",      # Fault occurred
     "INTERRUPTED",       # Execution interrupted with partial results
     "PAUSED",            # Execution paused at a clean step seam (verbatim-resumable)

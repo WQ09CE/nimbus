@@ -25,6 +25,7 @@ class PendingPermission:
     args: Dict[str, Any]
     created_at: datetime
     future: asyncio.Future
+    context: Dict[str, Any]
 
 
 class PermissionManager:
@@ -49,7 +50,10 @@ class PermissionManager:
         "shell",
         "exec",
         "execute",
+        "write",
+        "edit",
         "write_file",
+        "edit_file",
         "delete_file",
         "remove_file",
         "rm",
@@ -58,14 +62,20 @@ class PermissionManager:
         "move",
     }
 
-    # Tools that default to 'allow_always'
+    # Read-only discovery and framework-local bookkeeping do not need a
+    # per-call prompt. Names are canonicalized case-insensitively.
     SAFE_TOOLS = {
+        "read",
+        "grep",
+        "glob",
         "read_file",
         "list_directory",
         "search",
         "synthesize",
         "summarize",
         "analyze",
+        "update_plan",
+        "submit_result",
     }
 
     def __init__(self):
@@ -80,25 +90,35 @@ class PermissionManager:
         for tool in self.SAFE_TOOLS:
             self._rules[tool] = PermissionDecision.ALLOW_ALWAYS
 
-    def get_rule(self, tool: str) -> PermissionDecision:
-        """
-        Get the permission rule for a tool.
+    @staticmethod
+    def _canonical(tool: str) -> str:
+        return str(tool).strip().casefold()
 
-        Args:
-            tool: Tool name.
+    def get_rule(
+        self, tool: str, args: Optional[Dict[str, Any]] = None,
+    ) -> PermissionDecision:
+        """Resolve the effective rule for this concrete action."""
+        canonical = self._canonical(tool)
+        if canonical in self._rules:
+            return self._rules[canonical]
 
-        Returns:
-            Permission decision for the tool.
-        """
-        if tool in self._rules:
-            return self._rules[tool]
+        # A reader sub-agent is capability-confined to Read/Grep/Glob. A
+        # worker can write and execute, so delegation itself is the approval
+        # boundary for its whole role-scoped run.
+        if canonical == "spawn_agent":
+            role = str((args or {}).get("role", "worker")).casefold()
+            return (
+                PermissionDecision.ALLOW_ALWAYS
+                if role == "reader" else PermissionDecision.ASK
+            )
 
-        # Check if tool name suggests it's dangerous
-        tool_lower = tool.lower()
-        if any(d in tool_lower for d in ["dangerous", "destructive", "delete", "remove", "exec"]):
+        if any(
+            marker in canonical
+            for marker in ("dangerous", "destructive", "delete", "remove", "exec")
+        ):
             return PermissionDecision.ASK
 
-        # Default to ask for unknown tools
+        # Unknown/plugin tools fail closed into a human decision.
         return PermissionDecision.ASK
 
     def set_rule(self, tool: str, decision: PermissionDecision) -> None:
@@ -109,7 +129,7 @@ class PermissionManager:
             tool: Tool name.
             decision: Permission decision.
         """
-        self._rules[tool] = decision
+        self._rules[self._canonical(tool)] = decision
 
     def get_all_rules(self) -> Dict[str, PermissionDecision]:
         """Get all permission rules."""
@@ -121,6 +141,7 @@ class PermissionManager:
         tool: str,
         args: Dict[str, Any],
         on_permission_request: Optional[Callable[[str, str, Dict], None]] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> tuple[bool, Optional[str]]:
         """
         Check if a tool execution is permitted.
@@ -135,7 +156,7 @@ class PermissionManager:
             Tuple of (allowed, request_id).
             If allowed is False and request_id is set, await resolve_permission().
         """
-        rule = self.get_rule(tool)
+        rule = self.get_rule(tool, args)
 
         if rule == PermissionDecision.ALLOW_ALWAYS:
             return True, None
@@ -147,7 +168,7 @@ class PermissionManager:
         request_id = f"perm_{uuid.uuid4().hex[:8]}"
 
         async with self._lock:
-            future = asyncio.get_event_loop().create_future()
+            future = asyncio.get_running_loop().create_future()
             pending = PendingPermission(
                 request_id=request_id,
                 session_id=session_id,
@@ -155,6 +176,7 @@ class PermissionManager:
                 args=args,
                 created_at=datetime.now(),
                 future=future,
+                context=dict(context or {}),
             )
             self._pending[request_id] = pending
 
@@ -188,7 +210,10 @@ class PermissionManager:
 
         try:
             decision = await asyncio.wait_for(pending.future, timeout=timeout)
-            return decision != PermissionDecision.DENY, decision
+            return decision in (
+                PermissionDecision.ALLOW_ONCE,
+                PermissionDecision.ALLOW_ALWAYS,
+            ), decision
         finally:
             async with self._lock:
                 self._pending.pop(request_id, None)
@@ -213,7 +238,7 @@ class PermissionManager:
 
             # If allow_always, update the rule
             if decision == PermissionDecision.ALLOW_ALWAYS:
-                self._rules[pending.tool] = PermissionDecision.ALLOW_ALWAYS
+                self._rules[self._canonical(pending.tool)] = PermissionDecision.ALLOW_ALWAYS
             elif decision == PermissionDecision.DENY:
                 # Could optionally set to deny always
                 pass
@@ -252,6 +277,7 @@ class PermissionManager:
                     "tool": pending.tool,
                     "args": pending.args,
                     "created_at": pending.created_at,
+                    **pending.context,
                 }
             )
         return requests

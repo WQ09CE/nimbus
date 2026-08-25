@@ -43,6 +43,10 @@ class SSEHub:
     EVENT_MESSAGE = "message"
     EVENT_TOOL_CALL = "tool_call"
     EVENT_TOOL_RESULT = "tool_result"
+    EVENT_PERMISSION_REQUEST = "permission_request"
+    EVENT_POLICY_DECISION = "policy_decision"
+    EVENT_SANDBOX_STATUS = "sandbox_status"
+    EVENT_PAUSED = "paused"
     EVENT_DONE = "done"
     EVENT_ERROR = "error"
     EVENT_HEARTBEAT = "heartbeat"
@@ -63,9 +67,10 @@ class SSEHub:
 
     def prepare_session(self, session_id: str) -> None:
         """Prepare event buffer for a session. Call before starting background work."""
-        if session_id not in self._pending_events:
-            self._pending_events[session_id] = []
-        self._event_log[session_id] = []  # Reset log for new session run
+        # A new run supersedes the previous run's replay/pending buffer. The
+        # completed run remains replayable until this exact boundary.
+        self._pending_events[session_id] = []
+        self._event_log[session_id] = []
         self._closed_sessions.discard(session_id)
 
     async def start(self) -> None:
@@ -271,7 +276,7 @@ class SSEHub:
 
     async def close_session(self, session_id: str) -> None:
         """Close all connections for a session.
-        
+
         Args:
             session_id: Session to close.
         """

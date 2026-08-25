@@ -1,12 +1,11 @@
 """Tests for nimbus_next.agent — the AgentOS facade."""
 
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
-from nimbus.core.agent import AgentConfig, AgentOS, _register_default_tools
 from nimbus.adapters.types import VcpuLLMResponse as LLMResponse
-from nimbus.core.tools.registry import ToolRegistry, ToolParameter, tool
-
+from nimbus.core.agent import AgentConfig, AgentOS, _register_default_tools
+from nimbus.core.tools.registry import ToolParameter, ToolRegistry, tool
 
 # =============================================================================
 # Mock Adapter
@@ -95,6 +94,7 @@ class TestAgentOSRun:
         )
         result = await agent.run("List files")
         assert result.status == "OK"
+        assert agent._iterations == 1
 
     @pytest.mark.asyncio
     async def test_run_with_tool_call(self):
@@ -112,6 +112,7 @@ class TestAgentOSRun:
         )
         result = await agent.run("Run echo hello")
         assert result.status == "OK"
+        assert agent._iterations == 2
 
     @pytest.mark.asyncio
     async def test_chat_returns_string(self):

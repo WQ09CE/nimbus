@@ -66,6 +66,11 @@ class TestServerModels:
         assert response.skills == []
         assert response.plugins == []
 
+    def test_paused_session_status(self):
+        from nimbus.server.models import SessionStatus
+
+        assert SessionStatus.PAUSED.value == "paused"
+
     def test_permission_decision_enum(self):
         """Test PermissionDecision enum values."""
         from nimbus.server.models import PermissionDecision
@@ -146,11 +151,15 @@ class TestPermissionManager:
 
         manager = PermissionManager()
 
-        # Dangerous tools should default to ASK
+        # Dangerous tools should default to ASK (actual registry names are
+        # case-insensitive).
         assert manager.get_rule("bash").value == "ask"
+        assert manager.get_rule("Bash").value == "ask"
+        assert manager.get_rule("Write").value == "ask"
         assert manager.get_rule("exec").value == "ask"
 
         # Safe tools should default to ALLOW_ALWAYS
+        assert manager.get_rule("Read").value == "allow_always"
         assert manager.get_rule("read_file").value == "allow_always"
         assert manager.get_rule("synthesize").value == "allow_always"
 
@@ -178,6 +187,14 @@ class TestPermissionManager:
         assert "bash" in rules
         assert "read_file" in rules
 
+    def test_spawn_agent_rule_depends_on_role_capability(self):
+        from nimbus.server.models import PermissionDecision
+        from nimbus.server.permission import PermissionManager
+
+        manager = PermissionManager()
+        assert manager.get_rule("spawn_agent", {"role": "reader"}) == PermissionDecision.ALLOW_ALWAYS
+        assert manager.get_rule("spawn_agent", {"role": "worker"}) == PermissionDecision.ASK
+
     def test_unknown_tool_defaults_to_ask(self):
         """Test that unknown tools default to ASK."""
         from nimbus.server.models import PermissionDecision
@@ -190,6 +207,124 @@ class TestPermissionManager:
 
         # Tool with dangerous keywords should default to ASK
         assert manager.get_rule("dangerous_operation") == PermissionDecision.ASK
+
+
+class TestSessionToolAuthorizer:
+    @pytest.mark.asyncio
+    async def test_bash_waits_for_user_and_carries_sandbox_grant(self, tmp_path):
+        import asyncio
+
+        from nimbus.core.path_context import AgentPathContext
+        from nimbus.core.protocol import ActionIR
+        from nimbus.server.models import PermissionDecision
+        from nimbus.server.permission import PermissionManager
+        from nimbus.server.tool_policy import SessionToolAuthorizer
+
+        manager = PermissionManager()
+        authorizer = SessionToolAuthorizer(
+            manager,
+            "sess_policy",
+            AgentPathContext(
+                workspace_root=str(tmp_path),
+                target_root=str(tmp_path),
+                execution_cwd=str(tmp_path),
+            ),
+            sandbox_mode="best_effort",
+        )
+        notifications = []
+        task = asyncio.create_task(authorizer(
+            ActionIR(
+                id="call_1", kind="TOOL_CALL", name="Bash",
+                args={"command": "echo ok"},
+            ),
+            lambda phase, data: notifications.append((phase, data)),
+        ))
+
+        for _ in range(20):
+            pending = manager.get_pending_requests("sess_policy")
+            if pending:
+                break
+            await asyncio.sleep(0)
+        assert pending
+        assert notifications[0][0] == "requested"
+        await manager.resolve_permission(
+            pending[0]["request_id"], PermissionDecision.ALLOW_ONCE,
+        )
+        decision = await task
+        assert decision.allowed is True
+        assert decision.decision == "allow_once"
+        assert decision.sandbox["state"] in ("active", "unavailable")
+
+
+class TestSessionLifecycle:
+    """Pause/resume vertical slice at the server manager boundary."""
+
+    @staticmethod
+    def _manager(tmp_path):
+        from nimbus.core.storage import SessionStorage
+        from nimbus.server.permission import PermissionManager
+        from nimbus.server.session import SessionManagerV2
+        from nimbus.server.sse import SSEHub
+
+        manager = SessionManagerV2(SSEHub(), PermissionManager())
+        manager._storage = SessionStorage(str(tmp_path))
+        return manager
+
+    @staticmethod
+    def _save(manager, status):
+        manager._storage.save_session(
+            session_id="sess_lifecycle",
+            status=status,
+            messages=[],
+            vcpu_state={"iteration": 7},
+            metadata={"name": "Lifecycle", "created_at": datetime.now().isoformat()},
+        )
+
+    @pytest.mark.asyncio
+    async def test_pause_requests_clean_seam_on_active_loop(self, tmp_path):
+        import asyncio
+
+        manager = self._manager(tmp_path)
+        self._save(manager, "active")
+
+        class Loop:
+            requested = False
+
+            def request_pause(self):
+                self.requested = True
+
+        loop = Loop()
+        blocker = asyncio.Event()
+        task = asyncio.create_task(blocker.wait())
+        manager.register_task("sess_lifecycle", task)
+        manager._active_loops["sess_lifecycle"] = loop
+        try:
+            result = await manager.pause_session("sess_lifecycle")
+            assert result["success"] is True
+            assert result["status"] == "pause_requested"
+            assert loop.requested is True
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_resume_starts_assistant_only_background_run(self, tmp_path):
+        import asyncio
+
+        manager = self._manager(tmp_path)
+        self._save(manager, "paused")
+        calls = []
+
+        async def fake_stream_chat(session_id, message, tools=None, *, resume=False):
+            calls.append((session_id, message, resume))
+
+        manager.stream_chat = fake_stream_chat
+        result = await manager.resume_session("sess_lifecycle")
+        assert result["success"] is True
+        assert result["restored_iteration"] == 7
+        await asyncio.sleep(0)
+        assert calls == [("sess_lifecycle", None, True)]
+        assert manager.is_session_running("sess_lifecycle") is False
 
 
 class TestSSEHub:
@@ -315,6 +450,9 @@ class TestAPIRouter:
         assert "/models" in route_paths
         assert "/skills" in route_paths
         assert "/plugins" in route_paths
+        assert "/sessions/{session_id}/pause" in route_paths
+        assert "/sessions/{session_id}/resume" in route_paths
+        assert "/permissions/pending" in route_paths
 
     def test_fastapi_app_creation(self):
         """Test FastAPI app can be created with router."""

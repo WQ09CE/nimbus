@@ -15,7 +15,7 @@ import logging
 from pathlib import Path
 from typing import Any, List, Optional
 
-from .registry import ToolParameter, tool
+from .registry import ToolParameter, ToolTraits, tool
 
 logger = logging.getLogger("nimbus.update_plan")
 
@@ -63,6 +63,7 @@ def _render(todos: List[str], notes: Optional[str]) -> str:
             required=False,
         ),
     ],
+    traits=ToolTraits(side_effects="none"),
 )
 async def update_plan(
     todos: Optional[List[str]] = None,

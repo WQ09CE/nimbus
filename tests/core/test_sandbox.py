@@ -51,6 +51,18 @@ class TestBuildProfile:
         profile = sandbox.build_profile([str(tmp_path)], allow_network=True)
         assert "(deny network*)" not in profile
 
+    def test_bubblewrap_prefix_is_read_only_and_networkless(self, tmp_path):
+        argv = sandbox.build_bwrap_argv([str(tmp_path)])
+        assert argv[:1] == ["bwrap"]
+        assert ["--ro-bind", "/", "/"] == argv[argv.index("--ro-bind"):argv.index("--ro-bind") + 3]
+        assert "--unshare-net" in argv
+
+    def test_required_unavailable_plan_is_explicit(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sandbox, "sandbox_available", lambda: False)
+        plan = sandbox.sandbox_plan("required", [str(tmp_path)])
+        assert plan["state"] == "unavailable"
+        assert plan["required"] is True
+
 
 # =============================================================================
 # Failure attribution (Seatbelt dialect)
@@ -87,8 +99,19 @@ class TestBashExitCode:
         # status, reporting exit 0 for every failing command.
         monkeypatch.delenv("NIMBUS_BASH_SANDBOX", raising=False)
         result = await bash_command("false", _path_context=_test_ctx(tmp_path))
+        assert result["status"] == "ERROR"
         assert result["ui_detail"]["exit_code"] == 1
         assert "Exit code: 1" in result["output"]
+
+    async def test_output_without_trailing_newline_does_not_leak_cwd_sentinel(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.delenv("NIMBUS_BASH_SANDBOX", raising=False)
+        result = await bash_command(
+            "printf hello", _path_context=_test_ctx(tmp_path),
+        )
+        assert result["output"] == "hello"
+        assert "__NIMBUS_CWD__" not in result["output"]
 
     async def test_cd_tracking_still_works(self, tmp_path, monkeypatch):
         monkeypatch.delenv("NIMBUS_BASH_SANDBOX", raising=False)
@@ -112,6 +135,33 @@ class TestBashSandboxState:
         result = await bash_command("echo hi", _path_context=_test_ctx(tmp_path))
         assert result["ui_detail"]["sandbox"] == "unavailable"
         assert "UNSANDBOXED" in result["output"]
+
+    async def test_required_but_unavailable_fails_closed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sandbox, "sandbox_available", lambda: False)
+        result = await bash_command(
+            "touch should-not-exist",
+            _path_context=_test_ctx(tmp_path),
+            _sandbox_policy={"mode": "required"},
+        )
+        assert result["status"] == "ERROR"
+        assert result["ui_detail"]["executed"] is False
+        assert not (tmp_path / "should-not-exist").exists()
+
+    @pytest.mark.skipif(
+        sandbox.sandbox_backend() != "bubblewrap",
+        reason="bubblewrap is Linux-only/optional",
+    )
+    async def test_linux_bubblewrap_executes_inside_workspace(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("NIMBUS_BASH_SANDBOX", raising=False)
+        result = await bash_command(
+            "echo confined > result.txt && cat result.txt",
+            _path_context=_test_ctx(tmp_path),
+            _sandbox_policy={"mode": "required"},
+        )
+        assert result["status"] == "OK"
+        assert result["ui_detail"]["sandbox"] == "active"
+        assert result["ui_detail"]["sandbox_backend"] == "bubblewrap"
+        assert (tmp_path / "result.txt").read_text().strip() == "confined"
 
     @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt is macOS-only")
     async def test_active_denial_is_attributed(self, tmp_path, monkeypatch):

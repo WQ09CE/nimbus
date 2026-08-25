@@ -28,6 +28,7 @@ class SessionStatus(str, Enum):
     DELETED = "deleted"
     RUNNING = "running"
     SUSPENDED = "suspended"
+    PAUSED = "paused"
     COMPLETED = "completed"
     ERROR = "error"
 
@@ -184,6 +185,9 @@ class PermissionRequest(BaseModel):
     args: Dict[str, Any]
     session_id: str
     created_at: datetime
+    call_id: Optional[str] = None
+    explanation: Optional[str] = None
+    sandbox: Optional[Dict[str, Any]] = None
 
 
 class PermissionRespond(BaseModel):

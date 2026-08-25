@@ -2,10 +2,7 @@
 
 import json
 import os
-from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 from nimbus.config import NimbusConfig, get_config, reset_config
 
@@ -20,6 +17,7 @@ class TestNimbusConfigDefaults:
         assert config.timeout == 300.0
         assert config.temperature is None
         assert config.server_port == 4096
+        assert config.sandbox_mode == "best_effort"
         assert len(config.review_models) == 3
         assert config.agent_roles == {}
         assert config.enabled_skills == ["goal"]
@@ -41,6 +39,7 @@ class TestNimbusConfigJson:
                 "temperature": 0.7,
             },
             "server": {"port": 8080},
+            "security": {"sandbox_mode": "required"},
             "review_committee": {
                 "models": ["a/b", "c/d"],
             },
@@ -51,6 +50,7 @@ class TestNimbusConfigJson:
         assert config.timeout == 60.0
         assert config.temperature == 0.7
         assert config.server_port == 8080
+        assert config.sandbox_mode == "required"
         assert config.review_models == ["a/b", "c/d"]
 
     def test_agent_roles_load_from_json(self, tmp_path):
@@ -133,6 +133,11 @@ class TestNimbusConfigEnv:
             config = NimbusConfig.load(config_path=tmp_path / "nope.json")
         assert config.default_model == "google/gemini-pro"
         assert config.max_tokens == 2048
+
+    def test_env_sandbox_mode(self, tmp_path):
+        with patch.dict(os.environ, {"NIMBUS_SANDBOX_MODE": "off"}):
+            config = NimbusConfig.load(config_path=tmp_path / "nope.json")
+        assert config.sandbox_mode == "off"
 
     def test_env_skill_overrides(self, tmp_path):
         with patch.dict(os.environ, {

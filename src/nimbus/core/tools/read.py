@@ -5,7 +5,7 @@ from typing import Any, Optional
 
 from nimbus.core.path_context import AgentPathContext, PathResolver
 
-from .registry import ToolParameter, tool
+from .registry import ToolParameter, ToolTraits, tool
 
 MAX_LINES = 2000
 MAX_BYTES = 50 * 1024  # 50KB (aligned with pi-coding-agent)
@@ -25,6 +25,7 @@ MAX_BYTES = 50 * 1024  # 50KB (aligned with pi-coding-agent)
         ToolParameter("offset", "integer", "Line number to start from (1-indexed); only for files beyond 2000 lines", required=False),
         ToolParameter("limit", "integer", "Maximum lines to read (default 2000 — omit unless you need less)", required=False),
     ],
+    traits=ToolTraits(side_effects="read"),
 )
 async def read_file(file_path: str, offset: Optional[int] = None, limit: Optional[int] = None, **kwargs: Any) -> str:
     _path_context: AgentPathContext = kwargs.get("_path_context") or AgentPathContext.from_cwd()

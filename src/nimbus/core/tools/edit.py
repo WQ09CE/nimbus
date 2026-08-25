@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from nimbus.core.path_context import AgentPathContext, PathResolver
 
-from .registry import ToolParameter, tool
+from .registry import ToolParameter, ToolTraits, tool
 
 
 def _fuzzy_find(content: str, old_text: str) -> Optional[int]:
@@ -40,6 +40,7 @@ def _fuzzy_find(content: str, old_text: str) -> Optional[int]:
         ToolParameter("old_text", "string", "Text to find and replace", required=True),
         ToolParameter("new_text", "string", "Replacement text", required=True),
     ],
+    traits=ToolTraits(side_effects="write"),
 )
 async def edit_file(file_path: str, old_text: str, new_text: str, **kwargs: Any) -> str:
     _path_context: AgentPathContext = kwargs.get("_path_context") or AgentPathContext.from_cwd()

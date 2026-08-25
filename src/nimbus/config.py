@@ -49,10 +49,10 @@ class NimbusConfig:
     ollama_base_url: str = "http://localhost:11434"
 
     # pi-ai sidecar (OpenAI-compatible). The pi-codex/* and pi-claude/* models
-    # route here with pi-style "provider/model" names. Default matches
-    # sidecar/pi-sidecar-anthropic.mjs (PI_SIDECAR_PORT=8798), the unified
-    # anthropic+codex sidecar. Override via NIMBUS_PI_SIDECAR_URL.
-    pi_sidecar_url: str = "http://localhost:8798/v1"
+    # route here with pi-style "provider/model" names. Default matches the
+    # Codex smoke rail started by ``cd sidecar && npm start``. The optional
+    # unified sidecar defaults to 8798 and needs an explicit URL override.
+    pi_sidecar_url: str = "http://localhost:8799/v1"
     # Shared secret sent as the Bearer to the sidecar (required when the sidecar
     # binds beyond loopback, e.g. Docker). Empty = loopback/no-auth.
     pi_sidecar_token: str = ""
@@ -72,8 +72,11 @@ class NimbusConfig:
     enabled_plugins: List[str] = field(default_factory=list)
     plugin_paths: List[str] = field(default_factory=list)
 
-    # Nimbus Server
+    # Nimbus Server / execution security. ``best_effort`` uses Seatbelt on
+    # macOS or bubblewrap on Linux and reports an explicit unavailable state
+    # elsewhere; ``required`` fails Bash closed when no backend exists.
     server_port: int = 4096
+    sandbox_mode: str = "best_effort"
 
     # Review Committee default models
     review_models: list = field(default_factory=lambda: [
@@ -118,7 +121,7 @@ def _apply_json(config: NimbusConfig, data: dict) -> None:
         config.timeout = float(v)
     if "temperature" in llm and llm["temperature"] is not None:
         config.temperature = float(llm["temperature"])
-    
+
     if providers := llm.get("providers"):
         if gemini := providers.get("gemini"):
             if api_key := gemini.get("api_key"):
@@ -138,6 +141,12 @@ def _apply_json(config: NimbusConfig, data: dict) -> None:
     server = data.get("server", {})
     if v := server.get("port"):
         config.server_port = int(v)
+
+    security = data.get("security", {})
+    if isinstance(security, dict) and (v := security.get("sandbox_mode")):
+        mode = str(v).strip().lower().replace("-", "_")
+        if mode in {"off", "best_effort", "required"}:
+            config.sandbox_mode = mode
 
     rc = data.get("review_committee", {})
     if models := rc.get("models"):
@@ -188,7 +197,11 @@ def _apply_env(config: NimbusConfig) -> None:
         config.timeout = float(v)
     if v := os.environ.get("NIMBUS_SERVER_PORT"):
         config.server_port = int(v)
-    
+    if v := os.environ.get("NIMBUS_SANDBOX_MODE"):
+        mode = v.strip().lower().replace("-", "_")
+        if mode in {"off", "best_effort", "required"}:
+            config.sandbox_mode = mode
+
     if v := os.environ.get("GEMINI_API_KEY"):
         config.gemini_api_key = v
     elif v := os.environ.get("GOOGLE_API_KEY"):

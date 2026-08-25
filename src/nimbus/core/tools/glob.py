@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 from nimbus.core.path_context import AgentPathContext, PathResolver
 
-from .registry import ToolParameter, tool
+from .registry import ToolParameter, ToolTraits, tool
 
 MAX_RESULTS = 1000
 MAX_OUTPUT_BYTES = 50 * 1024  # 50KB total output limit (aligned with Grep)
@@ -27,6 +27,7 @@ MAX_OUTPUT_BYTES = 50 * 1024  # 50KB total output limit (aligned with Grep)
         ToolParameter("pattern", "string", "Glob pattern, e.g. '**/*.py' or '*.md'", required=True),
         ToolParameter("path", "string", "Directory to search in (default: workspace root)", required=False),
     ],
+    traits=ToolTraits(side_effects="read"),
 )
 async def glob_search(
     pattern: str,

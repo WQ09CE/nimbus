@@ -14,10 +14,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from nimbus import AgentOS
+from nimbus.core.storage import SessionStorage
 
 from .permission import PermissionManager
 from .sse import SSEHub
-from nimbus.core.storage import SessionStorage
+from .tool_policy import SessionToolAuthorizer
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,9 @@ class SessionManagerV2:
         self._sessions: Dict[str, AgentOS] = {}  # session_id -> AgentOS
         self._active_tasks: Dict[str, asyncio.Task] = {}  # session_id -> running task
         self._active_loops: Dict[str, Any] = {}  # session_id -> RuntimeLoop
+        # Pause can arrive while model/AgentOS setup is still constructing the
+        # loop; retain the intent and apply it at the first clean seam.
+        self._pause_requests: set[str] = set()
         self._storage = SessionStorage()
         self._lock = asyncio.Lock()
         self._shared_llm_lock = asyncio.Lock()
@@ -232,7 +236,7 @@ class SessionManagerV2:
                 "updated_at": d.get("updated_at"),
                 "message_count": len(d.get("messages", [])),
             })
-        
+
         # Sort is already handled by list_sessions
         return sessions[offset:offset+limit], len(sessions)
 
@@ -304,6 +308,12 @@ class SessionManagerV2:
                 "steps": counts.get("step/start", 0),
                 "tool_results": counts.get("tool/result", 0),
                 "compactions": counts.get("compaction/applied", 0),
+                "policy_requests": counts.get("policy/requested", 0),
+                "policy_denials": sum(
+                    1 for e in events
+                    if e.type == "policy/decision" and not e.data.get("allowed", False)
+                ),
+                "sandbox_events": counts.get("sandbox/result", 0),
                 "turn_end_reasons": reasons,
             },
         }
@@ -314,6 +324,7 @@ class SessionManagerV2:
             if session_id in self._sessions:
                 del self._sessions[session_id]
             self._storage.delete_session(session_id)
+        self._pause_requests.discard(session_id)
         self._permission_manager.cancel_pending(session_id)
         logger.info(f"🗑️ Deleted session {session_id}")
 
@@ -459,6 +470,7 @@ class SessionManagerV2:
         agent_config.max_consecutive_thoughts = 2  # Safety net: stop after 2 thoughts max
         # Our context-window cap (0 = use the model's full window; compaction is ours).
         agent_config.max_context_tokens = nimbus_config.max_context_tokens
+        agent_config.sandbox_mode = nimbus_config.sandbox_mode
 
         system_prompt = (
             "You are a capable AI assistant. Use tools to solve the user's tasks. Think step by step.\n"
@@ -539,6 +551,14 @@ class SessionManagerV2:
                 return (etype, {**data, "content": data["content"] + nxt[1]["content"]})
             return (etype, {**data, "chunk": data.get("chunk", "") + nxt[1].get("chunk", "")})
 
+        async def _publish_payload(payload):
+            if payload[0] == "__barrier__":
+                future = payload[1]
+                if not future.done():
+                    future.set_result(None)
+                return
+            await self._sse_hub.publish(session_id, payload[0], payload[1])
+
         async def _publisher_task():
             loop = asyncio.get_running_loop()
             stopped = False
@@ -566,17 +586,26 @@ class SessionManagerV2:
                             else:
                                 # Different event type: flush the batch, then the
                                 # interleaving event — order is preserved.
-                                await self._sse_hub.publish(session_id, payload[0], payload[1])
+                                await _publish_payload(payload)
                                 payload = nxt
                                 key = _coalesce_key(payload)
                                 if key is None:
                                     break
                                 deadline = loop.time() + COALESCE_WINDOW_S
-                    await self._sse_hub.publish(session_id, payload[0], payload[1])
+                    await _publish_payload(payload)
                 except Exception as e:
                     logger.error(f"Event publisher error: {e}")
 
         pub_task = asyncio.create_task(_publisher_task())
+
+        async def _flush_publisher() -> None:
+            """FIFO barrier: all queued deltas precede lifecycle terminal events."""
+            future = asyncio.get_running_loop().create_future()
+            event_queue.put_nowait(("__barrier__", future))
+            try:
+                await asyncio.wait_for(asyncio.shield(future), timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning("Timed out draining SSE publisher for %s", session_id)
 
         # Real-time gate callback: queue tool events to SSE as they happen
         def _gate_event_cb(event):
@@ -601,8 +630,25 @@ class SessionManagerV2:
                     "status": event.data.get("status"),
                     "output": event.data.get("output"),
                     "action_id": event.data.get("call_id"),
+                    "duration_ms": event.data.get("duration_ms"),
+                    "authorization_ms": event.data.get("authorization_ms"),
+                    "execution_ms": event.data.get("execution_ms"),
                     "ui_detail": event.data.get("ui_detail"),
+                    "fault": event.data.get("fault"),
                 }))
+            elif event.type == "POLICY_REQUESTED":
+                event_queue.put_nowait(("permission_request", dict(event.data)))
+            elif event.type == "POLICY_DECIDED":
+                event_queue.put_nowait(("policy_decision", dict(event.data)))
+            elif event.type == "SANDBOX_STATUS":
+                event_queue.put_nowait(("sandbox_status", dict(event.data)))
+
+        tool_authorizer = SessionToolAuthorizer(
+            self._permission_manager,
+            session_id,
+            path_ctx,
+            nimbus_config.sandbox_mode,
+        )
 
         # Token-level text streaming callback
         def _text_delta_cb(chunk: str):
@@ -627,10 +673,14 @@ class SessionManagerV2:
             on_text_delta=_text_delta_cb,
             on_tool_output=_tool_output_cb,
             path_context=path_ctx,
+            tool_authorizer=tool_authorizer,
         )
 
-        # Attach task reference to agent_os so it isn't garbage collected
+        # Attach publisher lifecycle/barrier to the AgentOS cached for this
+        # session. Runtime terminal events use the barrier before publishing
+        # paused/error/done, preventing them from overtaking queued deltas.
         agent_os._pub_task = pub_task
+        agent_os._flush_publisher = _flush_publisher
 
         logger.info(f"Created nimbus-next AgentOS for session {session_id}")
 
@@ -693,8 +743,10 @@ class SessionManagerV2:
     async def stream_chat(
         self,
         session_id: str,
-        message: "str | list",
+        message: "str | list | None",
         tools: Optional[List[str]] = None,
+        *,
+        resume: bool = False,
     ):
         """
         Stream chat response with SSE events directly from nimbus-next RuntimeLoop.
@@ -702,24 +754,45 @@ class SessionManagerV2:
         logger.info(f"[stream_chat] Starting for session {session_id}")
         agent_os = await self.get_or_create_agent(session_id)
 
-        # Publish user message so multi-client subscribers can see it
-        user_content = message if isinstance(message, str) else "[multimodal message]"
-        if isinstance(message, list):
-            # Extract text from multimodal content parts
-            text_parts = [p.get("text", "") for p in message if isinstance(p, dict) and p.get("type") == "text"]
-            user_content = " ".join(text_parts) if text_parts else "[multimodal message]"
-        await self._sse_hub.publish(session_id, "user_message", {"content": user_content})
+        # A resume continues the balanced paused surface without inventing a
+        # synthetic user message. A normal chat still publishes its input for
+        # multi-client observers.
+        if not resume:
+            user_content = message if isinstance(message, str) else "[multimodal message]"
+            if isinstance(message, list):
+                text_parts = [
+                    p.get("text", "") for p in message
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ]
+                user_content = " ".join(text_parts) if text_parts else "[multimodal message]"
+            await self._sse_hub.publish(
+                session_id, "user_message", {"content": user_content}
+            )
 
-        # message_start signals a new assistant turn (connected is sent by SSEHub.subscribe automatically)
-        await self._sse_hub.publish(session_id, "message_start", {"role": "assistant"})
+        await self._sse_hub.publish(
+            session_id,
+            "message_start",
+            {"role": "assistant", "resumed": resume},
+        )
 
         loop = None
+        terminal_status = "OK"
+
+        async def flush_realtime_events() -> None:
+            flush = getattr(agent_os, "_flush_publisher", None)
+            if flush is not None:
+                await flush()
+
         try:
             logger.info("[stream_chat] Calling agent_os.stream_with_queue...")
-            
-            # Fire off auto-titling if this is the first real interaction
+
+            # Fire off auto-titling only for a real new user interaction.
             session = await self.get_session(session_id)
-            if session and session.get("name", "").startswith("New Chat"):
+            if (
+                not resume
+                and session
+                and session.get("name", "").startswith("New Chat")
+            ):
                 asyncio.create_task(self._auto_generate_title(session_id, agent_os))
 
             # Retrieve previous state if any
@@ -730,15 +803,18 @@ class SessionManagerV2:
             loop_metadata = dump.get("metadata", {})
             loop_metadata["llm_config"] = dump.get("llm_config", {})
 
-            # Reset execution counters for new turn (iteration is per-task, not cumulative)
-            vcpu_state = dump.get("vcpu_state", {})
-            vcpu_state["iteration"] = 0
-            vcpu_state["consecutive_thoughts"] = 0
-            vcpu_state["consecutive_errors"] = 0
+            # A fresh user turn resets task counters. Resume restores the
+            # checkpoint verbatim, including the remaining iteration budget.
+            vcpu_state = dict(dump.get("vcpu_state", {}))
+            if not resume:
+                vcpu_state["iteration"] = 0
+                vcpu_state["consecutive_thoughts"] = 0
+                vcpu_state["consecutive_errors"] = 0
 
-            # Generate the RuntimeLoop (pi-style)
+            # Generate the RuntimeLoop. Empty goal means no new user message;
+            # the VCPU continues from the latest paired tool result.
             loop = agent_os.stream_with_queue(
-                message,
+                "" if resume else message,
                 session_id=session_id,
                 storage=self._storage,
                 metadata=loop_metadata,
@@ -746,16 +822,33 @@ class SessionManagerV2:
                 initial_vcpu_state=vcpu_state,
             )
             self._active_loops[session_id] = loop
+            if session_id in self._pause_requests:
+                self._pause_requests.discard(session_id)
+                loop.request_pause()
 
             # Yield fine-grained events mapped to SSE UI format
             async for event in loop.stream():
                 evt_type = event.get("type")
-                
+
                 if evt_type == "interrupted":
                     logger.info("[stream_chat] Execution cancelled by interrupt request")
-                    await self._sse_hub.publish(session_id, "done", {"status": "CANCELLED"})
-                    break  # P0 fix: stop processing loop events after interrupt
-                
+                    terminal_status = "CANCELLED"
+                    await flush_realtime_events()
+                    await self._sse_hub.publish(
+                        session_id, "done", {"status": terminal_status}
+                    )
+                    break
+
+                if evt_type == "paused":
+                    terminal_status = "PAUSED"
+                    result = event.get("result")
+                    await flush_realtime_events()
+                    await self._sse_hub.publish(session_id, "paused", {
+                        "status": "PAUSED",
+                        "message": getattr(result, "output", None),
+                    })
+                    continue
+
                 if evt_type == "message_queued":
                     logger.info(f"[stream_chat] Handled enqueued message: {str(event.get('content'))[:50]}...")
                     continue
@@ -786,6 +879,8 @@ class SessionManagerV2:
                     continue
                 elif evt_type == "final":
                     result = event.get("result")
+                    if result:
+                        terminal_status = result.status
                     if result and result.status == "ERROR":
                         fault = getattr(result, "fault", None)
                         error_payload = {
@@ -793,36 +888,116 @@ class SessionManagerV2:
                             "message": fault.message if fault else str(result.output),
                             "retryable": False,
                         }
+                        await flush_realtime_events()
                         await self._sse_hub.publish(session_id, "error", error_payload)
                     elif result and result.status == "OK":
-                        logger.info(f"[stream_chat] Completed with status: OK")
-            
+                        logger.info("[stream_chat] Completed with status: OK")
+
             # Normal completion
 
         except asyncio.CancelledError:
             logger.info(f"[stream_chat] Cancelled by user for session {session_id}")
             raise
         except Exception as chat_err:
+            terminal_status = "ERROR"
             logger.error(f"[stream_chat] Streaming failed: {chat_err}", exc_info=True)
             raise
         finally:
-            # P0 fix: only publish done:OK if the loop was NOT interrupted
-            # (interrupted path already published done:CANCELLED)
             loop = self._active_loops.get(session_id)
-            was_interrupted = loop and getattr(loop, '_interrupted', False)
+            was_interrupted = bool(
+                loop and getattr(loop, "_interrupted", False)
+            )
 
-            if session_id in self._active_loops:
-                del self._active_loops[session_id]
+            self._active_loops.pop(session_id, None)
 
+            # The interrupted branch already emitted CANCELLED. Preserve the
+            # last-run SSE replay log after completion so a resume caller or
+            # refreshed observer can attach late and still receive PAUSED/done.
+            # prepare_session() resets it at the beginning of the next run.
             if not was_interrupted:
-                await self._sse_hub.publish(session_id, "done", {"status": "OK"})
-
-            # Do NOT close the SSE connections — keep subscribers alive so they
-            # can receive the next task's events without reconnecting.
-            # Only reset the event log so the next prepare_session starts fresh.
-            await self._sse_hub.reset_session_log(session_id)
+                await flush_realtime_events()
+                await self._sse_hub.publish(
+                    session_id, "done", {"status": terminal_status}
+                )
 
 
+    async def pause_session(self, session_id: str) -> Dict[str, Any]:
+        """Request a soft stop at the next RuntimeLoop step seam."""
+        session = await self.get_session(session_id)
+        if session is None:
+            return {"success": False, "error": "Session not found"}
+        if session.get("status") == "paused" and not self.is_session_running(session_id):
+            return {
+                "success": True,
+                "session_id": session_id,
+                "status": "paused",
+                "already_paused": True,
+            }
+        if not self.is_session_running(session_id):
+            return {"success": False, "error": "Session is not running"}
+
+        loop = self._active_loops.get(session_id)
+        if loop is not None:
+            loop.request_pause()
+        else:
+            self._pause_requests.add(session_id)
+        return {
+            "success": True,
+            "session_id": session_id,
+            "status": "pause_requested",
+            "already_paused": False,
+        }
+
+    async def resume_session(self, session_id: str) -> Dict[str, Any]:
+        """Start an assistant-only run from a durable PAUSED checkpoint.
+
+        The task runs in the background and publishes through the normal SSE
+        hub. Its replay buffer is retained after completion, so the caller can
+        attach immediately after this JSON response without a race.
+        """
+        session = await self.get_session(session_id)
+        if session is None:
+            return {"success": False, "error": "Session not found"}
+        if self.is_session_running(session_id):
+            return {"success": False, "error": "Session is already running"}
+        if session.get("status") != "paused":
+            return {
+                "success": False,
+                "error": f"Session is {session.get('status')!r}, not paused",
+            }
+
+        dump = self._storage.load_session(session_id) or {}
+        restored = dict(dump.get("vcpu_state", {}))
+        self._pause_requests.discard(session_id)
+        self._sse_hub.prepare_session(session_id)
+
+        async def run_resume() -> None:
+            try:
+                await self.stream_chat(session_id, None, resume=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Resume failed for %s: %s", session_id, exc,
+                    exc_info=True,
+                )
+                await self._sse_hub.publish(session_id, "error", {
+                    "code": "resume_failed",
+                    "message": str(exc),
+                    "retryable": True,
+                })
+            finally:
+                self.unregister_task(session_id)
+
+        task = asyncio.create_task(run_resume())
+        self.register_task(session_id, task)
+        return {
+            "success": True,
+            "session_id": session_id,
+            "status": "resuming",
+            "restored_step": restored.get("iteration", 0),
+            "restored_iteration": restored.get("iteration", 0),
+        }
 
     async def interrupt_session(self, session_id: str) -> Dict[str, Any]:
         """
@@ -835,6 +1010,7 @@ class SessionManagerV2:
             return {"success": False, "error": "Session not loaded"}
 
         try:
+            self._pause_requests.discard(session_id)
             loop = self._active_loops.get(session_id)
             interrupted = False
             if loop:
@@ -872,13 +1048,14 @@ class SessionManagerV2:
             loop.message_queue.enqueue(content)
             logger.info(f"💉 Injected message into running nimbus-next loop for {session_id}")
             return True
-            
+
         return False
 
     async def close_all(self) -> None:
         """Close all active sessions."""
         async with self._lock:
             self._sessions.clear()
+            self._pause_requests.clear()
 
         if self._shared_llm_client:
             logger.info("🔌 Closing shared LLM adapter")

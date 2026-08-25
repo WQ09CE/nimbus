@@ -5,13 +5,13 @@ import asyncio
 import pytest
 
 from nimbus.core.gate import (
+    AuthorizationDecision,
     DoomLoopDetector,
     KernelGate,
     _normalize_args,
     _truncate_output,
 )
-from nimbus.core.protocol import ActionIR, Event
-
+from nimbus.core.protocol import ActionIR
 
 # =============================================================================
 # Doom Loop Detector
@@ -187,6 +187,81 @@ class TestKernelGate:
         assert len(events) == 2
         assert events[0].type == "TOOL_STARTED"
         assert events[1].type == "TOOL_FINISHED"
+
+    @pytest.mark.asyncio
+    async def test_authorization_denial_blocks_executor_and_is_audited(self):
+        executed = False
+        audit = []
+        events = []
+
+        async def executor(name, args):
+            nonlocal executed
+            executed = True
+            return "should not run"
+
+        async def authorizer(action, notify):
+            notify("requested", {
+                "request_id": "perm_1",
+                "explanation": "approval required",
+            })
+            return AuthorizationDecision(
+                allowed=False,
+                decision="deny",
+                source="user",
+                explanation="The user denied this action.",
+                request_id="perm_1",
+            )
+
+        gate = KernelGate(
+            "p1", executor, authorizer=authorizer,
+            event_callback=events.append, session_id="sess_1",
+        )
+        gate.set_audit_sink(lambda t, d: audit.append((t, d)))
+        result = await gate.syscall_tool(
+            ActionIR(kind="TOOL_CALL", name="Bash", args={"command": "rm -rf x"})
+        )
+
+        assert executed is False
+        assert result.status == "ERROR"
+        assert result.fault.code == "PERMISSION_DENIED"
+        assert any(t == "policy/requested" for t, _ in audit)
+        decision = next(d for t, d in audit if t == "policy/decision")
+        assert decision["allowed"] is False
+        assert any(e.type == "POLICY_REQUESTED" for e in events)
+        assert any(e.type == "POLICY_DECIDED" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_authorized_bash_receives_effective_sandbox_policy(self):
+        received = {}
+
+        async def executor(name, args):
+            received.update(args)
+            return {"output": "ok", "ui_detail": {}}
+
+        sandbox_plan = {
+            "mode": "required",
+            "state": "active",
+            "backend": "bubblewrap",
+            "requested": True,
+            "required": True,
+        }
+
+        async def authorizer(action, notify):
+            return AuthorizationDecision(
+                allowed=True,
+                decision="allow_once",
+                source="user",
+                explanation="approved",
+                sandbox=sandbox_plan,
+            )
+
+        gate = KernelGate("p1", executor, authorizer=authorizer)
+        result = await gate.syscall_tool(
+            ActionIR(kind="TOOL_CALL", name="Bash", args={"command": "echo ok"})
+        )
+        assert received["_sandbox_policy"] == sandbox_plan
+        assert result.ui_detail["policy"]["decision"] == "allow_once"
+        assert set(result.timing_ms) == {"total", "authorization", "exec"}
 
     @pytest.mark.asyncio
     async def test_doom_loop_fatal(self):

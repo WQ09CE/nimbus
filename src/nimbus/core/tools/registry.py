@@ -12,7 +12,14 @@ from dataclasses import dataclass, field
 from functools import wraps
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
+from ..protocol import ToolTraits
+
 F = TypeVar("F", bound=Callable[..., Any])
+
+# Undeclared tools (plugins) are distrusted by default: workspace-scoped grant
+# plus fail-closed permission ASK. OS-sandbox execute class is opt-in by
+# declaration (design doc §6b, plugin row).
+DEFAULT_TRAITS = ToolTraits(side_effects="write")
 
 
 @dataclass
@@ -40,6 +47,7 @@ class ToolDefinition:
     name: str
     description: str
     parameters: List[ToolParameter] = field(default_factory=list)
+    traits: ToolTraits = DEFAULT_TRAITS
 
     def to_openai_format(self) -> Dict[str, Any]:
         """Export as OpenAI function calling schema."""
@@ -160,13 +168,19 @@ class ToolRegistry:
         return name in self._tools
 
 
-def tool(name: str, description: str, parameters: Optional[List[ToolParameter]] = None) -> Callable[[F], F]:
+def tool(
+    name: str,
+    description: str,
+    parameters: Optional[List[ToolParameter]] = None,
+    traits: Optional[ToolTraits] = None,
+) -> Callable[[F], F]:
     """Decorator to define a tool. Attaches ToolDefinition to the function."""
     def decorator(func: F) -> F:
         func._tool_definition = ToolDefinition(  # type: ignore
             name=name,
             description=description,
             parameters=parameters or [],
+            traits=traits or DEFAULT_TRAITS,
         )
         return func
     return decorator
