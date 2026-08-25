@@ -322,6 +322,15 @@ class AgentOS:
         """
         return getattr(self, "_vcompute_backend", None)
 
+    def set_sandbox_restore_hint(self, snapshot_id: Optional[str]) -> None:
+        """Arm a deferred layer-3 restore for a backend not yet built.
+
+        resume_session runs before any loop build, so the backend may not
+        exist yet; the hint makes the FIRST lease open a restore instead of
+        a fresh open. One-shot: consumed at the next backend construction.
+        """
+        self._sandbox_restore_hint = snapshot_id
+
     async def chat(self, message: str, session_id: str = "default") -> str:
         """Simple chat interface. Returns the text response."""
         loop = self._build_loop(message, text_is_final=True, session_id=session_id)
@@ -461,8 +470,17 @@ class AgentOS:
             # per-run (they carry the per-run abort_event).
             if getattr(self, "_vcompute_backend", None) is None:
                 self._vcompute_backend = VComputeBackend(
-                    vcompute_url, session_id=session_id,
+                    vcompute_url,
+                    session_id=session_id,
+                    # NIMBUS_VCOMPUTE_MOUNT=0 selects the true-cloud isolated
+                    # form (no workspace mount; state lives in the lease and
+                    # its snapshots — the layer-3 binding then matters).
+                    mount_workspace=os.environ.get("NIMBUS_VCOMPUTE_MOUNT", "1") != "0",
+                    # One-shot layer-3 hint: a resume recorded before any loop
+                    # build defers its restore to the first lease open.
+                    restore_from=getattr(self, "_sandbox_restore_hint", None),
                 )
+                self._sandbox_restore_hint = None
             gate_backend = RoutingBackend(
                 default=LocalBackend(
                     tool_executor,

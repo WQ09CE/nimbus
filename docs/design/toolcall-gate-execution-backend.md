@@ -344,11 +344,23 @@ snapshot failure degrades to no binding, never blocks the pause. Proven
 live through a real SessionManagerV2 + storage across BOTH a daemon recycle
 and a server-process restart (fresh manager over the same storage).
 
-Remaining for full layer 3: drive the cut through a real LLM run with the
-PAUSE primitive as the quiesce trigger (pi_codex_vertical_smoke.py +
-NIMBUS_VCOMPUTE_URL is the ready-made harness), and Crab-style
-side-effect-aware cut policy (skip snapshot for read-only turns —
-traits.side_effects is the ready signal, memex Phase 2.5).
+**Full-LLM PAUSE cut proven (same day):**
+`scripts/dev_tools/vc_pause_cut_vertical.py` — real model (pi-ai
+gpt-5.6-sol) on an ISOLATED lease (`NIMBUS_VCOMPUTE_MOUNT=0`, the
+true-cloud form): step-1 Bash writes state → PAUSE lands at the seam →
+binding persisted → vcompute daemon killed and restarted → resume → step-2
+Bash reads the pre-pause state from the RESTORED lease. The vertical's
+first run caught a real ordering bug: resume_session fires before any loop
+build, so the lazily-built backend didn't exist and restore was silently
+skipped — split-brain reproduced under a real LLM. Fix: a one-shot
+deferred-restore hint (`AgentOS.set_sandbox_restore_hint` →
+`VComputeBackend(restore_from=…)`) makes the FIRST lease open a restore.
+The isolated form is env-selectable now because server sessions always
+carry a workspace and would otherwise always mount.
+
+Remaining for layer 3: Crab-style side-effect-aware cut policy (skip
+snapshot for read-only turns — traits.side_effects is the ready signal,
+memex Phase 2.5), lifecycle policies (TTL/auto-sleep), cost attribution.
 
 Gate = syscall layer (its own docstring, `gate.py:2`). Backend = VFS
 `file_operations`. Lease = fd. §4 = errno taxonomy. Catalog = mount table.

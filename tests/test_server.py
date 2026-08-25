@@ -573,6 +573,30 @@ class TestSandboxBinding:
         assert backend.restored == ["snap_bind1"]
 
     @pytest.mark.asyncio
+    async def test_resume_defers_restore_when_backend_not_built(self, tmp_path):
+        # resume_session runs before any loop build: with no backend yet, the
+        # restore is armed as a one-shot hint for the first lease open.
+        manager = self._manager(tmp_path)
+        self._save(manager, status="paused", metadata={
+            "sandbox_binding": {"backend": "vcompute", "snapshot_id": "snap_bind1",
+                                "lease_id": "vc_old", "taken_at": "t"},
+        })
+
+        class LazyAgent:
+            hint = None
+
+            def sandbox_backend(self):
+                return None
+
+            def set_sandbox_restore_hint(self, snapshot_id):
+                self.hint = snapshot_id
+
+        agent = LazyAgent()
+        manager._sessions["sess_binding"] = agent
+        assert await manager._restore_sandbox_from_binding("sess_binding") is True
+        assert agent.hint == "snap_bind1"
+
+    @pytest.mark.asyncio
     async def test_resume_without_binding_is_a_noop(self, tmp_path):
         manager = self._manager(tmp_path)
         self._save(manager, status="paused")

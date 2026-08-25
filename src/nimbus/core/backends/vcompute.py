@@ -38,11 +38,20 @@ class VComputeBackend:
         base_url: str = "",
         session_id: str = "",
         client: Optional[httpx.AsyncClient] = None,
+        mount_workspace: bool = True,
+        restore_from: Optional[str] = None,
     ):
         self._client = client or httpx.AsyncClient(base_url=base_url, timeout=10.0)
         self._session_id = session_id
         self._lease: Optional[Lease] = None
         self._lease_mounted = False
+        # False = true-cloud form: ignore the local workspace and use isolated
+        # leases, so machine state lives only in the lease (and its snapshots).
+        self._mount_workspace = mount_workspace
+        # Deferred layer-3 restore: the first lease open replays this snapshot
+        # instead of opening fresh (set when the binding is read before any
+        # loop has built the backend — the resume-before-first-tool ordering).
+        self._restore_from = restore_from
 
     @property
     def lease_mounted(self) -> bool:
@@ -130,15 +139,21 @@ class VComputeBackend:
         try:
             active = lease or self._lease
             if active is None:
-                # Finding #7: mount the session workspace so the file surface
-                # and the exec surface are the same directory.
-                pc = call.path_context
-                workspace = str(getattr(pc, "target_root", "") or "") if pc else ""
-                cwd = str(getattr(pc, "execution_cwd", "") or "") if pc else ""
-                active = await self.open_lease(
-                    call.session_id or self._session_id, workspace=workspace, cwd=cwd,
-                )
-                self._lease = active
+                if self._restore_from:
+                    snapshot_id, self._restore_from = self._restore_from, None
+                    active = await self.restore_lease(snapshot_id)
+                else:
+                    # Finding #7: mount the session workspace so the file
+                    # surface and the exec surface are the same directory
+                    # (unless the true-cloud isolated form is requested).
+                    pc = call.path_context if self._mount_workspace else None
+                    workspace = str(getattr(pc, "target_root", "") or "") if pc else ""
+                    cwd = str(getattr(pc, "execution_cwd", "") or "") if pc else ""
+                    active = await self.open_lease(
+                        call.session_id or self._session_id,
+                        workspace=workspace, cwd=cwd,
+                    )
+                    self._lease = active
             async with self._client.stream(
                 "POST", f"/v1/leases/{active.lease_id}/exec",
                 json=payload, timeout=timeout,

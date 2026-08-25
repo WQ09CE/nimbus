@@ -992,6 +992,15 @@ class SessionManagerV2:
         agent = await self.get_or_create_agent(session_id)
         backend = agent.sandbox_backend() if hasattr(agent, "sandbox_backend") else None
         if backend is None:
+            # The backend is built lazily by the first loop; arm a deferred
+            # restore so its FIRST lease open replays the bound snapshot.
+            if hasattr(agent, "set_sandbox_restore_hint"):
+                agent.set_sandbox_restore_hint(binding["snapshot_id"])
+                logger.info(
+                    "Sandbox restore deferred to first lease open for %s (%s)",
+                    session_id, binding["snapshot_id"],
+                )
+                return True
             logger.warning(
                 "Session %s carries a sandbox binding but no compute backend; "
                 "resuming without machine state", session_id,
