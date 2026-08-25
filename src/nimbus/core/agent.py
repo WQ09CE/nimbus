@@ -30,6 +30,7 @@ Usage:
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -424,6 +425,38 @@ class AgentOS:
                 )
             return await self._registry.execute(name, args)
 
+        # Logical model name (pre-rewrite) — sidecar models rewrite _model
+        # for the wire; sub-agents must inherit the logical identity so
+        # llm_factory routes them through the same channel.
+        parent_model = (
+            getattr(self._adapter, "_logical_model", None)
+            or getattr(self._adapter, "_model", self.config.model)
+        )
+        parent_base_url = getattr(
+            getattr(self._adapter, "config", None), "base_url", None
+        )
+
+        # Execution backend: local by default; with NIMBUS_VCOMPUTE_URL set,
+        # execute-class Bash routes to the vcompute service while everything
+        # else stays in-process (design doc §6b / step 6).
+        gate_backend = None
+        vcompute_url = os.environ.get("NIMBUS_VCOMPUTE_URL")
+        if vcompute_url:
+            from .backend import LocalBackend, RoutingBackend
+            from .backends.vcompute import VComputeBackend
+
+            gate_backend = RoutingBackend(
+                default=LocalBackend(
+                    tool_executor,
+                    abort_event=abort_event,
+                    parent_model=parent_model,
+                    parent_base_url=parent_base_url,
+                ),
+                routes={
+                    "Bash": VComputeBackend(vcompute_url, session_id=session_id),
+                },
+            )
+
         gate = KernelGate(
             pid=pid,
             tool_executor=tool_executor,
@@ -432,15 +465,12 @@ class AgentOS:
             on_tool_output=self._on_tool_output,
             abort_event=abort_event,
             path_context=path_context,
-            # Logical model name (pre-rewrite) — sidecar models rewrite _model
-            # for the wire; sub-agents must inherit the logical identity so
-            # llm_factory routes them through the same channel.
-            parent_model=getattr(self._adapter, "_logical_model", None)
-            or getattr(self._adapter, "_model", self.config.model),
-            parent_base_url=getattr(getattr(self._adapter, "config", None), "base_url", None),
+            parent_model=parent_model,
+            parent_base_url=parent_base_url,
             authorizer=self._tool_authorizer,
             session_id=session_id,
             sandbox_mode=self.config.sandbox_mode,
+            backend=gate_backend,
         )
 
         # Decoder

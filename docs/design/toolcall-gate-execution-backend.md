@@ -259,6 +259,41 @@ Grounds: ordered by dependency and reversibility; steps 1–5 blast radius =
 | D4 | Is spawn_agent a backend? | No — orchestration, not a channel. | it composes AgentOS instances, not tool processes |
 | D5 | Migrate `tool_policy.py` from name-matching to traits-driven now, or when the first non-built-in backend lands? | Now (step 1.5): built-ins declare traits, authorizer consumes traits, name rules become overrides. Small diff, kills the scaling wart before backends multiply. | contract stability; blast radius = tool_policy.py only |
 
+## 10a. Step 6 findings — vcompute, the first real second backend (2026-08-25)
+
+Substrate: `infra` vcompute daemon (`src/nimbus/infra/vcompute.py` — leases =
+workspaces with persistent cwd, per-call process groups, chaos injection) +
+`core/backends/vcompute.py` + `RoutingBackend`. Verified through the real
+Gate over ASGI (9 tests, `tests/core/test_vcompute.py`) and over live TCP
+(5-scenario smoke): roundtrip, cwd affinity, 2× network blip silently
+retried, recycle → LEASE_LOST → next-call self-heal, timeout → remote kill
+with zero orphans. Loop/VCPU: zero changes — the seam held.
+
+What reality forced (the discoveries the model predicted it would need):
+
+1. **The router is a required part, not an option.** §7's "resolve backend"
+   grew into `RoutingBackend` with in-flight cancel routing — the timeout
+   path cancels run() BEFORE calling cancel(), so the call→backend entry
+   must survive CancelledError. Paper designs don't find this ordering.
+2. **PreparedCall lacks session identity** — the predicted contract
+   revision. v1 sidesteps it because backends are session-scoped like the
+   Gate itself; a shared/pooled backend needs `PreparedCall.session_id`.
+3. **Streaming breaks at the channel.** `on_stream` is a local function
+   pointer; remote Bash runs silent in the UI. Needs an SSE/chunked leg
+   (daemon + backend) — step 7 material.
+4. **The sandbox grant does not travel.** Remote execution escapes the host
+   Seatbelt/bwrap entirely; the grant is a host-scoped concept. Either
+   trust the compute side's own isolation (containers) or translate grant
+   semantics into the exec request. vcompute's workspace is a convention,
+   not an enforcement.
+5. **Orphan defense needs two layers.** A vanished client cancels the HTTP
+   handler mid-exec; without `asyncio.shield` + a daemon-side backstop
+   timeout, the child is orphaned. Gate-side cancel alone cannot close this
+   (it never arrives across a partition).
+6. **The retry budget is a contract parameter.** fail_next=2 is exactly
+   covered by BACKEND_RETRY_MAX=2; a third consecutive blip reaches the
+   model. Budget should eventually follow `latency_class`, not a constant.
+
 ## 10. Cross-reference (why this shape)
 
 Gate = syscall layer (its own docstring, `gate.py:2`). Backend = VFS

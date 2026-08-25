@@ -157,3 +157,65 @@ class LocalBackend:
         # coroutine and the shared abort event reaches process groups (bash).
         # Nothing extra to kill here; remote backends implement this for real.
         return None
+
+
+class RoutingBackend:
+    """Route each call to a per-tool backend; `default` catches the rest.
+
+    The Gate's "resolve backend" pipeline step made concrete (design doc §7).
+    Cancel must reach the backend that RAN the call: an in-flight entry is
+    kept when run() is cancelled (the Gate's timeout path cancels run first,
+    then calls cancel), and dropped on normal completion.
+    """
+
+    backend_id = "router"
+
+    def __init__(self, default: ExecutionBackend, routes: Dict[str, ExecutionBackend]):
+        self._default = default
+        self._routes = dict(routes)
+        self._inflight: Dict[str, ExecutionBackend] = {}
+
+    def _all_backends(self) -> List[ExecutionBackend]:
+        seen: List[ExecutionBackend] = [self._default]
+        for b in self._routes.values():
+            if all(b is not s for s in seen):
+                seen.append(b)
+        return seen
+
+    def advertise(self) -> List[ToolDefinition]:
+        defs: List[ToolDefinition] = []
+        for b in self._all_backends():
+            defs.extend(b.advertise())
+        return defs
+
+    def catalog_version(self) -> int:
+        return sum(b.catalog_version() for b in self._all_backends())
+
+    async def open_lease(self, session_id: str) -> Optional[Lease]:
+        return None  # sub-backends self-manage their leases (session-scoped)
+
+    async def close_lease(self, lease: Lease) -> None:
+        return None
+
+    async def run(self, call: PreparedCall, lease: Optional[Lease] = None) -> BackendOutcome:
+        backend = self._routes.get(call.tool, self._default)
+        self._inflight[call.call_id] = backend
+        try:
+            outcome = await backend.run(call, lease)
+        except asyncio.CancelledError:
+            # Keep the entry: the Gate's cancel() for this call is coming.
+            raise
+        except Exception:
+            self._inflight.pop(call.call_id, None)
+            raise
+        self._inflight.pop(call.call_id, None)
+        return outcome
+
+    async def cancel(self, call_id: str, lease: Optional[Lease] = None) -> None:
+        backend = self._inflight.pop(call_id, None)
+        if backend is not None:
+            await backend.cancel(call_id, lease)
+            return
+        # Unknown call (already reaped, or raced): best-effort fan-out.
+        for b in self._all_backends():
+            await b.cancel(call_id, lease)
