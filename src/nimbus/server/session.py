@@ -842,6 +842,10 @@ class SessionManagerV2:
                 if evt_type == "paused":
                     terminal_status = "PAUSED"
                     result = event.get("result")
+                    # Two-phase cut: the loop just quiesced at a clean seam —
+                    # bind the machine state before announcing the pause, so
+                    # a durable checkpoint precedes its advertisement.
+                    await self._snapshot_sandbox_at_seam(session_id)
                     await flush_realtime_events()
                     await self._sse_hub.publish(session_id, "paused", {
                         "status": "PAUSED",
@@ -921,6 +925,91 @@ class SessionManagerV2:
                 )
 
 
+    async def _save_sandbox_binding(
+        self, session_id: str, binding: Optional[Dict[str, Any]],
+    ) -> None:
+        """Persist (or clear) the layer-3 binding in session metadata."""
+        async with self._lock:
+            dump = self._storage.load_session(session_id)
+            if not dump:
+                return
+            meta = dump.get("metadata", {})
+            if binding is None:
+                meta.pop("sandbox_binding", None)
+            else:
+                meta["sandbox_binding"] = binding
+            self._storage.save_session(
+                session_id=session_id,
+                status=dump.get("status", "active"),
+                messages=dump.get("messages", []),
+                vcpu_state=dump.get("vcpu_state", {}),
+                vcpu_config=dump.get("vcpu_config", {}),
+                llm_config=dump.get("llm_config", {}),
+                metadata=meta,
+            )
+
+    async def _snapshot_sandbox_at_seam(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Two-phase cut, phase 2: the runtime has quiesced at a PAUSED seam;
+        snapshot the sandbox and persist the (session_ckpt, sandbox_snap_id)
+        binding. Mounted leases skip — a mounted workspace is durable by
+        itself. Any failure degrades to no binding; pause is never blocked.
+        """
+        agent = self._sessions.get(session_id)
+        backend = agent.sandbox_backend() if hasattr(agent, "sandbox_backend") else None
+        if backend is None or getattr(backend, "_lease", None) is None:
+            return None
+        if getattr(backend, "lease_mounted", False):
+            return None
+        try:
+            snapshot_id = await backend.snapshot_lease()
+        except Exception:
+            logger.warning(
+                "Sandbox snapshot at pause seam failed; binding skipped",
+                exc_info=True,
+            )
+            return None
+        binding = {
+            "backend": getattr(backend, "backend_id", "?"),
+            "snapshot_id": snapshot_id,
+            "lease_id": backend._lease.lease_id,
+            "taken_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await self._save_sandbox_binding(session_id, binding)
+        logger.info(
+            "Sandbox bound at seam: %s -> %s", session_id, snapshot_id,
+        )
+        return binding
+
+    async def _restore_sandbox_from_binding(self, session_id: str) -> bool:
+        """Resume's other half: replay BOTH sides together. The session
+        checkpoint restores via the log; the sandbox restores from the bound
+        snapshot. Restoring only one side is the split-brain the
+        consistency-cut vertical demonstrated."""
+        dump = self._storage.load_session(session_id) or {}
+        binding = (dump.get("metadata") or {}).get("sandbox_binding")
+        if not binding:
+            return False
+        agent = await self.get_or_create_agent(session_id)
+        backend = agent.sandbox_backend() if hasattr(agent, "sandbox_backend") else None
+        if backend is None:
+            logger.warning(
+                "Session %s carries a sandbox binding but no compute backend; "
+                "resuming without machine state", session_id,
+            )
+            return False
+        try:
+            await backend.restore_lease(binding["snapshot_id"])
+        except Exception:
+            logger.warning(
+                "Sandbox restore from binding failed; resuming degraded",
+                exc_info=True,
+            )
+            return False
+        logger.info(
+            "Sandbox restored for %s from %s", session_id, binding["snapshot_id"],
+        )
+        return True
+
     async def pause_session(self, session_id: str) -> Dict[str, Any]:
         """Request a soft stop at the next RuntimeLoop step seam."""
         session = await self.get_session(session_id)
@@ -970,6 +1059,10 @@ class SessionManagerV2:
         restored = dict(dump.get("vcpu_state", {}))
         self._pause_requests.discard(session_id)
         self._sse_hub.prepare_session(session_id)
+
+        # Replay both sides together: session checkpoint via the log (below),
+        # machine state via the bound snapshot (no-op when no binding).
+        await self._restore_sandbox_from_binding(session_id)
 
         async def run_resume() -> None:
             try:

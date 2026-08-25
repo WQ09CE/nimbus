@@ -42,6 +42,13 @@ class VComputeBackend:
         self._client = client or httpx.AsyncClient(base_url=base_url, timeout=10.0)
         self._session_id = session_id
         self._lease: Optional[Lease] = None
+        self._lease_mounted = False
+
+    @property
+    def lease_mounted(self) -> bool:
+        """True when the active lease mounts the session workspace — a
+        mounted workspace is durable by itself, so layer 3 skips binding."""
+        return self._lease_mounted
 
     # -- catalog face --
     def advertise(self) -> List[ToolDefinition]:
@@ -60,6 +67,7 @@ class VComputeBackend:
         )
         resp.raise_for_status()
         body = resp.json()
+        self._lease_mounted = bool(body.get("mounted"))
         return Lease(backend_id=self.backend_id, lease_id=body["lease_id"])
 
     async def close_lease(self, lease: Lease) -> None:
@@ -90,6 +98,7 @@ class VComputeBackend:
         resp.raise_for_status()
         lease = Lease(backend_id=self.backend_id, lease_id=resp.json()["lease_id"])
         self._lease = lease
+        self._lease_mounted = False  # restored leases are always isolated
         return lease
 
     # -- dispatch face --

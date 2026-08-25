@@ -469,5 +469,117 @@ class TestAPIRouter:
         assert "/api/v1/sessions" in all_paths
 
 
+class TestSandboxBinding:
+    """Layer-3 binding: (session_ckpt, sandbox_snap_id) in SessionManagerV2."""
+
+    @staticmethod
+    def _manager(tmp_path):
+        from nimbus.core.storage import SessionStorage
+        from nimbus.server.permission import PermissionManager
+        from nimbus.server.session import SessionManagerV2
+        from nimbus.server.sse import SSEHub
+
+        manager = SessionManagerV2(SSEHub(), PermissionManager())
+        manager._storage = SessionStorage(str(tmp_path))
+        return manager
+
+    @staticmethod
+    def _save(manager, status="active", metadata=None):
+        meta = {"name": "Binding", "created_at": datetime.now().isoformat()}
+        meta.update(metadata or {})
+        manager._storage.save_session(
+            session_id="sess_binding",
+            status=status,
+            messages=[],
+            vcpu_state={},
+            metadata=meta,
+        )
+
+    class FakeBackend:
+        backend_id = "vcompute"
+
+        def __init__(self, mounted=False, fail=False):
+            from types import SimpleNamespace
+
+            self._lease = SimpleNamespace(lease_id="vc_old")
+            self.lease_mounted = mounted
+            self.fail = fail
+            self.restored = []
+
+        async def snapshot_lease(self):
+            if self.fail:
+                raise RuntimeError("snapshot boom")
+            return "snap_bind1"
+
+        async def restore_lease(self, snapshot_id):
+            from types import SimpleNamespace
+
+            self.restored.append(snapshot_id)
+            self._lease = SimpleNamespace(lease_id="vc_new")
+            return self._lease
+
+    class FakeAgent:
+        def __init__(self, backend):
+            self._backend = backend
+
+        def sandbox_backend(self):
+            return self._backend
+
+    @pytest.mark.asyncio
+    async def test_pause_seam_snapshots_and_persists_binding(self, tmp_path):
+        manager = self._manager(tmp_path)
+        self._save(manager)
+        backend = self.FakeBackend()
+        manager._sessions["sess_binding"] = self.FakeAgent(backend)
+
+        binding = await manager._snapshot_sandbox_at_seam("sess_binding")
+        assert binding["snapshot_id"] == "snap_bind1"
+        assert binding["lease_id"] == "vc_old"
+        dump = manager._storage.load_session("sess_binding")
+        assert dump["metadata"]["sandbox_binding"]["snapshot_id"] == "snap_bind1"
+
+    @pytest.mark.asyncio
+    async def test_mounted_lease_skips_binding(self, tmp_path):
+        # A mounted workspace is durable by itself — no binding to keep honest.
+        manager = self._manager(tmp_path)
+        self._save(manager)
+        manager._sessions["sess_binding"] = self.FakeAgent(self.FakeBackend(mounted=True))
+
+        assert await manager._snapshot_sandbox_at_seam("sess_binding") is None
+        dump = manager._storage.load_session("sess_binding")
+        assert "sandbox_binding" not in dump["metadata"]
+
+    @pytest.mark.asyncio
+    async def test_snapshot_failure_never_blocks_pause(self, tmp_path):
+        manager = self._manager(tmp_path)
+        self._save(manager)
+        manager._sessions["sess_binding"] = self.FakeAgent(self.FakeBackend(fail=True))
+
+        assert await manager._snapshot_sandbox_at_seam("sess_binding") is None
+
+    @pytest.mark.asyncio
+    async def test_resume_restores_bound_snapshot(self, tmp_path):
+        # Both sides replay together: the cached agent's backend is restored
+        # from the bound snapshot before the resume run starts.
+        manager = self._manager(tmp_path)
+        self._save(manager, status="paused", metadata={
+            "sandbox_binding": {"backend": "vcompute", "snapshot_id": "snap_bind1",
+                                "lease_id": "vc_old", "taken_at": "t"},
+        })
+        backend = self.FakeBackend()
+        manager._sessions["sess_binding"] = self.FakeAgent(backend)
+
+        assert await manager._restore_sandbox_from_binding("sess_binding") is True
+        assert backend.restored == ["snap_bind1"]
+
+    @pytest.mark.asyncio
+    async def test_resume_without_binding_is_a_noop(self, tmp_path):
+        manager = self._manager(tmp_path)
+        self._save(manager, status="paused")
+        manager._sessions["sess_binding"] = self.FakeAgent(self.FakeBackend())
+
+        assert await manager._restore_sandbox_from_binding("sess_binding") is False
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

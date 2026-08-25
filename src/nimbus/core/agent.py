@@ -313,6 +313,15 @@ class AgentOS:
             initial_vcpu_state=initial_vcpu_state,
         )
 
+    def sandbox_backend(self):
+        """The session's stateful compute backend, if any.
+
+        Layer-3 access point: the control plane (SessionManagerV2) uses this
+        to snapshot at pause seams and restore at resume — the binding
+        (session_ckpt, sandbox_snap_id) lives on its side, not here.
+        """
+        return getattr(self, "_vcompute_backend", None)
+
     async def chat(self, message: str, session_id: str = "default") -> str:
         """Simple chat interface. Returns the text response."""
         loop = self._build_loop(message, text_is_final=True, session_id=session_id)
@@ -445,6 +454,15 @@ class AgentOS:
             from .backend import LocalBackend, RoutingBackend
             from .backends.vcompute import VComputeBackend
 
+            # SESSION-scoped, not run-scoped: the vcompute backend carries the
+            # lease (session affinity), which must survive loop rebuilds
+            # between turns — a per-run backend silently dropped isolated-lease
+            # state at every turn boundary. LocalBackend/RoutingBackend stay
+            # per-run (they carry the per-run abort_event).
+            if getattr(self, "_vcompute_backend", None) is None:
+                self._vcompute_backend = VComputeBackend(
+                    vcompute_url, session_id=session_id,
+                )
             gate_backend = RoutingBackend(
                 default=LocalBackend(
                     tool_executor,
@@ -452,9 +470,7 @@ class AgentOS:
                     parent_model=parent_model,
                     parent_base_url=parent_base_url,
                 ),
-                routes={
-                    "Bash": VComputeBackend(vcompute_url, session_id=session_id),
-                },
+                routes={"Bash": self._vcompute_backend},
             )
 
         gate = KernelGate(

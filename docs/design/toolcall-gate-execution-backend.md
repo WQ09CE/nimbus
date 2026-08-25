@@ -332,10 +332,23 @@ empty") → restore → continue on restored state (cwd depth, files, appended
 code all intact). One experiment lights up the layer-2 pair, the layer-3
 binding, and the negative proof that restoring only one side is corruption.
 
-Remaining for a real layer 3: the binding's production home is
-SessionManagerV2 session metadata (currently a file written by the
-experiment), and the quiesce trigger should be the PAUSE primitive driven
-through a real agent run (the scripted vertical reaches seams trivially).
+**Binding landed in its production home (same day):** SessionManagerV2 now
+owns the layer-3 record — `_snapshot_sandbox_at_seam` runs in stream_chat's
+PAUSED branch (durable binding precedes the pause announcement),
+`_restore_sandbox_from_binding` runs at resume_session (both sides replay
+together). The vcompute backend became SESSION-scoped in AgentOS (a per-run
+backend silently dropped isolated-lease state at every turn boundary —
+latent bug found by this wiring), exposed via `AgentOS.sandbox_backend()`.
+Mounted leases skip binding (a mounted workspace is durable by itself);
+snapshot failure degrades to no binding, never blocks the pause. Proven
+live through a real SessionManagerV2 + storage across BOTH a daemon recycle
+and a server-process restart (fresh manager over the same storage).
+
+Remaining for full layer 3: drive the cut through a real LLM run with the
+PAUSE primitive as the quiesce trigger (pi_codex_vertical_smoke.py +
+NIMBUS_VCOMPUTE_URL is the ready-made harness), and Crab-style
+side-effect-aware cut policy (skip snapshot for read-only turns —
+traits.side_effects is the ready signal, memex Phase 2.5).
 
 Gate = syscall layer (its own docstring, `gate.py:2`). Backend = VFS
 `file_operations`. Lease = fd. §4 = errno taxonomy. Catalog = mount table.
