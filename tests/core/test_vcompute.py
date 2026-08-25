@@ -261,6 +261,35 @@ class TestSnapshotRestore:
         assert r2.ui_detail["exit_code"] != 0
 
 
+class TestDirtyTracking:
+    @pytest.mark.asyncio
+    async def test_side_effect_lifecycle(self, vc):
+        # fresh backend: nothing dispatched, nothing snapshotted
+        assert vc.backend.dirty is False
+        assert vc.backend.last_snapshot_id is None
+
+        r = await vc.gate.syscall_tool(_bash("echo x > f.txt"))
+        assert r.status == "OK"
+        assert vc.backend.dirty is True  # execute-class dispatch happened
+
+        snap = await vc.backend.snapshot_lease()
+        assert vc.backend.dirty is False  # snapshot re-baselines
+        assert vc.backend.last_snapshot_id == snap
+
+        r = await vc.gate.syscall_tool(_bash("echo y >> f.txt", "c2"))
+        assert vc.backend.dirty is True  # diverged again
+
+    @pytest.mark.asyncio
+    async def test_restore_rebaselines_clean(self, vc, tmp_path):
+        await vc.gate.syscall_tool(_bash("echo z > f.txt"))
+        snap = await vc.backend.snapshot_lease()
+        reborn = Harness(tmp_path)
+        await reborn.backend.restore_lease(snap)
+        # machine state == snapshot content, by definition
+        assert reborn.backend.dirty is False
+        assert reborn.backend.last_snapshot_id == snap
+
+
 class TestRoutingBackend:
     @pytest.mark.asyncio
     async def test_tools_split_between_backends(self, vc, tmp_path):

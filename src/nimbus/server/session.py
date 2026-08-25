@@ -960,6 +960,26 @@ class SessionManagerV2:
             return None
         if getattr(backend, "lease_mounted", False):
             return None
+        # Crab-style side-effect awareness (memex Phase 2.5): a seam with no
+        # side-effecting dispatch since the last snapshot reuses it. The
+        # runtime knows exactly whether machine state could have moved
+        # (traits.side_effects → backend.dirty), so a clean pause costs a
+        # metadata write instead of a workspace tar. Unknown backends lack
+        # the properties and default to dirty — conservative.
+        last_snapshot = getattr(backend, "last_snapshot_id", None)
+        if last_snapshot and not getattr(backend, "dirty", True):
+            binding = {
+                "backend": getattr(backend, "backend_id", "?"),
+                "snapshot_id": last_snapshot,
+                "lease_id": backend._lease.lease_id,
+                "taken_at": datetime.now(timezone.utc).isoformat(),
+                "reused": True,
+            }
+            await self._save_sandbox_binding(session_id, binding)
+            logger.info(
+                "Clean seam: reusing snapshot %s for %s", last_snapshot, session_id,
+            )
+            return binding
         try:
             snapshot_id = await backend.snapshot_lease()
         except Exception:

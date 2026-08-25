@@ -498,15 +498,19 @@ class TestSandboxBinding:
     class FakeBackend:
         backend_id = "vcompute"
 
-        def __init__(self, mounted=False, fail=False):
+        def __init__(self, mounted=False, fail=False, dirty=True, last_snapshot_id=None):
             from types import SimpleNamespace
 
             self._lease = SimpleNamespace(lease_id="vc_old")
             self.lease_mounted = mounted
             self.fail = fail
+            self.dirty = dirty
+            self.last_snapshot_id = last_snapshot_id
+            self.snapshot_calls = 0
             self.restored = []
 
         async def snapshot_lease(self):
+            self.snapshot_calls += 1
             if self.fail:
                 raise RuntimeError("snapshot boom")
             return "snap_bind1"
@@ -548,6 +552,33 @@ class TestSandboxBinding:
         assert await manager._snapshot_sandbox_at_seam("sess_binding") is None
         dump = manager._storage.load_session("sess_binding")
         assert "sandbox_binding" not in dump["metadata"]
+
+    @pytest.mark.asyncio
+    async def test_clean_seam_reuses_snapshot_without_retar(self, tmp_path):
+        # Crab-style: no side-effecting dispatch since the last snapshot →
+        # the seam re-binds to it instead of tarring the workspace again.
+        manager = self._manager(tmp_path)
+        self._save(manager)
+        backend = self.FakeBackend(dirty=False, last_snapshot_id="snap_prev")
+        manager._sessions["sess_binding"] = self.FakeAgent(backend)
+
+        binding = await manager._snapshot_sandbox_at_seam("sess_binding")
+        assert binding["snapshot_id"] == "snap_prev"
+        assert binding["reused"] is True
+        assert backend.snapshot_calls == 0  # no tar happened
+        dump = manager._storage.load_session("sess_binding")
+        assert dump["metadata"]["sandbox_binding"]["snapshot_id"] == "snap_prev"
+
+    @pytest.mark.asyncio
+    async def test_dirty_seam_takes_fresh_snapshot(self, tmp_path):
+        manager = self._manager(tmp_path)
+        self._save(manager)
+        backend = self.FakeBackend(dirty=True, last_snapshot_id="snap_prev")
+        manager._sessions["sess_binding"] = self.FakeAgent(backend)
+
+        binding = await manager._snapshot_sandbox_at_seam("sess_binding")
+        assert binding["snapshot_id"] == "snap_bind1"
+        assert backend.snapshot_calls == 1
 
     @pytest.mark.asyncio
     async def test_snapshot_failure_never_blocks_pause(self, tmp_path):
@@ -595,6 +626,44 @@ class TestSandboxBinding:
         manager._sessions["sess_binding"] = agent
         assert await manager._restore_sandbox_from_binding("sess_binding") is True
         assert agent.hint == "snap_bind1"
+
+    @pytest.mark.asyncio
+    async def test_crab_policy_end_to_end_with_real_backend(self, tmp_path):
+        # Real VComputeBackend + in-process daemon: dirty seam snapshots,
+        # clean seam reuses, next dirty seam snapshots anew.
+        import httpx
+
+        from nimbus.core.backends.vcompute import VComputeBackend
+        from nimbus.core.gate import KernelGate
+        from nimbus.core.protocol import ActionIR
+        from nimbus.infra.vcompute import create_app
+
+        manager = self._manager(tmp_path)
+        self._save(manager)
+        app = create_app(root=str(tmp_path / "vc"))
+        client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://vc",
+        )
+        backend = VComputeBackend(session_id="sess_binding", client=client)
+        gate = KernelGate(pid="crab", backend=backend, session_id="sess_binding")
+        manager._sessions["sess_binding"] = self.FakeAgent(backend)
+
+        async def bash(cmd, cid):
+            return await gate.syscall_tool(
+                ActionIR(id=cid, kind="TOOL_CALL", name="Bash", args={"command": cmd})
+            )
+
+        await bash("echo one > f.txt", "c1")
+        b1 = await manager._snapshot_sandbox_at_seam("sess_binding")
+        assert "reused" not in b1  # dirty seam → fresh tar
+
+        b2 = await manager._snapshot_sandbox_at_seam("sess_binding")
+        assert b2["snapshot_id"] == b1["snapshot_id"]  # clean seam → reuse
+        assert b2["reused"] is True
+
+        await bash("echo two >> f.txt", "c2")
+        b3 = await manager._snapshot_sandbox_at_seam("sess_binding")
+        assert b3["snapshot_id"] != b1["snapshot_id"]  # dirty again → new tar
 
     @pytest.mark.asyncio
     async def test_resume_without_binding_is_a_noop(self, tmp_path):

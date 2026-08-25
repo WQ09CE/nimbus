@@ -358,9 +358,19 @@ deferred-restore hint (`AgentOS.set_sandbox_restore_hint` →
 The isolated form is env-selectable now because server sessions always
 carry a workspace and would otherwise always mount.
 
-Remaining for layer 3: Crab-style side-effect-aware cut policy (skip
-snapshot for read-only turns — traits.side_effects is the ready signal,
-memex Phase 2.5), lifecycle policies (TTL/auto-sleep), cost attribution.
+**Phase 2.5 landed (same day) — side-effect-aware cuts (Crab-style):**
+mechanism in the backend (`dirty` set on any write/execute-class dispatch,
+re-baselined by snapshot and by restore), policy in layer 3 (a clean seam
+re-binds to `last_snapshot_id` — a metadata write instead of a workspace
+tar; unknown backends default to dirty, conservative). Where Crab filters
+statistically (eBPF-observed, 87%), this is exact: the runtime knows from
+`traits.side_effects` whether machine state could have moved — the
+semantic gap closed by the catalog contract, not by kernel observation.
+Covered by dirty-lifecycle tests and an end-to-end dirty→fresh /
+clean→reuse / dirty→fresh sequence against the real daemon.
+
+Remaining for layer 3: lifecycle policies (TTL/auto-sleep), cost
+attribution per lease/session.
 
 Gate = syscall layer (its own docstring, `gate.py:2`). Backend = VFS
 `file_operations`. Lease = fd. §4 = errno taxonomy. Catalog = mount table.

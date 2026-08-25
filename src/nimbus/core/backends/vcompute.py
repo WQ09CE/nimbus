@@ -52,6 +52,20 @@ class VComputeBackend:
         # instead of opening fresh (set when the binding is read before any
         # loop has built the backend — the resume-before-first-tool ordering).
         self._restore_from = restore_from
+        # Crab-style side-effect tracking (memex Phase 2.5): dirty means a
+        # side-effecting call dispatched since the last snapshot/restore, so
+        # machine state may have diverged from it. Conservative: set on
+        # dispatch attempt, not on confirmed success.
+        self._dirty = False
+        self._last_snapshot_id: Optional[str] = restore_from
+
+    @property
+    def dirty(self) -> bool:
+        return self._dirty
+
+    @property
+    def last_snapshot_id(self) -> Optional[str]:
+        return self._last_snapshot_id
 
     @property
     def lease_mounted(self) -> bool:
@@ -96,7 +110,10 @@ class VComputeBackend:
             raise RuntimeError("no active lease to snapshot")
         resp = await self._client.post(f"/v1/leases/{active.lease_id}/snapshot")
         resp.raise_for_status()
-        return resp.json()["snapshot_id"]
+        snapshot_id = resp.json()["snapshot_id"]
+        self._dirty = False
+        self._last_snapshot_id = snapshot_id
+        return snapshot_id
 
     async def restore_lease(self, snapshot_id: str) -> Lease:
         """Open a fresh lease rebuilt from a snapshot and adopt it."""
@@ -108,6 +125,8 @@ class VComputeBackend:
         lease = Lease(backend_id=self.backend_id, lease_id=resp.json()["lease_id"])
         self._lease = lease
         self._lease_mounted = False  # restored leases are always isolated
+        self._dirty = False  # machine state == snapshot content, by definition
+        self._last_snapshot_id = snapshot_id
         return lease
 
     # -- dispatch face --
@@ -118,6 +137,8 @@ class VComputeBackend:
                 message=f"vcompute executes Bash only, got {call.tool!r}",
                 retryable=False,
             )
+        if call.traits.side_effects in ("write", "execute"):
+            self._dirty = True
         payload = {
             "call_id": call.call_id,
             "command": str(call.args.get("command", "")),
