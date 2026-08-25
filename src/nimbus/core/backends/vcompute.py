@@ -18,6 +18,7 @@ its own lease lazily — the same way KernelGate itself is per-session. A
 multi-session shared backend would need PreparedCall to carry session identity.
 """
 
+import json
 import logging
 from typing import List, Optional
 
@@ -50,8 +51,13 @@ class VComputeBackend:
         return 0
 
     # -- lease face --
-    async def open_lease(self, session_id: str) -> Optional[Lease]:
-        resp = await self._client.post("/v1/leases", json={"session_id": session_id})
+    async def open_lease(
+        self, session_id: str, workspace: str = "", cwd: str = "",
+    ) -> Optional[Lease]:
+        resp = await self._client.post(
+            "/v1/leases",
+            json={"session_id": session_id, "workspace": workspace, "cwd": cwd},
+        )
         resp.raise_for_status()
         body = resp.json()
         return Lease(backend_id=self.backend_id, lease_id=body["lease_id"])
@@ -62,6 +68,30 @@ class VComputeBackend:
         except httpx.HTTPError:
             logger.warning("close_lease best-effort failed", exc_info=True)
 
+    # -- snapshot face (layer-2 verbs; proposed ExecutionBackend contract
+    # extension — kept concrete here until a second provider validates the
+    # shape). snapshot requires a QUIESCED lease: the daemon answers 409
+    # NOT_QUIESCED while calls are in flight, enforcing the two-phase cut
+    # (runtime quiesce first, machine snapshot second) from its side too. --
+    async def snapshot_lease(self, lease: Optional[Lease] = None) -> str:
+        active = lease or self._lease
+        if active is None:
+            raise RuntimeError("no active lease to snapshot")
+        resp = await self._client.post(f"/v1/leases/{active.lease_id}/snapshot")
+        resp.raise_for_status()
+        return resp.json()["snapshot_id"]
+
+    async def restore_lease(self, snapshot_id: str) -> Lease:
+        """Open a fresh lease rebuilt from a snapshot and adopt it."""
+        resp = await self._client.post(
+            "/v1/leases",
+            json={"session_id": self._session_id, "restore": snapshot_id},
+        )
+        resp.raise_for_status()
+        lease = Lease(backend_id=self.backend_id, lease_id=resp.json()["lease_id"])
+        self._lease = lease
+        return lease
+
     # -- dispatch face --
     async def run(self, call: PreparedCall, lease: Optional[Lease] = None) -> BackendOutcome:
         if call.tool != "Bash":
@@ -70,56 +100,99 @@ class VComputeBackend:
                 message=f"vcompute executes Bash only, got {call.tool!r}",
                 retryable=False,
             )
+        payload = {
+            "call_id": call.call_id,
+            "command": str(call.args.get("command", "")),
+            # Daemon backstop slightly above the Gate deadline: the Gate owns
+            # the timeout; the backstop only reaps orphans.
+            "timeout_s": (call.deadline_s if call.deadline_s is not None else 60.0) + 5.0,
+        }
+        # Finding #4: the grant travels. Only a real OS-sandbox intent is
+        # forwarded; host-scoped writable roots stay home (meaningless there).
+        grant = call.sandbox_grant or {}
+        if grant.get("mode") in ("best_effort", "required"):
+            payload["sandbox"] = {
+                "mode": grant["mode"],
+                "allow_network": bool(grant.get("allow_network", False)),
+                "required": bool(grant.get("required", False)),
+            }
+        timeout = httpx.Timeout(payload["timeout_s"] + 5.0)
+
         try:
             active = lease or self._lease
             if active is None:
-                active = await self.open_lease(self._session_id)
+                # Finding #7: mount the session workspace so the file surface
+                # and the exec surface are the same directory.
+                pc = call.path_context
+                workspace = str(getattr(pc, "target_root", "") or "") if pc else ""
+                cwd = str(getattr(pc, "execution_cwd", "") or "") if pc else ""
+                active = await self.open_lease(
+                    call.session_id or self._session_id, workspace=workspace, cwd=cwd,
+                )
                 self._lease = active
-            timeout_s = call.deadline_s if call.deadline_s is not None else 60.0
-            resp = await self._client.post(
-                f"/v1/leases/{active.lease_id}/exec",
-                json={
-                    "call_id": call.call_id,
-                    "command": str(call.args.get("command", "")),
-                    # Daemon backstop slightly above the Gate deadline: the
-                    # Gate owns the timeout; the backstop only reaps orphans.
-                    "timeout_s": timeout_s + 5.0,
-                },
-                timeout=httpx.Timeout(timeout_s + 10.0),
-            )
+            async with self._client.stream(
+                "POST", f"/v1/leases/{active.lease_id}/exec",
+                json=payload, timeout=timeout,
+            ) as resp:
+                if resp.status_code != 200:
+                    await resp.aread()
+                    return self._fault_for(resp)
+                body = None
+                async for line in resp.aiter_lines():
+                    if not line.strip():
+                        continue
+                    obj = json.loads(line)
+                    if obj.get("type") == "chunk":
+                        # Finding #3: the streaming leg — remote output reaches
+                        # the Gate's delta wrapper (and the UI) live.
+                        if call.on_stream is not None:
+                            try:
+                                call.on_stream(obj.get("data", ""))
+                            except Exception:
+                                logger.exception("on_stream callback failed")
+                    elif obj.get("type") == "result":
+                        body = obj
+                        break
         except httpx.HTTPError as exc:
             return BackendFault(code="NETWORK", message=str(exc) or type(exc).__name__, retryable=True)
 
+        if body is None:
+            return BackendFault(
+                code="NETWORK", message="stream ended without a result line", retryable=True,
+            )
+        ui_detail = {
+            "backend": self.backend_id,
+            "lease_id": active.lease_id,
+            "cwd": body.get("cwd"),
+            "exit_code": body.get("exit_code"),
+            "remote_duration_ms": body.get("duration_ms"),
+        }
+        sandbox_verdict = body.get("sandbox") or {}
+        if sandbox_verdict.get("state") != "off":
+            # Same surface the local runner uses: the Gate re-emits this as a
+            # SANDBOX_STATUS event, so remote confinement is UI-attributable.
+            ui_detail["sandbox_details"] = sandbox_verdict
+        return {
+            "output": body.get("output", ""),
+            "status": body.get("status", "OK"),
+            "ui_detail": ui_detail,
+        }
+
+    def _fault_for(self, resp: httpx.Response) -> BackendFault:
         if resp.status_code == 410:
             self._lease = None  # next call opens a fresh lease
-            return BackendFault(
-                code="LEASE_LOST", message=self._msg(resp), retryable=False,
-            )
+            return BackendFault(code="LEASE_LOST", message=self._msg(resp), retryable=False)
         if resp.status_code == 403:
             return BackendFault(code="AUTH_REQUIRED", message=self._msg(resp), retryable=False)
         if resp.status_code == 401:
             return BackendFault(code="AUTH_EXPIRED", message=self._msg(resp), retryable=False)
         if resp.status_code >= 500:
             return BackendFault(code="NETWORK", message=self._msg(resp), retryable=True)
-        if resp.status_code != 200:
-            return BackendFault(
-                code="BACKEND_UNAVAILABLE",
-                message=f"unexpected status {resp.status_code}: {self._msg(resp)}",
-                retryable=False,
-            )
-
-        body = resp.json()
-        return {
-            "output": body.get("output", ""),
-            "status": body.get("status", "OK"),
-            "ui_detail": {
-                "backend": self.backend_id,
-                "lease_id": active.lease_id,
-                "cwd": body.get("cwd"),
-                "exit_code": body.get("exit_code"),
-                "remote_duration_ms": body.get("duration_ms"),
-            },
-        }
+        return BackendFault(
+            code="BACKEND_UNAVAILABLE",
+            message=f"unexpected status {resp.status_code}: {self._msg(resp)}",
+            retryable=False,
+        )
 
     async def cancel(self, call_id: str, lease: Optional[Lease] = None) -> None:
         active = lease or self._lease

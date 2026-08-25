@@ -269,6 +269,15 @@ Gate over ASGI (9 tests, `tests/core/test_vcompute.py`) and over live TCP
 retried, recycle → LEASE_LOST → next-call self-heal, timeout → remote kill
 with zero orphans. Loop/VCPU: zero changes — the seam held.
 
+Fix status (2026-08-25, same day): #1 and #5 were implemented as part of the
+discovery itself; #2 (`PreparedCall.session_id`), #3 (NDJSON streaming leg —
+chunks reach the Gate's delta wrapper live), #4 (the grant travels — daemon
+enforces it with bubblewrap: host ro, workspace rw, net unshared; verdict
+returns as `sandbox_details` so SANDBOX_STATUS attribution works remotely),
+and #6 (`BackendFault.retry_budget` — the channel self-describes) are fixed
+and covered by tests + live TCP smoke. Open remainder: retry budget derived
+from latency_class automatically (currently per-fault hint).
+
 What reality forced (the discoveries the model predicted it would need):
 
 1. **The router is a required part, not an option.** §7's "resolve backend"
@@ -293,8 +302,40 @@ What reality forced (the discoveries the model predicted it would need):
 6. **The retry budget is a contract parameter.** fail_next=2 is exactly
    covered by BACKEND_RETRY_MAX=2; a third consecutive blip reaches the
    model. Budget should eventually follow `latency_class`, not a constant.
+7. **The data plane splits the brain** (found the moment an agent workflow
+   was attempted): local Write lands in the session workspace, remote Bash
+   runs in the lease workspace — the file surface and the exec surface are
+   two directories, so "write code, then run it" breaks at the second step.
+   FIXED via mounted leases: with a path_context present, the lease mounts
+   the session workspace (the volume-mount form real cloud agents use), so
+   both surfaces are one directory; omitting the workspace keeps the
+   isolated-lease form for studying the split. The fully-remote file
+   surface (Read/Write/Edit as remote operations — the true cloud form) is
+   the next milestone.
 
-## 10. Cross-reference (why this shape)
+## 10b. Layer-2 snapshot/restore + the consistency-cut vertical (2026-08-25)
+
+vcompute gained the layer-2 verb pair (memex 三层抽象, 01KZDHACB7DPMBE4A9N8EQ16JN):
+`POST /leases/{id}/snapshot` (refuses a non-quiesced lease with 409
+NOT_QUIESCED — the two-phase discipline enforced provider-side) and
+`POST /leases {restore: snap_id}` (fresh workspace rebuilt from the durable
+tar + cwd meta; snapshots survive daemon restarts, leases don't — by design).
+`VComputeBackend.snapshot_lease()/restore_lease()` carry the verbs; they are
+a PROPOSED ExecutionBackend contract extension, kept concrete until a second
+provider validates the shape.
+
+Live vertical (real TCP, real daemon kill/restart): build state → quiesce →
+snapshot → bind (session_ckpt, sandbox_snap_id) → recycle daemon →
+**split-brain counter-example** (fresh lease + session memory: cat
+requirements.txt → exit 1, "session remembers installing deps but the FS is
+empty") → restore → continue on restored state (cwd depth, files, appended
+code all intact). One experiment lights up the layer-2 pair, the layer-3
+binding, and the negative proof that restoring only one side is corruption.
+
+Remaining for a real layer 3: the binding's production home is
+SessionManagerV2 session metadata (currently a file written by the
+experiment), and the quiesce trigger should be the PAUSE primitive driven
+through a real agent run (the scripted vertical reaches seams trivially).
 
 Gate = syscall layer (its own docstring, `gate.py:2`). Backend = VFS
 `file_operations`. Lease = fd. §4 = errno taxonomy. Catalog = mount table.

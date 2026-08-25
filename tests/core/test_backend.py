@@ -63,6 +63,7 @@ class FakeBackend:
 
     async def run(self, call, lease=None):
         self.run_calls += 1
+        self.last_call = call
         if self.run_delay:
             await asyncio.sleep(self.run_delay)
         return self.outcomes.pop(0)
@@ -180,6 +181,36 @@ class TestBackendFaultRouting:
         result = await gate.syscall_tool(_action(), timeout=0.05)
         assert result.status == "TIMEOUT"
         assert backend.cancel_calls == ["call_1"]
+
+    @pytest.mark.asyncio
+    async def test_session_identity_rides_the_call(self):
+        # Finding #2: a backend managing its own leases must know for whom.
+        backend = FakeBackend(["ok"])
+        gate, _, _ = _gate(backend)
+        await gate.syscall_tool(_action())
+        assert backend.last_call.session_id == "sess_t"
+
+    @pytest.mark.asyncio
+    async def test_retry_budget_zero_disables_retry(self):
+        # Finding #6: the channel self-describes its retry-worthiness.
+        backend = FakeBackend([
+            BackendFault(code="NETWORK", message="x", retryable=True, retry_budget=0),
+        ])
+        gate, _, _ = _gate(backend)
+        result = await gate.syscall_tool(_action())
+        assert result.status == "ERROR"
+        assert backend.run_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_budget_can_exceed_the_default(self):
+        faults = [
+            BackendFault(code="NETWORK", message="x", retryable=True, retry_budget=4)
+        ] * 4
+        backend = FakeBackend(faults + ["recovered"])
+        gate, _, _ = _gate(backend)
+        result = await gate.syscall_tool(_action())
+        assert result.status == "OK"
+        assert backend.run_calls == 5
 
     @pytest.mark.asyncio
     async def test_fault_never_escapes_as_exception(self):

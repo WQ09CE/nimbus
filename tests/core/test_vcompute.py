@@ -131,6 +131,136 @@ class TestVComputeThroughGate:
         assert info["running"] == []  # the remote process group is dead
 
 
+class TestStreamingLeg:
+    @pytest.mark.asyncio
+    async def test_remote_output_streams_live(self, vc, tmp_path):
+        # Finding #3 fixed: chunks reach the Gate's streaming wrapper while
+        # the remote command is still running.
+        chunks = []
+        harness = Harness(tmp_path)
+        gate = KernelGate(
+            pid="p3",
+            backend=harness.backend,
+            on_tool_output=lambda tool, chunk: chunks.append(chunk),
+            session_id="sess_vc",
+        )
+        result = await gate.syscall_tool(_bash("echo one; sleep 0.25; echo two"))
+        assert result.status == "OK"
+        streamed = "".join(chunks)
+        assert "one" in streamed and "two" in streamed
+        assert "__VC_CWD__" not in streamed  # the sentinel never leaks to the UI
+        assert len(chunks) >= 2  # arrived incrementally, not as one blob
+
+class TestSandboxTravel:
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        __import__("shutil").which("bwrap") is None, reason="bwrap not installed"
+    )
+    async def test_grant_travels_and_confines_remote_exec(self, vc, tmp_path):
+        # Finding #4 fixed: an execute-class grant rides the exec request and
+        # the daemon enforces it with bubblewrap.
+        harness = Harness(tmp_path)
+        events = []
+        gate = KernelGate(
+            pid="p4",
+            backend=harness.backend,
+            event_callback=events.append,
+            session_id="sess_vc",
+            sandbox_mode="best_effort",  # gate's inherited-capability branch
+        )
+        result = await gate.syscall_tool(_bash(
+            "touch /usr/vc_probe 2>/dev/null && echo ESCAPED || echo CONFINED; "
+            "echo data > ws.txt && cat ws.txt"
+        ))
+        assert result.status == "OK"
+        assert "CONFINED" in result.output and "ESCAPED" not in result.output
+        assert "data" in result.output  # workspace stays writable
+        detail = result.ui_detail["sandbox_details"]
+        assert detail["state"] == "active" and detail["backend"] == "bubblewrap"
+        assert any(e.type == "SANDBOX_STATUS" for e in events)
+
+
+class TestWorkspaceMount:
+    @pytest.mark.asyncio
+    async def test_mounted_lease_unifies_file_and_exec_surface(self, tmp_path):
+        # Finding #7 fixed: with a path_context, the lease mounts the session
+        # workspace — local Write and remote Bash see the same directory.
+        from nimbus.core.path_context import AgentPathContext
+
+        ws = tmp_path / "agent_ws"
+        ws.mkdir()
+        (ws / "fib.py").write_text("print('unified')\n")
+        harness = Harness(tmp_path)
+        gate = KernelGate(
+            pid="p5",
+            backend=harness.backend,
+            path_context=AgentPathContext(
+                workspace_root=str(ws), target_root=str(ws), execution_cwd=str(ws),
+            ),
+            session_id="sess_vc",
+        )
+        r = await gate.syscall_tool(_bash("python3 fib.py"))
+        assert r.status == "OK"
+        assert "unified" in r.output
+
+        r2 = await gate.syscall_tool(_bash("echo from-remote > out.txt", "c2"))
+        assert r2.status == "OK"
+        # The exec surface's writes are the file surface's files.
+        assert (ws / "out.txt").read_text().strip() == "from-remote"
+
+
+class TestSnapshotRestore:
+    @pytest.mark.asyncio
+    async def test_snapshot_refuses_non_quiesced_lease(self, vc):
+        # The two-phase cut is enforced provider-side: no snapshot under a
+        # running call — that would be a torn read of machine state.
+        await vc.gate.syscall_tool(_bash("echo warm", "c0"))
+        task = asyncio.create_task(vc.gate.syscall_tool(_bash("sleep 3", "c_run")))
+        for _ in range(50):
+            await asyncio.sleep(0.05)
+            _, info = await vc.lease_info()
+            if info["running"]:
+                break
+        assert info["running"] == ["c_run"]
+        lease_id = vc.backend._lease.lease_id
+        resp = await vc.client.post(f"/v1/leases/{lease_id}/snapshot")
+        assert resp.status_code == 409
+        assert resp.json()["code"] == "NOT_QUIESCED"
+        await vc.client.post(f"/v1/leases/{lease_id}/calls/c_run/cancel")
+        await task
+
+    @pytest.mark.asyncio
+    async def test_cut_survives_daemon_restart(self, vc, tmp_path):
+        # Build machine state: files + cwd depth.
+        r = await vc.gate.syscall_tool(_bash(
+            "echo 'requests==2.31' > requirements.txt && mkdir -p src && "
+            "echo 'print(1)' > src/app.py && cd src", "c1",
+        ))
+        assert r.status == "OK"
+        snap_id = await vc.backend.snapshot_lease()
+
+        # A NEW app over the SAME root = daemon restart: leases are gone
+        # (in-memory), snapshots persist (disk).
+        reborn = Harness(tmp_path)
+        lease = await reborn.backend.restore_lease(snap_id)
+        assert lease.lease_id != vc.backend._lease.lease_id
+        r2 = await reborn.gate.syscall_tool(_bash("pwd && cat ../requirements.txt", "c2"))
+        assert r2.status == "OK"
+        assert r2.output.strip().splitlines()[0].endswith("/src")  # cwd restored
+        assert "requests==2.31" in r2.output                       # files restored
+
+    @pytest.mark.asyncio
+    async def test_split_brain_when_only_one_side_restores(self, vc, tmp_path):
+        # Counter-example: session "remembers" the file, but a fresh lease
+        # (no restore) has empty machine state — the brain splits.
+        r = await vc.gate.syscall_tool(_bash("echo data > important.txt", "c1"))
+        assert r.status == "OK"
+        reborn = Harness(tmp_path)  # restart, NO restore
+        r2 = await reborn.gate.syscall_tool(_bash("cat important.txt", "c2"))
+        assert r2.status == "ERROR"
+        assert r2.ui_detail["exit_code"] != 0
+
+
 class TestRoutingBackend:
     @pytest.mark.asyncio
     async def test_tools_split_between_backends(self, vc, tmp_path):

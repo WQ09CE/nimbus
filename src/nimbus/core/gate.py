@@ -394,6 +394,7 @@ class KernelGate:
             args=dict(action.args),
             traits=self._traits_for(tool_name),
             deadline_s=effective_timeout,
+            session_id=self._session_id or "",
             path_context=self._path_context,
             sandbox_grant=dict(decision.sandbox or {}),
             on_stream=on_stream,
@@ -509,7 +510,11 @@ class KernelGate:
                 return outcome
 
             refresh = outcome.code == "AUTH_EXPIRED" and attempt == 0
-            if (outcome.retryable or refresh) and attempt < BACKEND_RETRY_MAX:
+            budget = (
+                outcome.retry_budget
+                if outcome.retry_budget is not None else BACKEND_RETRY_MAX
+            )
+            if (outcome.retryable or refresh) and attempt < budget:
                 attempt += 1
                 self._audit("backend/retry", {
                     "session_id": self._session_id,

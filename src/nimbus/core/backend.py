@@ -53,6 +53,9 @@ class PreparedCall:
     args: Dict[str, Any]
     traits: ToolTraits
     deadline_s: Optional[float]  # per-attempt wall budget; None = unbounded
+    # Step-6 finding #2: a backend managing its own leases must know for whom.
+    # Session-scoped backends may ignore it; shared/pooled backends key on it.
+    session_id: str = ""
     path_context: Optional[AgentPathContext] = None
     sandbox_grant: Dict[str, Any] = field(default_factory=dict)
     # (chunk, ui_detail=None) — Gate-built wrapper that also emits SSE deltas.
@@ -73,6 +76,10 @@ class BackendFault:
     message: str
     retryable: bool = False
     model_visible: bool = False
+    # Step-6 finding #6: the retry budget is a property of the CHANNEL, and
+    # the backend producing the fault is the one that knows the channel.
+    # None → the Gate's default budget applies.
+    retry_budget: Optional[int] = None
 
 
 # Raw tool payload (str, or split dict with output/ui_detail) — or a channel fault.
