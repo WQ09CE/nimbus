@@ -1,0 +1,6 @@
+[Unit]
+Description=nimbus-lab Temporal dev server (second arm: textbook durable execution)
+
+[Service]
+ExecStart=%h/.local/bin/temporal server start-dev --ip 127.0.0.1 --port 7233 --ui-port 8233 --db-filename %h/.local/share/nimbus-lab/temporal/temporal.db --log-level warn
+Restart=on-failure

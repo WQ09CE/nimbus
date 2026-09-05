@@ -480,3 +480,33 @@ class TestEdgeCases:
 
         r3 = await adapter.chat([_user_msg("READ /tmp/x")])
         assert r3.tool_calls is not None
+
+
+class TestRuleLabSteps:
+    """Lab rule: 'lab steps N [sleep S]' -> N sequential Bash steps, then LAB_DONE."""
+
+    def _bash_result(self, k: int) -> dict:
+        return _tool_result_msg(f"step-{k}", tool_call_id=f"tc_{k}", name="Bash")
+
+    def test_first_step_is_bash_with_sleep(self, adapter):
+        r = asyncio.run(adapter.chat([_user_msg("lab steps 2 sleep 0.5")]))
+        assert r.tool_calls and r.tool_calls[0]["function"]["name"] == "Bash"
+        cmd = json.loads(r.tool_calls[0]["function"]["arguments"])["command"]
+        assert cmd.startswith("sleep 0.5;") and "step-1" in cmd
+
+    def test_counts_bash_results_within_turn_only(self, adapter):
+        msgs = [
+            _user_msg("lab steps 3"),
+            self._bash_result(9),  # previous turn noise must not count...
+            _user_msg("lab steps 2"),
+            {"role": "assistant", "content": "x", "tool_calls": []},
+            self._bash_result(1),
+        ]
+        r = asyncio.run(adapter.chat(msgs))
+        cmd = json.loads(r.tool_calls[0]["function"]["arguments"])["command"]
+        assert "step-2" in cmd and cmd.startswith("sleep 0;")
+
+    def test_done_after_n_results(self, adapter):
+        msgs = [_user_msg("lab steps 2"), self._bash_result(1), self._bash_result(2)]
+        r = asyncio.run(adapter.chat(msgs))
+        assert r.tool_calls is None and r.content == "LAB_DONE 2"

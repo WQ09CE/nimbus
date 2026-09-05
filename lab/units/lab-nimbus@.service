@@ -1,0 +1,20 @@
+[Unit]
+Description=nimbus-lab pod %i (nimbus serve, MockLLM, Bash routed to vcompute)
+After=lab-vcompute.service lab-valkey.service
+
+[Service]
+WorkingDirectory=%h/.local/share/nimbus-lab/pods/%i
+EnvironmentFile=%h/Projects/nimbus/lab/pods/%i.env
+Environment=NIMBUS_POD_ID=%i
+Environment=NIMBUS_HOST=127.0.0.1
+Environment=NIMBUS_DB=%h/.local/share/nimbus-lab/pods/%i/nimbus.db
+Environment=NIMBUS_SESSIONS_DIR=%h/.local/share/nimbus-lab/sessions
+Environment=NIMBUS_VCOMPUTE_URL=http://127.0.0.1:8793
+Environment=NIMBUS_PI_SIDECAR_URL=http://127.0.0.1:8799/v1
+Environment=NIMBUS_VCOMPUTE_MOUNT=0
+Environment=NIMBUS_SANDBOX_MODE=best_effort
+Environment=NIMBUS_LOG_CONSOLE=1
+ExecStart=%h/Projects/nimbus/.venv/bin/nimbus serve --quiet
+KillSignal=SIGTERM
+TimeoutStopSec=30
+# no Restart= : death is the experiment; lab-ctl restarts pods explicitly

@@ -1,0 +1,8 @@
+[Unit]
+Description=nimbus-lab vcompute daemon (layer-2 substrate: leases, snapshot/restore, chaos)
+
+[Service]
+WorkingDirectory=%h/Projects/nimbus
+Environment=VCOMPUTE_PORT=8793 VCOMPUTE_ROOT=%h/.local/share/nimbus-lab/vcompute
+ExecStart=%h/Projects/nimbus/.venv/bin/python -m nimbus.infra.vcompute
+Restart=on-failure

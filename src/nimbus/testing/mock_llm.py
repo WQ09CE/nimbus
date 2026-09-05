@@ -7,6 +7,7 @@ the same LLMClient interface (chat/start/stop). Activated via NIMBUS_LLM=mock.
 Rules (priority order):
 1. /^hello|hi|hey/i            -> text reply
 2. /echo\\s+(.+)/i             -> Bash tool_call
+   (lab: /lab steps N [sleep S]/ -> N sequential Bash steps, nimbus-lab drills)
 3. /read\\s+(.+)/i             -> Read tool_call
 4. /count\\s+to\\s+(\\d+)/i    -> multi-step counting (stateful via message history)
 5. /error/i                    -> error message
@@ -240,6 +241,7 @@ class MockLLMAdapter:
         # Dispatch through rules in priority order
         response = (
             self._rule_greeting(user_text)
+            or self._rule_lab_steps(user_text, messages)
             or self._rule_echo(user_text, messages)
             or self._rule_read(user_text, messages)
             or self._rule_count(user_text, messages)
@@ -262,6 +264,44 @@ class MockLLMAdapter:
                 _content="Hello! I'm Nimbus mock agent. How can I help?"
             )
         return None
+
+    def _rule_lab_steps(
+        self, text: str, messages: List[Dict[str, Any]]
+    ) -> Optional[MockLLMResponse]:
+        """Lab rule: ``lab steps N [sleep S]`` -> N sequential Bash tool_calls.
+
+        Step k runs ``sleep S; echo step-k >> lab_steps.txt; cat lab_steps.txt``
+        so a multi-step turn has controllable duration and leaves observable
+        state in the (sandbox) workspace — the nimbus-lab fault-drill workload.
+        Continuation = number of Bash tool results since the last user message;
+        once N steps are answered the turn ends with ``LAB_DONE N``.
+        """
+        match = re.match(
+            r"lab\s+steps\s+(\d+)(?:\s+sleep\s+(\d+(?:\.\d+)?))?", text, re.IGNORECASE
+        )
+        if not match:
+            return None
+        total = int(match.group(1))
+        sleep_s = match.group(2) or "0"
+        done = 0
+        for msg in reversed(messages):
+            role = msg.get("role")
+            if role in ("user", "system"):
+                break
+            if role == "tool" and msg.get("name") == "Bash":
+                done += 1
+        if done >= total:
+            return MockLLMResponse(_content=f"LAB_DONE {total}")
+        k = done + 1
+        return MockLLMResponse(
+            _content=f"Lab step {k}/{total}.",
+            _tool_calls=[
+                _make_tool_call(
+                    "Bash",
+                    {"command": f"sleep {sleep_s}; echo step-{k} >> lab_steps.txt; cat lab_steps.txt"},
+                )
+            ],
+        )
 
     def _rule_echo(
         self, text: str, messages: List[Dict[str, Any]]

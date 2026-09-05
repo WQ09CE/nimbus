@@ -1,0 +1,9 @@
+[Unit]
+Description=nimbus-lab pi-ai Codex sidecar (real model rail: pi-codex/* via ChatGPT subscription)
+
+[Service]
+WorkingDirectory=%h/Projects/nimbus/sidecar
+Environment=PI_SIDECAR_PORT=8799
+ExecStart=%h/.local/share/mise/shims/node pi-sidecar.mjs
+Restart=on-failure
+RestartSec=3

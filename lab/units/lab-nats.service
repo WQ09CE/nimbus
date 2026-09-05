@@ -1,0 +1,6 @@
+[Unit]
+Description=nimbus-lab NATS JetStream (handoff / resume / watchdog messages)
+
+[Service]
+ExecStart=%h/.local/bin/nats-server -js -sd %h/.local/share/nimbus-lab/nats -a 127.0.0.1 -p 4222 -m 8222
+Restart=on-failure

@@ -1,0 +1,6 @@
+[Unit]
+Description=nimbus-lab Valkey (ledger: checkpoints / ownership / heartbeats)
+
+[Service]
+ExecStart=/usr/bin/valkey-server --bind 127.0.0.1 --port 6379 --dir %h/.local/share/nimbus-lab/valkey --appendonly yes --save ""
+Restart=on-failure
