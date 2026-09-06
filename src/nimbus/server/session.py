@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from nimbus import AgentOS
+from nimbus.core.session_log import OwnershipLostError
 from nimbus.core.storage import SessionStorage
 
 from .permission import PermissionManager
@@ -282,13 +283,12 @@ class SessionManagerV2:
         Returns None when no log exists. A corrupt log is reported, not
         raised — the UI should surface it, not 500.
         """
-        from nimbus.core.session_log import SessionLog, check_invariants
+        from nimbus.core.session_log import check_invariants, load_session_log
 
-        log_path = self._storage.base_dir / f"{session_id}.jsonl"
-        if not log_path.exists():
-            return None
         try:
-            log = SessionLog.load(log_path)
+            log = load_session_log(self._storage.base_dir, session_id)
+            if not log.events:
+                return None
         except ValueError as e:
             return {"events": [], "corrupt": str(e), "invariant_violations": [], "stats": {}}
 
@@ -786,9 +786,10 @@ class SessionManagerV2:
                 await flush()
 
         request_id = uuid.uuid4().hex[:12]
+        log_epoch = None
         if self._ledger is not None:
             try:
-                await self._ledger.claim(session_id, request_id)
+                log_epoch = await self._ledger.claim(session_id, request_id)
             except Exception as e:  # bookkeeping must never block a turn
                 logger.warning("[stream_chat] ledger claim failed: %s", e)
 
@@ -811,6 +812,8 @@ class SessionManagerV2:
             # can preserve it when writing vcpu_config (which is VCPU runtime state)
             loop_metadata = dump.get("metadata", {})
             loop_metadata["llm_config"] = dump.get("llm_config", {})
+            if log_epoch is not None:
+                loop_metadata["log_epoch"] = log_epoch  # fence token for every log write this run
 
             # A fresh user turn resets task counters. Resume restores the
             # checkpoint verbatim, including the remaining iteration budget.
@@ -911,6 +914,12 @@ class SessionManagerV2:
         except asyncio.CancelledError:
             logger.info(f"[stream_chat] Cancelled by user for session {session_id}")
             raise
+        except OwnershipLostError as lost:
+            # A newer epoch owns this session (another pod took over while we
+            # were frozen/partitioned). The zombie stops here: no core dump, no
+            # more tool execution, and the client is told the truth — not "done: OK".
+            terminal_status = "OWNERSHIP_LOST"
+            logger.warning(f"[stream_chat] ownership lost for {session_id}: {lost}")
         except Exception as chat_err:
             terminal_status = "ERROR"
             logger.error(f"[stream_chat] Streaming failed: {chat_err}", exc_info=True)

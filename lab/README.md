@@ -59,3 +59,17 @@ pod heartbeat `pod:{id}` (5s, EX 15s), turn ownership `turn:{session}` claimed/r
 once (HSETNX) when an owner pod's key has expired. Nothing is resumed or cancelled — Phase 1a
 numbers only. View: `./lab/labctl.py ledger` (`ledger reset` clears). Measured: kill -9 →
 DEAD at t+15s, ORPHAN recorded at t+20s (heartbeat expiry + scan interval).
+
+## R2 retrofit — Valkey Stream log + epoch fence at the single write point
+
+`NIMBUS_LOG_STORE=valkey` switches the session log store to `StreamSessionLog`
+(`sess:{session}:log`, one XADD per event; `nimbus.core.session_log` factories pick the
+store at the four call sites). Ownership is an **epoch**: `Ledger.claim` is a Lua
+`HINCRBY turn:{session}.epoch` that never resets; the epoch rides `loop metadata.log_epoch`
+into every flush, where a Lua script compares it with the current epoch before XADD. A
+stale writer is rejected on its first causal flush, raises `OwnershipLostError`
+(BaseException: generic handlers can't swallow it), stops executing tools, writes no core
+dump, and its client gets `done {status: OWNERSHIP_LOST}` instead of a fake OK.
+Measured (freeze → pod-b takes over → thaw): DUPLICATE seq none (was 22–45),
+rejected flushes 1, zombie stopped at step 3 (previously ran to step 5).
+`./lab/labctl.py ledger dump SID` prints a stream.

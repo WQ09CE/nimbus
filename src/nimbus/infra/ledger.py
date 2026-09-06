@@ -8,7 +8,8 @@ Keys (Valkey / Redis, all under one logical namespace):
 
   pod:{pod}                hash {last, port}  EX dead_after   a pod is alive iff the key exists
   pods                     set of pod ids ever seen
-  turn:{session}           hash {pod, request_id, started}  EX owner_ttl   who owns the running turn
+  turn:{session}           hash {epoch, pod, request_id, started}  EX owner_ttl   who owns the running turn;
+                           epoch is monotonic and never reset — the fence token for every log write
   orphan:{session}         hash {pod, request_id, detected, detected_by}   first scanner to see it wins
   ledger:orphans_detected  counter
 
@@ -103,22 +104,30 @@ class Ledger:
 
     # -- ownership (record only) -----------------------------------------
 
-    async def claim(self, session_id: str, request_id: str) -> None:
+    # Atomic take-over: epoch is monotonic per session and NEVER reset (the hash
+    # is never deleted), so a writer holding an older epoch can always be told apart.
+    _CLAIM = """
+local e = redis.call('HINCRBY', KEYS[1], 'epoch', 1)
+redis.call('HSET', KEYS[1], 'pod', ARGV[1], 'request_id', ARGV[2], 'started', ARGV[3])
+redis.call('EXPIRE', KEYS[1], ARGV[4])
+return e
+"""
+
+    async def claim(self, session_id: str, request_id: str) -> int:
+        """Take ownership of the session's turn; returns the new epoch (fence token)."""
         # A claim implies liveness: co-write the heartbeat so a scanner can never
         # see "turn owned by X" without "X alive" (ledger wipe / failover race).
         await self.heartbeat()
-        key = f"turn:{session_id}"
-        await self._r.hset(key, mapping={
-            "pod": self.pod_id, "request_id": request_id, "started": f"{time.time():.3f}",
-        })
-        await self._r.expire(key, self.owner_ttl_s)
+        epoch = await self._r.eval(self._CLAIM, 1, f"turn:{session_id}", self.pod_id, request_id,
+                                   f"{time.time():.3f}", self.owner_ttl_s)
+        return int(epoch)
 
     async def release(self, session_id: str, request_id: str) -> bool:
-        """Drop the ownership record if it is still ours (same request). Not atomic — R2 adds epochs."""
+        """Drop the owner fields if the record is still ours (same request). The epoch stays."""
         key = f"turn:{session_id}"
         cur = await self._r.hgetall(key)
         if cur and cur.get("request_id") == request_id:
-            await self._r.delete(key)
+            await self._r.hdel(key, "pod", "request_id", "started")
             return True
         return False
 
@@ -129,8 +138,8 @@ class Ledger:
         async for key in self._r.scan_iter(match="turn:*"):
             session_id = key.split(":", 1)[1]
             owner = await self._r.hgetall(key)
-            if not owner or await self._r.exists(f"pod:{owner.get('pod', '')}"):
-                continue
+            if not owner.get("pod") or await self._r.exists(f"pod:{owner['pod']}"):
+                continue  # released (epoch-only record) or owner alive
             # Grace: a turn younger than dead_after_s had a live owner when it
             # started — a missing pod key that early is ledger loss, not death.
             try:
@@ -162,16 +171,29 @@ class Ledger:
         turns = {k.split(":", 1)[1]: await self._r.hgetall(k) async for k in self._r.scan_iter(match="turn:*")}
         orphans = {k.split(":", 1)[1]: await self._r.hgetall(k) async for k in self._r.scan_iter(match="orphan:*")}
         return {"pods": pods, "turns": turns, "orphans": orphans,
-                "orphans_detected": int(await self._r.get("ledger:orphans_detected") or 0)}
+                "orphans_detected": int(await self._r.get("ledger:orphans_detected") or 0),
+                "rejected_writes": int(await self._r.get("ledger:rejected_writes") or 0)}
 
 
 async def _main(argv: List[str]) -> None:
     url = os.environ.get("NIMBUS_LEDGER_URL", "redis://127.0.0.1:6379")
     led = Ledger(url, pod_id="cli")
     await led.connect()
+    if argv[:1] == ["dump"] and len(argv) > 1:  # events of a session stream: seq type [detail]
+        for _id, f in await led._r.xrange(f"sess:{argv[1]}:log"):
+            e = json.loads(f["e"])
+            d = e.get("data", {})
+            m = d.get("message", {}) if isinstance(d, dict) else {}
+            x = ""
+            if e["type"] in ("turn/end", "step/end"):
+                x = json.dumps({k: v for k, v in d.items() if k in ("reason", "turn", "step", "synthetic")})
+            elif e["type"] in ("assistant/message", "user/message", "tool/result"):
+                x = (m.get("content") or "")[:60].replace("\n", " ")
+            print(f'{e["seq"]:>3} {e["type"]:<18} {x}')
+        return
     if argv[:1] == ["reset"]:
         n = 0
-        for pat in ("pod:*", "turn:*", "orphan:*", "pods", "ledger:*"):
+        for pat in ("pod:*", "turn:*", "orphan:*", "pods", "ledger:*", "sess:*"):
             async for k in led._r.scan_iter(match=pat):
                 await led._r.delete(k)
                 n += 1

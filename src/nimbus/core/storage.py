@@ -1,16 +1,16 @@
 import json
 import logging
 import os
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .session_log import (
-    SessionLog,
     derive_state,
     grade_unanswered_calls,
     interrupted_turn_closers,
+    load_session_log,
+    new_session_log,
 )
 
 logger = logging.getLogger("nimbus.core.storage")
@@ -32,10 +32,10 @@ class SessionStorage:
             self.base_dir = Path(env_dir)
         else:
             self.base_dir = Path.home() / ".nimbus" / "sessions"
-        
+
         # Ensure the directory exists
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        
+
     def _get_path(self, session_id: str) -> Path:
         return self.base_dir / f"{session_id}.json"
 
@@ -51,7 +51,7 @@ class SessionStorage:
     ) -> None:
         """Serialize complete process state into a JSON Core Dump."""
         path = self._get_path(session_id)
-        
+
         dump = {
             "session_id": session_id,
             "status": status,
@@ -62,7 +62,7 @@ class SessionStorage:
             "llm_config": llm_config or {},
             "metadata": metadata or {},
         }
-        
+
         # Use a temporary file for atomic write
         temp_path = path.with_suffix(".json.tmp")
         try:
@@ -91,11 +91,10 @@ class SessionStorage:
         closers are written to disk by SessionLog.open() when a loop
         actually resumes the session.
         """
-        log_path = self.base_dir / f"{session_id}.jsonl"
-        if not log_path.exists():
-            return None
         try:
-            log = SessionLog.load(log_path)
+            log = load_session_log(self.base_dir, session_id)
+            if not log.events:
+                return None
             events = log.events + interrupted_turn_closers(log.events)
             state = derive_state(events)
         except Exception as e:
@@ -143,7 +142,7 @@ class SessionStorage:
         log_path = self.base_dir / f"{parent_id}.jsonl"
         if log_path.exists():
             try:
-                log = SessionLog.load(log_path)
+                log = load_session_log(self.base_dir, parent_id)
                 events = log.events if at_seq is None else log.events[:at_seq]
                 events = events + interrupted_turn_closers(events)
                 state = derive_state(events)
@@ -170,7 +169,7 @@ class SessionStorage:
         new_log_path = self.base_dir / f"{new_id}.jsonl"
         if new_log_path.exists():
             new_log_path.unlink()
-        new_log = SessionLog(new_log_path)
+        new_log = new_session_log(self.base_dir, new_id)
         new_log.append("seed/applied", {
             "messages": state["messages"],
             "summary": state["summary"],
@@ -286,7 +285,7 @@ class SessionStorage:
         # Sort by most recently updated
         sessions.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
         return sessions
-    
+
     def delete_session(self, session_id: str) -> bool:
         """Delete a session Core Dump."""
         path = self._get_path(session_id)

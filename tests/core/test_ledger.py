@@ -62,6 +62,20 @@ class FakeRedis:
     async def get(self, key):
         return self.kv.get(key)
 
+    async def hdel(self, key, *fields):
+        d = self.h.get(key, {})
+        for f in fields:
+            d.pop(f, None)
+
+    async def eval(self, script, numkeys, *args):
+        # emulate Ledger._CLAIM: HINCRBY epoch + HSET owner fields + EXPIRE
+        key, pod, req, started, ttl = args
+        d = self.h.setdefault(key, {})
+        d["epoch"] = str(int(d.get("epoch", "0")) + 1)
+        d.update({"pod": pod, "request_id": req, "started": started})
+        self.exp[key] = self.now + int(ttl)
+        return int(d["epoch"])
+
     async def scan_iter(self, match="*"):
         for k in list(self.h) + list(self.kv):
             if fnmatch.fnmatch(k, match):
@@ -88,12 +102,14 @@ def test_heartbeat_registers_pod_and_dies_by_expiry(fake):
 
 
 def test_claim_and_release_only_by_same_request(fake):
-    a = _ledger(fake, "a")
-    asyncio.run(a.claim("s1", "req1"))
+    a, b = _ledger(fake, "a"), _ledger(fake, "b")
+    assert asyncio.run(a.claim("s1", "req1")) == 1               # first epoch
     assert asyncio.run(fake.hgetall("turn:s1"))["pod"] == "a"
-    assert asyncio.run(a.release("s1", "other")) is False   # stale/foreign request keeps the record
+    assert asyncio.run(a.release("s1", "other")) is False        # stale/foreign request keeps the record
     assert asyncio.run(a.release("s1", "req1")) is True
-    assert asyncio.run(fake.exists("turn:s1")) == 0
+    rec = asyncio.run(fake.hgetall("turn:s1"))
+    assert "pod" not in rec and rec["epoch"] == "1"               # released, but the epoch never resets
+    assert asyncio.run(b.claim("s1", "req2")) == 2               # takeover bumps the fence token
 
 
 def test_scanner_flags_turn_whose_pod_is_dead_exactly_once(fake):

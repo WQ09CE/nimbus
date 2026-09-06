@@ -42,7 +42,7 @@ from .queues import (  # noqa: F401  (re-exported for compat)
     MessageQueue,
     SteeringQueue,
 )
-from .session_log import SessionLog
+from .session_log import SessionLog, open_session_log
 from .storage import SessionStorage
 
 logger = logging.getLogger("nimbus.loop")
@@ -185,7 +185,9 @@ class RuntimeLoop:
         # Mock storages without base_dir get an in-memory log.
         log_dir = getattr(self.storage, "base_dir", None)
         if log_dir is not None:
-            self.session_log = SessionLog.open(log_dir / f"{self.session_id}.jsonl")
+            self.session_log = open_session_log(
+                log_dir, self.session_id, epoch=self.metadata.get("log_epoch")
+            )
         else:
             self.session_log = SessionLog(None)
         self._turn = self.session_log.last_turn

@@ -20,6 +20,7 @@ Design notes (dsh-aligned):
 
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -552,3 +553,165 @@ def interrupted_turn_closers(events: List[SessionEvent]) -> List[SessionEvent]:
         "synthetic": True,
     })
     return closers
+
+
+# =============================================================================
+# Valkey Stream store + ownership fence (nimbus-lab R2)
+# =============================================================================
+
+
+class OwnershipLostError(BaseException):
+    """This process no longer owns the session's turn: a newer epoch exists.
+
+    Deliberately a BaseException (like CancelledError): generic ``except
+    Exception`` handlers in the loop must not swallow it, save a core dump or
+    keep executing tools — a fenced writer has to stop, not recover.
+    """
+
+
+class StreamSessionLog(SessionLog):
+    """SessionLog whose durable store is a Valkey/Redis Stream, one entry per event.
+
+    The write point is a Lua script that compares the caller's ownership epoch
+    with ``turn:{session}.epoch`` and appends all pending events atomically —
+    a stale writer (zombie pod) is rejected on its first flush and never again
+    reaches the stream. Reads are XRANGE; seq contiguity is checked like the
+    file backend. The in-memory model, write-behind and causal barriers are
+    inherited unchanged.
+    """
+
+    _XADD_FENCED = """
+local cur = redis.call('HGET', KEYS[1], 'epoch')
+if ARGV[1] ~= '' and cur and cur ~= ARGV[1] then
+  redis.call('INCR', 'ledger:rejected_writes')
+  return redis.error_reply('OWNERSHIP_LOST current=' .. cur .. ' mine=' .. ARGV[1])
+end
+for i = 2, #ARGV do
+  redis.call('XADD', KEYS[2], '*', 'e', ARGV[i])
+end
+return #ARGV - 1
+"""
+
+    def __init__(self, client: Any, session_id: str, epoch: Optional[int] = None):
+        super().__init__(path=None)
+        self._r = client
+        self.session_id = session_id
+        self.epoch = epoch
+        self.fenced = False
+        self.rejected = 0
+        self._loss_raised = False
+        # non-None path = "durable store attached": the base class only buffers
+        # pending events when a path is set. Never used as a filesystem path.
+        self.path = Path(f"valkey://{self.stream_key}")
+
+    @property
+    def stream_key(self) -> str:
+        return f"sess:{self.session_id}:log"
+
+    @property
+    def turn_key(self) -> str:
+        return f"turn:{self.session_id}"
+
+    def _append_event_locked(self, event: SessionEvent) -> None:
+        if self.fenced:
+            # First append after the fence raises so the loop stops; later
+            # appends (backstop closers, audit trace) are dropped silently.
+            if not self._loss_raised:
+                self._loss_raised = True
+                raise OwnershipLostError(f"session {self.session_id}: epoch {self.epoch} is stale")
+            return
+        super()._append_event_locked(event)
+
+    def _flush_locked(self) -> None:
+        if self.fenced:
+            del self._pending[:]
+            return
+        if not self._pending:
+            return
+        payload = [json.dumps(e.to_dict(), ensure_ascii=False) for e in self._pending]
+        try:
+            self._r.eval(self._XADD_FENCED, 2, self.turn_key, self.stream_key,
+                         "" if self.epoch is None else str(self.epoch), *payload)
+        except Exception as e:
+            if "OWNERSHIP_LOST" in str(e):
+                self.fenced = True
+                self.rejected += len(self._pending)
+                del self._pending[:]
+                logger.warning("session %s: %d event(s) rejected — %s", self.session_id, self.rejected, e)
+                if not self._loss_raised:
+                    self._loss_raised = True
+                    raise OwnershipLostError(str(e)) from None
+                return
+            # store unreachable: keep pending for a later retry (same policy as OSError on files)
+            if self._flush_timer is None and not self._closed:
+                self._schedule_flush_locked()
+            return
+        del self._pending[:]
+        self._pending_since = 0.0
+
+    @classmethod
+    def load(cls, client: Any, session_id: str, epoch: Optional[int] = None) -> "StreamSessionLog":  # type: ignore[override]
+        log = cls(client, session_id, epoch)
+        for _id, fields in client.xrange(log.stream_key):
+            event = SessionEvent.from_dict(json.loads(fields["e"]))
+            if event.seq != len(log._events):
+                raise ValueError(
+                    f"seq gap in session stream {log.stream_key} at {_id}: "
+                    f"expected {len(log._events)}, got {event.seq}"
+                )
+            log._events.append(event)
+        return log
+
+    @classmethod
+    def open(cls, client: Any, session_id: str, epoch: Optional[int] = None) -> "StreamSessionLog":  # type: ignore[override]
+        """Load + repair-on-open (same contract as SessionLog.open). A corrupt
+        stream is renamed aside (evidence, never truncated) and a fresh one started."""
+        try:
+            log = cls.load(client, session_id, epoch)
+        except ValueError as e:
+            quarantine = f"sess:{session_id}:log.corrupt.{int(time.time())}"
+            client.rename(f"sess:{session_id}:log", quarantine)
+            logger.warning("Corrupt session stream quarantined to %s (%s); starting fresh", quarantine, e)
+            log = cls(client, session_id, epoch)
+        for event in interrupted_turn_closers(log._events):
+            log._append_event(event)
+        return log
+
+
+_stream_client = None
+
+
+def _client() -> Any:
+    global _stream_client
+    if _stream_client is None:
+        import redis  # optional extra: nimbus[ledger]
+
+        _stream_client = redis.Redis.from_url(
+            os.environ.get("NIMBUS_LEDGER_URL", "redis://127.0.0.1:6379"), decode_responses=True
+        )
+    return _stream_client
+
+
+def _use_stream() -> bool:
+    return os.environ.get("NIMBUS_LOG_STORE", "file") == "valkey"
+
+
+def open_session_log(base_dir: Path, session_id: str, epoch: Optional[int] = None) -> SessionLog:
+    """Continue (or create) the session's log for writing; store chosen by NIMBUS_LOG_STORE."""
+    if _use_stream():
+        return StreamSessionLog.open(_client(), session_id, epoch)
+    return SessionLog.open(Path(base_dir) / f"{session_id}.jsonl")
+
+
+def load_session_log(base_dir: Path, session_id: str) -> SessionLog:
+    """Read-only load (no repair written back)."""
+    if _use_stream():
+        return StreamSessionLog.load(_client(), session_id)
+    return SessionLog.load(Path(base_dir) / f"{session_id}.jsonl")
+
+
+def new_session_log(base_dir: Path, session_id: str) -> SessionLog:
+    """A fresh log for a new session (fork seeding)."""
+    if _use_stream():
+        return StreamSessionLog(_client(), session_id)
+    return SessionLog(Path(base_dir) / f"{session_id}.jsonl")
