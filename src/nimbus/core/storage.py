@@ -9,6 +9,7 @@ from .session_log import (
     derive_state,
     grade_unanswered_calls,
     interrupted_turn_closers,
+    ContractNewerError,
     load_session_log,
     new_session_log,
 )
@@ -97,6 +98,8 @@ class SessionStorage:
                 return None
             events = log.events + interrupted_turn_closers(log.events)
             state = derive_state(events)
+        except ContractNewerError:
+            raise  # never mask a newer log with the snapshot: the reader must refuse
         except Exception as e:
             logger.warning(
                 f"Session log for '{session_id}' unusable ({e}); using snapshot"
@@ -254,6 +257,8 @@ class SessionStorage:
                     )
 
             return dump
+        except ContractNewerError:
+            raise  # the caller must refuse, not treat the session as missing
         except Exception as e:
             logger.error(f"Failed to load session '{session_id}': {e}")
             return None

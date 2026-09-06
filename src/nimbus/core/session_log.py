@@ -42,6 +42,41 @@ LIVE_TURN_END_KINDS = (
 )
 
 
+# Contract version of the log this code writes and understands. Bumped only when the
+# event shapes change (not on every deploy — that is the pod generation). A reader may
+# open a log only if its contract >= the log's: a rollout that rolls the contract
+# BACK must drain first, or the older pods refuse the newer sessions (nimbus-lab R5.2).
+SESSION_LOG_CONTRACT = 1
+
+
+class ContractNewerError(Exception):
+    """The log was written under a newer contract than this reader understands.
+    Deliberately not a ValueError: open() must not quarantine such a log."""
+
+    def __init__(self, log_contract: int, mine: int, where: str = ""):
+        super().__init__(f"session log contract {log_contract} > reader contract {mine}" + (f" ({where})" if where else ""))
+        self.log_contract = log_contract
+        self.mine = mine
+
+
+def log_contract(events: List["SessionEvent"]) -> int:
+    """The highest contract any turn of this log was written under (1 when unstamped)."""
+    c = 1
+    for e in events:
+        if e.type == "turn/start":
+            try:
+                c = max(c, int(e.data.get("contract", 1) or 1))
+            except (TypeError, ValueError):
+                pass
+    return c
+
+
+def _check_contract(events: List["SessionEvent"], where: str) -> None:
+    c = log_contract(events)
+    if c > SESSION_LOG_CONTRACT:
+        raise ContractNewerError(c, SESSION_LOG_CONTRACT, where)
+
+
 @dataclass
 class SessionEvent:
     """One log entry. seq is assigned by the log (== index at append time)."""
@@ -259,6 +294,7 @@ class SessionLog:
             log._events.append(event)
         log.path = path
         log._needs_separator = bool(raw and log._truncate_at is None and not raw.endswith((b"\n", b"\r")))
+        _check_contract(log._events, str(path))
         return log
 
     @classmethod
@@ -753,6 +789,7 @@ return #ARGV - 1
                     f"expected {len(log._events)}, got {event.seq}"
                 )
             log._events.append(event)
+        _check_contract(log._events, log.stream_key)
         return log
 
     @classmethod

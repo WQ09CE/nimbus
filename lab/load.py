@@ -88,7 +88,7 @@ def report(a):
         ev = [json.loads(f["e"]) for _id, f in r.xrange(f"sess:{sid}:log")]
         turns = sum(1 for e in ev if e["type"] == "turn/start")
         ends = [e["data"].get("reason", {}).get("kind", "?") for e in ev if e["type"] == "turn/end"]
-        results = [e for e in ev if e["type"] == "tool/result"]
+        results = [e for e in ev if e["type"] in ("tool/result", "tool/result.v2")]  # .v2: lab contract-v2 branch
         real = sum(1 for e in results if not e["data"].get("synthetic"))
         replays = sum(1 for e in results if e["data"].get("resumed"))
         done = any(e["type"] == "assistant/message" and str(e["data"].get("message", {}).get("content", "")).startswith("LAB_DONE") for e in ev)

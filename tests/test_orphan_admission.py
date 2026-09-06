@@ -166,3 +166,21 @@ def test_binding_written_at_a_seam_reaches_the_running_loops_metadata(manager, t
     assert manager._storage.load_session(SID)["metadata"]["sandbox_binding"] == new
     asyncio.run(manager._save_sandbox_binding(SID, None))
     assert "sandbox_binding" not in FakeLoop.metadata
+
+
+def test_orphan_written_by_a_newer_contract_is_refused_untouched(manager, tmp_path):
+    """R5.2 rollback: the v1 scanner finds a crashed v2 turn. It must neither grade nor repair it —
+    refuse, tell the client, leave the log as it is."""
+    from nimbus.core.session_log import SESSION_LOG_CONTRACT
+    set_repeat_resolver(lambda n: "keyed")
+    _crashed_session(tmp_path, "Write")
+    lines = [json.loads(line) for line in open(tmp_path / f"{SID}.jsonl")]
+    lines[1]["data"]["contract"] = SESSION_LOG_CONTRACT + 1
+    with open(tmp_path / f"{SID}.jsonl", "w") as f:
+        for e in lines:
+            f.write(json.dumps(e) + "\n")
+    resumed = []
+    manager.resume_interrupted = lambda sid: resumed.append(sid) or asyncio.sleep(0)
+    asyncio.run(manager.on_orphan({"session_id": SID, "pod": "a", "request_id": "r"}))
+    assert resumed == [] and manager._ledger.resolutions == [f"refused:contract={SESSION_LOG_CONTRACT + 1}"]
+    assert [json.loads(line) for line in open(tmp_path / f"{SID}.jsonl")] == lines  # untouched

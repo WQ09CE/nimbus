@@ -46,7 +46,7 @@ for i in 0 1 2; do o=${OLD[$i]}; n=${NEW[$i]}
   echo "   t+$(( $(date +%s) - T0 ))s fleet: $(fleet)| owners: $(owners) | ended=$(ended)/$N"
 done
 echo "== $(ts) rollout done; waiting for the load to drain"
-for w in $(seq 1 24); do sleep 5; e=$(ended); echo "   t+$(( $(date +%s) - T0 ))s ended=$e/$N owners: $(owners) | $(mq)"; [ "$e" -ge "$N" ] && break; done
+for w in $(seq 1 30); do sleep 5; e=$(ended); ow=$(owners); echo "   t+$(( $(date +%s) - T0 ))s ended=$e/$N owners: $ow| $(mq)"; [ "$e" -ge "$N" ] && [ -z "$ow" ] && break; done  # clients gone AND no turn still owned
 kill $PROBE 2>/dev/null; wait $LOAD 2>/dev/null; tail -1 "$LAB/load-$TAG.out"
 echo "== $(ts) report:"; "$PY" load.py report --tag "$TAG"
 echo "== $(ts) probe csv: $LAB/probe/$TAG.csv"

@@ -42,7 +42,7 @@ from .queues import (  # noqa: F401  (re-exported for compat)
     MessageQueue,
     SteeringQueue,
 )
-from .session_log import SessionLog, open_session_log, resumable_calls
+from .session_log import SESSION_LOG_CONTRACT, SessionLog, open_session_log, resumable_calls
 from .storage import SessionStorage
 
 logger = logging.getLogger("nimbus.loop")
@@ -381,7 +381,7 @@ class RuntimeLoop:
         self._step_in_turn = 0
         self._turn_open = True
         self._step_open = False
-        data: Dict[str, Any] = {"turn": self._turn}
+        data: Dict[str, Any] = {"turn": self._turn, "contract": SESSION_LOG_CONTRACT}
         if continues is not None:
             data["continues"] = continues  # this turn resumes an interrupted one
         self.session_log.append("turn/start", data)

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from nimbus import AgentOS
-from nimbus.core.session_log import OwnershipLostError
+from nimbus.core.session_log import ContractNewerError, OwnershipLostError
 from nimbus.core.storage import SessionStorage
 
 from .permission import PermissionManager
@@ -1031,6 +1031,17 @@ class SessionManagerV2:
             return
         try:
             events = load_session_log(self._storage.base_dir, session_id).events
+        except ContractNewerError as e:
+            # R5.2: written by a newer contract — not ours to repair or resume. Refuse loudly;
+            # a rollout that rolled the contract back must drain (or roll forward) first.
+            logger.warning("[on_orphan] %s: %s — refused", session_id, e)
+            await self._sse_hub.publish(session_id, "interrupted", {
+                "reason": "contract_newer", "resumable": False,
+                "hint": f"This session was written by a newer runtime (contract {e.log_contract}); this pod "
+                        f"(contract {e.mine}) cannot continue it.",
+            })
+            await self._ledger.resolve(session_id, f"refused:contract={e.log_contract}")
+            return
         except Exception as e:
             await self._ledger.resolve(session_id, f"skipped:log_unreadable:{type(e).__name__}")
             return
@@ -1160,7 +1171,15 @@ class SessionManagerV2:
         if self.is_session_running(sid):
             return True  # already ours
         self._sessions.pop(sid, None)  # rebuild from durable state, never from a cached surface
-        result = await self.resume_session(sid)
+        try:
+            result = await self.resume_session(sid)
+        except ContractNewerError as e:
+            logger.warning("[handoff] %s: %s — refused, redeliver", sid, e)
+            await self._sse_hub.publish(sid, "interrupted", {
+                "reason": "contract_newer", "resumable": False,
+                "hint": f"Announced to a pod on contract {e.mine}; the session needs contract {e.log_contract}.",
+            })
+            return False  # nak: a capable member may still take it
         if result.get("success"):
             logger.warning("[handoff] resumed %s from pod %s", sid, payload.get("from_pod"))
             return True
