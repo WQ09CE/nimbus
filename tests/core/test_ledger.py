@@ -294,3 +294,11 @@ def test_stranded_sessions_are_drained_once_by_the_first_capable_pod(fake):
     assert [r["session_id"] for r in asyncio.run(g.drain_stranded())] == ["s1"]  # contract 2 reads s1, not s2
     assert asyncio.run(h.drain_stranded()) == []          # s1 claimed once (DEL), s2 still needs 3
     assert got == [("s1", "paused", "d")] and asyncio.run(fake.exists("stranded:s2")) == 1
+
+
+def test_note_attempt_counts_consecutive_deaths_without_progress(fake):
+    a = _ledger(fake, "a")
+    assert asyncio.run(a.note_attempt("s1", "1", "2")) == 1
+    assert asyncio.run(a.note_attempt("s1", "2", "2")) == 2   # died again at the same point
+    assert asyncio.run(a.note_attempt("s1", "3", "5")) == 1   # progressed: the streak restarts
+    assert asyncio.run(a.note_attempt("s1", "4", "5")) == 2

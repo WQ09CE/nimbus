@@ -291,6 +291,22 @@ return e
                     await self.resolve(rec["session_id"], f"handler_error:{type(e).__name__}")
         return found
 
+    async def note_attempt(self, session_id: str, epoch: str, progress: str) -> int:
+        """Record what the turn had achieved when it lost this owner and return how many
+        owners in a row it lost WITHOUT progressing (R5.2: a rolling crash burns three owners
+        of every turn on the fleet — that is not a poison turn; a poison turn is one whose
+        progress marker is the same at every death)."""
+        key = f"orphan:{session_id}"
+        await self._r.hset(key, mapping={f"progress_e{epoch}": progress})
+        h = await self._r.hgetall(key)
+        marks = sorted(((int(k[len("progress_e"):]), v) for k, v in h.items() if k.startswith("progress_e")), reverse=True)
+        n = 0
+        for _e, v in marks:
+            if v != progress:
+                break
+            n += 1
+        return n
+
     async def strand(self, session_id: str, needed: int, kind: str, **facts: str) -> None:
         """Record a session this pod refused (needs contract `needed`): kind = paused | orphan."""
         await self._r.hset(f"stranded:{session_id}", mapping={"contract": str(needed), "kind": kind, "by": self.pod_id,

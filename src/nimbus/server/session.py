@@ -1058,18 +1058,20 @@ class SessionManagerV2:
             await self.fast_fail_interrupted(session_id)
             await self._ledger.resolve(session_id, f"fast_fail:{tool}")
             return
-        # R4: attempts budget (Temporal: RetryPolicy.maximum_attempts). Each takeover is a
-        # new epoch; a turn that keeps killing or stalling its owners (poison turn) must not
-        # bounce between pods forever — after max attempts it is closed and the user told.
-        attempts = int(rec.get("epoch") or 1)
+        # R4: attempts budget (Temporal: RetryPolicy.maximum_attempts). A turn that keeps
+        # killing or stalling its owners (poison turn) must not bounce between pods forever.
+        # R5.2: count only owners lost WITHOUT progress — a rolling crash of the fleet takes
+        # three owners from every turn on it, and those turns advanced between deaths.
+        progress = str(sum(1 for e in events if e.type == "tool/result" and not e.data.get("synthetic")))
+        attempts = await self._ledger.note_attempt(session_id, str(rec.get("epoch") or 1), progress)
         max_attempts = int(os.environ.get("NIMBUS_RESUME_MAX_ATTEMPTS", "3"))
         if attempts >= max_attempts:
-            logger.warning("[on_orphan] %s: %d owners lost (max %d) — quarantined, not resumed",
+            logger.warning("[on_orphan] %s: %d owners lost without progress (max %d) — quarantined, not resumed",
                            session_id, attempts, max_attempts)
             await self.fast_fail_interrupted(
                 session_id, reason="max_attempts",
-                hint=f"This turn lost {attempts} owner pods in a row (last: {rec.get('pod')}). Not resumed"
-                     f" automatically; something about this turn kills or stalls the pod that runs it.")
+                hint=f"This turn lost {attempts} owner pods in a row without making progress (last: {rec.get('pod')})."
+                     f" Not resumed automatically; something about this turn kills or stalls the pod that runs it.")
             await self._ledger.resolve(session_id, f"quarantine:attempts={attempts}")
             return
         # R4: the cost axis. A turn that has already ingested more than the budget is the

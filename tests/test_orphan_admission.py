@@ -37,6 +37,17 @@ class FakeLedger:
     async def strand(self, session_id, needed, kind, **facts):
         self.stranded = getattr(self, "stranded", []) + [(session_id, needed, kind, facts)]
 
+    async def note_attempt(self, session_id, epoch, progress):
+        marks = getattr(self, "marks", [])
+        marks.append(progress)
+        self.marks = marks
+        n = 0
+        for m in reversed(marks):
+            if m != progress:
+                break
+            n += 1
+        return n
+
 
 def _tc(i, name):
     return {"id": f"c{i}", "type": "function", "function": {"name": name, "arguments": "{}"}}
@@ -132,10 +143,11 @@ def test_ingest_is_metered_at_the_door_and_posted_past_the_flush_threshold(manag
     assert manager._streamed == {} and manager._ingest == {}
 
 
-def test_a_turn_that_lost_max_attempts_owners_is_quarantined(manager, tmp_path, monkeypatch):
+def test_a_turn_that_lost_max_attempts_owners_without_progress_is_quarantined(manager, tmp_path, monkeypatch):
     """R4 stall drill: a poison turn (stalls / kills whoever runs it) bounces between pods, each
-    takeover a new epoch. Temporal stops at maximum_attempts; so does the ledger's admission."""
-    monkeypatch.setenv("NIMBUS_RESUME_MAX_ATTEMPTS", "3")
+    takeover a new epoch. Temporal stops at maximum_attempts; so does the ledger's admission.
+    R5.2: only owners lost WITHOUT progress count — a rolling crash of the fleet is not a poison turn."""
+    monkeypatch.setenv("NIMBUS_RESUME_MAX_ATTEMPTS", "2")
     set_repeat_resolver(lambda n: "keyed")
     _crashed_session(tmp_path, "Write")
     resumed = []
@@ -145,10 +157,13 @@ def test_a_turn_that_lost_max_attempts_owners_is_quarantined(manager, tmp_path, 
         return True
 
     manager.resume_interrupted = fake_resume
-    asyncio.run(manager.on_orphan({"session_id": SID, "pod": "a", "request_id": "r", "epoch": "2"}))
-    assert resumed == [SID] and manager._ledger.resolutions == ["resume"]  # second owner lost: still resumed
+    asyncio.run(manager.on_orphan({"session_id": SID, "pod": "a", "request_id": "r", "epoch": "1"}))
+    assert resumed == [SID] and manager._ledger.resolutions == ["resume"]
+    manager._ledger.marks = ["0", "3"]  # progressed between deaths (3 real results now): the count restarts
+    asyncio.run(manager.on_orphan({"session_id": SID, "pod": "b", "request_id": "r", "epoch": "2"}))
+    assert resumed == [SID, SID] and manager._ledger.resolutions[-1] == "resume"
     asyncio.run(manager.on_orphan({"session_id": SID, "pod": "c", "request_id": "r", "epoch": "3"}))
-    assert resumed == [SID] and manager._ledger.resolutions[-1] == "quarantine:attempts=3"
+    assert resumed == [SID, SID] and manager._ledger.resolutions[-1] == "quarantine:attempts=2"  # same marker twice
     tail = [json.loads(line) for line in open(tmp_path / f"{SID}.jsonl")][-1]
     assert tail["type"] == "turn/end" and tail["data"]["reason"]["kind"] == "interrupted"
 

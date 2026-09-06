@@ -6,10 +6,12 @@
 # Before the reader gate: v1 cannot see the v2 tool results and re-executes the turn from step 1.
 # After the gate: v1 refuses (`interrupted reason=contract_newer`), the announcement waits for a capable pod.
 # FAULT=term (default, graceful: pause snapshot + handoff) or FAULT=kill (kill -9: crash path, the v1 scanner
-# grades the v2 log). usage: [FAULT=term|kill] r5-skew.sh [sessions=20] [gap=10]
+# grades the v2 log). PROMPT= overrides the turn (a turn longer than the rollout leaves v2 sessions on the last
+# v2 pod when it goes: those strand; ROLLFORWARD=1 then brings a v2 pod back to drain them).
+# usage: [FAULT=term|kill] [PROMPT="lab steps 8 sleep 12"] r5-skew.sh [sessions=20] [gap=10]
 set -u
 cd "$(dirname "$0")/.."
-N=${1:-20}; GAP=${2:-10}; PROMPT="lab steps 7 sleep 8"; FAULT=${FAULT:-term}
+N=${1:-20}; GAP=${2:-10}; PROMPT=${PROMPT:-"lab steps 7 sleep 8"}; FAULT=${FAULT:-term}
 V2=$HOME/Projects/nimbus-v2/src
 LAB=~/.local/share/nimbus-lab; VC=$LAB/vcompute/leases; PY=$PWD/../.venv/bin/python
 ts() { date '+%H:%M:%S'; }
