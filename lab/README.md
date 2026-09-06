@@ -121,3 +121,11 @@ Peers consume announcements and `resume_session` from the durable checkpoint + b
 Measured: SIGTERM mid step 3 → pause at the seam ~3 s later → pod-b resumed the same second on
 the restored lease → LAB_DONE 5 at t+10 s; pod-a exited within 4 s; the client of the dying
 pod saw `paused` + `done`. Enabled by `NIMBUS_HANDOFF_URL`; drill `lab/drills/r3-handoff.sh`.
+
+## Side drill — frozen consumer holds messages (NATS JetStream)
+
+`lab/drills/mq-freeze.sh`: SIGSTOP pod-b (a queue-group member), publish 6 announcements, watch
+the consumer's `ack_pending` / `redelivered`. Measured: every message routed to the frozen member
+sat for one full `ack_wait` (15 s) before redelivery; with two members and random routing the
+slowest message needed two cycles (~29 s). The bound is the ack timeout — a broker without one
+(or a client that never pings) holds them until the frozen process dies.
