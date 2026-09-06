@@ -25,7 +25,7 @@ from .core.agent import (
     AgentConfig as AgentOSConfig,
 )
 
-__version__ = "0.5.0"
+__version__ = "0.5.0+v2"
 __all__ = [
     "AgentOS",
     "AgentOSConfig",

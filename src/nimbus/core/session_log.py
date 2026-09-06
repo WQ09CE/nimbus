@@ -46,7 +46,7 @@ LIVE_TURN_END_KINDS = (
 # event shapes change (not on every deploy — that is the pod generation). A reader may
 # open a log only if its contract >= the log's: a rollout that rolls the contract
 # BACK must drain first, or the older pods refuse the newer sessions (nimbus-lab R5.2).
-SESSION_LOG_CONTRACT = 1
+SESSION_LOG_CONTRACT = 2  # lab/contract-v2: tool/result written on the wire as tool/result.v2
 
 
 class ContractNewerError(Exception):
@@ -86,11 +86,13 @@ class SessionEvent:
     data: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"seq": self.seq, "type": self.type, "time": self.time, "data": self.data}
+        wire = "tool/result.v2" if self.type == "tool/result" else self.type  # contract 2 wire shape
+        return {"seq": self.seq, "type": wire, "time": self.time, "data": self.data}
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "SessionEvent":
-        return cls(seq=d["seq"], type=d["type"], time=d["time"], data=d.get("data", {}))
+        t = "tool/result" if d["type"] == "tool/result.v2" else d["type"]
+        return cls(seq=d["seq"], type=t, time=d["time"], data=d.get("data", {}))
 
 
 class SessionLog:
