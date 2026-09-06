@@ -161,7 +161,12 @@ def test_results_logged_after_the_binding_cut_are_redone_before_the_in_flight_ca
     """R5.2 rolling crash: the binding was taken at the seam after step 1 (seq 5); steps 2 and 3
     completed in the log but the restored workspace predates them — redo them, then the in-flight
     step 4. Without the cut only step 4 would run and steps 2–3 would vanish from the machine."""
-    from nimbus.core.session_log import TOOL_REDO, TOOL_RESUMABLE, resumable_calls, set_repeat_resolver
+    from nimbus.core.session_log import (
+        TOOL_REDO,
+        TOOL_RESUMABLE,
+        resumable_calls,
+        set_repeat_resolver,
+    )
     set_repeat_resolver(lambda n: "keyed")
     try:
         ev = _chain(3)

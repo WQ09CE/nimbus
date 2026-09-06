@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .session_log import (
+    ContractNewerError,
     derive_state,
     grade_unanswered_calls,
     interrupted_turn_closers,
-    ContractNewerError,
     load_session_log,
     new_session_log,
 )
