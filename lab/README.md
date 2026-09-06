@@ -50,3 +50,12 @@ Each pod runs on one of two rails (`lab/pods/<pod>.env`, flip with `./lab/labctl
   subscription login in `~/.pi/agent/auth.json`); acceptance runs under a real model.
 
 Default: pod-a mock, pod-b real.
+
+## R1 retrofit — ledger (record only)
+
+`nimbus.infra.ledger.Ledger` (extra `nimbus[ledger]`, enabled by `NIMBUS_LEDGER_URL`):
+pod heartbeat `pod:{id}` (5s, EX 15s), turn ownership `turn:{session}` claimed/released around
+`stream_chat`, and an orphan scanner on every live pod (10s) that records `orphan:{session}`
+once (HSETNX) when an owner pod's key has expired. Nothing is resumed or cancelled — Phase 1a
+numbers only. View: `./lab/labctl.py ledger` (`ledger reset` clears). Measured: kill -9 →
+DEAD at t+15s, ORPHAN recorded at t+20s (heartbeat expiry + scan interval).

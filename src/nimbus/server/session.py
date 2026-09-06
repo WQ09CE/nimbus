@@ -38,8 +38,10 @@ class SessionManagerV2:
         sse_hub: SSEHub,
         permission_manager: PermissionManager,
         max_sessions: int = 10,
+        ledger=None,
     ):
         self._sse_hub = sse_hub
+        self._ledger = ledger  # nimbus.infra.ledger.Ledger or None (single-pod)
         self._permission_manager = permission_manager
         self._max_sessions = max_sessions
         self._sessions: Dict[str, AgentOS] = {}  # session_id -> AgentOS
@@ -783,6 +785,13 @@ class SessionManagerV2:
             if flush is not None:
                 await flush()
 
+        request_id = uuid.uuid4().hex[:12]
+        if self._ledger is not None:
+            try:
+                await self._ledger.claim(session_id, request_id)
+            except Exception as e:  # bookkeeping must never block a turn
+                logger.warning("[stream_chat] ledger claim failed: %s", e)
+
         try:
             logger.info("[stream_chat] Calling agent_os.stream_with_queue...")
 
@@ -907,6 +916,12 @@ class SessionManagerV2:
             logger.error(f"[stream_chat] Streaming failed: {chat_err}", exc_info=True)
             raise
         finally:
+            if self._ledger is not None:
+                try:
+                    await self._ledger.release(session_id, request_id)
+                except Exception as e:
+                    logger.warning("[stream_chat] ledger release failed: %s", e)
+
             loop = self._active_loops.get(session_id)
             was_interrupted = bool(
                 loop and getattr(loop, "_interrupted", False)

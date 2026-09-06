@@ -8,6 +8,7 @@ This module provides:
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -45,9 +46,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Use v2 session manager (AgentOS-based)
     from .session import SessionManagerV2
 
+    # Multi-pod bookkeeping (nimbus-lab): heartbeat + turn ownership + orphan scanner.
+    ledger = None
+    if ledger_url := os.environ.get("NIMBUS_LEDGER_URL"):
+        from nimbus.infra.ledger import Ledger
+
+        ledger = Ledger(
+            ledger_url,
+            pod_id=os.environ.get("NIMBUS_POD_ID") or f"pid-{os.getpid()}",
+            port=int(os.environ.get("NIMBUS_PORT", "0") or 0),
+        )
+        await ledger.start()
     session_manager = SessionManagerV2(
         sse_hub=sse_hub,
         permission_manager=permission_manager,
+        ledger=ledger,
     )
 
     # Set up log hub for real-time log streaming
@@ -63,6 +76,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Cleanup
     await session_manager.close_all()
+    if ledger is not None:
+        await ledger.stop()
     await sse_hub.stop()
 
     # Flush logs and remove handlers to prevent semaphore leaks (resource_tracker warning)

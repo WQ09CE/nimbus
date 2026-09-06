@@ -56,11 +56,15 @@ rag = [
     "chromadb>=0.4.0",
 ]
 acp = []  # ACP module has no extra dependencies (uses core deps)
+ledger = [
+    "redis>=5.0.0",  # nimbus.infra.ledger (multi-pod ownership / orphan scanner)
+]
 all = [
     "nimbus[dev]",
     "nimbus[llm]",
     "nimbus[rag]",
     "nimbus[acp]",
+    "nimbus[ledger]",
 ]
 
 [project.scripts]

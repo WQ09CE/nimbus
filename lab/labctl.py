@@ -3,6 +3,7 @@
 
   labctl pods up|down|status            start/stop pod units (lab-nimbus@a, @b)
   labctl vc recycle | vc chaos '{json}' vcompute: drop all leases / set chaos knobs
+  labctl ledger [reset]                 Valkey ledger: pods alive/dead, turn owners, orphans (R1 record-only)
   labctl kill|term|freeze|thaw POD      SIGKILL / SIGTERM / SIGSTOP / SIGCONT the pod cgroup
   labctl mem POD MAX                    set MemoryMax (e.g. 300M) on the pod unit (runtime)
   labctl allow POD                      allow_always Bash/Write/Edit on POD (done automatically by pods up / turn)
@@ -73,6 +74,13 @@ def cmd_llm(pod, rail):
     print(pod, "llm rail =", rail, "(restarted)" if ok else "(restart FAILED)")
     if ok: cmd_allow(pod)
 
+def cmd_ledger(arg=None):
+    """Valkey ledger view (pods alive/dead, turn owners, orphans) via nimbus.infra.ledger; 'reset' clears it."""
+    root = LAB.parent
+    r = subprocess.run([str(root / ".venv" / "bin" / "python"), "-m", "nimbus.infra.ledger"] + ([arg] if arg else []),
+                       text=True, capture_output=True, env={**os.environ, "NIMBUS_LEDGER_URL": "redis://127.0.0.1:6379"})
+    print(r.stdout.strip() or r.stderr.strip())
+
 def cmd_vc(action, arg=None):
     url = "http://127.0.0.1:8793/v1"
     if action == "recycle": print(http("POST", url + "/chaos/recycle", {}))
@@ -134,6 +142,7 @@ def main(a):
         cmd_signal({"kill": "SIGKILL", "term": "SIGTERM", "freeze": "SIGSTOP", "thaw": "SIGCONT"}[c], a[1])
     elif c == "mem": cmd_mem(a[1], a[2])
     elif c == "allow": cmd_allow(a[1])
+    elif c == "ledger": cmd_ledger(a[1] if len(a) > 1 else None)
     elif c == "llm": cmd_llm(a[1], a[2])
     elif c == "perms": cmd_perms(a[1])
     elif c == "respond": cmd_respond(a[1], a[2], a[3])
