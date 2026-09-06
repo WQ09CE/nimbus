@@ -44,6 +44,9 @@ class SessionManagerV2:
     ):
         self._sse_hub = sse_hub
         self._ledger = ledger  # nimbus.infra.ledger.Ledger or None (single-pod)
+        self._ingest: Dict[str, int] = {}  # session_id -> tool output bytes not yet charged to the ledger (R4)
+        self._streamed: Dict[str, int] = {}  # call_id -> bytes already metered while streaming
+        self._charging: set = set()  # sessions with a ledger charge in flight
         self._permission_manager = permission_manager
         self._max_sessions = max_sessions
         self._sessions: Dict[str, AgentOS] = {}  # session_id -> AgentOS
@@ -619,6 +622,9 @@ class SessionManagerV2:
                     "action_id": event.data.get("call_id"),
                 }))
             elif event.type == "TOOL_CALL_DELTA":
+                chunk = event.data.get("chunk")
+                if isinstance(chunk, str):
+                    self._meter_ingest(session_id, event.data.get("call_id"), len(chunk))
                 delta_payload = {
                     "tool": event.data.get("tool"),
                     "chunk": event.data.get("chunk"),
@@ -628,6 +634,12 @@ class SessionManagerV2:
                     delta_payload["ui_detail"] = event.data["ui_detail"]
                 event_queue.put_nowait(("tool_output_chunk", delta_payload))
             elif event.type == "TOOL_FINISHED":
+                # R4: per-turn ingest — the bytes this result pulled into the process (the
+                # untruncated raw kept for the UI, else the model-facing output)
+                ud = event.data.get("ui_detail") or {}
+                raw = ud.get("raw_text_output") if isinstance(ud, dict) else None
+                n = len(raw) if isinstance(raw, str) else len(event.data.get("output") or "")
+                self._meter_ingest(session_id, event.data.get("call_id"), n, final=True)
                 event_queue.put_nowait(("tool_result", {
                     "tool": event.data.get("tool"),
                     "status": event.data.get("status"),
@@ -791,7 +803,7 @@ class SessionManagerV2:
         log_epoch = None
         if self._ledger is not None:
             try:
-                log_epoch = await self._ledger.claim(session_id, request_id)
+                log_epoch = await self._ledger.claim(session_id, request_id, fresh=not resume)
             except Exception as e:  # bookkeeping must never block a turn
                 logger.warning("[stream_chat] ledger claim failed: %s", e)
 
@@ -874,6 +886,7 @@ class SessionManagerV2:
                     # a clean seam is a metadata write, a dirty one a workspace
                     # snapshot — the price of being restorable after a crash.
                     await self._snapshot_sandbox_at_seam(session_id)
+                    await self._charge_ingest(session_id)
                     continue
                 if evt_type == "resume_replay":
                     # interrupted-turn resume re-executed a graded call
@@ -943,6 +956,7 @@ class SessionManagerV2:
             raise
         finally:
             if self._ledger is not None:
+                await self._charge_ingest(session_id)
                 try:
                     await self._ledger.release(session_id, request_id)
                 except Exception as e:
@@ -965,6 +979,37 @@ class SessionManagerV2:
                     session_id, "done", {"status": terminal_status}
                 )
 
+
+    INGEST_FLUSH_BYTES = 1 << 20
+
+    def _meter_ingest(self, session_id: str, call_id: Optional[str], n: int, final: bool = False) -> None:
+        """Meter tool output at the door — as it streams in — not at the step seam: a pod
+        that dies of a result never reaches the seam (R4 drill: the suspect's ledger said 0).
+        Streamed bytes are charged once; the final result adds only what was not streamed.
+        Past INGEST_FLUSH_BYTES the count is posted to the ledger without waiting for a seam."""
+        seen = self._streamed.get(call_id or "", 0)
+        if final:
+            self._streamed.pop(call_id or "", None)
+            n = max(0, n - seen)
+        elif call_id:
+            self._streamed[call_id] = seen + n
+        if n <= 0:
+            return
+        self._ingest[session_id] = self._ingest.get(session_id, 0) + n
+        if self._ingest[session_id] >= self.INGEST_FLUSH_BYTES and session_id not in self._charging:
+            self._charging.add(session_id)
+            asyncio.get_running_loop().create_task(self._charge_ingest(session_id))
+
+    async def _charge_ingest(self, session_id: str) -> None:
+        """Post the bytes ingested since the last charge to the ledger's turn record."""
+        n = self._ingest.pop(session_id, 0)
+        try:
+            if n and self._ledger is not None:
+                await self._ledger.account(session_id, n)
+        except Exception as e:  # bookkeeping never blocks a turn
+            logger.warning("[stream_chat] ledger account failed: %s", e)
+        finally:
+            self._charging.discard(session_id)
 
     # -- interrupted-turn recovery (nimbus-lab R3): admission + first-tier resume --
 
@@ -1000,11 +1045,40 @@ class SessionManagerV2:
             await self.fast_fail_interrupted(session_id)
             await self._ledger.resolve(session_id, f"fast_fail:{tool}")
             return
+        # R4: attempts budget (Temporal: RetryPolicy.maximum_attempts). Each takeover is a
+        # new epoch; a turn that keeps killing or stalling its owners (poison turn) must not
+        # bounce between pods forever — after max attempts it is closed and the user told.
+        attempts = int(rec.get("epoch") or 1)
+        max_attempts = int(os.environ.get("NIMBUS_RESUME_MAX_ATTEMPTS", "3"))
+        if attempts >= max_attempts:
+            logger.warning("[on_orphan] %s: %d owners lost (max %d) — quarantined, not resumed",
+                           session_id, attempts, max_attempts)
+            await self.fast_fail_interrupted(
+                session_id, reason="max_attempts",
+                hint=f"This turn lost {attempts} owner pods in a row (last: {rec.get('pod')}). Not resumed"
+                     f" automatically; something about this turn kills or stalls the pod that runs it.")
+            await self._ledger.resolve(session_id, f"quarantine:attempts={attempts}")
+            return
+        # R4: the cost axis. A turn that has already ingested more than the budget is the
+        # likeliest reason its pod died hot; resuming it here would put the same bytes on this
+        # pod (the 0903 cascade: the rescuer dies of the rescued). Quarantine, tell the user.
+        ingest = int(rec.get("bytes") or 0)
+        budget = int(os.environ.get("NIMBUS_RESUME_INGEST_BUDGET_MB", "8")) << 20
+        if ingest >= budget:
+            logger.warning("[on_orphan] %s: ingested %d B >= budget %d B (owner mem %s%%) — quarantined, not resumed",
+                           session_id, ingest, budget, rec.get("owner_mem_pct") or "?")
+            await self.fast_fail_interrupted(
+                session_id, reason="oom_suspect",
+                hint=f"This turn had pulled {ingest >> 20} MB of tool output into pod {rec.get('pod')} when it died"
+                     f" (memory {rec.get('owner_mem_pct') or '?'}%). Not resumed automatically; retry deliberately.")
+            await self._ledger.resolve(session_id, f"quarantine:ingest={ingest >> 20}MB")
+            return
         logger.warning("[on_orphan] %s: resuming interrupted turn on pod %s", session_id, self._ledger.pod_id)
         started = await self.resume_interrupted(session_id)
         await self._ledger.resolve(session_id, "resume" if started else "skipped:resume_refused")
 
-    async def fast_fail_interrupted(self, session_id: str) -> None:
+    async def fast_fail_interrupted(self, session_id: str, reason: str = "owner_pod_died",
+                                    hint: Optional[str] = None) -> None:
         """Second tier: close the crashed turn now (graded synthetic results,
         turn/end interrupted) under our epoch and tell any attached client."""
         from nimbus.core.session_log import open_session_log
@@ -1017,8 +1091,8 @@ class SessionManagerV2:
         finally:
             await self._ledger.release(session_id, request_id)
         await self._sse_hub.publish(session_id, "interrupted", {
-            "reason": "owner_pod_died", "resumable": False,
-            "hint": "The previous step may have executed; verify before retrying.",
+            "reason": reason, "resumable": False,
+            "hint": hint or "The previous step may have executed; verify before retrying.",
         })
 
     async def resume_interrupted(self, session_id: str) -> bool:

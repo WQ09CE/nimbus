@@ -23,12 +23,14 @@ async def open_lease() -> str:
 
 
 @activity.defn
-async def lab_step(lease_id: str, k: int, sleep_s: float) -> dict:
+async def lab_step(lease_id: str, k: int, sleep_s: float, bloat: str = "") -> dict:
     """One Bash step in the lease (same command as the nimbus MockLLM rule);
     heartbeats every second while the command runs so a dead/frozen worker is
-    detected by heartbeat timeout, not by start-to-close."""
+    detected by heartbeat timeout, not by start-to-close. ``bloat`` (R4) adds K
+    bytes of noise to the step's output — the result payload lands in history."""
     info = activity.info()
-    cmd = f"sleep {sleep_s}; echo step-{k} >> lab_steps.txt; cat lab_steps.txt"
+    noise = f"base64 -w0 /dev/urandom | head -c {bloat}; echo; " if bloat else ""
+    cmd = f"sleep {sleep_s}; {noise}echo step-{k} >> lab_steps.txt; cat lab_steps.txt"
     req = {"call_id": f"{info.workflow_id}-{k}-a{info.attempt}", "command": cmd, "timeout_s": 60}
 
     async def beat():
@@ -49,5 +51,6 @@ async def lab_step(lease_id: str, k: int, sleep_s: float) -> dict:
                         result = json.loads(line)
     finally:
         hb.cancel()
-    return {"k": k, "worker": WORKER, "attempt": info.attempt,
-            "status": result.get("status"), "output": (result.get("output") or "").strip().replace("\n", ",")}
+    out = (result.get("output") or "").strip().replace("\n", ",")
+    return {"k": k, "worker": WORKER, "attempt": info.attempt, "status": result.get("status"),
+            "output": out if not bloat else f"<{len(out)} chars>", "raw": out if bloat else ""}

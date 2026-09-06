@@ -7,7 +7,7 @@ the same LLMClient interface (chat/start/stop). Activated via NIMBUS_LLM=mock.
 Rules (priority order):
 1. /^hello|hi|hey/i            -> text reply
 2. /echo\\s+(.+)/i             -> Bash tool_call
-   (lab: /lab steps N [sleep S]/ -> N sequential Bash steps, nimbus-lab drills)
+   (lab: /lab steps N [sleep S] [bloat K] [stall T]/ -> N sequential Bash steps, nimbus-lab drills)
 3. /read\\s+(.+)/i             -> Read tool_call
 4. /count\\s+to\\s+(\\d+)/i    -> multi-step counting (stateful via message history)
 5. /error/i                    -> error message
@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
@@ -268,21 +269,29 @@ class MockLLMAdapter:
     def _rule_lab_steps(
         self, text: str, messages: List[Dict[str, Any]]
     ) -> Optional[MockLLMResponse]:
-        """Lab rule: ``lab steps N [sleep S]`` -> N sequential Bash tool_calls.
+        """Lab rule: ``lab steps N [sleep S] [bloat K] [stall T]`` -> N sequential Bash tool_calls.
 
         Step k runs ``sleep S; <append step-k unless present>; cat lab_steps.txt``
         so a multi-step turn has controllable duration and leaves observable
         state in the (sandbox) workspace — the nimbus-lab fault-drill workload.
         Continuation = number of Bash tool results since the last user message;
         once N steps are answered the turn ends with ``LAB_DONE N``.
+
+        R4 knobs: ``bloat K`` makes every step also print K bytes of base64 noise
+        (tool-output ingest — the memory amplifier of the 0829/0903 incidents);
+        ``stall T`` blocks the event loop for T seconds inside each model call
+        (a sync pickle / GC pause stand-in: the pod is alive but cannot beat).
         """
         match = re.match(
-            r"lab\s+steps\s+(\d+)(?:\s+sleep\s+(\d+(?:\.\d+)?))?", text, re.IGNORECASE
+            r"lab\s+steps\s+(\d+)((?:\s+(?:sleep|bloat|stall)\s+\S+)*)", text, re.IGNORECASE
         )
         if not match:
             return None
         total = int(match.group(1))
-        sleep_s = match.group(2) or "0"
+        opts = dict(re.findall(r"(sleep|bloat|stall)\s+(\S+)", match.group(2), re.IGNORECASE))
+        opts = {k.lower(): v for k, v in opts.items()}
+        sleep_s = opts.get("sleep", "0")
+        bloat = f"base64 -w0 /dev/urandom | head -c {opts['bloat']}; echo; " if "bloat" in opts else ""
         done = 0
         for msg in reversed(messages):
             role = msg.get("role")
@@ -293,6 +302,8 @@ class MockLLMAdapter:
         if done >= total:
             return MockLLMResponse(_content=f"LAB_DONE {total}")
         k = done + 1
+        if "stall" in opts:
+            time.sleep(float(opts["stall"]))  # deliberately synchronous: stalls the event loop
         return MockLLMResponse(
             _content=f"Lab step {k}/{total}.",
             _tool_calls=[
@@ -300,7 +311,7 @@ class MockLLMAdapter:
                     "Bash",
                     # idempotent by construction: a rerun of step k is a no-op, so a
                     # 'keyed' declaration for this workload is truthful
-                    {"command": f"sleep {sleep_s}; grep -qx step-{k} lab_steps.txt 2>/dev/null || echo step-{k} >> lab_steps.txt; cat lab_steps.txt"},
+                    {"command": f"sleep {sleep_s}; {bloat}grep -qx step-{k} lab_steps.txt 2>/dev/null || echo step-{k} >> lab_steps.txt; cat lab_steps.txt"},
                 )
             ],
         )

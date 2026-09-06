@@ -21,7 +21,7 @@ class FakeLedger:
     def __init__(self):
         self.resolutions, self.epoch = [], 0
 
-    async def claim(self, session_id, request_id):
+    async def claim(self, session_id, request_id, fresh=True):
         self.epoch += 1
         return self.epoch
 
@@ -30,6 +30,9 @@ class FakeLedger:
 
     async def resolve(self, session_id, resolution):
         self.resolutions.append(resolution)
+
+    async def account(self, session_id, nbytes):
+        self.charged = getattr(self, "charged", []) + [(session_id, nbytes)]
 
 
 def _tc(i, name):
@@ -93,3 +96,55 @@ def test_own_pod_and_balanced_logs_are_skipped(manager, tmp_path):
         f.write(json.dumps({"seq": 1, "type": "turn/end", "time": 1.0, "data": {"turn": 1, "reason": {"kind": "completed"}}}) + "\n")
     asyncio.run(manager.on_orphan({"session_id": SID, "pod": "a", "request_id": "r"}))
     assert manager._ledger.resolutions[-1] == "skipped:balanced"
+
+
+def test_ingest_over_budget_is_quarantined_not_resumed(manager, tmp_path, monkeypatch):
+    """R4: the cost axis — a rerunnable in-flight call is not enough when the turn had already
+    pulled more than the budget into its (dead) pod; resuming would repeat the 0903 cascade."""
+    monkeypatch.setenv("NIMBUS_RESUME_INGEST_BUDGET_MB", "8")
+    set_repeat_resolver(lambda n: "keyed")
+    _crashed_session(tmp_path, "Write")
+    resumed = []
+    manager.resume_interrupted = lambda sid: resumed.append(sid) or asyncio.sleep(0)
+    asyncio.run(manager.on_orphan({"session_id": SID, "pod": "a", "request_id": "r",
+                                   "bytes": str(9 * 2**20), "owner_mem_pct": "81"}))
+    assert resumed == [] and manager._ledger.resolutions == ["quarantine:ingest=9MB"]
+    tail = [json.loads(line) for line in open(tmp_path / f"{SID}.jsonl")][-1]
+    assert tail["type"] == "turn/end" and tail["data"]["reason"]["kind"] == "interrupted"
+    asyncio.run(manager.on_orphan({"session_id": SID, "pod": "a", "request_id": "r", "bytes": str(7 * 2**20)}))
+    assert manager._ledger.resolutions[-1] == "skipped:balanced"  # already closed by the quarantine
+
+
+def test_ingest_is_metered_at_the_door_and_posted_past_the_flush_threshold(manager):
+    """R4: chunks are charged as they stream (once), the final result adds only the remainder,
+    and a turn past INGEST_FLUSH_BYTES posts to the ledger before any step seam."""
+    async def run():
+        manager._meter_ingest(SID, "c1", 600_000)
+        manager._meter_ingest(SID, "c1", 600_000)          # 1.2 MB streamed -> flush task scheduled
+        await asyncio.sleep(0)
+        manager._meter_ingest(SID, "c1", 1_500_000, final=True)  # raw is 1.5 MB: only +300 KB new
+        await manager._charge_ingest(SID)
+    asyncio.run(run())
+    assert manager._ledger.charged == [(SID, 1_200_000), (SID, 300_000)]
+    assert manager._streamed == {} and manager._ingest == {}
+
+
+def test_a_turn_that_lost_max_attempts_owners_is_quarantined(manager, tmp_path, monkeypatch):
+    """R4 stall drill: a poison turn (stalls / kills whoever runs it) bounces between pods, each
+    takeover a new epoch. Temporal stops at maximum_attempts; so does the ledger's admission."""
+    monkeypatch.setenv("NIMBUS_RESUME_MAX_ATTEMPTS", "3")
+    set_repeat_resolver(lambda n: "keyed")
+    _crashed_session(tmp_path, "Write")
+    resumed = []
+
+    async def fake_resume(sid):
+        resumed.append(sid)
+        return True
+
+    manager.resume_interrupted = fake_resume
+    asyncio.run(manager.on_orphan({"session_id": SID, "pod": "a", "request_id": "r", "epoch": "2"}))
+    assert resumed == [SID] and manager._ledger.resolutions == ["resume"]  # second owner lost: still resumed
+    asyncio.run(manager.on_orphan({"session_id": SID, "pod": "c", "request_id": "r", "epoch": "3"}))
+    assert resumed == [SID] and manager._ledger.resolutions[-1] == "quarantine:attempts=3"
+    tail = [json.loads(line) for line in open(tmp_path / f"{SID}.jsonl")][-1]
+    assert tail["type"] == "turn/end" and tail["data"]["reason"]["kind"] == "interrupted"

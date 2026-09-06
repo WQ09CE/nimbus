@@ -73,3 +73,32 @@ def test_resume_plan_excludes_once_in_flight_but_keeps_not_started():
 def test_resume_plan_is_empty_for_a_completed_turn():
     events = _crashed_log() + [SessionEvent(seq=4, type="turn/end", time=1.0, data={"turn": 1, "reason": {"kind": "completed"}})]
     assert resumable_calls(events) == []
+
+
+def test_replayed_result_replaces_its_placeholder_in_the_projection():
+    """Second-generation resume (nimbus-lab R4): the surface rebuilt from the log must hold ONE
+    result per call id — the replay's real result in place of the synthetic placeholder —
+    otherwise the next taking-over pod (and a strict provider) sees a duplicate tool_call_id."""
+    from nimbus.core.session_log import SessionEvent, check_invariants, derive_state
+
+    tc = {"id": "c7", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}
+    raw = [
+        ("user/message", {"message": {"role": "user", "content": "go"}}),
+        ("turn/start", {"turn": 1}),
+        ("step/start", {"turn": 1, "step": 1}),
+        ("assistant/message", {"message": {"role": "assistant", "content": "", "tool_calls": [tc]}}),
+        ("tool/result", {"message": {"role": "tool", "content": "[TOOL_RESUMABLE] crashed", "name": "Bash", "tool_call_id": "c7"},
+                         "synthetic": True, "code": "TOOL_RESUMABLE"}),
+        ("step/end", {"turn": 1, "step": 1, "synthetic": True}),
+        ("turn/end", {"turn": 1, "reason": {"kind": "interrupted"}, "synthetic": True}),
+        ("turn/start", {"turn": 2, "continues": 1}),
+        ("step/start", {"turn": 2, "step": 1, "resume_replay": True}),
+        ("tool/result", {"message": {"role": "tool", "content": "step-7", "name": "Bash", "tool_call_id": "c7"},
+                         "resumed": True, "replaces_seq": 4, "graded": "TOOL_RESUMABLE"}),
+        ("step/end", {"turn": 2, "step": 1, "resume_replay": True}),
+        ("turn/end", {"turn": 2, "reason": {"kind": "completed"}}),
+    ]
+    events = [SessionEvent(seq=i, type=t, time=1.0, data=d) for i, (t, d) in enumerate(raw)]
+    tools = [m for m in derive_state(events)["messages"] if m.get("role") == "tool"]
+    assert [m["tool_call_id"] for m in tools] == ["c7"] and tools[0]["content"] == "step-7"
+    assert check_invariants(events) == []

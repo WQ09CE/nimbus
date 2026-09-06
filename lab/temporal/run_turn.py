@@ -1,5 +1,5 @@
 """Temporal arm — start a lab turn and trace its progress (worker + attempt per step).
-usage: run_turn.py [STEPS=5] [SLEEP=3]"""
+usage: run_turn.py [STEPS=5] [SLEEP=3] [BLOAT=]   (BLOAT e.g. 12M: R4 payload-size drill)"""
 
 import asyncio
 import os
@@ -12,10 +12,10 @@ from temporalio.client import Client, WorkflowExecutionStatus  # noqa: E402
 from workflows import LabTurn  # noqa: E402
 
 
-async def main(steps: int, sleep_s: float) -> None:
+async def main(steps: int, sleep_s: float, bloat: str = "") -> None:
     client = await Client.connect(os.environ.get("TEMPORAL_ADDRESS", "127.0.0.1:7233"))
     wid = f"lab-turn-{int(time.time())}"
-    handle = await client.start_workflow(LabTurn.run, args=[steps, sleep_s], id=wid, task_queue="nimbus-lab")
+    handle = await client.start_workflow(LabTurn.run, args=[steps, sleep_s, 15.0, 3, bloat], id=wid, task_queue="nimbus-lab")
     print(f"workflow {wid}", flush=True)
     t0, seen, blind_since = time.monotonic(), 0, None
     while True:
@@ -42,8 +42,13 @@ async def main(steps: int, sleep_s: float) -> None:
         res = await handle.result()
         print(f"  result: {res['done']} in {time.monotonic() - t0:.2f}s (lease {res['lease']})", flush=True)
     except Exception as e:
+        cause = getattr(e, "cause", None)
         print(f"  workflow ended without result: {type(e).__name__}: {str(e)[:200]}", flush=True)
+        while cause is not None:
+            print(f"    cause: {type(cause).__name__}: {str(cause)[:300]}", flush=True)
+            cause = getattr(cause, "cause", None)
 
 
 if __name__ == "__main__":
-    asyncio.run(main(int(sys.argv[1]) if len(sys.argv) > 1 else 5, float(sys.argv[2]) if len(sys.argv) > 2 else 3.0))
+    asyncio.run(main(int(sys.argv[1]) if len(sys.argv) > 1 else 5, float(sys.argv[2]) if len(sys.argv) > 2 else 3.0,
+                     sys.argv[3] if len(sys.argv) > 3 else ""))

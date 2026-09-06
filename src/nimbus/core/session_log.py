@@ -336,7 +336,21 @@ def derive_state(events: List[SessionEvent]) -> Dict[str, Any]:
             summary = event.data.get("summary", "")
             plan = event.data.get("plan", "")
         elif event.type in ("user/message", "assistant/message", "tool/result"):
-            surface.append(event.data["message"])
+            msg = event.data["message"]
+            if event.type == "tool/result" and event.data.get("replaces_seq") is not None:
+                # Interrupted-turn resume: the re-executed call's real result replaces
+                # the synthetic placeholder logged for the same call id — the surface
+                # must hold one result per call, or the next resume (and a strict
+                # provider) sees a duplicate tool_call_id.
+                cid = msg.get("tool_call_id")
+                for i in range(len(surface) - 1, -1, -1):
+                    if surface[i].get("role") == "tool" and surface[i].get("tool_call_id") == cid:
+                        surface[i] = msg
+                        break
+                else:
+                    surface.append(msg)
+            else:
+                surface.append(msg)
         elif event.type == "compaction/applied":
             kept_indices = event.data.get("kept_indices")
             if kept_indices is None:
@@ -432,7 +446,7 @@ def check_invariants(events: List[SessionEvent], allow_open_tail: bool = False) 
                     pending_call_ids.add(tc["id"])
         elif t == "tool/result":
             call_id = event.data.get("message", {}).get("tool_call_id")
-            if call_id and call_id not in pending_call_ids:
+            if call_id and call_id not in pending_call_ids and event.data.get("replaces_seq") is None:
                 violations.append(f"seq {event.seq}: tool/result for unknown call id {call_id!r}")
             pending_call_ids.discard(call_id)
 

@@ -6,7 +6,7 @@
   labctl ledger [reset | dump SID]      Valkey ledger: pods, owners+epoch, orphans, rejected writes; dump = session stream
   labctl workers up|down|status         Temporal-arm workers (lab-temporal-worker@a, @b)
   labctl kill|term|freeze|thaw POD      SIGKILL / SIGTERM / SIGSTOP / SIGCONT the pod cgroup (POD = a|b|worker-a|worker-b)
-  labctl mem POD MAX                    set MemoryMax (e.g. 300M) on the pod unit (runtime)
+  labctl mem POD MAX                    set MemoryMax (e.g. 300M) + MemorySwapMax=0 on the pod unit (runtime); infinity resets
   labctl allow POD                      allow_always Bash/Write/Edit on POD (done automatically by pods up / turn)
   labctl llm POD mock|real              switch the pod's LLM rail (MockLLM vs pi-codex/gpt-5.6-luna via sidecar) + restart
   labctl repeat once|keyed|free         lab knob: repeat class override for Bash on both pods (+restart) — resume admission drills
@@ -75,7 +75,11 @@ def cmd_workers(action):
         else: print(f"worker-{w:2} {sc('is-active', u).stdout.strip():9} pid={sc('show', '-p', 'MainPID', '--value', u).stdout.strip()}")
 
 def cmd_mem(pod, mx):
-    r = sc("set-property", "--runtime", unit_for(pod), f"MemoryMax={mx}"); print(pod, "MemoryMax", mx, "ok" if r.returncode == 0 else r.stderr.strip())
+    """MemoryMax on the pod unit. A limit also sets MemorySwapMax=0 (the k8s shape: no swap, so the
+    limit ends in the OOM killer instead of a swap-thrash plateau); 'infinity' resets both."""
+    swap = "infinity" if mx == "infinity" else "0"
+    r = sc("set-property", "--runtime", unit_for(pod), f"MemoryMax={mx}", f"MemorySwapMax={swap}")
+    print(pod, "MemoryMax", mx, "MemorySwapMax", swap, "ok" if r.returncode == 0 else r.stderr.strip())
 
 def cmd_llm(pod, rail):
     """Flip a pod between the deterministic MockLLM rail and the real pi-codex rail, then restart it."""

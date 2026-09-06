@@ -18,11 +18,13 @@ Infra: `./up.sh` · `./status.sh` · `./down.sh` (data under `~/.local/share/nim
 1. Death morphology: kill -9 / SIGSTOP / SIGTERM — who notices, how fast, who takes over, what is lost.
 2. Zombie writer + fencing: freeze pod-a mid-turn, pod-b takes over, SIGCONT a → epoch at the single write point (XADD).
 3. Consistency cut + sandbox ownership: layer-3 binding moved from PAUSE to dirty step seams; crash-path restore.
-4. Memory/CPU: MemoryMax OOMKill, event-loop stalls, precursors (PSI / GC / late heartbeats) with memray + py-spy.
+4. Memory/CPU: MemoryMax OOMKill with a victim and a suspect turn on one pod, rescue cascade, same-name restart,
+   event-loop stalls (false death, takeover storm), precursors (cgroup PSI / GC / late heartbeats) via the probe.
 5. Mixed-version rolling handoff vs Temporal worker versioning.
 
 Retrofits land per round, never up front: Valkey Streams log store + orphan scanner (R1),
-ownership ledger + epoch check (R2), first-tier resume + binding at dirty seams (R3).
+ownership ledger + epoch check (R2), first-tier resume + binding at dirty seams (R3), incarnations +
+per-epoch orphans + ingest/attempts admission + heartbeat facts (R4).
 
 ## Console
 
@@ -30,14 +32,18 @@ ownership ledger + epoch check (R2), first-tier resume + binding at dirty seams 
 ./lab/labctl.py pods up|down|status          pods (auto allow_always Bash/Write/Edit — rules are per process)
 ./lab/labctl.py turn a "lab steps 3 sleep 1" deterministic N-step Bash turn via MockLLM, prints the SSE trace
 ./lab/labctl.py kill|term|freeze|thaw a      SIGKILL / SIGTERM / SIGSTOP / SIGCONT the pod's cgroup
-./lab/labctl.py mem a 300M                   MemoryMax on the pod unit (runtime property)
+./lab/labctl.py mem a 300M                   MemoryMax + MemorySwapMax=0 on the pod unit (runtime; `infinity` resets)
+./lab/probe.py --tag NAME --pods a,b         1 Hz sampler: cgroup mem/peak/swap/oom_kill, PSI, heartbeat age + pod facts, /health ms
 ./lab/labctl.py vc health|recycle|chaos '{"fail_next":2}'
 ./lab/labctl.py perms a | respond a REQ allow_once|deny
 ```
 
-Workload: MockLLM rule `lab steps N [sleep S]` → N sequential Bash calls
+Workload: MockLLM rule `lab steps N [sleep S] [bloat K] [stall T]` → N sequential Bash calls
 (`sleep S; echo step-k >> lab_steps.txt; cat lab_steps.txt`) in the vcompute lease
-(isolated form, `NIMBUS_VCOMPUTE_MOUNT=0`), then `LAB_DONE N`. Session logs (shared
+(isolated form, `NIMBUS_VCOMPUTE_MOUNT=0`), then `LAB_DONE N`; `bloat K` adds K bytes of base64 noise
+to every step's output (the 0829/0903 ingest amplifier), `stall T` blocks the pod's event loop for T s
+inside each model call (sync pickle / GC stand-in). A turn is at most 8 Bash steps: the loop's same-tool
+streak guard nudges the model after 8 and the mock then ends the turn. Session logs (shared
 by both pods): `~/.local/share/nimbus-lab/sessions/`; lease workspaces:
 `~/.local/share/nimbus-lab/vcompute/leases/`.
 
@@ -129,3 +135,43 @@ the consumer's `ack_pending` / `redelivered`. Measured: every message routed to 
 sat for one full `ack_wait` (15 s) before redelivery; with two members and random routing the
 slowest message needed two cycles (~29 s). The bound is the ack timeout — a broker without one
 (or a client that never pings) holds them until the frozen process dies.
+
+## R4 — memory / CPU: OOM collateral, rescue cascade, same-name restart, stalls
+
+The 0903 shape on one pod pair (`lab/drills/r4-oom.sh [MemoryMax] [bloat]`): pod-a runs a **victim**
+(plain steps) and a **suspect** (`bloat 12M` steps) under `MemoryMax=230M`. Measured before the retrofit:
+the suspect's step-2 result spike (~45 MB transient for a 12 MB output: chunks + join + JSON + SSE copies)
+OOM-kills pod-a at t+7 s — no precursor at 1 Hz, the kill is inside one step; pod-b's scanner resumes BOTH
+turns at t+22 s and dies of the suspect's replay 5 s later (the rescuer dies of the rescued; the victim
+dies a second time mid-turn); restarting both pods under the same ids hid everything: the successor's
+heartbeat made the predecessor's turns look owned-and-alive, and the once-per-session orphan record
+(HSETNX) could not even register the second death. Also: without `MemorySwapMax=0` the limit is a
+swap-thrash plateau (peak pinned at the limit, PSI up, /health 100 ms, steps 15 s) rather than a kill.
+
+Retrofit:
+- **Incarnation** — `Ledger.inc` per process; a turn's owner is alive iff `pod:{id}` exists with the
+  same `inc`; a successor under the same pod id exposes its predecessor's turns at once (no grace).
+- **Orphans once per epoch** (`orphan:{sid}` field `e{epoch}`) — a turn whose rescuer dies is an orphan again.
+- **Heartbeat facts** — `rss_mb`, cgroup `mem_pct`, event-loop `lag_ms` (a late heartbeat confesses the stall
+  it could not report), longest gen-2 `gc2_ms`, `prev_oom_kills` (the successor reads its cgroup's
+  `memory.events`); kept in `podlast:{id}` without expiry as the pod's last words.
+- **Ingest per turn** (`turn:{sid}.bytes`) metered **at the door** — as tool output streams in, posted past
+  1 MiB — not at the step seam: a pod that dies of a result never reaches the seam (first attempt charged
+  at seams read 0 for the suspect).
+- **Admission gains two budgets** next to the repeat class: `NIMBUS_RESUME_INGEST_BUDGET_MB` (default 8; over
+  it → `interrupted reason=oom_suspect`) and `NIMBUS_RESUME_MAX_ATTEMPTS` (default 3, Temporal's
+  `maximum_attempts`; over it → `reason=max_attempts`).
+- **Projection honors `replaces_seq`** — a second-generation resume rebuilt the surface from the log with
+  both the synthetic placeholder and the replay's result for one call id (the mock skipped a step; a strict
+  provider would reject the duplicate tool_call_id).
+
+Measured after: pod-a dies at t+7 s as before; at t+22 s pod-b resumes the victim (45 B ingested) and
+quarantines the suspect (12 MB, `oom_suspect`, hint names the pod and its last memory %); the victim
+finishes on pod-b at t+35 s; pod-b lives. Same-name restart (`r4-restart.sh`): kill -9 pod-b at t+7, start it
+again 2 s later → pod-a resumes the turn 12 s after the restart (previously never). Stall (`r4-stall.sh 20|30`):
+a 20 s stall is a coin flip for the 10 s scanner (5 s dead window) — caught once (takeover, the woken pod's
+flush rejected, client told OWNERSHIP_LOST), missed once (turn completes, each heartbeat afterwards carries
+`lag_ms≈16000`); a 30 s stall on a turn that stalls every owner produced a takeover storm (18 epochs in
+340 s, 16 rejected writes, 8 OWNERSHIP_LOST per client) until `max_attempts` closed it at epoch 3.
+Temporal column: a 12 MB step result is refused by the server at once — `PayloadsTooLarge [TMPRL1103]`,
+workflow failed, nothing retried (`lab/temporal/run_turn.py 3 1 12M`): the size budget is in the contract.
