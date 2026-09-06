@@ -148,3 +148,21 @@ def test_a_turn_that_lost_max_attempts_owners_is_quarantined(manager, tmp_path, 
     assert resumed == [SID] and manager._ledger.resolutions[-1] == "quarantine:attempts=3"
     tail = [json.loads(line) for line in open(tmp_path / f"{SID}.jsonl")][-1]
     assert tail["type"] == "turn/end" and tail["data"]["reason"]["kind"] == "interrupted"
+
+
+def test_binding_written_at_a_seam_reaches_the_running_loops_metadata(manager, tmp_path):
+    """R5 rolling-deploy drill: a handed-off turn finished on the new pod and the completion
+    core dump (loop metadata captured at run start) put the OLD pod's pause binding back."""
+    SessionStorage(str(tmp_path)).save_session(SID, "active", messages=[], vcpu_state={},
+                                               metadata={"sandbox_binding": {"snapshot_id": "old", "lease_id": "l0"}})
+
+    class FakeLoop:
+        metadata = {"sandbox_binding": {"snapshot_id": "old", "lease_id": "l0"}, "llm_config": {}}
+
+    manager._active_loops[SID] = FakeLoop()
+    new = {"backend": "vcompute", "snapshot_id": "new", "lease_id": "l1"}
+    asyncio.run(manager._save_sandbox_binding(SID, new))
+    assert FakeLoop.metadata["sandbox_binding"] == new
+    assert manager._storage.load_session(SID)["metadata"]["sandbox_binding"] == new
+    asyncio.run(manager._save_sandbox_binding(SID, None))
+    assert "sandbox_binding" not in FakeLoop.metadata

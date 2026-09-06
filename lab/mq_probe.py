@@ -1,7 +1,7 @@
 """NATS JetStream probe for the frozen-consumer drill: publish N handoff-shaped
 messages (session ids that no pod holds, so consumers just ack) and print the
 consumer's ack_pending / redelivered counters over time.
-usage: mq_probe.py publish N | mq_probe.py watch SECONDS"""
+usage: mq_probe.py publish N | mq_probe.py watch SECONDS | mq_probe.py purge"""
 
 import asyncio
 import json
@@ -21,6 +21,15 @@ async def publish(n: int) -> None:
     for i in range(n):
         await bus.announce(f"probe-{int(time.time())}-{i}", reason="mq_probe")
     await bus.close()
+
+
+async def purge() -> None:
+    """Drop every message still in the handoff stream (stale announcements from earlier drills)."""
+    bus = HandoffBus(os.environ.get("NIMBUS_HANDOFF_URL", "nats://127.0.0.1:4222"), pod_id="probe")
+    await bus.connect()
+    await bus._js.purge_stream(STREAM)
+    await bus.close()
+    print("purged", STREAM)
 
 
 def consumer_state() -> dict:
@@ -51,5 +60,7 @@ def watch(seconds: float) -> None:
 if __name__ == "__main__":
     if sys.argv[1:2] == ["publish"]:
         asyncio.run(publish(int(sys.argv[2]) if len(sys.argv) > 2 else 4))
+    elif sys.argv[1:2] == ["purge"]:
+        asyncio.run(purge())
     else:
         watch(float(sys.argv[2]) if len(sys.argv) > 2 else 30)

@@ -81,6 +81,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ledger_url,
             pod_id=os.environ.get("NIMBUS_POD_ID") or f"pid-{os.getpid()}",
             port=int(os.environ.get("NIMBUS_PORT", "0") or 0),
+            generation=int(os.environ.get("NIMBUS_GENERATION", "0") or 0),
         )
         await ledger.start()
     session_manager = SessionManagerV2(
@@ -105,6 +106,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.warning("graceful shutdown: handed off %d session(s)", len(paused))
 
         GRACEFUL_HOOKS.append(_graceful)
+        if ledger is not None:
+            # R5: a newer deploy generation is alive → leave the handoff queue group so
+            # announcements land on pods that will outlive the rollout.
+            async def _superseded() -> None:
+                await handoff.stop_consuming()
+                logger.warning("superseded by a newer generation: left the handoff queue group")
+
+            ledger.on_superseded = _superseded
+            if ledger.superseded:
+                await _superseded()
     app.state.handoff = handoff
 
     # Set up log hub for real-time log streaming

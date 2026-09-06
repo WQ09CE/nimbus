@@ -20,7 +20,8 @@ Infra: `./up.sh` · `./status.sh` · `./down.sh` (data under `~/.local/share/nim
 3. Consistency cut + sandbox ownership: layer-3 binding moved from PAUSE to dirty step seams; crash-path restore.
 4. Memory/CPU: MemoryMax OOMKill with a victim and a suspect turn on one pod, rescue cascade, same-name restart,
    event-loop stalls (false death, takeover storm), precursors (cgroup PSI / GC / late heartbeats) via the probe.
-5. Mixed-version rolling handoff vs Temporal worker versioning.
+5. Rolling deploy under load (new pod ids replace old ones, surge vs unavailable), deploy generations vs
+   Temporal worker versioning; then schema skew between generations (R5.2).
 
 Retrofits land per round, never up front: Valkey Streams log store + orphan scanner (R1),
 ownership ledger + epoch check (R2), first-tier resume + binding at dirty seams (R3), incarnations +
@@ -29,7 +30,8 @@ per-epoch orphans + ingest/attempts admission + heartbeat facts (R4).
 ## Console
 
 ```
-./lab/labctl.py pods up|down|status          pods (auto allow_always Bash/Write/Edit — rules are per process)
+./lab/labctl.py pods up|down|status [a b ..] pods a–f (auto allow_always Bash/Write/Edit — rules are per process)
+./lab/load.py start|report --tag T           N sessions over a pod list, SSE captured; report = per-session owners/hops/outcome
 ./lab/labctl.py turn a "lab steps 3 sleep 1" deterministic N-step Bash turn via MockLLM, prints the SSE trace
 ./lab/labctl.py kill|term|freeze|thaw a      SIGKILL / SIGTERM / SIGSTOP / SIGCONT the pod's cgroup
 ./lab/labctl.py mem a 300M                   MemoryMax + MemorySwapMax=0 on the pod unit (runtime; `infinity` resets)
@@ -175,3 +177,43 @@ flush rejected, client told OWNERSHIP_LOST), missed once (turn completes, each h
 340 s, 16 rejected writes, 8 OWNERSHIP_LOST per client) until `max_attempts` closed it at epoch 3.
 Temporal column: a 12 MB step result is refused by the server at once — `PayloadsTooLarge [TMPRL1103]`,
 workflow failed, nothing retried (`lab/temporal/run_turn.py 3 1 12M`): the size budget is in the contract.
+
+## R5.1 — rolling deploy under load: new pod ids, surge vs unavailable, deploy generations
+
+`lab/drills/r5-deploy.sh surge|unavailable`: 20 sessions (7-step turns, 8 s per step) across pods a,b,c;
+the rollout replaces them with d,e,f one at a time (10 s gaps) — names change, old ids never return (k8s
+Deployment shape). `lab/load.py` drives the sessions and reports, per session, the ledger's claim history
+(`turn:{sid}.owners`, "pod/epoch …"), turns, results/replays, end reasons, the bound workspace's steps and the
+outcome; plus takeovers per pod, scanner-fallback use and the NATS consumer counters.
+
+Measured before the retrofit (all 20 completed both times, every takeover via NATS, scanner fallback 0,
+rejected writes 0; an old pod leaves 2–10 s after SIGTERM — the pause waits for the step seam):
+
+| mode | handed off | takeovers (extra hops) | first hop landed on an old pod | slowest session |
+|---|---|---|---|---|
+| surge (new up, then old term) | 14 | 20 (6) | 9 of 14 | 75.6 s vs 65–67 s untouched (8-step turns) |
+| unavailable (old term, then new up) | 17 | 28 (11), one session had 4 owners | 15 of 17 | 67.3 s vs 56.6 s |
+
+The queue group routes each announcement to a random member; during a rollout most members are the pods
+about to be terminated, so a session pauses, restores and pauses again (~+8–10 s per extra hop). Found on
+the way: the completion core dump (loop metadata captured at run start) put the old pod's pause binding
+back over the seam bindings the new pod had written — a crash in the next turn would have restored a stale
+workspace. Fixed (`_save_sandbox_binding` keeps the running loop's metadata in step; test in
+`tests/test_orphan_admission.py`).
+
+Retrofit — **deploy generations** (`NIMBUS_GENERATION`, heartbeat fact `gen`): once a live pod of a newer
+generation beats, an older pod is *superseded* — it leaves the handoff queue group and stops scanning for
+orphans; it finishes what it has and hands it off on SIGTERM (`Ledger._check_generation`, hook wired in
+`server/app.py`). This is what Temporal's worker versioning does with build ids: old builds only drain.
+
+| mode | takeovers (extra hops) | slowest session |
+|---|---|---|
+| surge, gen 1 → 2 | 14 (0): every handoff went to d or e exactly once | 59.2 s vs 56.6–58.9 s |
+| unavailable, gen 1 → 2 | 24 (7): only a's 7 sessions hopped twice — no gen-2 pod existed when a died | 66.7 s for those, 58.6–59.3 s for the rest |
+
+The remaining double hop is inherent to maxUnavailable: the first batch's announcements have no new-generation
+consumer yet. The alternative is for the rollout to announce its intent first (old pods leave the group before
+the first SIGTERM; announcements wait in JetStream until a gen-2 pod appears — visible as `pending > 0`),
+trading the extra hop for a resume delayed until the new pod is up. Not implemented; a policy choice.
+Client side: the old pod's SSE client saw `paused` + `done PAUSED` and had to reattach to the new pod — the
+stream does not follow the session.

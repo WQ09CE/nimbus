@@ -10,9 +10,10 @@ Keys (Valkey / Redis, all under one logical namespace):
                            a pod is alive iff the key exists AND its inc(arnation) is the one that claimed the turn
   podlast:{pod}            the same hash without expiry — the pod's last words, readable after it died
   pods                     set of pod ids ever seen
-  turn:{session}           hash {epoch, pod, inc, request_id, started, bytes}  EX owner_ttl   who owns the running
-                           turn; epoch is monotonic and never reset — the fence token for every log write;
-                           bytes = tool output the turn has ingested into the owner process (R4)
+  turn:{session}           hash {epoch, pod, inc, request_id, started, bytes, owners}  EX owner_ttl   who owns the
+                           running turn; epoch is monotonic and never reset — the fence token for every log write;
+                           bytes = tool output the turn has ingested into the owner process (R4);
+                           owners = "pod/epoch ..." history of every claim (R5: who ran this turn, in order)
   orphan:{session}         hash {pod, inc, epoch, request_id, detected, detected_by, bytes, owner_mem_pct,
                            resolution}  recorded once PER EPOCH (field e{epoch}): a turn whose rescuer dies
                            is an orphan again
@@ -51,6 +52,7 @@ class Ledger:
         scan_s: float = 10.0,
         owner_ttl_s: int = 1800,
         client: Any = None,
+        generation: int = 0,
     ):
         self.url = url
         self.pod_id = pod_id
@@ -66,6 +68,13 @@ class Ledger:
         self._gc2_ms = 0.0    # longest gen-2 GC pause since the last heartbeat
         self._gc_t0: Optional[float] = None
         self.prev_oom_kills = 0  # our cgroup's oom_kill count at start: the predecessor's cause of death
+        # R5: deploy generation (build id). Once a live pod of a newer generation beats, this
+        # pod is superseded: it finishes what it has but takes no new work — no handoff
+        # consumption, no orphan scanning (Temporal worker versioning: old builds only
+        # drain their pinned workflows).
+        self.generation = generation
+        self.superseded = False
+        self.on_superseded = None
         # Called with each newly recorded orphan {session_id, pod, request_id, ...};
         # the owner (SessionManagerV2) decides: resume here, or fast-fail.
         self.on_orphan = None
@@ -149,8 +158,8 @@ class Ledger:
         RSS, cgroup memory %, event-loop lag, longest gen-2 GC pause, prior OOM kills."""
         cg = _cgroup_mem()
         cur, mx = cg.get("current"), cg.get("max")
-        f = {"inc": self.inc, "rss_mb": f"{_rss_mb():.1f}", "lag_ms": f"{self._lag_ms:.0f}",
-             "gc2_ms": f"{self._gc2_ms:.0f}", "prev_oom_kills": str(self.prev_oom_kills)}
+        f = {"inc": self.inc, "gen": str(self.generation), "rss_mb": f"{_rss_mb():.1f}",
+             "lag_ms": f"{self._lag_ms:.0f}", "gc2_ms": f"{self._gc2_ms:.0f}", "prev_oom_kills": str(self.prev_oom_kills)}
         if cur is not None and mx:
             f["mem_pct"] = f"{100.0 * cur / mx:.0f}"
         self._gc2_ms = 0.0
@@ -163,6 +172,24 @@ class Ledger:
         await self._r.expire(key, int(self.dead_after_s))
         await self._r.hset(f"podlast:{self.pod_id}", mapping=mapping)  # last words survive the expiry
         await self._r.sadd("pods", self.pod_id)
+        if not self.superseded:
+            await self._check_generation()
+
+    async def _check_generation(self) -> None:
+        for pod in await self._r.smembers("pods"):
+            if pod == self.pod_id:
+                continue
+            h = await self._r.hgetall(f"pod:{pod}")
+            if h and int(h.get("gen", "0") or 0) > self.generation:
+                self.superseded = True
+                logger.warning("ledger pod=%s gen=%s superseded by pod=%s gen=%s: no new work from here on",
+                               self.pod_id, self.generation, pod, h.get("gen"))
+                if self.on_superseded is not None:
+                    try:
+                        await self.on_superseded()
+                    except Exception as e:
+                        logger.warning("on_superseded failed: %s", e)
+                return
 
     # -- ownership (record only) -----------------------------------------
 
@@ -170,7 +197,9 @@ class Ledger:
     # is never deleted), so a writer holding an older epoch can always be told apart.
     _CLAIM = """
 local e = redis.call('HINCRBY', KEYS[1], 'epoch', 1)
-redis.call('HSET', KEYS[1], 'pod', ARGV[1], 'request_id', ARGV[2], 'started', ARGV[3], 'inc', ARGV[5])
+local o = redis.call('HGET', KEYS[1], 'owners')
+redis.call('HSET', KEYS[1], 'pod', ARGV[1], 'request_id', ARGV[2], 'started', ARGV[3], 'inc', ARGV[5],
+           'owners', (o or '') .. ARGV[1] .. '/' .. e .. ' ')
 if ARGV[6] == '1' then redis.call('HSET', KEYS[1], 'bytes', '0') end
 redis.call('EXPIRE', KEYS[1], ARGV[4])
 return e
@@ -205,6 +234,8 @@ return e
 
     async def scan_once(self) -> List[Dict[str, Any]]:
         found: List[Dict[str, Any]] = []
+        if self.superseded:
+            return found  # a newer generation is alive: orphans are its work, not ours
         async for key in self._r.scan_iter(match="turn:*"):
             session_id = key.split(":", 1)[1]
             owner = await self._r.hgetall(key)
@@ -258,7 +289,7 @@ return e
             h = await self._r.hgetall(f"pod:{pod}")
             last = h or await self._r.hgetall(f"podlast:{pod}")
             pods[pod] = {"alive": bool(h), "age_s": round(now - float(last["last"]), 1) if last else None,
-                         **{k: last[k] for k in ("inc", "rss_mb", "mem_pct", "lag_ms", "gc2_ms", "prev_oom_kills") if k in last}}
+                         **{k: last[k] for k in ("inc", "gen", "rss_mb", "mem_pct", "lag_ms", "gc2_ms", "prev_oom_kills") if k in last}}
         turns = {k.split(":", 1)[1]: await self._r.hgetall(k) async for k in self._r.scan_iter(match="turn:*")}
         orphans = {k.split(":", 1)[1]: await self._r.hgetall(k) async for k in self._r.scan_iter(match="orphan:*")}
         return {"pods": pods, "turns": turns, "orphans": orphans,

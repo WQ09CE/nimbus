@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """nimbus-lab control: pods, vcompute, faults, turns. stdlib only.
 
-  labctl pods up|down|status            start/stop pod units (lab-nimbus@a, @b)
+  labctl pods up|down|status [POD...]   start/stop pod units (lab-nimbus@a..f; default: every pods/*.env)
   labctl vc recycle | vc chaos '{json}' vcompute: drop all leases / set chaos knobs
   labctl ledger [reset | dump SID]      Valkey ledger: pods, owners+epoch, orphans, rejected writes; dump = session stream
   labctl workers up|down|status         Temporal-arm workers (lab-temporal-worker@a, @b)
@@ -47,16 +47,18 @@ def http(method, url, body=None, timeout=10):
 
 def pods(): return sorted(p.stem for p in (LAB / "pods").glob("*.env"))
 
-def cmd_pods(action):
+def cmd_pods(action, names=None):
+    chosen = names or pods()
     if action == "up":
-        for p in pods():
+        for p in chosen:
+            (Path.home() / ".local/share/nimbus-lab/pods" / p).mkdir(parents=True, exist_ok=True)
             ok = sc("start", UNIT.format(p)).returncode == 0 and wait_health(p)
             print(p, "started" if ok else "FAILED")
             if ok: cmd_allow(p)
     elif action == "down":
-        for p in pods(): sc("stop", UNIT.format(p)); print(p, "stopped")
+        for p in chosen: sc("stop", UNIT.format(p)); print(p, "stopped")
     else:
-        for p in pods():
+        for p in chosen:
             act = sc("is-active", UNIT.format(p)).stdout.strip()
             pid = sc("show", "-p", "MainPID", "--value", UNIT.format(p)).stdout.strip()
             try: h = http("GET", base(p) + "/health", timeout=2)
@@ -108,6 +110,7 @@ def cmd_repeat(cls):
         lines = [l for l in f.read_text().splitlines() if not l.startswith("NIMBUS_REPEAT_OVERRIDE=")]
         if cls != "once": lines.append(f"NIMBUS_REPEAT_OVERRIDE=Bash={cls}")
         f.write_text("\n".join(lines) + "\n")
+        if sc("is-active", UNIT.format(pod)).stdout.strip() != "active": continue  # env only; not part of the fleet now
         sc("restart", UNIT.format(pod)); ok = wait_health(pod)
         print(pod, "Bash repeat =", cls, "(restarted)" if ok else "(restart FAILED)")
         if ok: cmd_allow(pod)
@@ -168,7 +171,7 @@ def cmd_turn(pod, prompt, session=None, timeout=120):
 def main(a):
     if not a or a[0] in ("-h", "--help"): print(__doc__); return
     c = a[0]
-    if c == "pods": cmd_pods(a[1] if len(a) > 1 else "status")
+    if c == "pods": cmd_pods(a[1] if len(a) > 1 else "status", a[2:] or None)
     elif c == "workers": cmd_workers(a[1] if len(a) > 1 else "status")
     elif c in ("kill", "term", "freeze", "thaw"):
         cmd_signal({"kill": "SIGKILL", "term": "SIGTERM", "freeze": "SIGSTOP", "thaw": "SIGCONT"}[c], a[1])

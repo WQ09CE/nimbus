@@ -1174,6 +1174,16 @@ class SessionManagerV2:
         self, session_id: str, binding: Optional[Dict[str, Any]],
     ) -> None:
         """Persist (or clear) the layer-3 binding in session metadata."""
+        # The running loop dumps ITS metadata (captured at run start) on every
+        # core dump; keep it in step or the completion dump restores the binding
+        # the run started with (R5: a handed-off turn finished on the new pod
+        # with the old pod's pause snapshot still bound).
+        loop = self._active_loops.get(session_id)
+        if loop is not None and isinstance(getattr(loop, "metadata", None), dict):
+            if binding is None:
+                loop.metadata.pop("sandbox_binding", None)
+            else:
+                loop.metadata["sandbox_binding"] = binding
         async with self._lock:
             dump = self._storage.load_session(session_id)
             if not dump:

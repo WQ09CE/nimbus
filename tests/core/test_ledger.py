@@ -72,7 +72,8 @@ class FakeRedis:
         key, pod, req, started, ttl, inc, fresh = args
         d = self.h.setdefault(key, {})
         d["epoch"] = str(int(d.get("epoch", "0")) + 1)
-        d.update({"pod": pod, "request_id": req, "started": started, "inc": inc})
+        d.update({"pod": pod, "request_id": req, "started": started, "inc": inc,
+                  "owners": d.get("owners", "") + f"{pod}/{d['epoch']} "})
         if fresh == "1":
             d["bytes"] = "0"
         self.exp[key] = self.now + int(ttl)
@@ -210,6 +211,7 @@ def test_ingest_is_charged_per_turn_and_kept_across_a_takeover(fake):
     assert asyncio.run(fake.hgetall("turn:s1"))["bytes"] == str(8 * 2**20)
     asyncio.run(b.claim("s1", "r3"))                 # a new user turn starts from zero
     assert asyncio.run(fake.hgetall("turn:s1"))["bytes"] == "0"
+    assert asyncio.run(fake.hgetall("turn:s1"))["owners"] == "a/1 b/2 b/3 "  # claim history (R5)
 
 
 def test_orphan_record_carries_ingest_and_the_owners_last_words(fake):
@@ -227,3 +229,33 @@ def test_orphan_record_carries_ingest_and_the_owners_last_words(fake):
     assert rec["bytes"] == str(12 * 2**20) and rec["inc"] == a.inc
     snap = asyncio.run(b.snapshot())
     assert snap["pods"]["a"]["alive"] is False and snap["pods"]["a"]["inc"] == a.inc
+
+
+def test_newer_generation_supersedes_older_pods(fake):
+    """R5 rolling deploy: once a pod of a newer generation beats, older pods take no new work —
+    hook fired once (leave the handoff group), scanner silent — the way Temporal's worker
+    versioning keeps old builds from picking up new tasks."""
+    calls = []
+
+    async def hook():
+        calls.append(1)
+
+    a = Ledger("fake://", pod_id="a", dead_after_s=15, client=fake, generation=1)
+    b = Ledger("fake://", pod_id="b", dead_after_s=15, client=fake, generation=1)
+    a.on_superseded = hook
+    asyncio.run(a.heartbeat())
+    asyncio.run(b.heartbeat())
+    asyncio.run(a.heartbeat())
+    assert a.superseded is False and calls == []          # same generation: nothing happens
+    d = Ledger("fake://", pod_id="d", dead_after_s=15, client=fake, generation=2)
+    asyncio.run(d.heartbeat())
+    asyncio.run(a.heartbeat())
+    asyncio.run(a.heartbeat())
+    assert a.superseded is True and calls == [1]          # noticed at the next beat, hook once
+    assert asyncio.run(fake.hgetall("pod:d"))["gen"] == "2"
+    asyncio.run(b.claim("s1", "r1"))
+    fake.tick(16)                                          # b dies mid-turn
+    asyncio.run(a.heartbeat())
+    asyncio.run(d.heartbeat())
+    assert asyncio.run(a.scan_once()) == []                # superseded: not its orphan to take
+    assert [f["session_id"] for f in asyncio.run(d.scan_once())] == ["s1"]
