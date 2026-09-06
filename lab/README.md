@@ -217,3 +217,47 @@ the first SIGTERM; announcements wait in JetStream until a gen-2 pod appears —
 trading the extra hop for a resume delayed until the new pod is up. Not implemented; a policy choice.
 Client side: the old pod's SSE client saw `paused` + `done PAUSED` and had to reattach to the new pod — the
 stream does not follow the session.
+
+## R5.2 — contract skew across a rollout (generation ≠ contract)
+
+Two numbers, two jobs. The **generation** bumps on every rollout (routing: who takes new work); the
+**contract** (`SESSION_LOG_CONTRACT`, stamped on every `turn/start`) bumps only when the log's shapes
+change (readability: `reader.contract >= log.contract` or the reader must refuse). A lab branch
+`lab/contract-v2` (worktree `~/Projects/nimbus-v2`, run through `PYTHONPATH` in the pod env) writes contract 2
+with tool results on the wire as `tool/result.v2`; `lab/drills/r5-skew.sh` runs the fleet d,e,f on it (gen 2)
+and ROLLS BACK to a,b,c on this tree (gen 3, contract 1) mid-turn — `FAULT=term|kill`, `PROMPT=` for turns
+longer than the rollout, `ROLLFORWARD=1` then brings a v2 pod back.
+
+Measured before the reader gate: graceful path — v1 continued the v2 sessions silently from the pause
+**snapshot** (the log projection lost to the fuller snapshot in `load_session`'s fallback, masking the
+skew); crash path — v1 graded the v2 log (results invisible), replayed the in-flight step and the mock
+issued it again: one duplicate execution per resumed session, 14/14 (a strict provider would have
+rejected the surface: tool calls without results).
+
+Retrofit, in the order the drills forced it:
+1. **Reader gate** — `ContractNewerError` from `load`/`open` (not a `ValueError`: never quarantined or
+   repaired); the snapshot fallback re-raises it; `on_orphan` refuses (`refused:contract=N`), `on_handoff`
+   refuses; the client gets `interrupted reason=contract_newer`. Result: safe but **14/20 stranded** —
+   the v2 pods had left the handoff group (superseded by generation) and the v1 pods could not read.
+2. **Capability-aware supersession** — a newer generation supersedes an older pod only if it can read
+   that pod's contract; otherwise the older pod stays in service as the only reader. Result: every
+   handoff went to a v2 pod, 20/20 — until the last v2 pod goes with sessions still running.
+3. **Stranded set** — a refusal is not a resolution: the refusing pod records `stranded:{sid}` (needed
+   contract, paused|orphan, owner facts) and acks; every scan, a pod whose contract can read a stranded
+   session claims it (DEL) and resumes / admits it. Result: 20 stranded at the last v2 pod's exit, all
+   drained within 10 s of a v2 pod coming back (roll-forward), 20/20 completed, no duplicates.
+4. **Attempts count deaths without progress** — a rolling crash took three owners from every turn on the
+   fleet and the epoch-based budget quarantined 7/20 turns that had advanced between deaths; the budget
+   now counts the streak of deaths at the same progress marker (real results so far).
+5. **The cut is the binding, not the log tail** — twice-resumed turns finished with a step missing from
+   the workspace: a crash between a result's log write and its seam binding leaves the log one step ahead
+   of the machine, and the resumer replayed only the in-flight call. Bindings now carry their log
+   position; a crash-resume redoes every keyed result logged after it (`TOOL_REDO`) and fast-fails
+   (`cut_unsafe`) if one of them is `once`. Also: the replay step now yields its own `step_end` seam.
+   Result (kill every 30 s, 12 s steps, three hops): 20/20 with complete workspaces, 3–5 replays each.
+
+Temporal column: worker versioning pins running workflows to their build id and `workflow.patched()`
+guards code-path changes; a rollback across a patch is a non-determinism error at replay — the engine
+refuses rather than misreads, which is the reader gate; it has no stranded set because a pinned workflow
+simply waits for a worker of its build. The deploy policy either way: **a contract downgrade drains first,
+or accepts stranded sessions until a capable pod returns.**
