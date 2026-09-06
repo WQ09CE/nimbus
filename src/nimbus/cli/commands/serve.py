@@ -106,8 +106,37 @@ async def _run_server(
 
     server = uvicorn.Server(config)
 
-    # Run server
-    await server.serve()
+    # Graceful handoff on SIGTERM/SIGINT (nimbus-lab R3.3): uvicorn's own
+    # handler only drains connections, and our SSE streams never close on
+    # their own — a pod would linger forever with its sessions un-handed.
+    # Install our handlers AFTER uvicorn started (its capture_signals runs
+    # inside serve()), run the app's graceful hooks (pause at seams, bind,
+    # announce), then let uvicorn exit without waiting for connections.
+    shutdown_event = asyncio.Event()
+    serve_task = asyncio.create_task(server.serve())
+    while not server.started and not serve_task.done():
+        await asyncio.sleep(0.05)
+    if not serve_task.done():
+        _setup_signal_handlers(shutdown_event)
+
+        async def _graceful_exit() -> None:
+            await shutdown_event.wait()
+            from nimbus.server.app import run_graceful_hooks
+
+            await run_graceful_hooks()
+            server.should_exit = True
+            server.force_exit = True
+            # Hard backstop: anything still swallowing cancellation (an SSE
+            # generator, a poller) must not keep a handed-off pod alive. Every
+            # durable fact is already in the ledger/stream — this is the
+            # process-level equivalent of k8s' grace-period SIGKILL.
+            asyncio.get_running_loop().call_later(10.0, os._exit, 0)
+
+        exit_task = asyncio.create_task(_graceful_exit())
+        await serve_task
+        exit_task.cancel()
+    else:
+        await serve_task
 
 
 @app.callback(invoke_without_command=True)

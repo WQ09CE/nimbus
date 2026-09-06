@@ -13,6 +13,7 @@ Environment=NIMBUS_VCOMPUTE_URL=http://127.0.0.1:8793
 Environment=NIMBUS_PI_SIDECAR_URL=http://127.0.0.1:8799/v1
 Environment=NIMBUS_LEDGER_URL=redis://127.0.0.1:6379
 Environment=NIMBUS_LOG_STORE=valkey
+Environment=NIMBUS_HANDOFF_URL=nats://127.0.0.1:4222
 Environment=NIMBUS_VCOMPUTE_MOUNT=0
 Environment=NIMBUS_SANDBOX_MODE=best_effort
 Environment=NIMBUS_LOG_CONSOLE=1

@@ -108,3 +108,16 @@ before its first lease open, so the taking-over pod continues on the SAME machin
 Measured: kill mid step 3 → pod-b's lease restored with step-1,2 → replay step 3 → 4,5: one
 workspace with all five steps, step-3 exactly once. The lab step is idempotent by construction
 (`grep -qx step-k || echo step-k`) so the `keyed` declaration is truthful.
+
+## R3.3 — graceful handoff (SIGTERM → seam pause → announce → peer resumes)
+
+`nimbus serve` installs its own SIGTERM/SIGINT handler after uvicorn starts: run the app's
+graceful hooks — `SessionManagerV2.handoff_all`: leave the handoff queue group, `pause_all`
+(step-seam pause + layer-3 binding), announce each paused session on NATS JetStream
+(`nimbus.infra.handoff.HandoffBus`, stream NIMBUS_HANDOFF, queue group `pods`, ack_wait 15 s,
+max_deliver 3) — then tear down the app and force uvicorn out (a 10 s `os._exit` backstop
+covers anything that swallows cancellation; uvicorn alone would drain SSE streams forever).
+Peers consume announcements and `resume_session` from the durable checkpoint + bound snapshot.
+Measured: SIGTERM mid step 3 → pause at the seam ~3 s later → pod-b resumed the same second on
+the restored lease → LAB_DONE 5 at t+10 s; pod-a exited within 4 s; the client of the dying
+pod saw `paused` + `done`. Enabled by `NIMBUS_HANDOFF_URL`; drill `lab/drills/r3-handoff.sh`.

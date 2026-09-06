@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1041,6 +1042,59 @@ class SessionManagerV2:
         self.register_task(session_id, task)
         task.add_done_callback(lambda t: self.unregister_task(session_id))
         return True
+
+    # -- graceful handoff (nimbus-lab R3.3): SIGTERM -> pause at seams -> announce --
+
+    async def pause_all(self, timeout_s: float = 30.0) -> List[str]:
+        """Request a step-seam pause on every running session and wait (bounded)
+        until they have quiesced. Returns the session ids now durably paused."""
+        running = [sid for sid in list(self._active_tasks) if self.is_session_running(sid)]
+        for sid in running:
+            await self.pause_session(sid)
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline and any(self.is_session_running(s) for s in running):
+            await asyncio.sleep(0.2)
+        paused = []
+        for sid in running:
+            session = await self.get_session(sid)
+            if session and session.get("status") == "paused":
+                paused.append(sid)
+            else:
+                logger.warning("[pause_all] %s did not reach a seam in time (status=%s)",
+                               sid, session and session.get("status"))
+        return paused
+
+    async def handoff_all(self, bus, timeout_s: float = 30.0) -> List[str]:
+        """Graceful shutdown: leave the handoff queue group (never take our own
+        announcements), pause every session at a seam (binding included), then
+        announce each paused session for another pod to resume."""
+        await bus.stop_consuming()
+        paused = await self.pause_all(timeout_s)
+        for sid in paused:
+            try:
+                await bus.announce(sid, reason="graceful_shutdown")
+            except Exception as e:
+                logger.error("[handoff_all] announce failed for %s: %s", sid, e)
+        return paused
+
+    async def on_handoff(self, payload: Dict[str, Any]) -> bool:
+        """Handoff consumer: resume a paused session announced by a dying pod.
+        True = ack (taken, or nothing left to do); False = nak for redelivery."""
+        sid = payload.get("session_id", "")
+        if not sid:
+            return True
+        if self.is_session_running(sid):
+            return True  # already ours
+        self._sessions.pop(sid, None)  # rebuild from durable state, never from a cached surface
+        result = await self.resume_session(sid)
+        if result.get("success"):
+            logger.warning("[handoff] resumed %s from pod %s", sid, payload.get("from_pod"))
+            return True
+        err = str(result.get("error", ""))
+        if "not paused" in err or "already running" in err:
+            return True  # someone else took it (or it completed) — nothing to redeliver
+        logger.warning("[handoff] could not resume %s: %s", sid, err)
+        return False
 
     async def _save_sandbox_binding(
         self, session_id: str, binding: Optional[Dict[str, Any]],

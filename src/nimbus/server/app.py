@@ -7,6 +7,7 @@ This module provides:
 - API route registration
 """
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -21,6 +22,31 @@ from .permission import PermissionManager
 from .sse import SSEHub
 
 logger = logging.getLogger(__name__)
+
+
+# Coroutines the serve command runs on SIGTERM/SIGINT BEFORE letting uvicorn exit
+# (uvicorn's own shutdown would first drain SSE connections, which never close).
+GRACEFUL_HOOKS: list = []
+
+
+# Idempotent teardown of the app's background machinery (SSE hub, ledger, handoff
+# bus). Registered by lifespan; run by the graceful path because uvicorn's
+# force_exit skips lifespan shutdown, and an SSE generator that is never closed
+# keeps the process alive past its handoff.
+TEARDOWN_HOOKS: list = []
+
+
+async def run_graceful_hooks(timeout_s: float = 45.0) -> None:
+    for hook in list(GRACEFUL_HOOKS):
+        try:
+            await asyncio.wait_for(hook(), timeout=timeout_s)
+        except Exception as e:  # never block exit
+            logger.error("graceful hook failed: %s", e)
+    for hook in list(TEARDOWN_HOOKS):
+        try:
+            await asyncio.wait_for(hook(), timeout=10.0)
+        except Exception as e:
+            logger.error("teardown hook failed: %s", e)
 
 
 @asynccontextmanager
@@ -64,6 +90,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     if ledger is not None:
         ledger.on_orphan = session_manager.on_orphan
+    # Graceful handoff bus (nimbus-lab R3.3): SIGTERM pauses sessions at seams
+    # and announces them; peers consume and resume.
+    handoff = None
+    if handoff_url := os.environ.get("NIMBUS_HANDOFF_URL"):
+        from nimbus.infra.handoff import HandoffBus
+
+        handoff = HandoffBus(handoff_url, pod_id=os.environ.get("NIMBUS_POD_ID") or f"pid-{os.getpid()}")
+        await handoff.connect()
+        await handoff.start_consumer(session_manager.on_handoff)
+
+        async def _graceful() -> None:
+            paused = await session_manager.handoff_all(handoff)
+            logger.warning("graceful shutdown: handed off %d session(s)", len(paused))
+
+        GRACEFUL_HOOKS.append(_graceful)
+    app.state.handoff = handoff
 
     # Set up log hub for real-time log streaming
     setup_log_hub_handler(log_hub)
@@ -74,13 +116,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.permission_manager = permission_manager
     app.state.session_manager = session_manager
 
+    torn_down = False
+
+    async def _teardown() -> None:
+        nonlocal torn_down
+        if torn_down:
+            return
+        torn_down = True
+        await session_manager.close_all()
+        if ledger is not None:
+            await ledger.stop()
+        if handoff is not None:
+            await handoff.close()
+        await sse_hub.stop()
+
+    TEARDOWN_HOOKS.append(_teardown)
     yield
 
-    # Cleanup
-    await session_manager.close_all()
-    if ledger is not None:
-        await ledger.stop()
-    await sse_hub.stop()
+    # Cleanup (no-op if the graceful path already ran it)
+    await _teardown()
+    GRACEFUL_HOOKS.clear()
+    TEARDOWN_HOOKS.clear()
 
     # Flush logs and remove handlers to prevent semaphore leaks (resource_tracker warning)
     from nimbus.core.logging import logger as loguru_logger

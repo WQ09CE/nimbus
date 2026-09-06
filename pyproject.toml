@@ -67,6 +67,7 @@ all = [
     "nimbus[ledger]",
 ]
 lab = [
+    "nats-py>=2.15.0",
     "temporalio>=1.32.0",
 ]
 
