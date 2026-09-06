@@ -530,6 +530,9 @@ class RuntimeLoop:
                 self.session_log.append(
                     "step/end", {"turn": self._turn, "step": self._step_in_turn}
                 )
+                # Step seam: history is balanced here. The server binds sandbox
+                # state at dirty seams (layer 3) so a crash-resume can restore it.
+                yield {"type": "step_end", "turn": self._turn, "step": self._step_in_turn}
 
                 elapsed_ms = int((time.monotonic() - t0) * 1000)
                 self._steps_since_compaction += 1

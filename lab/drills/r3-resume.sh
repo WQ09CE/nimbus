@@ -30,5 +30,6 @@ echo "== $(ts) session stream (since the kill):"; dump | awk 'f||/turn\/end/{f=1
 echo "== $(ts) pod-b observer events: $(grep -oE '^event: [a-z_]+' "$LAB/r3-$CLS-b.sse" | sort | uniq -c | sort -rn | tr '\n' ' ')"
 grep -A1 -E '^event: (done|interrupted|resume_replay)' "$LAB/r3-$CLS-b.sse" | grep -E '^data' | cut -c1-140 | tail -4
 echo "== $(ts) ledger:"; ./labctl.py ledger | python3 -c 'import sys,json;d=json.load(sys.stdin);print("   orphans:",d["orphans"]);print("   rejected_writes:",d["rejected_writes"])'
+echo "== $(ts) binding in session metadata: $(python3 -c "import json;d=json.load(open('$LAB/sessions/$SID.json'));b=d.get('metadata',{}).get('sandbox_binding');print(b and {k:b[k] for k in ('snapshot_id','lease_id') if k in b} or 'none')")"
 echo "== $(ts) workspaces: $(steps)"
 echo "== $(ts) reset pod-a"; ./labctl.py pods up | grep -E '^a '

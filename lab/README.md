@@ -98,3 +98,13 @@ first step re-executes the graded calls (`resume_replay` SSE) and then lets the 
 Lab knob `labctl repeat once|keyed` (NIMBUS_REPEAT_OVERRIDE) exercises both branches:
 `lab/drills/r3-resume.sh keyed|once`. Measured: kill at t+7 → resume decided t+27, turn
 finished on pod-b with no user message; once → fast-fail t+26.
+
+## R3.2 — layer-3 binding at every dirty step seam
+
+The loop yields `step_end` at each balanced seam; `SessionManagerV2` binds sandbox state there
+(`_snapshot_sandbox_at_seam`: clean seam = metadata write reusing the last snapshot, dirty
+seam = workspace snapshot). A crash-resume (`resume_interrupted`) restores the bound snapshot
+before its first lease open, so the taking-over pod continues on the SAME machine state.
+Measured: kill mid step 3 → pod-b's lease restored with step-1,2 → replay step 3 → 4,5: one
+workspace with all five steps, step-3 exactly once. The lab step is idempotent by construction
+(`grep -qx step-k || echo step-k`) so the `keyed` declaration is truthful.

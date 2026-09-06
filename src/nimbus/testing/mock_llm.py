@@ -270,7 +270,7 @@ class MockLLMAdapter:
     ) -> Optional[MockLLMResponse]:
         """Lab rule: ``lab steps N [sleep S]`` -> N sequential Bash tool_calls.
 
-        Step k runs ``sleep S; echo step-k >> lab_steps.txt; cat lab_steps.txt``
+        Step k runs ``sleep S; <append step-k unless present>; cat lab_steps.txt``
         so a multi-step turn has controllable duration and leaves observable
         state in the (sandbox) workspace — the nimbus-lab fault-drill workload.
         Continuation = number of Bash tool results since the last user message;
@@ -298,7 +298,9 @@ class MockLLMAdapter:
             _tool_calls=[
                 _make_tool_call(
                     "Bash",
-                    {"command": f"sleep {sleep_s}; echo step-{k} >> lab_steps.txt; cat lab_steps.txt"},
+                    # idempotent by construction: a rerun of step k is a no-op, so a
+                    # 'keyed' declaration for this workload is truthful
+                    {"command": f"sleep {sleep_s}; grep -qx step-{k} lab_steps.txt 2>/dev/null || echo step-{k} >> lab_steps.txt; cat lab_steps.txt"},
                 )
             ],
         )

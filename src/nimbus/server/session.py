@@ -868,6 +868,12 @@ class SessionManagerV2:
                     })
                     continue
 
+                if evt_type == "step_end":
+                    # Layer-3 binding at every dirty step seam (not only at PAUSE):
+                    # a clean seam is a metadata write, a dirty one a workspace
+                    # snapshot — the price of being restorable after a crash.
+                    await self._snapshot_sandbox_at_seam(session_id)
+                    continue
                 if evt_type == "resume_replay":
                     # interrupted-turn resume re-executed a graded call
                     await self._sse_hub.publish(session_id, "resume_replay", {
