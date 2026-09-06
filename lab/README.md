@@ -73,3 +73,14 @@ dump, and its client gets `done {status: OWNERSHIP_LOST}` instead of a fake OK.
 Measured (freeze → pod-b takes over → thaw): DUPLICATE seq none (was 22–45),
 rejected flushes 1, zombie stopped at step 3 (previously ran to step 5).
 `./lab/labctl.py ledger dump SID` prints a stream.
+
+## Temporal arm (textbook column)
+
+`lab/temporal/`: the same N-step lab turn as a Temporal workflow (`LabTurn`) whose
+activities execute on the **same vcompute daemon** — so the arms differ only in the control
+plane. Activities heartbeat every 1 s (`heartbeat_timeout` 15 s, `start_to_close` 60 s,
+retry ≤ 3); the lease id lives in workflow history. Workers `lab-temporal-worker@a/@b`
+(`labctl workers up`); faults target `worker-a`/`worker-b`; drill `lab/drills/r1-temporal.sh
+kill|term|freeze` picks the worker running the pending activity (`temporal workflow describe`)
+and reports attempts / worker identity / history event counts. Extra `nimbus[lab]`
+(temporalio).

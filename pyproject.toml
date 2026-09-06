@@ -66,6 +66,9 @@ all = [
     "nimbus[acp]",
     "nimbus[ledger]",
 ]
+lab = [
+    "temporalio>=1.32.0",
+]
 
 [project.scripts]
 nimbus = "nimbus.cli.main:cli"

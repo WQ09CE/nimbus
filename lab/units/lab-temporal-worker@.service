@@ -1,0 +1,13 @@
+[Unit]
+Description=nimbus-lab Temporal worker %i (second arm: same lab turn as workflow+activities on vcompute)
+After=lab-temporal.service lab-vcompute.service
+
+[Service]
+WorkingDirectory=%h/Projects/nimbus
+Environment=LAB_WORKER=worker-%i
+Environment=NIMBUS_VCOMPUTE_URL=http://127.0.0.1:8793
+Environment=TEMPORAL_ADDRESS=127.0.0.1:7233
+ExecStart=%h/Projects/nimbus/.venv/bin/python lab/temporal/worker.py
+KillSignal=SIGTERM
+TimeoutStopSec=20
+# no Restart= : death is the experiment

@@ -4,7 +4,8 @@
   labctl pods up|down|status            start/stop pod units (lab-nimbus@a, @b)
   labctl vc recycle | vc chaos '{json}' vcompute: drop all leases / set chaos knobs
   labctl ledger [reset | dump SID]      Valkey ledger: pods, owners+epoch, orphans, rejected writes; dump = session stream
-  labctl kill|term|freeze|thaw POD      SIGKILL / SIGTERM / SIGSTOP / SIGCONT the pod cgroup
+  labctl workers up|down|status         Temporal-arm workers (lab-temporal-worker@a, @b)
+  labctl kill|term|freeze|thaw POD      SIGKILL / SIGTERM / SIGSTOP / SIGCONT the pod cgroup (POD = a|b|worker-a|worker-b)
   labctl mem POD MAX                    set MemoryMax (e.g. 300M) on the pod unit (runtime)
   labctl allow POD                      allow_always Bash/Write/Edit on POD (done automatically by pods up / turn)
   labctl llm POD mock|real              switch the pod's LLM rail (MockLLM vs pi-codex/gpt-5.6-luna via sidecar) + restart
@@ -20,6 +21,11 @@ from pathlib import Path
 
 LAB = Path(__file__).resolve().parent
 UNIT = "lab-nimbus@{}"
+WUNIT = "lab-temporal-worker@{}"
+
+def unit_for(name):
+    """'a'/'b' -> nimbus pod unit; 'worker-a'/'worker-b' -> Temporal worker unit."""
+    return WUNIT.format(name[len("worker-"):]) if name.startswith("worker-") else UNIT.format(name)
 
 def pod_port(pod):
     for line in (LAB / "pods" / f"{pod}.env").read_text().splitlines():
@@ -57,11 +63,18 @@ def cmd_pods(action):
             print(f"{p:3} {act:9} pid={pid:7} {h}")
 
 def cmd_signal(sig, pod):
-    r = sc("kill", "-s", sig, "--kill-whom=all", UNIT.format(pod)); print(pod, sig, "ok" if r.returncode == 0 else r.stderr.strip())
+    r = sc("kill", "-s", sig, "--kill-whom=all", unit_for(pod)); print(pod, sig, "ok" if r.returncode == 0 else r.stderr.strip())
     print(f"  t={time.strftime('%H:%M:%S')}")
 
+def cmd_workers(action):
+    for w in ("a", "b"):
+        u = WUNIT.format(w)
+        if action == "up": print("worker-" + w, "started" if sc("start", u).returncode == 0 else "FAILED")
+        elif action == "down": sc("stop", u); print("worker-" + w, "stopped")
+        else: print(f"worker-{w:2} {sc('is-active', u).stdout.strip():9} pid={sc('show', '-p', 'MainPID', '--value', u).stdout.strip()}")
+
 def cmd_mem(pod, mx):
-    r = sc("set-property", "--runtime", UNIT.format(pod), f"MemoryMax={mx}"); print(pod, "MemoryMax", mx, "ok" if r.returncode == 0 else r.stderr.strip())
+    r = sc("set-property", "--runtime", unit_for(pod), f"MemoryMax={mx}"); print(pod, "MemoryMax", mx, "ok" if r.returncode == 0 else r.stderr.strip())
 
 def cmd_llm(pod, rail):
     """Flip a pod between the deterministic MockLLM rail and the real pi-codex rail, then restart it."""
@@ -138,6 +151,7 @@ def main(a):
     if not a or a[0] in ("-h", "--help"): print(__doc__); return
     c = a[0]
     if c == "pods": cmd_pods(a[1] if len(a) > 1 else "status")
+    elif c == "workers": cmd_workers(a[1] if len(a) > 1 else "status")
     elif c in ("kill", "term", "freeze", "thaw"):
         cmd_signal({"kill": "SIGKILL", "term": "SIGTERM", "freeze": "SIGSTOP", "thaw": "SIGCONT"}[c], a[1])
     elif c == "mem": cmd_mem(a[1], a[2])
