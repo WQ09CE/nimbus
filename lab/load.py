@@ -125,7 +125,8 @@ def report(a):
     print("originals per pod:", dict(originals), "| takeovers per pod:", dict(takeovers))
     orph = {k.split(":", 1)[1]: r.hgetall(k) for k in r.scan_iter(match="orphan:*")}
     print("ledger orphans (scanner fallback):", Counter(v.get("resolution", "?") for v in orph.values()) or "none",
-          "| rejected_writes:", r.get("ledger:rejected_writes") or 0)
+          "| rejected_writes:", r.get("ledger:rejected_writes") or 0,
+          "| stranded now:", len(list(r.scan_iter(match="stranded:*"))))
     try:
         from mq_probe import consumer_state
         print("handoff consumer:", consumer_state())

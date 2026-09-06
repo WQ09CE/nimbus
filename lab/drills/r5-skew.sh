@@ -44,7 +44,15 @@ done
 echo "== $(ts) rollout done; waiting for the load to drain"
 for w in $(seq 1 30); do sleep 5; e=$(ended); ow=$(owners); echo "   t+$(( $(date +%s) - T0 ))s ended=$e/$N owners: $ow| $(mq)"; [ "$e" -ge "$N" ] && [ -z "$ow" ] && break; done  # clients gone AND no turn still owned
 wait $LOAD 2>/dev/null; tail -1 "$LAB/load-$TAG.out"
+stranded() { valkey-cli -p 6379 --scan --pattern 'stranded:*' | wc -l | tr -d ' '; }
+echo "== $(ts) after the rollback: stranded=$(stranded) | $(mq)"
+if [ "$(stranded)" -gt 0 ] && [ "${ROLLFORWARD:-1}" = 1 ]; then
+  setenv d NIMBUS_GENERATION 4; setenv d PYTHONPATH "$V2"
+  ./labctl.py pods up d >/dev/null && echo "== $(ts) ROLL FORWARD: d up again as v2 (contract 2, gen 4) — can it drain the stranded sessions?"
+  R0=$(date +%s)
+  for w in $(seq 1 20); do sleep 5; echo "   r+$(( $(date +%s) - R0 ))s stranded=$(stranded) owners: $(owners)| fleet: $(fleet)"; [ "$(stranded)" -eq 0 ] && [ -z "$(owners)" ] && [ "$w" -gt 2 ] && break; done
+fi
 echo "== $(ts) report:"; "$PY" load.py report --tag "$TAG"
-echo "== $(ts) v1 pods' journal (refusals / resumes):"; journalctl --user -u lab-nimbus@a -u lab-nimbus@b -u lab-nimbus@c --since "3 min ago" --no-pager -o cat | grep -iE "contract|handoff\] (resumed|could not)|on_orphan" | sed 's/sess_[0-9a-f]*/sess_X/g' | sort | uniq -c | sort -rn | head -6 | cut -c1-160
+echo "== $(ts) journal (refusals / strands / drains):"; journalctl --user -u lab-nimbus@a -u lab-nimbus@b -u lab-nimbus@c -u lab-nimbus@d -u lab-nimbus@e -u lab-nimbus@f --since "5 min ago" --no-pager -o cat | grep -iE "contract|STRANDED|stranded\]|handoff\] (resumed|could not)|on_orphan" | sed 's/sess_[0-9a-f]*/sess_X/g; s/[0-9a-f]\{8\}//g' | sort | uniq -c | sort -rn | head -8 | cut -c1-170
 echo "== $(ts) one v2 session's stream as v1 sees it:"; SID=$(python3 -c "import json;print(list(json.load(open('$LAB/load/$TAG/manifest.json'))['sessions'])[0])"); NIMBUS_LEDGER_URL=redis://127.0.0.1:6379 "$PY" -m nimbus.infra.ledger dump "$SID" | awk '{print $2}' | sort | uniq -c | sort -rn | head -8 | tr '\n' ' '; echo
 for p in a b c d e f; do setenv "$p" PYTHONPATH ""; done

@@ -34,6 +34,9 @@ class FakeLedger:
     async def account(self, session_id, nbytes):
         self.charged = getattr(self, "charged", []) + [(session_id, nbytes)]
 
+    async def strand(self, session_id, needed, kind, **facts):
+        self.stranded = getattr(self, "stranded", []) + [(session_id, needed, kind, facts)]
+
 
 def _tc(i, name):
     return {"id": f"c{i}", "type": "function", "function": {"name": name, "arguments": "{}"}}
@@ -184,3 +187,15 @@ def test_orphan_written_by_a_newer_contract_is_refused_untouched(manager, tmp_pa
     asyncio.run(manager.on_orphan({"session_id": SID, "pod": "a", "request_id": "r"}))
     assert resumed == [] and manager._ledger.resolutions == [f"refused:contract={SESSION_LOG_CONTRACT + 1}"]
     assert [json.loads(line) for line in open(tmp_path / f"{SID}.jsonl")] == lines  # untouched
+    assert manager._ledger.stranded[0][:3] == (SID, SESSION_LOG_CONTRACT + 1, "orphan")  # left for a capable pod
+
+
+def test_handoff_of_a_newer_contract_session_is_acked_and_stranded(manager):
+    from nimbus.core.session_log import ContractNewerError
+
+    async def refuse(sid):
+        raise ContractNewerError(2, 1, "test")
+
+    manager.resume_session = refuse
+    assert asyncio.run(manager.on_handoff({"session_id": SID, "from_pod": "d"})) is True
+    assert manager._ledger.stranded == [(SID, 2, "paused", {"from_pod": "d"})]

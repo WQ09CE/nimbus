@@ -53,6 +53,7 @@ class Ledger:
         owner_ttl_s: int = 1800,
         client: Any = None,
         generation: int = 0,
+        contract: int = 1,
     ):
         self.url = url
         self.pod_id = pod_id
@@ -73,8 +74,13 @@ class Ledger:
         # consumption, no orphan scanning (Temporal worker versioning: old builds only
         # drain their pinned workflows).
         self.generation = generation
+        self.contract = contract  # session-log contract this pod reads/writes (R5.2)
         self.superseded = False
         self.on_superseded = None
+        # R5.2: a refusal is not a resolution. A pod that cannot read a session (newer
+        # contract) strands it in the ledger; the first pod that CAN read it drains it.
+        self.on_stranded = None
+        self._noted_incapable: set = set()
         # Called with each newly recorded orphan {session_id, pod, request_id, ...};
         # the owner (SessionManagerV2) decides: resume here, or fast-fail.
         self.on_orphan = None
@@ -158,7 +164,7 @@ class Ledger:
         RSS, cgroup memory %, event-loop lag, longest gen-2 GC pause, prior OOM kills."""
         cg = _cgroup_mem()
         cur, mx = cg.get("current"), cg.get("max")
-        f = {"inc": self.inc, "gen": str(self.generation), "rss_mb": f"{_rss_mb():.1f}",
+        f = {"inc": self.inc, "gen": str(self.generation), "contract": str(self.contract), "rss_mb": f"{_rss_mb():.1f}",
              "lag_ms": f"{self._lag_ms:.0f}", "gc2_ms": f"{self._gc2_ms:.0f}", "prev_oom_kills": str(self.prev_oom_kills)}
         if cur is not None and mx:
             f["mem_pct"] = f"{100.0 * cur / mx:.0f}"
@@ -181,6 +187,14 @@ class Ledger:
                 continue
             h = await self._r.hgetall(f"pod:{pod}")
             if h and int(h.get("gen", "0") or 0) > self.generation:
+                if int(h.get("contract", "1") or 1) < self.contract:
+                    # A newer generation that cannot read what we wrote (contract rollback):
+                    # we stay in service — we may be the only reader of our sessions.
+                    if pod not in self._noted_incapable:
+                        self._noted_incapable.add(pod)
+                        logger.warning("ledger pod=%s gen=%s contract=%s: newer pod=%s gen=%s has contract %s — not superseded",
+                                       self.pod_id, self.generation, self.contract, pod, h.get("gen"), h.get("contract"))
+                    continue
                 self.superseded = True
                 logger.warning("ledger pod=%s gen=%s superseded by pod=%s gen=%s: no new work from here on",
                                self.pod_id, self.generation, pod, h.get("gen"))
@@ -236,6 +250,7 @@ return e
         found: List[Dict[str, Any]] = []
         if self.superseded:
             return found  # a newer generation is alive: orphans are its work, not ours
+        await self.drain_stranded()
         async for key in self._r.scan_iter(match="turn:*"):
             session_id = key.split(":", 1)[1]
             owner = await self._r.hgetall(key)
@@ -276,6 +291,32 @@ return e
                     await self.resolve(rec["session_id"], f"handler_error:{type(e).__name__}")
         return found
 
+    async def strand(self, session_id: str, needed: int, kind: str, **facts: str) -> None:
+        """Record a session this pod refused (needs contract `needed`): kind = paused | orphan."""
+        await self._r.hset(f"stranded:{session_id}", mapping={"contract": str(needed), "kind": kind, "by": self.pod_id,
+                                                              "at": f"{time.time():.3f}", **{k: str(v) for k, v in facts.items()}})
+
+    async def drain_stranded(self) -> List[Dict[str, Any]]:
+        """Claim every stranded session this pod's contract can read (DEL = claim, once) and
+        hand it to on_stranded."""
+        taken: List[Dict[str, Any]] = []
+        async for key in self._r.scan_iter(match="stranded:*"):
+            h = await self._r.hgetall(key)
+            if not h or int(h.get("contract", "1") or 1) > self.contract:
+                continue
+            if await self._r.delete(key):
+                h["session_id"] = key.split(":", 1)[1]
+                taken.append(h)
+                logger.warning("STRANDED session=%s (needs contract %s, %s) drained by %s",
+                               h["session_id"], h.get("contract"), h.get("kind"), self.pod_id)
+        for rec in taken:
+            if self.on_stranded is not None:
+                try:
+                    await self.on_stranded(rec)
+                except Exception as e:
+                    logger.warning("on_stranded(%s) failed: %s", rec["session_id"], e)
+        return taken
+
     async def resolve(self, session_id: str, resolution: str) -> None:
         """Record how an orphan was handled: resume | fast_fail | skipped:* | handler_error:*."""
         await self._r.hset(f"orphan:{session_id}", mapping={"resolution": resolution, "resolved": f"{time.time():.3f}"})
@@ -289,10 +330,11 @@ return e
             h = await self._r.hgetall(f"pod:{pod}")
             last = h or await self._r.hgetall(f"podlast:{pod}")
             pods[pod] = {"alive": bool(h), "age_s": round(now - float(last["last"]), 1) if last else None,
-                         **{k: last[k] for k in ("inc", "gen", "rss_mb", "mem_pct", "lag_ms", "gc2_ms", "prev_oom_kills") if k in last}}
+                         **{k: last[k] for k in ("inc", "gen", "contract", "rss_mb", "mem_pct", "lag_ms", "gc2_ms", "prev_oom_kills") if k in last}}
         turns = {k.split(":", 1)[1]: await self._r.hgetall(k) async for k in self._r.scan_iter(match="turn:*")}
         orphans = {k.split(":", 1)[1]: await self._r.hgetall(k) async for k in self._r.scan_iter(match="orphan:*")}
-        return {"pods": pods, "turns": turns, "orphans": orphans,
+        stranded = {k.split(":", 1)[1]: await self._r.hgetall(k) async for k in self._r.scan_iter(match="stranded:*")}
+        return {"pods": pods, "turns": turns, "orphans": orphans, "stranded": stranded,
                 "orphans_detected": int(await self._r.get("ledger:orphans_detected") or 0),
                 "rejected_writes": int(await self._r.get("ledger:rejected_writes") or 0)}
 
@@ -343,7 +385,7 @@ async def _main(argv: List[str]) -> None:
         return
     if argv[:1] == ["reset"]:
         n = 0
-        for pat in ("pod:*", "podlast:*", "turn:*", "orphan:*", "pods", "ledger:*", "sess:*"):
+        for pat in ("pod:*", "podlast:*", "turn:*", "orphan:*", "stranded:*", "pods", "ledger:*", "sess:*"):
             async for k in led._r.scan_iter(match=pat):
                 await led._r.delete(k)
                 n += 1

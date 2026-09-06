@@ -75,6 +75,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Multi-pod bookkeeping (nimbus-lab): heartbeat + turn ownership + orphan scanner.
     ledger = None
     if ledger_url := os.environ.get("NIMBUS_LEDGER_URL"):
+        from nimbus.core.session_log import SESSION_LOG_CONTRACT
         from nimbus.infra.ledger import Ledger
 
         ledger = Ledger(
@@ -82,6 +83,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             pod_id=os.environ.get("NIMBUS_POD_ID") or f"pid-{os.getpid()}",
             port=int(os.environ.get("NIMBUS_PORT", "0") or 0),
             generation=int(os.environ.get("NIMBUS_GENERATION", "0") or 0),
+            contract=SESSION_LOG_CONTRACT,
         )
         await ledger.start()
     session_manager = SessionManagerV2(
@@ -91,6 +93,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     if ledger is not None:
         ledger.on_orphan = session_manager.on_orphan
+        ledger.on_stranded = session_manager.on_stranded
     # Graceful handoff bus (nimbus-lab R3.3): SIGTERM pauses sessions at seams
     # and announces them; peers consume and resume.
     handoff = None

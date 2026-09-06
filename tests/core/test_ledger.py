@@ -45,9 +45,11 @@ class FakeRedis:
         return int(key in self.h or key in self.kv)
 
     async def delete(self, key):
+        existed = int(key in self.h or key in self.kv)
         self.h.pop(key, None)
         self.kv.pop(key, None)
         self.exp.pop(key, None)
+        return existed
 
     async def sadd(self, key, member):
         self.s.setdefault(key, set()).add(member)
@@ -259,3 +261,36 @@ def test_newer_generation_supersedes_older_pods(fake):
     asyncio.run(d.heartbeat())
     assert asyncio.run(a.scan_once()) == []                # superseded: not its orphan to take
     assert [f["session_id"] for f in asyncio.run(d.scan_once())] == ["s1"]
+
+
+def test_a_newer_generation_that_cannot_read_us_does_not_supersede(fake):
+    """R5.2 rollback: generation 3 runs contract 1 while we (gen 2) wrote contract 2 — we are the
+    only readers of our sessions, so we stay in the handoff group and keep scanning."""
+    e = Ledger("fake://", pod_id="e", dead_after_s=15, client=fake, generation=2, contract=2)
+    a = Ledger("fake://", pod_id="a", dead_after_s=15, client=fake, generation=3, contract=1)
+    asyncio.run(a.heartbeat())
+    asyncio.run(e.heartbeat())
+    asyncio.run(e.heartbeat())
+    assert e.superseded is False
+    g = Ledger("fake://", pod_id="g", dead_after_s=15, client=fake, generation=4, contract=2)
+    asyncio.run(g.heartbeat())
+    asyncio.run(e.heartbeat())
+    assert e.superseded is True  # a newer generation that can read us: now we drain
+
+
+def test_stranded_sessions_are_drained_once_by_the_first_capable_pod(fake):
+    a = Ledger("fake://", pod_id="a", dead_after_s=15, client=fake, generation=3, contract=1)
+    g = Ledger("fake://", pod_id="g", dead_after_s=15, client=fake, generation=4, contract=2)
+    h = Ledger("fake://", pod_id="h", dead_after_s=15, client=fake, generation=4, contract=2)
+    got = []
+
+    async def take(rec):
+        got.append((rec["session_id"], rec["kind"], rec.get("from_pod")))
+
+    g.on_stranded = h.on_stranded = take
+    asyncio.run(a.strand("s1", 2, "paused", from_pod="d"))
+    asyncio.run(a.strand("s2", 3, "orphan", pod="d", epoch="1"))
+    assert asyncio.run(a.drain_stranded()) == []          # contract 1 cannot read either
+    assert [r["session_id"] for r in asyncio.run(g.drain_stranded())] == ["s1"]  # contract 2 reads s1, not s2
+    assert asyncio.run(h.drain_stranded()) == []          # s1 claimed once (DEL), s2 still needs 3
+    assert got == [("s1", "paused", "d")] and asyncio.run(fake.exists("stranded:s2")) == 1

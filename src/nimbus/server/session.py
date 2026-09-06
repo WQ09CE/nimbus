@@ -1041,6 +1041,8 @@ class SessionManagerV2:
                         f"(contract {e.mine}) cannot continue it.",
             })
             await self._ledger.resolve(session_id, f"refused:contract={e.log_contract}")
+            await self._ledger.strand(session_id, e.log_contract, "orphan", pod=rec.get("pod", ""), epoch=rec.get("epoch", ""),
+                                      request_id=rec.get("request_id", ""), bytes=rec.get("bytes", "0"))
             return
         except Exception as e:
             await self._ledger.resolve(session_id, f"skipped:log_unreadable:{type(e).__name__}")
@@ -1174,12 +1176,15 @@ class SessionManagerV2:
         try:
             result = await self.resume_session(sid)
         except ContractNewerError as e:
-            logger.warning("[handoff] %s: %s — refused, redeliver", sid, e)
+            logger.warning("[handoff] %s: %s — refused, stranded for a capable pod", sid, e)
             await self._sse_hub.publish(sid, "interrupted", {
                 "reason": "contract_newer", "resumable": False,
                 "hint": f"Announced to a pod on contract {e.mine}; the session needs contract {e.log_contract}.",
             })
-            return False  # nak: a capable member may still take it
+            if self._ledger is not None:
+                await self._ledger.strand(sid, e.log_contract, "paused", from_pod=payload.get("from_pod", ""))
+                return True  # acked: the ledger holds it now, the first capable pod drains it
+            return False  # no ledger: nak and hope a capable member is in the group
         if result.get("success"):
             logger.warning("[handoff] resumed %s from pod %s", sid, payload.get("from_pod"))
             return True
@@ -1188,6 +1193,16 @@ class SessionManagerV2:
             return True  # someone else took it (or it completed) — nothing to redeliver
         logger.warning("[handoff] could not resume %s: %s", sid, err)
         return False
+
+    async def on_stranded(self, rec: Dict[str, Any]) -> None:
+        """Ledger callback (R5.2): a session an older-contract pod refused is ours to continue."""
+        sid = rec.get("session_id", "")
+        if rec.get("kind") == "paused":
+            result = await self.resume_session(sid)
+            logger.warning("[stranded] resumed paused %s: %s", sid, "ok" if result.get("success") else result.get("error"))
+        else:
+            await self.on_orphan({"session_id": sid, "pod": rec.get("pod", ""), "request_id": rec.get("request_id", ""),
+                                  "epoch": rec.get("epoch", "1"), "bytes": rec.get("bytes", "0")})
 
     async def _save_sandbox_binding(
         self, session_id: str, binding: Optional[Dict[str, Any]],
