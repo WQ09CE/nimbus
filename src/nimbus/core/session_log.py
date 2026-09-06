@@ -454,6 +454,40 @@ def check_invariants(events: List[SessionEvent], allow_open_tail: bool = False) 
 # later one had provably not started yet.
 TOOL_OUTCOME_UNKNOWN = "TOOL_OUTCOME_UNKNOWN"
 TOOL_NOT_STARTED = "TOOL_NOT_STARTED"
+TOOL_RESUMABLE = "TOOL_RESUMABLE"
+
+# Process-wide resolver: tool name -> repeat class ("free" | "keyed" | "once").
+# Installed by the ToolRegistry that owns the catalog; the default treats every
+# tool as 'once' (never rerun automatically) — the conservative reading.
+_repeat_resolver = None
+
+
+def set_repeat_resolver(fn) -> None:
+    global _repeat_resolver
+    _repeat_resolver = fn
+
+
+def repeat_of(tool_name: str) -> str:
+    """Repeat class for crash grading. Uses the installed registry resolver;
+    before any AgentOS exists in this process (e.g. a pod deciding about
+    another pod's orphaned turn) it falls back to the builtin declarations,
+    with the same lab override. Unknown → once."""
+    if _repeat_resolver is not None:
+        try:
+            return _repeat_resolver(tool_name) or "once"
+        except Exception:
+            return "once"
+    try:
+        from .tools import builtin_tool_traits  # lazy: tools import this module
+        from .tools.registry import repeat_override
+
+        forced = repeat_override(tool_name)
+        if forced:
+            return forced
+        traits = builtin_tool_traits().get(tool_name)
+        return getattr(traits, "repeat", "once") or "once"
+    except Exception:
+        return "once"
 
 _OUTCOME_UNKNOWN_TEXT = (
     "[TOOL_OUTCOME_UNKNOWN] The session crashed while this tool call may have "
@@ -466,24 +500,69 @@ _NOT_STARTED_TEXT = (
     "[TOOL_NOT_STARTED] The session crashed before this tool call started "
     "executing. It was not run. Retry it if it is still needed."
 )
+_RESUMABLE_TEXT = (
+    "[TOOL_RESUMABLE] The session crashed while this tool call may have been "
+    "executing. The tool is safe to run again (read-only or idempotent); a "
+    "resumed run re-executes it automatically, otherwise retry it if still needed."
+)
 
 
 def grade_unanswered_calls(tool_calls: List[Dict[str, Any]], answered_ids: set) -> List[tuple]:
     """Grade a serial batch's unanswered calls: (call, code, content) triples.
 
-    First unanswered call in request order → TOOL_OUTCOME_UNKNOWN; the rest →
-    TOOL_NOT_STARTED (serial execution had not reached them).
+    First unanswered call in request order may have been in flight: its grade
+    follows the tool's repeat class — 'once' → TOOL_OUTCOME_UNKNOWN (never rerun
+    automatically), 'free'/'keyed' → TOOL_RESUMABLE (a resumed run re-executes
+    it). Later calls had provably not started → TOOL_NOT_STARTED (safe to run,
+    whatever their class).
     """
     graded = []
     first = True
     for tc in tool_calls:
         if tc.get("id") in answered_ids:
             continue
-        code = TOOL_OUTCOME_UNKNOWN if first else TOOL_NOT_STARTED
-        text = _OUTCOME_UNKNOWN_TEXT if first else _NOT_STARTED_TEXT
+        if first:
+            name = tc.get("function", {}).get("name", "")
+            if repeat_of(name) == "once":
+                code, text = TOOL_OUTCOME_UNKNOWN, _OUTCOME_UNKNOWN_TEXT
+            else:
+                code, text = TOOL_RESUMABLE, _RESUMABLE_TEXT
+        else:
+            code, text = TOOL_NOT_STARTED, _NOT_STARTED_TEXT
         graded.append((tc, code, text))
         first = False
     return graded
+
+
+RERUNNABLE_CODES = (TOOL_RESUMABLE, TOOL_NOT_STARTED)
+
+
+def resumable_calls(events: List["SessionEvent"]) -> List[Dict[str, Any]]:
+    """After crash repair: the synthetic results of the last interrupted turn
+    that a resumed run must re-execute — [{tool_call, code, seq}] in order.
+    Empty when the last turn was not an interrupted one."""
+    last_turn_start = None
+    for i in range(len(events) - 1, -1, -1):
+        if events[i].type == "turn/start":
+            last_turn_start = i
+            break
+    if last_turn_start is None:
+        return []
+    tail = events[last_turn_start:]
+    if not any(e.type == "turn/end" and e.data.get("reason", {}).get("kind") == "interrupted" for e in tail):
+        return []
+    calls_by_id: Dict[str, Dict[str, Any]] = {}
+    for e in tail:
+        if e.type == "assistant/message":
+            for tc in e.data.get("message", {}).get("tool_calls") or []:
+                calls_by_id[tc.get("id")] = tc
+    out = []
+    for e in tail:
+        if e.type == "tool/result" and e.data.get("synthetic") and e.data.get("code") in RERUNNABLE_CODES:
+            tc = calls_by_id.get(e.data.get("message", {}).get("tool_call_id"))
+            if tc is not None:
+                out.append({"tool_call": tc, "code": e.data.get("code"), "seq": e.seq})
+    return out
 
 
 def interrupted_turn_closers(events: List[SessionEvent]) -> List[SessionEvent]:

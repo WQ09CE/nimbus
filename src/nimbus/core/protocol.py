@@ -20,7 +20,6 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 
-
 # =============================================================================
 # 1. Action Instruction Set (ISA)
 # =============================================================================
@@ -54,6 +53,15 @@ class ActionIR:
 SideEffects = Literal["none", "read", "write", "execute"]
 LatencyClass = Literal["local", "network", "batch"]
 DataPlane = Literal["inline", "by_reference"]
+# Repeatability — what a SECOND execution of the same call does (recovery axis,
+# orthogonal to side_effects which is the authority/sandbox axis):
+#   free  : pure read/compute, rerun is free
+#   keyed : rerun with the same idempotency key collapses at the receiver
+#   once  : non-idempotent external effect (send a message, run a shell command
+#           against unknown state) — never rerun automatically. The default.
+# Same three classes as HTTP safe / idempotent / neither (RFC 9110) and MCP's
+# readOnlyHint / idempotentHint; a tool that declares nothing is treated as once.
+Repeat = Literal["free", "keyed", "once"]
 
 
 @dataclass(frozen=True)
@@ -71,6 +79,7 @@ class ToolTraits:
     needs_auth: bool = False
     latency_class: LatencyClass = "local"
     data_plane: DataPlane = "inline"
+    repeat: Repeat = "once"
 
 
 # =============================================================================

@@ -21,7 +21,7 @@ MAX_LINE_LENGTH = 500  # Per-line truncation (aligned with pi's GREP_MAX_LINE_LE
         ToolParameter("path", "string", "File or directory to search in (default: cwd)", required=False),
         ToolParameter("glob", "string", "File glob filter, e.g. '*.py'", required=False),
     ],
-    traits=ToolTraits(side_effects="read"),
+    traits=ToolTraits(side_effects="read", repeat="free"),
 )
 async def grep_search(
     pattern: str,

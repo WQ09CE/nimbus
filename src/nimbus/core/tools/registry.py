@@ -7,9 +7,8 @@ uses it to export schemas to the LLM API.
 """
 
 import asyncio
-import inspect
+import os
 from dataclasses import dataclass, field
-from functools import wraps
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from ..protocol import ToolTraits
@@ -20,6 +19,18 @@ F = TypeVar("F", bound=Callable[..., Any])
 # plus fail-closed permission ASK. OS-sandbox execute class is opt-in by
 # declaration (design doc §6b, plugin row).
 DEFAULT_TRAITS = ToolTraits(side_effects="write")
+
+
+def repeat_override(name: str) -> Optional[str]:
+    """NIMBUS_REPEAT_OVERRIDE="Bash=keyed,Edit=free" — a lab/test knob for
+    exercising resume paths with tools that are conservatively 'once' by
+    declaration. Never set it in production."""
+    for pair in os.environ.get("NIMBUS_REPEAT_OVERRIDE", "").split(","):
+        k, _, v = pair.partition("=")
+        if k.strip() == name and v.strip() in ("free", "keyed", "once"):
+            return v.strip()
+    return None
+
 
 
 @dataclass
@@ -132,6 +143,16 @@ class ToolRegistry:
 
     def get(self, name: str) -> Optional[tuple[ToolDefinition, Callable[..., Any]]]:
         return self._tools.get(name)
+
+    def repeat_of(self, name: str) -> str:
+        """Recovery class of a tool: free | keyed | once (unknown tools -> once)."""
+        forced = repeat_override(name)
+        if forced:
+            return forced
+        entry = self._tools.get(name)
+        if entry is None:
+            return "once"
+        return getattr(entry[0].traits, "repeat", "once") or "once"
 
     def get_function(self, name: str) -> Optional[Callable[..., Any]]:
         entry = self._tools.get(name)

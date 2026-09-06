@@ -36,13 +36,13 @@ from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
 from nimbus.adapters.types import TokenUsage
 
-from .protocol import Event, Fault, StepResult, ToolResult
+from .protocol import ActionIR, Event, Fault, StepResult, ToolResult
 from .queues import (  # noqa: F401  (re-exported for compat)
     FollowUpQueue,
     MessageQueue,
     SteeringQueue,
 )
-from .session_log import SessionLog, open_session_log
+from .session_log import SessionLog, open_session_log, resumable_calls
 from .storage import SessionStorage
 
 logger = logging.getLogger("nimbus.loop")
@@ -194,6 +194,13 @@ class RuntimeLoop:
         self._step_in_turn = 0
         self._turn_open = False
         self._step_open = False
+        # Interrupted-turn resume (crash repair + continue): the plan is the set
+        # of graded RESUMABLE / NOT_STARTED calls of the last interrupted turn;
+        # computed here, before this run opens its own turn.
+        self._resume_plan: List[Dict[str, Any]] = (
+            resumable_calls(self.session_log.events)
+            if self.metadata.get("resume_interrupted") else []
+        )
         if hasattr(self.mmu, "event_sink"):
             self.mmu.event_sink = self.session_log.append
 
@@ -329,14 +336,55 @@ class RuntimeLoop:
             self._turn_end("aborted", backstop=True)
             self.session_log.flush()
 
+    # --- Interrupted-turn resume (nimbus-lab R3) ---
+
+    async def _replay_resumable_calls(self) -> AsyncIterator[Dict[str, Any]]:
+        """Re-execute the calls crash repair graded as safe to run again, then
+        let the model continue. 'once' calls were graded TOOL_OUTCOME_UNKNOWN
+        and are never rerun here — the model sees that verdict instead.
+
+        Each real result replaces the synthetic placeholder in the MMU surface
+        and is logged as a normal tool/result (marked resumed) inside its own
+        step, so the trace shows exactly one execution per call."""
+        plan, self._resume_plan = self._resume_plan, []
+        self._step_in_turn += 1
+        self._step_open = True
+        self.session_log.append("step/start", {"turn": self._turn, "step": self._step_in_turn, "resume_replay": True})
+        for item in plan:
+            tc = item["tool_call"]
+            fn = tc.get("function", {}) or {}
+            name = fn.get("name", "")
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+            action = ActionIR(kind="TOOL_CALL", name=name, args=args, id=tc.get("id") or uuid.uuid4().hex[:8])
+            self._emit("RESUME_REPLAY", {"tool": name, "call_id": action.id, "graded": item["code"]})
+            result = await self.vcpu.gate.syscall_tool(action)
+            content = result.output if isinstance(result.output, str) else json.dumps(result.output)
+            self.mmu.replace_tool_result(action.id, content, ui_detail=result.ui_detail)
+            self.session_log.append("tool/result", {
+                "message": {"role": "tool", "content": content, "name": name, "tool_call_id": action.id,
+                            "meta": {"ui_detail": result.ui_detail or {}, "resumed": True}},
+                "resumed": True, "replaces_seq": item["seq"], "graded": item["code"],
+            })
+            yield {"type": "resume_replay", "tool": name, "call_id": action.id,
+                   "status": result.status, "graded": item["code"]}
+        self._step_open = False
+        self.session_log.append("step/end", {"turn": self._turn, "step": self._step_in_turn, "resume_replay": True})
+
     # --- Turn/step brackets (Phase 0 event log) ---
 
     def _turn_start(self) -> None:
+        continues = self._turn if self._resume_plan else None
         self._turn += 1
         self._step_in_turn = 0
         self._turn_open = True
         self._step_open = False
-        self.session_log.append("turn/start", {"turn": self._turn})
+        data: Dict[str, Any] = {"turn": self._turn}
+        if continues is not None:
+            data["continues"] = continues  # this turn resumes an interrupted one
+        self.session_log.append("turn/start", data)
 
     def _turn_end(self, kind: str, **detail: Any) -> None:
         """Close the open turn with a reason. Idempotent — every exit path
@@ -378,6 +426,9 @@ class RuntimeLoop:
         """
         while True:  # OUTER: follow-up loop
             self._turn_start()
+            if self._resume_plan:
+                async for event in self._replay_resumable_calls():
+                    yield event
             while True:  # INNER: step loop
                 # Check interrupt -- return partial results (pi-style)
                 if self._interrupted:

@@ -63,7 +63,7 @@ def _render(todos: List[str], notes: Optional[str]) -> str:
             required=False,
         ),
     ],
-    traits=ToolTraits(side_effects="none"),
+    traits=ToolTraits(side_effects="none", repeat="free"),
 )
 async def update_plan(
     todos: Optional[List[str]] = None,

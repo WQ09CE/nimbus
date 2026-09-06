@@ -84,3 +84,17 @@ retry ≤ 3); the lease id lives in workflow history. Workers `lab-temporal-work
 kill|term|freeze` picks the worker running the pending activity (`temporal workflow describe`)
 and reports attempts / worker identity / history event counts. Extra `nimbus[lab]`
 (temporalio).
+
+## R3.1 — repeat classes + first-tier resume
+
+`ToolTraits.repeat = free | keyed | once` (default **once**; same three classes as HTTP
+safe/idempotent/neither and MCP readOnlyHint/idempotentHint) is the recovery axis, orthogonal
+to `side_effects` (authority axis). Crash repair grades the in-flight call by it:
+`once → TOOL_OUTCOME_UNKNOWN` (never rerun), `free/keyed → TOOL_RESUMABLE`; later calls are
+`TOOL_NOT_STARTED` (safe whatever their class). The ledger's orphan scanner now calls
+`SessionManagerV2.on_orphan`: UNKNOWN in flight → **fast-fail** (repair under our epoch,
+client gets `interrupted`), otherwise **resume here** — a new turn (`continues: N`) whose
+first step re-executes the graded calls (`resume_replay` SSE) and then lets the model go on.
+Lab knob `labctl repeat once|keyed` (NIMBUS_REPEAT_OVERRIDE) exercises both branches:
+`lab/drills/r3-resume.sh keyed|once`. Measured: kill at t+7 → resume decided t+27, turn
+finished on pod-b with no user message; once → fast-fail t+26.

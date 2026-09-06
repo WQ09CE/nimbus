@@ -166,6 +166,23 @@ class MMU:
         self._messages.append(msg)
         self._notify("tool/result", {"message": msg.to_dict()})
 
+    def replace_tool_result(
+        self, tool_call_id: str, content: str, ui_detail: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Overwrite a (synthetic) tool result in place with the real one.
+
+        Used by interrupted-turn resume after crash repair: the rehydrated
+        surface carries a graded placeholder for a call the runtime is about to
+        re-execute. Mutates without _notify — the loop logs the real result
+        itself, so the trace shows one event per execution, not a rehydration echo.
+        """
+        for msg in self._messages:
+            if msg.role == "tool" and msg.tool_call_id == tool_call_id:
+                msg.content = content
+                msg.meta = {"ui_detail": ui_detail} if ui_detail else {}
+                return True
+        return False
+
     def add_system_message(self, content: str) -> None:
         """Inject a transient system message (e.g., compaction notice, guard
         nudge). Sent as a user-role message because most providers reject a

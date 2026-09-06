@@ -62,6 +62,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         permission_manager=permission_manager,
         ledger=ledger,
     )
+    if ledger is not None:
+        ledger.on_orphan = session_manager.on_orphan
 
     # Set up log hub for real-time log streaming
     setup_log_hub_handler(log_hub)

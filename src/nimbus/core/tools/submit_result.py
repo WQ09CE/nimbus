@@ -81,7 +81,7 @@ def submit_result_impl(
             items={"type": "string"},
         ),
     ],
-    traits=ToolTraits(side_effects="none"),
+    traits=ToolTraits(side_effects="none", repeat="free"),
 )
 async def submit_result(
     summary: str = "",

@@ -43,6 +43,7 @@ from .loop import FollowUpQueue, LoopConfig, RuntimeLoop, SteeringQueue
 from .mmu import MMU, MMUConfig, PinnedContext
 from .path_context import AgentPathContext
 from .protocol import Event, ToolResult
+from .session_log import set_repeat_resolver
 from .tools.registry import ToolRegistry
 from .vcpu import VCPU, VCPUConfig
 
@@ -186,6 +187,9 @@ class AgentOS:
 
         # 2. Tool Registry
         self._registry = tools or ToolRegistry()
+        # Crash-repair grading and interrupted-turn resume consult the catalog's
+        # repeat classes through a process-wide resolver (session_log.repeat_of).
+        set_repeat_resolver(self._registry.repeat_of)
         if tools is None:
             _register_default_tools(self._registry)
         self._plugin_snapshot = plugin_snapshot
@@ -262,7 +266,7 @@ class AgentOS:
         else:
             base = Path(path_context.target_root).resolve() / ".nimbus" / "sessions"
         return str(base / safe_id / "scratchpad.md")
-        
+
     def get_mmu(self, session_id: str = "default") -> Optional[MMU]:
         """Get the MMU for a specific session_id, if it has been instantiated via stream_with_queue or run."""
         return self._mmus.get(session_id)
@@ -287,8 +291,8 @@ class AgentOS:
             yield event
 
     def stream_with_queue(
-        self, 
-        goal: str, 
+        self,
+        goal: str,
         session_id: str = "default",
         storage: Optional[Any] = None,
         metadata: Optional[Dict[str, Any]] = None,
@@ -305,7 +309,7 @@ class AgentOS:
             # On interrupt, partial results are in loop.partial_results
         """
         return self._build_loop(
-            goal, 
+            goal,
             session_id=session_id,
             storage=storage,
             metadata=metadata,
@@ -340,9 +344,9 @@ class AgentOS:
     # --- Build Pipeline ---
 
     def _build_loop(
-        self, 
-        goal: str, 
-        text_is_final: Optional[bool] = None, 
+        self,
+        goal: str,
+        text_is_final: Optional[bool] = None,
         session_id: str = "default",
         storage: Optional[Any] = None,
         metadata: Optional[Dict[str, Any]] = None,
@@ -377,7 +381,7 @@ class AgentOS:
                 user_memory=self._memory,
                 skill_instructions=self._skill_instructions,
             ))
-            
+
             # Rehydrate initial messages into MMU via the named restore
             # bypass (no re-logging; see MMU.restore_messages).
             if initial_messages:

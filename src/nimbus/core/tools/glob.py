@@ -27,7 +27,7 @@ MAX_OUTPUT_BYTES = 50 * 1024  # 50KB total output limit (aligned with Grep)
         ToolParameter("pattern", "string", "Glob pattern, e.g. '**/*.py' or '*.md'", required=True),
         ToolParameter("path", "string", "Directory to search in (default: workspace root)", required=False),
     ],
-    traits=ToolTraits(side_effects="read"),
+    traits=ToolTraits(side_effects="read", repeat="free"),
 )
 async def glob_search(
     pattern: str,

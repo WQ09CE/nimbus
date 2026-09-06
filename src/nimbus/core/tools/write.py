@@ -15,7 +15,7 @@ from .registry import ToolParameter, ToolTraits, tool
         ToolParameter("file_path", "string", "Path to the file to write", required=True),
         ToolParameter("content", "string", "Content to write", required=True),
     ],
-    traits=ToolTraits(side_effects="write"),
+    traits=ToolTraits(side_effects="write", repeat="keyed"),
 )
 async def write_file(file_path: str, content: str, **kwargs: Any) -> str:
     _path_context: AgentPathContext = kwargs.get("_path_context") or AgentPathContext.from_cwd()

@@ -749,6 +749,7 @@ class SessionManagerV2:
         tools: Optional[List[str]] = None,
         *,
         resume: bool = False,
+        resume_interrupted: bool = False,
     ):
         """
         Stream chat response with SSE events directly from nimbus-next RuntimeLoop.
@@ -814,6 +815,8 @@ class SessionManagerV2:
             loop_metadata["llm_config"] = dump.get("llm_config", {})
             if log_epoch is not None:
                 loop_metadata["log_epoch"] = log_epoch  # fence token for every log write this run
+            if resume_interrupted:
+                loop_metadata["resume_interrupted"] = True  # re-execute graded resumable calls, then continue
 
             # A fresh user turn resets task counters. Resume restores the
             # checkpoint verbatim, including the remaining iteration budget.
@@ -865,6 +868,13 @@ class SessionManagerV2:
                     })
                     continue
 
+                if evt_type == "resume_replay":
+                    # interrupted-turn resume re-executed a graded call
+                    await self._sse_hub.publish(session_id, "resume_replay", {
+                        "tool": event.get("tool"), "call_id": event.get("call_id"),
+                        "status": event.get("status"), "graded": event.get("graded"),
+                    })
+                    continue
                 if evt_type == "message_queued":
                     logger.info(f"[stream_chat] Handled enqueued message: {str(event.get('content'))[:50]}...")
                     continue
@@ -948,6 +958,83 @@ class SessionManagerV2:
                     session_id, "done", {"status": terminal_status}
                 )
 
+
+    # -- interrupted-turn recovery (nimbus-lab R3): admission + first-tier resume --
+
+    async def on_orphan(self, rec: Dict[str, Any]) -> None:
+        """Ledger callback: another pod's turn lost its owner. Decide by the
+        in-flight call's repeat class — free/keyed → resume here; once →
+        fast-fail (repair-on-open, user told), never rerun automatically."""
+        from nimbus.core.session_log import (
+            TOOL_OUTCOME_UNKNOWN,
+            interrupted_turn_closers,
+            load_session_log,
+        )
+
+        session_id = rec.get("session_id", "")
+        if self._ledger is None or not session_id:
+            return
+        if rec.get("pod") == self._ledger.pod_id or self.is_session_running(session_id):
+            await self._ledger.resolve(session_id, "skipped:local")
+            return
+        try:
+            events = load_session_log(self._storage.base_dir, session_id).events
+        except Exception as e:
+            await self._ledger.resolve(session_id, f"skipped:log_unreadable:{type(e).__name__}")
+            return
+        closers = interrupted_turn_closers(events)
+        if not closers:
+            await self._ledger.resolve(session_id, "skipped:balanced")  # nothing was in flight
+            return
+        blocked = [c for c in closers if c.type == "tool/result" and c.data.get("code") == TOOL_OUTCOME_UNKNOWN]
+        if blocked:
+            tool = blocked[0].data.get("message", {}).get("name")
+            logger.warning("[on_orphan] %s: in-flight %s is 'once' — fast-fail, not resuming", session_id, tool)
+            await self.fast_fail_interrupted(session_id)
+            await self._ledger.resolve(session_id, f"fast_fail:{tool}")
+            return
+        logger.warning("[on_orphan] %s: resuming interrupted turn on pod %s", session_id, self._ledger.pod_id)
+        started = await self.resume_interrupted(session_id)
+        await self._ledger.resolve(session_id, "resume" if started else "skipped:resume_refused")
+
+    async def fast_fail_interrupted(self, session_id: str) -> None:
+        """Second tier: close the crashed turn now (graded synthetic results,
+        turn/end interrupted) under our epoch and tell any attached client."""
+        from nimbus.core.session_log import open_session_log
+
+        request_id = uuid.uuid4().hex[:12]
+        epoch = await self._ledger.claim(session_id, request_id)
+        try:
+            log = open_session_log(self._storage.base_dir, session_id, epoch=epoch)  # repair-on-open
+            log.close()
+        finally:
+            await self._ledger.release(session_id, request_id)
+        await self._sse_hub.publish(session_id, "interrupted", {
+            "reason": "owner_pod_died", "resumable": False,
+            "hint": "The previous step may have executed; verify before retrying.",
+        })
+
+    async def resume_interrupted(self, session_id: str) -> bool:
+        """First tier: continue the crashed turn on this pod — graded resumable
+        calls are re-executed, then the model carries on. No user message needed."""
+        if self.is_session_running(session_id):
+            return False
+        self._sessions.pop(session_id, None)  # never reuse another pod's cached surface
+        self._sse_hub.prepare_session(session_id)
+        await self._restore_sandbox_from_binding(session_id)
+
+        async def run() -> None:
+            try:
+                await self.stream_chat(session_id, None, resume=True, resume_interrupted=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("Interrupted-turn resume failed for %s: %s", session_id, exc, exc_info=True)
+
+        task = asyncio.create_task(run())
+        self.register_task(session_id, task)
+        task.add_done_callback(lambda t: self.unregister_task(session_id))
+        return True
 
     async def _save_sandbox_binding(
         self, session_id: str, binding: Optional[Dict[str, Any]],

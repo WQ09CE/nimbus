@@ -9,6 +9,7 @@
   labctl mem POD MAX                    set MemoryMax (e.g. 300M) on the pod unit (runtime)
   labctl allow POD                      allow_always Bash/Write/Edit on POD (done automatically by pods up / turn)
   labctl llm POD mock|real              switch the pod's LLM rail (MockLLM vs pi-codex/gpt-5.6-luna via sidecar) + restart
+  labctl repeat once|keyed|free         lab knob: repeat class override for Bash on both pods (+restart) — resume admission drills
   labctl perms POD | respond POD REQ allow_once|deny
   labctl turn POD "prompt" [--session SID] [--timeout S]
                                         create session (or reuse) + chat; prints SSE events
@@ -94,6 +95,19 @@ def cmd_ledger(*args):
                        text=True, capture_output=True, env={**os.environ, "NIMBUS_LEDGER_URL": "redis://127.0.0.1:6379"})
     print(r.stdout.strip() or r.stderr.strip())
 
+def cmd_repeat(cls):
+    """Lab knob: NIMBUS_REPEAT_OVERRIDE=Bash=<cls> on both pods (+restart). 'once' = declaration default (fast-fail path),
+    'keyed' = treat the lab Bash step as idempotent so the resume path runs."""
+    if cls not in ("once", "keyed", "free"): raise SystemExit("repeat must be once|keyed|free")
+    for pod in pods():
+        f = LAB / "pods" / f"{pod}.env"
+        lines = [l for l in f.read_text().splitlines() if not l.startswith("NIMBUS_REPEAT_OVERRIDE=")]
+        if cls != "once": lines.append(f"NIMBUS_REPEAT_OVERRIDE=Bash={cls}")
+        f.write_text("\n".join(lines) + "\n")
+        sc("restart", UNIT.format(pod)); ok = wait_health(pod)
+        print(pod, "Bash repeat =", cls, "(restarted)" if ok else "(restart FAILED)")
+        if ok: cmd_allow(pod)
+
 def cmd_vc(action, arg=None):
     url = "http://127.0.0.1:8793/v1"
     if action == "recycle": print(http("POST", url + "/chaos/recycle", {}))
@@ -158,6 +172,7 @@ def main(a):
     elif c == "allow": cmd_allow(a[1])
     elif c == "ledger": cmd_ledger(*a[1:])
     elif c == "llm": cmd_llm(a[1], a[2])
+    elif c == "repeat": cmd_repeat(a[1])
     elif c == "perms": cmd_perms(a[1])
     elif c == "respond": cmd_respond(a[1], a[2], a[3])
     elif c == "vc": cmd_vc(a[1] if len(a) > 1 else "health", a[2] if len(a) > 2 else None)

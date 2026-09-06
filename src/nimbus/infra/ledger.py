@@ -51,6 +51,9 @@ class Ledger:
         self.owner_ttl_s = owner_ttl_s
         self._r = client
         self._tasks: List[asyncio.Task] = []
+        # Called with each newly recorded orphan {session_id, pod, request_id, ...};
+        # the owner (SessionManagerV2) decides: resume here, or fast-fail.
+        self.on_orphan = None
 
     # -- lifecycle --------------------------------------------------------
 
@@ -158,7 +161,18 @@ return e
                 found.append(rec)
                 logger.warning("ORPHAN turn: session=%s owner pod=%s request=%s (detected by %s)",
                                session_id, rec["pod"], rec["request_id"], self.pod_id)
+        for rec in found:
+            if self.on_orphan is not None:
+                try:
+                    await self.on_orphan(rec)
+                except Exception as e:  # the handler's failure is recorded, never propagated
+                    logger.warning("on_orphan(%s) failed: %s", rec["session_id"], e)
+                    await self.resolve(rec["session_id"], f"handler_error:{type(e).__name__}")
         return found
+
+    async def resolve(self, session_id: str, resolution: str) -> None:
+        """Record how an orphan was handled: resume | fast_fail | skipped:* | handler_error:*."""
+        await self._r.hset(f"orphan:{session_id}", mapping={"resolution": resolution, "resolved": f"{time.time():.3f}"})
 
     # -- observability ----------------------------------------------------
 
