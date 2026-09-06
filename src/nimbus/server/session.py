@@ -763,6 +763,7 @@ class SessionManagerV2:
         *,
         resume: bool = False,
         resume_interrupted: bool = False,
+        cut_seq: Optional[int] = None,
     ):
         """
         Stream chat response with SSE events directly from nimbus-next RuntimeLoop.
@@ -830,6 +831,8 @@ class SessionManagerV2:
                 loop_metadata["log_epoch"] = log_epoch  # fence token for every log write this run
             if resume_interrupted:
                 loop_metadata["resume_interrupted"] = True  # re-execute graded resumable calls, then continue
+                if cut_seq is not None:
+                    loop_metadata["resume_cut_seq"] = cut_seq  # redo results logged after the machine's cut
 
             # A fresh user turn resets task counters. Resume restores the
             # checkpoint verbatim, including the remaining iteration budget.
@@ -1018,9 +1021,11 @@ class SessionManagerV2:
         in-flight call's repeat class — free/keyed → resume here; once →
         fast-fail (repair-on-open, user told), never rerun automatically."""
         from nimbus.core.session_log import (
+            TOOL_ONCE_AFTER_CUT,
             TOOL_OUTCOME_UNKNOWN,
             interrupted_turn_closers,
             load_session_log,
+            resumable_calls,
         )
 
         session_id = rec.get("session_id", "")
@@ -1050,6 +1055,22 @@ class SessionManagerV2:
         closers = interrupted_turn_closers(events)
         if not closers:
             await self._ledger.resolve(session_id, "skipped:balanced")  # nothing was in flight
+            return
+        # R5.2: the consistency cut is the restored binding, not the log tail. Results logged
+        # after the binding ran on a machine state we no longer have; keyed ones are redone,
+        # a `once` one makes the turn unresumable here.
+        cut = self._binding_seq(session_id)
+        plan = resumable_calls(events + closers, after_seq=cut) if cut is not None else []
+        unsafe = [p for p in plan if p.get("code") == TOOL_ONCE_AFTER_CUT]
+        if unsafe:
+            tool = (unsafe[0]["tool_call"].get("function") or {}).get("name")
+            logger.warning("[on_orphan] %s: %s completed after the machine cut (seq %s) and is 'once' — fast-fail",
+                           session_id, tool, cut)
+            await self.fast_fail_interrupted(
+                session_id, reason="cut_unsafe",
+                hint=f"{tool} ran after the last sandbox snapshot; its effect is in the log but not in the "
+                     f"restored workspace, and it cannot be run again. Verify before retrying.")
+            await self._ledger.resolve(session_id, f"fast_fail:cut:{tool}")
             return
         blocked = [c for c in closers if c.type == "tool/result" and c.data.get("code") == TOOL_OUTCOME_UNKNOWN]
         if blocked:
@@ -1110,6 +1131,15 @@ class SessionManagerV2:
             "hint": hint or "The previous step may have executed; verify before retrying.",
         })
 
+    def _binding_seq(self, session_id: str) -> Optional[int]:
+        """Log position of the sandbox binding (the machine's cut), if one is recorded."""
+        try:
+            dump = self._storage.load_session(session_id) or {}
+            seq = ((dump.get("metadata") or {}).get("sandbox_binding") or {}).get("seq")
+            return int(seq) if seq is not None else None
+        except Exception:
+            return None
+
     async def resume_interrupted(self, session_id: str) -> bool:
         """First tier: continue the crashed turn on this pod — graded resumable
         calls are re-executed, then the model carries on. No user message needed."""
@@ -1117,11 +1147,12 @@ class SessionManagerV2:
             return False
         self._sessions.pop(session_id, None)  # never reuse another pod's cached surface
         self._sse_hub.prepare_session(session_id)
+        cut = self._binding_seq(session_id)
         await self._restore_sandbox_from_binding(session_id)
 
         async def run() -> None:
             try:
-                await self.stream_chat(session_id, None, resume=True, resume_interrupted=True)
+                await self.stream_chat(session_id, None, resume=True, resume_interrupted=True, cut_seq=cut)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -1258,6 +1289,9 @@ class SessionManagerV2:
         # metadata write instead of a workspace tar. Unknown backends lack
         # the properties and default to dirty — conservative.
         last_snapshot = getattr(backend, "last_snapshot_id", None)
+        loop = self._active_loops.get(session_id)
+        log = getattr(loop, "session_log", None)
+        seq = len(log.events) if log is not None else None  # the machine's cut in log coordinates (R5.2)
         if last_snapshot and not getattr(backend, "dirty", True):
             binding = {
                 "backend": getattr(backend, "backend_id", "?"),
@@ -1265,6 +1299,7 @@ class SessionManagerV2:
                 "lease_id": backend._lease.lease_id,
                 "taken_at": datetime.now(timezone.utc).isoformat(),
                 "reused": True,
+                "seq": seq,
             }
             await self._save_sandbox_binding(session_id, binding)
             logger.info(
@@ -1284,6 +1319,7 @@ class SessionManagerV2:
             "snapshot_id": snapshot_id,
             "lease_id": backend._lease.lease_id,
             "taken_at": datetime.now(timezone.utc).isoformat(),
+            "seq": seq,
         }
         await self._save_sandbox_binding(session_id, binding)
         logger.info(

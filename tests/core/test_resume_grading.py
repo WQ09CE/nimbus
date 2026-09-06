@@ -137,3 +137,48 @@ def test_replay_step_ends_with_a_seam_event():
     assert [e["type"] for e in events] == ["resume_replay", "step_end"]
     assert events[1]["resume_replay"] is True and events[1]["turn"] == 2
     assert [e.type for e in loop.session_log.events][-2:] == ["tool/result", "step/end"]
+
+
+def _chain(after_crash_results, in_flight="Bash"):
+    """user msg, turn 1 with N completed Bash results, then a call in flight (crash), repaired."""
+    from nimbus.core.session_log import SessionEvent, interrupted_turn_closers
+    raw = [("user/message", {"message": {"role": "user", "content": "go"}}), ("turn/start", {"turn": 1})]
+    for k in range(1, after_crash_results + 1):
+        raw += [("step/start", {"turn": 1, "step": k}),
+                ("assistant/message", {"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": f"c{k}", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}]}}),
+                ("tool/result", {"message": {"role": "tool", "content": f"step-{k}", "name": "Bash", "tool_call_id": f"c{k}"}}),
+                ("step/end", {"turn": 1, "step": k})]
+    k = after_crash_results + 1
+    raw += [("step/start", {"turn": 1, "step": k}),
+            ("assistant/message", {"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"id": f"c{k}", "type": "function", "function": {"name": in_flight, "arguments": "{}"}}]}})]
+    ev = [SessionEvent(seq=i, type=t, time=1.0, data=d) for i, (t, d) in enumerate(raw)]
+    return ev + interrupted_turn_closers(ev)
+
+
+def test_results_logged_after_the_binding_cut_are_redone_before_the_in_flight_call():
+    """R5.2 rolling crash: the binding was taken at the seam after step 1 (seq 5); steps 2 and 3
+    completed in the log but the restored workspace predates them — redo them, then the in-flight
+    step 4. Without the cut only step 4 would run and steps 2–3 would vanish from the machine."""
+    from nimbus.core.session_log import TOOL_REDO, TOOL_RESUMABLE, resumable_calls, set_repeat_resolver
+    set_repeat_resolver(lambda n: "keyed")
+    try:
+        ev = _chain(3)
+        cut = next(e.seq for e in ev if e.type == "step/end" and e.data.get("step") == 1) + 1
+        plan = resumable_calls(ev, after_seq=cut)
+        assert [(p["tool_call"]["id"], p["code"]) for p in plan] == [("c2", TOOL_REDO), ("c3", TOOL_REDO), ("c4", TOOL_RESUMABLE)]
+        assert [(p["tool_call"]["id"], p["code"]) for p in resumable_calls(ev)] == [("c4", TOOL_RESUMABLE)]  # no cut: log tail
+    finally:
+        set_repeat_resolver(None)
+
+
+def test_a_once_result_after_the_cut_is_flagged_not_redone():
+    from nimbus.core.session_log import TOOL_ONCE_AFTER_CUT, resumable_calls, set_repeat_resolver
+    set_repeat_resolver(lambda n: "once")
+    try:
+        ev = _chain(2)
+        plan = resumable_calls(ev, after_seq=1)
+        assert [p["code"] for p in plan][:2] == [TOOL_ONCE_AFTER_CUT, TOOL_ONCE_AFTER_CUT]
+    finally:
+        set_repeat_resolver(None)

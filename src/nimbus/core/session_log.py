@@ -587,10 +587,20 @@ def grade_unanswered_calls(tool_calls: List[Dict[str, Any]], answered_ids: set) 
 RERUNNABLE_CODES = (TOOL_RESUMABLE, TOOL_NOT_STARTED)
 
 
-def resumable_calls(events: List["SessionEvent"]) -> List[Dict[str, Any]]:
-    """After crash repair: the synthetic results of the last interrupted turn
-    that a resumed run must re-execute — [{tool_call, code, seq}] in order.
-    Empty when the last turn was not an interrupted one."""
+TOOL_REDO = "TOOL_REDO"                        # completed in the log, but after the machine's cut: run again
+TOOL_ONCE_AFTER_CUT = "TOOL_ONCE_AFTER_CUT"    # same, for a `once` tool: cannot be made consistent automatically
+
+
+def resumable_calls(events: List["SessionEvent"], after_seq: Optional[int] = None) -> List[Dict[str, Any]]:
+    """After crash repair: what a resumed run must re-execute — [{tool_call, code, seq}] in order.
+
+    Two sources. (1) The synthetic results of the last interrupted turn (in-flight / not
+    started). (2) With ``after_seq`` — the log position of the sandbox binding the resumer
+    restored — every REAL result logged after that cut: the log is ahead of the machine
+    by up to one step (a crash between a result and its seam binding), so those steps ran
+    but their effects are not in the restored workspace. free/keyed → TOOL_REDO; once →
+    TOOL_ONCE_AFTER_CUT (admission must refuse). Empty when the last turn was not interrupted.
+    The cut is the binding, never the log tail (nimbus-lab R5.2)."""
     last_turn_start = None
     for i in range(len(events) - 1, -1, -1):
         if events[i].type == "turn/start":
@@ -601,17 +611,32 @@ def resumable_calls(events: List["SessionEvent"]) -> List[Dict[str, Any]]:
     tail = events[last_turn_start:]
     if not any(e.type == "turn/end" and e.data.get("reason", {}).get("kind") == "interrupted" for e in tail):
         return []
+    # The logical turn chain starts at the last user message; resumed turns add none.
+    chain_start = 0
+    for i in range(len(events) - 1, -1, -1):
+        if events[i].type == "user/message":
+            chain_start = i
+            break
+    chain = events[chain_start:]
     calls_by_id: Dict[str, Dict[str, Any]] = {}
-    for e in tail:
+    for e in chain:
         if e.type == "assistant/message":
             for tc in e.data.get("message", {}).get("tool_calls") or []:
                 calls_by_id[tc.get("id")] = tc
     out = []
-    for e in tail:
-        if e.type == "tool/result" and e.data.get("synthetic") and e.data.get("code") in RERUNNABLE_CODES:
-            tc = calls_by_id.get(e.data.get("message", {}).get("tool_call_id"))
-            if tc is not None:
+    for e in chain:
+        if e.type != "tool/result":
+            continue
+        tc = calls_by_id.get(e.data.get("message", {}).get("tool_call_id"))
+        if tc is None:
+            continue
+        if e.data.get("synthetic"):
+            if e.data.get("code") in RERUNNABLE_CODES:
                 out.append({"tool_call": tc, "code": e.data.get("code"), "seq": e.seq})
+        elif after_seq is not None and e.seq > after_seq:
+            name = (tc.get("function") or {}).get("name", "")
+            code = TOOL_REDO if repeat_of(name) in ("free", "keyed") else TOOL_ONCE_AFTER_CUT
+            out.append({"tool_call": tc, "code": code, "seq": e.seq})
     return out
 
 

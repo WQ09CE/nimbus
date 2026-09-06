@@ -197,8 +197,11 @@ class RuntimeLoop:
         # Interrupted-turn resume (crash repair + continue): the plan is the set
         # of graded RESUMABLE / NOT_STARTED calls of the last interrupted turn;
         # computed here, before this run opens its own turn.
+        # R5.2: the machine's cut is the restored binding's log position, never the
+        # log tail — results logged after it ran on machine state we no longer have.
+        cut = self.metadata.get("resume_cut_seq")
         self._resume_plan: List[Dict[str, Any]] = (
-            resumable_calls(self.session_log.events)
+            resumable_calls(self.session_log.events, after_seq=None if cut is None else int(cut))
             if self.metadata.get("resume_interrupted") else []
         )
         if hasattr(self.mmu, "event_sink"):

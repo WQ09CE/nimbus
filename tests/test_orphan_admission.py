@@ -214,3 +214,28 @@ def test_handoff_of_a_newer_contract_session_is_acked_and_stranded(manager):
     manager.resume_session = refuse
     assert asyncio.run(manager.on_handoff({"session_id": SID, "from_pod": "d"})) is True
     assert manager._ledger.stranded == [(SID, 2, "paused", {"from_pod": "d"})]
+
+
+def test_once_completed_after_the_machine_cut_fast_fails(manager, tmp_path):
+    """R5.2: the restored binding predates a completed `once` step — its effect is in the log but
+    not on the machine, and it must not run again: fast-fail with reason cut_unsafe."""
+    set_repeat_resolver(lambda n: "once")
+    ev = [
+        ("user/message", {"message": {"role": "user", "content": "go"}}),
+        ("turn/start", {"turn": 1}),
+        ("step/start", {"turn": 1, "step": 1}),
+        ("assistant/message", {"message": {"role": "assistant", "content": "", "tool_calls": [_tc(1, "Send")]}}),
+        ("tool/result", {"message": {"role": "tool", "content": "sent", "name": "Send", "tool_call_id": "c1"}}),
+        ("step/end", {"turn": 1, "step": 1}),
+        ("step/start", {"turn": 1, "step": 2}),
+        ("assistant/message", {"message": {"role": "assistant", "content": "", "tool_calls": [_tc(2, "Read")]}}),
+    ]
+    with open(tmp_path / f"{SID}.jsonl", "w") as f:
+        for i, (t, d) in enumerate(ev):
+            f.write(json.dumps({"seq": i, "type": t, "time": 1.0, "data": d}) + "\n")
+    SessionStorage(str(tmp_path)).save_session(SID, "active", messages=[], vcpu_state={},
+                                               metadata={"sandbox_binding": {"snapshot_id": "s", "lease_id": "l", "seq": 2}})
+    resumed = []
+    manager.resume_interrupted = lambda sid: resumed.append(sid) or asyncio.sleep(0)
+    asyncio.run(manager.on_orphan({"session_id": SID, "pod": "a", "request_id": "r"}))
+    assert resumed == [] and manager._ledger.resolutions == ["fast_fail:cut:Send"]
