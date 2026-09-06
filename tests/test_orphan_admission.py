@@ -160,9 +160,9 @@ def test_a_turn_that_lost_max_attempts_owners_without_progress_is_quarantined(ma
     asyncio.run(manager.on_orphan({"session_id": SID, "pod": "a", "request_id": "r", "epoch": "1"}))
     assert resumed == [SID] and manager._ledger.resolutions == ["resume"]
     manager._ledger.marks = ["0", "3"]  # progressed between deaths (3 real results now): the count restarts
-    asyncio.run(manager.on_orphan({"session_id": SID, "pod": "b", "request_id": "r", "epoch": "2"}))
+    asyncio.run(manager.on_orphan({"session_id": SID, "pod": "c", "request_id": "r", "epoch": "2"}))
     assert resumed == [SID, SID] and manager._ledger.resolutions[-1] == "resume"
-    asyncio.run(manager.on_orphan({"session_id": SID, "pod": "c", "request_id": "r", "epoch": "3"}))
+    asyncio.run(manager.on_orphan({"session_id": SID, "pod": "d", "request_id": "r", "epoch": "3"}))
     assert resumed == [SID, SID] and manager._ledger.resolutions[-1] == "quarantine:attempts=2"  # same marker twice
     tail = [json.loads(line) for line in open(tmp_path / f"{SID}.jsonl")][-1]
     assert tail["type"] == "turn/end" and tail["data"]["reason"]["kind"] == "interrupted"

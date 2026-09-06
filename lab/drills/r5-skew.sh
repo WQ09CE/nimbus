@@ -18,7 +18,7 @@ ts() { date '+%H:%M:%S'; }
 act() { systemctl --user is-active "lab-nimbus@$1" 2>/dev/null; }
 ver() { curl -s -m 2 "127.0.0.1:$((8000 + $(printf '%d' "'$1") - 97))/api/v1/health" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("version","?"))' 2>/dev/null || echo "-"; }
 fleet() { for p in a b c d e f; do printf '%s=%s/%s ' "$p" "$(act "$p" | cut -c1-3)" "$(ver "$p")"; done; }
-owners() { valkey-cli -p 6379 --scan --pattern 'turn:*' | while read -r k; do valkey-cli -p 6379 HGET "$k" pod; done | sort | uniq -c | awk '$2!=""{printf "%s:%s ", $2, $1}'; }
+owners() { valkey-cli -p 6379 --scan --pattern 'turn:*' | while read -r k; do p=$(valkey-cli -p 6379 HGET "$k" pod); [ -n "$p" ] && [ "$(valkey-cli -p 6379 EXISTS "pod:$p")" = 1 ] && echo "$p"; done | sort | uniq -c | awk '{printf "%s:%s ", $2, $1}'; }  # live owners only
 ended() { [ -f "$LAB/load/$TAG/status.json" ] && python3 -c "import json;print(len(json.load(open('$LAB/load/$TAG/status.json'))))" || echo 0; }
 mq() { "$PY" -c "import sys; sys.path.insert(0,'.'); from mq_probe import consumer_state as c; s=c(); print(f\"mq pending={s.get('pending','?')} ack_pending={s.get('ack_pending','?')} redelivered={s.get('redelivered','?')} delivered={s.get('delivered','?')}\")" 2>/dev/null || echo "mq=n/a"; }
 setenv() { local f="pods/$1.env"; sed -i "/^$2=/d" "$f"; [ -n "$3" ] && echo "$2=$3" >> "$f"; }

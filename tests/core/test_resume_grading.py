@@ -102,3 +102,38 @@ def test_replayed_result_replaces_its_placeholder_in_the_projection():
     tools = [m for m in derive_state(events)["messages"] if m.get("role") == "tool"]
     assert [m["tool_call_id"] for m in tools] == ["c7"] and tools[0]["content"] == "step-7"
     assert check_invariants(events) == []
+
+
+def test_replay_step_ends_with_a_seam_event():
+    """R5.2: the replay step must yield step_end like any other step — the server binds the
+    workspace at that seam; without it the NEXT crash restores the snapshot from before the
+    replay and the replayed step's effects vanish from the machine."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from nimbus.core.loop import RuntimeLoop
+    from nimbus.core.mmu import MMU
+    from nimbus.core.protocol import ToolResult
+    from tests.core.test_loop import MockVCPU
+
+    vcpu = MockVCPU([])
+    calls = []
+
+    async def syscall_tool(action):
+        calls.append(action.name)
+        return ToolResult(status="OK", output="step-3")
+
+    vcpu.gate = SimpleNamespace(syscall_tool=syscall_tool)
+    loop = RuntimeLoop(vcpu, MMU())
+    loop._turn = 2
+    loop._resume_plan = [{"tool_call": {"id": "c3", "type": "function", "function": {"name": "Bash", "arguments": "{}"}},
+                          "code": "TOOL_RESUMABLE", "seq": 7}]
+
+    async def run():
+        return [ev async for ev in loop._replay_resumable_calls()]
+
+    events = asyncio.run(run())
+    assert calls == ["Bash"]
+    assert [e["type"] for e in events] == ["resume_replay", "step_end"]
+    assert events[1]["resume_replay"] is True and events[1]["turn"] == 2
+    assert [e.type for e in loop.session_log.events][-2:] == ["tool/result", "step/end"]

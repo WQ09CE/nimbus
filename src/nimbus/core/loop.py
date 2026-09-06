@@ -372,6 +372,11 @@ class RuntimeLoop:
                    "status": result.status, "graded": item["code"]}
         self._step_open = False
         self.session_log.append("step/end", {"turn": self._turn, "step": self._step_in_turn, "resume_replay": True})
+        # The replay step is a dirty seam like any other: without this the server never
+        # binds the workspace after a replay, and the NEXT crash restores the snapshot from
+        # before it — the replayed step's effects vanish from the machine (nimbus-lab R5.2:
+        # twice-resumed turns finished with a step missing from their workspace).
+        yield {"type": "step_end", "turn": self._turn, "step": self._step_in_turn, "resume_replay": True}
 
     # --- Turn/step brackets (Phase 0 event log) ---
 
