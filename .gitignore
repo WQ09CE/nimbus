@@ -59,6 +59,10 @@ workspace/
 node_modules/
 package.json
 package-lock.json
+!tools/pi-browser-lab/package.json
+!tools/pi-browser-lab/package-lock.json
+.artifacts/
+.runtime/
 
 # Type checking
 .mypy_cache/

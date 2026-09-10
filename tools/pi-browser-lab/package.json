@@ -1,0 +1,7 @@
+{
+  "name": "nimbus-pi-browser-lab",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test browser.test.mjs" },
+  "dependencies": { "playwright-core": "1.63.0" }
+}
