@@ -1,0 +1,21 @@
+# Template only. Worker environment must not contain the bot token.
+[Unit]
+Description=Nimbus chat worker %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/Projects/nimbus-telegram/chat-lab
+EnvironmentFile=%h/.config/nimbus-chat-lab/worker.env
+ExecStart=%h/Projects/nimbus-telegram/chat-lab/.venv/bin/nimbus-chat-lab worker --engine nimbus-pi --pi %h/.local/share/mise/installs/pi/0.85.1/pi/pi --state %h/.local/share/nimbus-chat-lab/worker-%i
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=135
+UMask=0077
+NoNewPrivileges=true
+MemoryMax=1G
+TasksMax=128
+
+[Install]
+WantedBy=default.target

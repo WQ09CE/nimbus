@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nimbus-chat-lab"
+version = "0.1.0"
+description = "Single-host Telegram control plane for Nimbus (private lab MVP)"
+requires-python = ">=3.12,<3.13"
+dependencies = ["nimbus", "psycopg[binary]==3.2.10", "httpx==0.28.1"]
+
+[project.scripts]
+nimbus-chat-lab = "nimbus_chat_lab.cli:main"
+
+[tool.uv.sources]
+nimbus = { path = "..", editable = true }
+
+[dependency-groups]
+dev = ["pytest==8.4.2", "pytest-asyncio==1.2.0", "pgserver==0.1.4", "ruff==0.14.0"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
