@@ -2,8 +2,9 @@
 
 本文件保留授权门槛。2026-09-10 更新：token 已安全落盘，`identify` 已验证 Telegram 连接；
 经 Dennis 授权，已安装 PostgreSQL 18.6 并启动专用 user service，受限应用角色、schema 和 DSN 已配置。
-初始空库备份／恢复检查通过，但不是定时或异地备份。精确私聊身份仍待人工确认，allowlist 为空，
-gateway／worker 模板已安装但未启用。没有启用代码工具、群聊权限或用户 lingering。
+初始空库备份／恢复检查通过，但不是定时或异地备份。Dennis 已明确确认数字私聊身份，
+唯一白名单已写入，gateway 和 worker A 已启用并运行；待处理的 `/start` 欢迎回复已获得 Telegram
+发送回执。新模型对话／用户端收件确认仍待验证，worker B 未启动。没有启用代码工具、群聊权限或用户 lingering。
 
 ## 1. Telegram 身份与 token
 
@@ -28,7 +29,7 @@ gateway／worker 模板已安装但未启用。没有启用代码工具、群聊
 - 已部署专用 PostgreSQL 18.6，仅 Unix socket；系统默认 `postgresql.service` 未启动。
 - 数据目录、无登录 owner／受限 app 角色和初始备份已分离，详见 [部署说明](deploy/LOCAL_POSTGRES.md)。
   `pgserver` 自带 PG 16.2 仍只用于合成测试；定时／异地备份、内容保留和磁盘告警仍待落实。
-- PG user unit 已启用；确认数字私聊身份后才启用 gateway 和 worker A，真实对话成功后再开 B。
+- PG、gateway、worker A user units 已启用，白名单身份已由 Dennis 确认；真实模型对话成功后再开 B。
   `Linger=no`，目前只保证用户登录期间的服务生命周期，无人登录常驻另行确认。
 - worker 的 Pi/Codex 通路已用真实 Astra 验证，不需要额外 API key。服务用户与登录用户不同时需正常重新授权，不能复制别人 token。
 

@@ -5,8 +5,10 @@ K3s, broker or Redis in this increment. PostgreSQL is task/attempt authority.
 
 **Status:** S1 implementation and local acceptance. On 2026-09-10, the operator
 reported Telegram connection validation, and a dedicated PostgreSQL 18.6 user service
-was provisioned. At this checkpoint the reply gateway/workers remain stopped pending
-explicit numeric private-chat identity confirmation; live reply acceptance is not PASS.
+was provisioned. Dennis confirmed the exact private-chat identity; the gateway and
+worker A are now enabled/running. The pending `/start` reply has a Telegram send receipt;
+a fresh model conversation and user receipt confirmation are still pending. Worker B
+remains stopped; full live reply acceptance is not PASS.
 See [ACCEPTANCE.md](ACCEPTANCE.md), [AUTHORIZATION.md](AUTHORIZATION.md), and the
 [local PostgreSQL deployment guide](deploy/LOCAL_POSTGRES.md).
 
@@ -41,8 +43,9 @@ The dirty `~/Projects/nimbus` and `nimbus-v2` recovery worktree were left untouc
 - Single-active gateway guarded by a PostgreSQL session advisory lock, not by
   assuming Telegram's 409 conflict is sufficient election. Losing the lock
   connection shuts down all gateway loops. No webhook or public listening port.
-- Two worker process identities and graceful drain templates. The dedicated PG
-  service is enabled locally; gateway/worker activation remains a separate identity gate.
+- Two worker process identities and graceful drain templates. The dedicated PG,
+  gateway and worker A user services are enabled locally after the identity gate;
+  worker B remains stopped pending the first real model conversation.
 
 ## Intentionally NOT enabled
 
