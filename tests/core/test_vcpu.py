@@ -3,7 +3,6 @@
 import asyncio
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -11,7 +10,6 @@ from nimbus.core.decoder import InstructionDecoder
 from nimbus.core.mmu import MMU, PinnedContext
 from nimbus.core.protocol import ActionIR, ToolResult
 from nimbus.core.vcpu import VCPU, VCPUConfig
-
 
 # =============================================================================
 # Mock ALU (LLM)
@@ -135,9 +133,9 @@ class TestVCPULimits:
             text_is_final=False,
         )
         # Step 1: thought
-        r1 = await vcpu.step()
+        await vcpu.step()
         # Step 2: thought
-        r2 = await vcpu.step()
+        await vcpu.step()
         # Step 3: should hit limit
         r3 = await vcpu.step()
         assert r3.is_final
@@ -354,6 +352,31 @@ class TestVCPULimits:
         result = await asyncio.wait_for(task, 1)
         assert not result.is_final
         await asyncio.wait_for(cancelled.wait(), 1)
+
+
+class TestVCPUParentCancellation:
+    @pytest.mark.asyncio
+    async def test_parent_cancellation_joins_model_and_wakeup_children(self):
+        started, stopped = asyncio.Event(), asyncio.Event()
+        vcpu, _ = make_vcpu([])
+
+        async def hanging_chat(*args, **kwargs):
+            started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                stopped.set()
+
+        vcpu.alu.chat = hanging_chat
+        wakeup = asyncio.Event()
+        vcpu.set_wakeup_event(wakeup)
+        task = asyncio.create_task(vcpu.step())
+        await asyncio.wait_for(started.wait(), 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 1)
+        assert stopped.is_set(), "model task must stop before its parent reports stopped"
+        assert not wakeup._waiters, "wakeup waiter must not outlive the cancelled step"
 
 
 class TestVCPUMemoryIntegrity:

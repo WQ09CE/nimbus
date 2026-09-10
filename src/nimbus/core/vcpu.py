@@ -307,19 +307,20 @@ class VCPU:
                 # The loop will inject the steering message and re-run step().
                 chat_task = asyncio.create_task(chat_coro)
                 wakeup_task = asyncio.create_task(self._wakeup_event.wait())
-                done, pending = await asyncio.wait(
-                    [chat_task, wakeup_task],
-                    timeout=self.config.llm_call_timeout,
-                    return_when=asyncio.FIRST_COMPLETED
-                )
-
-                # Always cancel pending tasks to prevent orphan task leaks
-                for t in pending:
-                    t.cancel()
-                    try:
-                        await t
-                    except asyncio.CancelledError:
-                        pass
+                try:
+                    done, _ = await asyncio.wait(
+                        [chat_task, wakeup_task],
+                        timeout=self.config.llm_call_timeout,
+                        return_when=asyncio.FIRST_COMPLETED
+                    )
+                finally:
+                    # asyncio.wait does not own its children. Parent cancellation
+                    # must also stop/join the model call and its wakeup waiter,
+                    # otherwise the loop can report stopped while the LLM lives on.
+                    for task in (chat_task, wakeup_task):
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(chat_task, wakeup_task, return_exceptions=True)
 
                 if self._wakeup_event.is_set():
                     if not chat_task.done():
@@ -530,7 +531,7 @@ class VCPU:
                         action.id, action.name, str(tool_result.output),
                         ui_detail=tool_result.ui_detail,
                     )
-                    
+
                     # Declarative turn conclusion (dsh concludesTurn): any tool
                     # result may declare it ends the turn — evidence-carrying
                     # termination instead of a framework-kept name list.
@@ -557,7 +558,7 @@ class VCPU:
             count = self._exec.on_thought()
             if thought_text:
                 self.mmu.add_assistant_message(thought_text)
-            
+
             if result.usage is not None and hasattr(self.mmu, 'set_last_usage'):
                 self.mmu.set_last_usage(result.usage)
 
