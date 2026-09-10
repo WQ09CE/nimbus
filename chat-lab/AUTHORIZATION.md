@@ -1,6 +1,9 @@
 # Dennis 上线后需要授权的事项
 
-本文件是待办，不是要求现在中断实现。没有替你登录、创建 bot、安装系统运行时或开启服务。
+本文件保留授权门槛。2026-09-10 更新：token 已安全落盘，`identify` 已验证 Telegram 连接；
+经 Dennis 授权，已安装 PostgreSQL 18.6 并启动专用 user service，受限应用角色、schema 和 DSN 已配置。
+初始空库备份／恢复检查通过，但不是定时或异地备份。精确私聊身份仍待人工确认，allowlist 为空，
+gateway／worker 模板已安装但未启用。没有启用代码工具、群聊权限或用户 lingering。
 
 ## 1. Telegram 身份与 token
 
@@ -22,10 +25,11 @@
 
 ## 2. 常驻 PostgreSQL 与用户服务
 
-- 测试数据库已独立运行验证，不代表系统已部署常驻 PG。
-- 需确认采用哪个**受支持、已打安全补丁**的 PG 版本、独立数据目录、应用角色和备份路径。
-  `pgserver` 自带 PG 16.2 只用于合成测试，不作为日常服务数据库。
-- 审查后再安装／启用 `deploy/` 中的 user systemd 模板；目前没有启用任何 Nimbus 新服务。
+- 已部署专用 PostgreSQL 18.6，仅 Unix socket；系统默认 `postgresql.service` 未启动。
+- 数据目录、无登录 owner／受限 app 角色和初始备份已分离，详见 [部署说明](deploy/LOCAL_POSTGRES.md)。
+  `pgserver` 自带 PG 16.2 仍只用于合成测试；定时／异地备份、内容保留和磁盘告警仍待落实。
+- PG user unit 已启用；确认数字私聊身份后才启用 gateway 和 worker A，真实对话成功后再开 B。
+  `Linger=no`，目前只保证用户登录期间的服务生命周期，无人登录常驻另行确认。
 - worker 的 Pi/Codex 通路已用真实 Astra 验证，不需要额外 API key。服务用户与登录用户不同时需正常重新授权，不能复制别人 token。
 
 ## 3. 开代码工具前的系统权限门槛

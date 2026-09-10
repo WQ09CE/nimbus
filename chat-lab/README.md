@@ -3,8 +3,12 @@
 Private single-host conversational bot. Telegram is the decided ingress; no Discord,
 K3s, broker or Redis in this increment. PostgreSQL is task/attempt authority.
 
-**Status:** implementation and local acceptance, not a deployed Telegram bot.
-See [ACCEPTANCE.md](ACCEPTANCE.md) and [AUTHORIZATION.md](AUTHORIZATION.md).
+**Status:** S1 implementation and local acceptance. On 2026-09-10, the operator
+reported Telegram connection validation, and a dedicated PostgreSQL 18.6 user service
+was provisioned. At this checkpoint the reply gateway/workers remain stopped pending
+explicit numeric private-chat identity confirmation; live reply acceptance is not PASS.
+See [ACCEPTANCE.md](ACCEPTANCE.md), [AUTHORIZATION.md](AUTHORIZATION.md), and the
+[local PostgreSQL deployment guide](deploy/LOCAL_POSTGRES.md).
 
 Source base: Nimbus `377b6065` (`refactor/core-hardening`, committed state only).
 Development worktree: `~/Projects/nimbus-telegram`, branch `feat/telegram-lab`.
@@ -37,7 +41,8 @@ The dirty `~/Projects/nimbus` and `nimbus-v2` recovery worktree were left untouc
 - Single-active gateway guarded by a PostgreSQL session advisory lock, not by
   assuming Telegram's 409 conflict is sufficient election. Losing the lock
   connection shuts down all gateway loops. No webhook or public listening port.
-- Two worker process identities and graceful drain templates; no services enabled.
+- Two worker process identities and graceful drain templates. The dedicated PG
+  service is enabled locally; gateway/worker activation remains a separate identity gate.
 
 ## Intentionally NOT enabled
 
@@ -113,7 +118,8 @@ changes to existing lab services. The PG restart drill targets only the test ser
    forwards only PATH/HOME/LANG, not Telegram/DB environment secrets. Credential
    access belongs to the trusted worker, never a future code sandbox.
 5. Review paths, resource limits and authorization, then install the provided **user
-   systemd templates**. They are not enabled by this implementation. Start gateway
+   systemd templates**. See the local deployment guide for opt-in PG provisioning;
+   gateway/workers are not enabled by that helper. Start gateway
    and one worker first, then worker B after the real initial conversation succeeds.
 6. Test private chat, `/status`, `/cancel`, `/new`, group @ and a real follow-up after
    an intentionally interrupted test turn. Only then label live acceptance PASS.

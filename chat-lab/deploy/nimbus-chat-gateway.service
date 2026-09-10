@@ -1,8 +1,8 @@
 # Template only. Not installed/enabled by the implementation session.
 [Unit]
 Description=Nimbus private Telegram gateway/control
-After=network-online.target
-Wants=network-online.target
+After=network-online.target nimbus-chat-postgres.service
+Wants=network-online.target nimbus-chat-postgres.service
 
 [Service]
 WorkingDirectory=%h/Projects/nimbus-telegram/chat-lab

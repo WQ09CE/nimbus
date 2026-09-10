@@ -1,0 +1,23 @@
+[Unit]
+Description=Nimbus chat dedicated PostgreSQL (Unix socket only)
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/postgres -D %h/.local/share/nimbus-chat-lab/postgres -c config_file=%h/.config/nimbus-chat-lab/postgres.conf
+ExecReload=/bin/kill -HUP ${MAINPID}
+RuntimeDirectory=nimbus-chat-postgres
+RuntimeDirectoryMode=0700
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutStartSec=120
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+MemoryMax=1G
+TasksMax=128
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=default.target

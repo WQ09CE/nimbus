@@ -1,8 +1,8 @@
 # Template only. Worker environment must not contain the bot token.
 [Unit]
 Description=Nimbus chat worker %i
-After=network-online.target
-Wants=network-online.target
+After=network-online.target nimbus-chat-postgres.service
+Wants=network-online.target nimbus-chat-postgres.service
 
 [Service]
 WorkingDirectory=%h/Projects/nimbus-telegram/chat-lab
