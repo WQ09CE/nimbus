@@ -2,7 +2,8 @@
 
 **Latest, 09:22:** conversational UX upgrade is deployed. Dennis confirmed Telegram
 creation/enablement, immediate execution and report receipt. His single existing daily
-job was preserved. New UX and the actual future 08:00 delivery still need observation.
+job was preserved. Dennis subsequently reran the workflow and confirmed a substantially
+better experience. The actual future 08:00 delivery remains unverified.
 See [CONVERSATION_UX.md](CONVERSATION_UX.md) for parallel lanes, quiet replies and context.
 No subscription or digest rerun was created by either deployment operation.
 
@@ -24,7 +25,8 @@ an operator canary are intentionally distinguished from Telegram user acceptance
 | Restricted production role; clean Agent service restart | PASS | `agent-post-cutover-health.json` |
 | Repository and model-artifact scan for actual local DSN/password/bot token | PASS | Same health evidence; values were never printed |
 | Real-user task creation, immediate run, report and follow-up | USER CONFIRMED | Dennis's morning transcript; quality problems prompted this UX upgrade |
-| New UX, draft/cancel/new cycle | **PENDING USER OBSERVATION** | Unit and real-model synthetic checks are not live UI acceptance |
+| Updated conversational UX | USER CONFIRMED | Dennis reran the workflow and reported a much better experience |
+| Complete draft/cancel/new cycle | **PENDING** | The positive UX report does not certify every control path |
 | Actual next 08:00 delivery | **PENDING** | User-enabled existing task preserved; next planned delivery September 12 |
 | Cold boot/logout, host-loss recovery, forced host resource exhaustion | **NOT TESTED** | Not inferred from unit settings or canaries |
 

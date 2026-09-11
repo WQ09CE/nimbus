@@ -4,7 +4,8 @@
 PostgreSQL, gateway, scheduler and three workers are enabled: A for chat, B/C for two
 background slots. Dennis has confirmed task creation and receipt of the immediate
 report, and has enabled his daily task himself. Its next delivery was preserved.
-New conversational UX and the future 08:00 delivery still need user observation.
+Dennis has since rerun the workflow and confirmed the improved conversational UX.
+The future 08:00 delivery and full control-command cycle remain separate checks.
 
 - [Latest conversation/concurrency upgrade and checks](CONVERSATION_UX.md)
 

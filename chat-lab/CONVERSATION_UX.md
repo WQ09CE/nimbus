@@ -52,9 +52,10 @@ Evidence (private/ignored `.artifacts/`):
 - `conversation-deployment.json`: one schedule preserved, two retained receipts
   recovered, actual worker environment verified as A=chat/B=jobs/C=jobs, services active.
 
-User-confirmed original creation/manual report receipt is not proof of the new UX or
-future scheduled delivery. Those need user observation. Do not rerun the one-time
-upgrade against an already migrated database.
+After the upgrade, Dennis reran the workflow and reported that the experience was
+much better. This confirms the user-observed UX improvement, not every control path
+or the future scheduled 08:00 delivery; those remain separate checks. Do not rerun
+the one-time upgrade against an already migrated database.
 
 ## Try through Telegram
 
