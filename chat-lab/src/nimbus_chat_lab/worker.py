@@ -61,7 +61,10 @@ class Worker:
             text = await job
             state = "succeeded"
         except CancelRequested:
-            state, text = "cancelled", "已确认停止（本阶段无外部工具操作）。"
+            state, text = (
+                "cancelled",
+                "已确认停止本次客户端执行；已完成的工具效果不会回滚，外部服务端计算是否停止未确认。",
+            )
         except AuthorityLost:
             state, text = "interrupted", "执行权已失效，旧 worker 不再发布结果。"
         except asyncio.CancelledError:

@@ -1,66 +1,65 @@
-# Nimbus Telegram Chat Lab — first runnable increment
+# Nimbus — private Telegram personal Agent
 
-Private single-host conversational bot. Telegram is the decided ingress; no Discord,
-K3s, broker or Redis in this increment. PostgreSQL is task/attempt authority.
+**Current deployment (2026-09-11, Asia/Shanghai): integrated Agent mode is running.**
+PostgreSQL, gateway, worker A and the persistent scheduler are enabled user services.
+Linger is enabled. **No daily subscription has been created.** Real user Telegram
+conversation/control acceptance and the first 08:00 delivery remain pending.
 
-**Status:** S1 implementation and local acceptance. On 2026-09-10, the operator
-reported Telegram connection validation, and a dedicated PostgreSQL 18.6 user service
-was provisioned. Dennis confirmed the exact private-chat identity; the gateway and
-worker A are now enabled/running. The pending `/start` reply has a Telegram send receipt;
-a fresh model conversation and user receipt confirmation are still pending. Worker B
-remains stopped; full live reply acceptance is not PASS.
-See [ACCEPTANCE.md](ACCEPTANCE.md), [AUTHORIZATION.md](AUTHORIZATION.md), and the
-[local PostgreSQL deployment guide](deploy/LOCAL_POSTGRES.md).
+- [Capabilities, deployment and rollback](AGENT_MODE.md)
+- [Measured acceptance and outstanding checks](ACCEPTANCE.md)
+- [Authorization and unchanged identity boundaries](AUTHORIZATION.md)
+- [Dedicated PostgreSQL setup](deploy/LOCAL_POSTGRES.md)
 
-Source base: Nimbus `377b6065` (`refactor/core-hardening`, committed state only).
-Development worktree: `~/Projects/nimbus-telegram`, branch `feat/telegram-lab`.
-The dirty `~/Projects/nimbus` and `nimbus-v2` recovery worktree were left untouched.
+Worktree: `~/Projects/nimbus-telegram`, branch `feat/telegram-lab`, originally based on
+Nimbus `377b6065`. The dirty original Nimbus and `nimbus-v2` worktrees are not edited.
+Changes are committed locally, not pushed or merged.
 
-## What works
+## Integrated capabilities
 
-- Native Pi screenshot browser tool: [setup](../tools/pi-browser-lab/README.md).
-- Real Nimbus `AgentOS` + a text-only Pi CLI model adapter using the existing
-  `openai-codex/gpt-6-astra` provider. No extra API-key model loop, token copying,
-  SDK impersonation headers, or changes to Nimbus's existing sidecar.
-- Telegram long polling, exact numeric bot/user/chat allowlist, UTF-16-correct group
-  mention parsing, private/group topic separation; original messages only.
-- Transactional inbox, rejected dispositions, task admission and polling cursor.
-  Duplicate updates do not create more work. One live turn per conversation;
-  at most 64 queued/running/cancel-requested turns across this database.
-- PostgreSQL `FOR UPDATE SKIP LOCKED` claims; fresh attempt/incarnation/generation.
-  Default lease 30 s, renewal at most 1 s, scanner 1 s, using database time.
-  **No renewal after expiry**, no stale progress/completion, no interrupted replay.
-- `/status`, `/cancel`, `/new`, `/help`, `/mem` (honest capability/status response).
-  Cancellation request is separate from confirmed stop; queued tasks never launch.
-- Recent completed context (last four turns with bounded text), keyed by exact user,
-  chat, topic and conversation epoch. `/new` starts an empty epoch, preserving audit.
-  This is not automatic long-term memory or hidden-engine checkpoint continuation.
-- Immutable terminal result + notification outbox in one transaction. Telegram
-  failures retry **delivery**, not Nimbus. Lost/ambiguous send receipts become
-  `uncertain`, not an uncontrolled send loop or an exactly-once claim.
-- Optional private `sendMessageDraft` streaming snapshots; durable `sendMessage`
-  final output. Plain text, conservative UTF-16 chunks, backoff on `retry_after`.
-- Single-active gateway guarded by a PostgreSQL session advisory lock, not by
-  assuming Telegram's 409 conflict is sufficient election. Losing the lock
-  connection shuts down all gateway loops. No webhook or public listening port.
-- Two worker process identities and graceful drain templates. The dedicated PG,
-  gateway and worker A user services are enabled locally after the identity gate;
-  worker B remains stopped pending the first real model conversation.
+The bot understands natural-language goals. There is no fixed digest command and no
+per-capability activation sequence:
 
-## Intentionally NOT enabled
+| Capability | Execution and persistence |
+|---|---|
+| Planning and conversation | Real Nimbus `AgentOS`, Astra through Pi's normal Codex OAuth |
+| Code/files | bash/read/write/edit/list in rootless gVisor; persistent bounded `/workspace` ZIP in PG |
+| Public research | Grok X Search and web search through Pi-managed xAI OAuth |
+| Long-term memory | Identity-scoped key/value records; saved key index supplied to subsequent turns |
+| Persistent tasks | Arbitrary supported instructions, daily timezone-aware delivery, immediate run, list/update/disable |
+| Control | `/status`, `/cancel`, `/new`, `/help`, `/mem`; ordinary language invokes the tools |
 
-**The bot has NO filesystem, shell, browser, search, plugin, spawn-agent or publication
-tools in this increment.** Both Nimbus's explicit empty registry/allowlist and the
-model adapter reject tools. An unavailable Linux sandbox never falls back to local
-execution. The developer's `browser_lab` extension is not loaded in bot workers.
+**Nimbus owns all client tool execution.** Pi is a model/auth bridge, not a second
+agent executor. Its `--no-tools` flag is intentional: native model tool calls return
+to Nimbus's explicitly registered tools. No Telegram token/DSN is forwarded to Pi,
+and no credentials, host home, writable host workspace or network enter gVisor.
+There is no host-Bash fallback. Pi normally refreshes its own authorization.
 
-Waiting for the next gate: verified rootless Podman + gVisor sandbox, all-tool routing,
-remote-operation identity/TTL/cleanup, durable approvals, file/image handling,
-long-term memory, group streaming edits and live Telegram verification. There is no
-web UI or claim of transparent worker resume. See the original memex design's C0–C12
-matrix for the later full acceptance bar, not just the S1 subset tested here.
+The developer-only [browser computer-use tool](../tools/pi-browser-lab/README.md)
+is separate and is **not exposed through Telegram**. Telegram attachments, arbitrary
+package downloads, desktop control, external writes/payments and arbitrary cron
+triggers are not implemented. This is not an unrestricted OpenClaw/cloud-agent clone.
 
-## Local development
+## Reliability contract
+
+- Exact numeric bot/user/chat allowlist; one active execution per conversation and
+  64 queued/running/cancel-requested turns across the dedicated database.
+- Transactional intake, cursor, dedupe, attempts, recent four-turn context and epochs.
+  `/new` clears conversational context, not explicit long-term memory or schedules.
+- DB-clock leases: default 30 s, renew at most every 1 s, no renewal after expiry.
+  Scheduled leases are additionally capped by their run deadline. Revocation is
+  checked and row-locked at request/delivery admission; state tools also commit-fence.
+- Terminal interruption is not transparently resumed/replayed. A retry is new work.
+- Ordered outbox, bounded definite delivery retries, bot-wide 429 cooldown. Ambiguous
+  sends are `uncertain`, not automatically replayed. A receipt is not proof of reading.
+- Daily work normally prepares five minutes early and holds results until the chosen
+  delivery time. Missed runs coalesce to the latest eligible slot within four hours.
+  Disable/update invalidates old generations, queued work and unsent notifications;
+  it cannot recall an already admitted/in-flight message or provider request.
+- Resource-limited, networkless gVisor operations; serialized workspace snapshots
+  prevent parallel native calls from losing sibling writes. Stale attempts cannot
+  persist a snapshot. Owned units/containers are cleaned on cancellation.
+
+## Development and verification
 
 ```bash
 cd ~/Projects/nimbus-telegram/chat-lab
@@ -69,124 +68,52 @@ uv run pytest -q
 uv run ruff check src tests scripts
 uv run nimbus-chat-lab doctor
 
-# Explicitly consumes existing Codex subscription usage; NEVER contacts Telegram.
-uv run python scripts/live_smoke.py
+# Actual models / subscription usage, MOCK Telegram, isolated test PG:
+uv run python scripts/agent_smoke.py
+uv run python scripts/agent_search_smoke.py
 
-# Browser unit tests, then a real model/UI smoke:
-cd ../tools/pi-browser-lab
-npm ci --ignore-scripts --no-audit --no-fund
-npm test
-node smoke.mjs
+# Actual installed gVisor, no Telegram or provider call:
+uv run python scripts/sandbox_drills.py
 ```
 
-The lab pins Python 3.12 because the isolated PostgreSQL test wheel currently only
-ships through CPython 3.12. This does not change Nimbus's global Python version or
-its existing virtualenv. `uv.lock` is checked in.
+The lab pins Python 3.12. Synthetic tests use isolated, Unix-socket-only PG 16.2
+from `pgserver`; this is **not** the deployed database, which is supported PG 18.6.
+Tests do not use Docker permissions or the original Nimbus stores. `doctor` describes
+its own process environment, not the currently running systemd services.
 
-Tests start **real PostgreSQL 16.2** from the pinned `pgserver` test dependency in a
-private temporary directory, listening on a Unix socket only. They create/drop only
-random test databases and stop the owned server afterward. This old bundled version
-is for synthetic tests, **not a recommended live database release**. Deploy a current
-supported/patched PostgreSQL independently; `uv sync --no-dev` excludes test binaries.
-No Docker socket, root, existing PG database or global service is used by these tests.
+`--engine nimbus-pi` remains an explicitly text-only fallback for operator rollback;
+`echo`/`nimbus-mock` remain test modes. Deployed units select `nimbus-agent` explicitly.
+The Agent unit has a 900 s turn bound, 30 s drain and 45 s systemd stop backstop.
+Stopping a client cannot prove provider-side computation/billing stopped immediately.
 
-The process drills only signal subprocesses that the test just created and whose
-attempt-start evidence was observed. No broad `pkill`, Redis flush, node OOM or
-changes to existing lab services. The PG restart drill targets only the test server.
-
-## Deployment after operator authorization
-
-1. Choose a supported, patched PostgreSQL and create an empty, dedicated `nimbus_chat`
-   database and limited application role. Do not point this at the old Nimbus or any
-   company database. No migration of the engine JSON/JSONL store is implied.
-2. Create `~/.config/nimbus-chat-lab/` with mode 0700. Make separate gateway/worker
-   env files based on `deploy/*.env.example`, mode 0600. Keep the bot token only in
-   `telegram-token` (owned regular file, mode 0600, no symlink).
-3. Provision the schema and exact numeric allowlist using the same dedicated DSN:
-
-   ```bash
-   # Environment populated securely by the operator; do not paste secrets in chat.
-   uv run nimbus-chat-lab init
-   uv run nimbus-chat-lab allow --bot BOT_ID --user DENNIS_USER_ID --chat PRIVATE_CHAT_ID
-   # Add a group only after deciding who may invoke it, with a separate exact pair:
-   # uv run nimbus-chat-lab allow --bot BOT_ID --user DENNIS_USER_ID --chat NEGATIVE_GROUP_ID
-   ```
-
-   Use the operator-only `identify` command after sending `/start` to a new bot if
-   numeric IDs are not known; see [AUTHORIZATION.md](AUTHORIZATION.md). It neither
-   acknowledges pending updates nor automatically admits/authorizes their senders.
-
-4. In the bot's intended worker account, verify ordinary Pi subscription login.
-   The tested adapter launches Pi with no tools/extensions/skills/context files and
-   forwards only PATH/HOME/LANG, not Telegram/DB environment secrets. Credential
-   access belongs to the trusted worker, never a future code sandbox.
-5. Review paths, resource limits and authorization, then install the provided **user
-   systemd templates**. See the local deployment guide for opt-in PG provisioning;
-   gateway/workers are not enabled by that helper. Start gateway
-   and one worker first, then worker B after the real initial conversation succeeds.
-6. Test private chat, `/status`, `/cancel`, `/new`, group @ and a real follow-up after
-   an intentionally interrupted test turn. Only then label live acceptance PASS.
-
-Manual foreground equivalents (without installing services):
+## Operations and remaining risks
 
 ```bash
-uv run nimbus-chat-lab gateway --bot BOT_ID --drafts
-uv run nimbus-chat-lab worker --engine nimbus-pi --state /APPROVED/STATE/worker-a
-uv run nimbus-chat-lab worker --engine nimbus-pi --state /APPROVED/STATE/worker-b
+systemctl --user status nimbus-chat-{postgres,gateway,scheduler}.service nimbus-chat-worker@a.service
+loginctl show-user "$USER" -p Linger
 ```
 
-`--engine echo` and `--engine nimbus-mock` are explicitly labelled test modes. The
-engine choice is required so startup cannot silently pretend a fixture is a model.
-SIGTERM stops new claims, drains up to 120 seconds, then cancels and records an honest
-interruption when it still has authority. Nimbus now joins its nested model/wakeup
-coroutines on parent cancellation. A Linux `PR_SET_PDEATHSIG` exec launcher also kills
-the direct Pi child if the worker is killed, even though Pi has its own process group.
-Systemd's cgroup remains the backstop for descendants; this is not a general remote
-sandbox cancellation mechanism. If an engine refuses to stop, the CLI fail-stops
-without releasing local admission early; lease recovery owns the interruption.
-Stopping the Pi client does not prove the provider immediately stops server-side
-inference or billing. Do not kill a Pi child and assume a future remote command also stopped.
+Services no longer depend on this development Pi session. Linger is enabled, but
+08:00 delivery still requires the machine awake, online, disk unlocked and provider
+credentials usable. Cold reboot/logout and a real future 08:00 delivery have not
+been acceptance-tested. Worker B remains stopped; it is not required for one user.
 
-## Operations and limitations
+Protected PG/session logs contain conversation/tool content. Telegram bot chats are
+not end-to-end encrypted secret chats. Do not submit company material or credentials.
+Local pre-cutover backup/restore passed; automatic/encrypted off-host backups,
+retention, disk alerts and full host-loss recovery remain unimplemented. These are
+known operational risks, not claims that those features are secretly active.
 
-- State names: `queued/running/cancel_requested/succeeded/failed/interrupted/cancelled`.
-  `interrupted` is terminal in S1. Retrying is a new explicitly submitted user turn.
-- Outbox `sending` abandoned for 60 s becomes `uncertain`. Definite 429/connect
-  failures retry up to five times. Same-chat pending/sending predecessors block later
-  fragments; multipart responses carry part labels. A 429 persists a conservative
-  bot-wide cooldown, shared by final messages and drafts. 5xx/read/write ambiguity
-  does **not** auto-retry.
-  `/status` remains database-authoritative; a successful model run can have failed
-  or uncertain notification delivery. There is no auto-publication or push credential.
-- Final notifications are globally paced at 3.2 s (conservative for groups); optional
-  private drafts update at most once per maintenance tick and honor 429. Real service
-  limits still need live acceptance. Group partial streaming is deliberately deferred.
-- `can_stop` is NOT enabled. Telegram's current official API calls the update field
-  `stopped_message_generation`; it needs durable mapping before exposing that button.
-  `/cancel` is implemented now. Unknown callbacks/edits/media are durably ignored.
-- Fixed UI strings currently use Chinese and machine state values remain English;
-  dynamic locale catalogs are deferred. User-facing errors show an error class,
-  never raw token-bearing URLs, DB DSNs or payloads.
-- Nimbus body logs are disabled in CLI operation. Protected engine session logs,
-  PostgreSQL conversation data, draft snapshots and screenshots **do contain content**.
-  Do not send company material or credentials through this bot; Telegram bots are not
-  end-to-end encrypted secret chats. Retention, disk quotas and encrypted off-host
-  backup/restore remain pre-daily-use gates, not implemented promises.
-- The current process boundary is a correctness/isolation-of-lifetime boundary,
-  **not a hostile-worker security boundary**. Gateway/worker DB roles and same-user
-  filesystem access still need deployment review. No multi-tenant certification.
-- Test runtime knobs use deliberately short leases. The 30 s default is not a measured
-  production SLA. Event/output/queue/run-time bounds do not replace host memory,
-  PID, disk or future sandbox resource limits.
+An OAuth-capable search endpoint does not prove unlimited/free subscription billing.
+There are three search-request and 24 workspace-operation allowances per turn;
+xAI `max_turns` is not a hard tool-count or monetary cap. Retrieval remains untrusted
+model input; the sandbox is not a proof that semantic prompt injection is solved.
 
-## Files
+## Main implementation files
 
-- `src/nimbus_chat_lab/schema.sql`, `store.py`: authority, inbox/outbox, queue and recovery.
-- `telegram.py`, `gateway.py`: transport/auth parsing, polling, delivery and drafts.
-- `engine.py`, `worker.py`: Nimbus/Pi text adapter and process execution lifecycle.
-- `tests/`: real PG tests, mock Telegram wire tests, real subprocess signal drills.
-- `scripts/live_smoke.py`: actual Nimbus + Pi/Codex, synthetic update and mocked Telegram.
-- `deploy/`: reviewed-before-use templates, no installation automation that changes the host.
-
-Reference design: `~/.memex/knowledge/projects/nimbus/architecture/chat-agent-lab-lite.md`.
-Code and acceptance evidence take precedence over assumptions in that proposal.
+- `store.py`, `schema.sql`: intake, control, leases, ordered delivery and recovery.
+- `agent_engine.py`, `agent_bridge.py`, `pi_bridge.ts`: Nimbus native tools and Pi auth/model bridge.
+- `agent_state.py`, `agent_schema.sql`, `scheduler.py`: memory, workspace, schedules, fences and publication.
+- `agent_sandbox.py`, `sandbox_runner.py`: verified runtime, limits, isolated file/code operations.
+- `scripts/deploy_agent_local.py`: explicit one-time backed-up cutover and real-unit canary;
+  **not** a general idempotent upgrade/retry command.

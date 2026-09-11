@@ -1,113 +1,112 @@
-# Local acceptance — 2026-09-10
+# Agent acceptance — 2026-09-11 (Asia/Shanghai)
 
-**Overall:** PASS for developer browser computer use and the local S1 chat/control
-increment. **BLOCKED for real Telegram deployment and S2 sandbox tools.**
+**Implemented and deployed:** integrated personal Agent, real native tools and persistent
+scheduler. **Not accepted yet:** a fresh real-user Telegram conversation/control cycle
+and an actual future 08:00 delivery. No daily subscription was created by deployment.
 
-This is not a C0–C12 full cloud-agent acceptance claim. No real bot token, personal
-Telegram account, company data, existing database or sandbox runtime was used.
+This supersedes the earlier S1-only assessment. Model smoke, installed services and
+an operator canary are intentionally distinguished from Telegram user acceptance.
 
-## Host and source
+## Current measured results
 
-- Host `omarchy`: x86_64, Linux 7.2.3-arch1-3, 16 logical CPUs, Intel Core Ultra X9 388H.
-- Approximately 61 GiB memory reported; ~850 GiB free on the encrypted root filesystem
-  at inventory. `/dev/kvm` present, not exercised by these tests.
-- Pi 0.85.1; system Chromium 152.0.7977.82; Playwright-core 1.63.0.
-- Lab Python 3.12.14 with locked dependencies; existing Nimbus core suite ran in its
-  existing Python 3.13 environment with PYTHONPATH pointing at this worktree.
-- Base Nimbus commit `377b6065`; feature branch `feat/telegram-lab` in
-  `/home/dennis/Projects/nimbus-telegram`. Existing dirty main development worktree
-  and `nimbus-v2` were not edited.
-- Memex successfully fast-forwarded `77776cc → 03f2973` before implementation.
-  The lightweight design was used; Telegram ingress is decided.
-
-## Results
-
-| Check | Verdict | Evidence / scope |
+| Check | Result | Evidence under repository `.artifacts/` |
 |---|---|---|
-| Native Pi + Astra + image tool, default auto | PASS | Previous research lab replay `auto-replay-Qj2m65` |
-| Native Pi + Astra + scoped `detail:original` | PASS | Replay `auto-replay-d6v3b9`; request metadata shows original images; receipt `PASS-1F5229E2` |
-| Project-local browser tool unit/security tests | PASS | 3 Node tests; actual Chromium, exact dimensions, serialized/stale observations, cross-origin/redirect denial, init rollback, cancellation/close |
-| Project-local browser + Astra visual loop | PASS | `.artifacts/browser-model-gXvfma/verification.json`, receipt `PASS-852B10E0`; random canvas challenge, actual trusted mouse events, fresh screenshots |
-| Nimbus AgentOS + actual Pi/Codex model + PG + mocked Telegram | PASS | `.artifacts/nimbus-model-worons89/verification.json`; one attempt after duplicate intake, 2 progress snapshots, exact nonce response, durable final notification |
-| Lab Python tests | PASS | **44 passed**, `.artifacts/chat-lab-unit.xml` |
-| Existing Nimbus core tests + cancellation regression | PASS | **540 passed, 3 skipped**, `.artifacts/nimbus-core.xml`; external-provider/slow markers excluded |
-| New lab Ruff / touched core file Ruff / diff whitespace | PASS | `ruff check`, `git diff --check` |
-| User systemd template syntax | PASS | `systemd-analyze --user verify` on both templates; not installed or enabled |
-| Actual Telegram polling/draft/final/follow-up | BLOCKED | Needs Dennis's bot token and confirmed numeric allowlist |
-| Podman/runsc sandbox and all-tool routing | BLOCKED | Neither binary available; Docker socket permission denied; **no local fallback** |
-| Remote tool commands, sandbox effect counts, real media | NOT TESTED | No sandbox/real device operations were enabled |
-| Backups, host reboot, disk/resource-pressure enforcement | NOT TESTED | Not inferred from worker/PG tests |
+| Lab tests, actual isolated PG and subprocess fault drills | **67 passed** | `agent-unit.xml`, `agent-unit.txt` |
+| Existing Nimbus core regression | **540 passed, 3 skipped** | `agent-core.xml`; external/slow tests excluded |
+| Native Astra → AgentOS → real gVisor → memory → daily create/disable → run_now → background/outbox | PASS | `agent-model-smoke/verification.json`; **mock Telegram, isolated PG** |
+| Native Astra tool call → Pi xAI OAuth → X Search, final uses provider source | PASS | `agent-search-smoke/verification.json`; one actual X Search call, one provider source; **mock Telegram** |
+| Pi xAI OAuth web search | PASS | `web-search-proof.json`; three actual web-search calls, two provider sources |
+| Real gVisor containment and cancellation | PASS | `sandbox-drills.json`, `sandbox-service-drill.txt` |
+| Native Agent in actual production worker user unit and PG | PASS | `agent-local-deployment.json`; **operator-injected synthetic turn, Telegram delivery suppressed** |
+| Pre-cutover PG dump and independent PG 18 restore | PASS | Protected `backups/agent-cutover-20260910T173305Z/`; row counts checked |
+| Restricted production role; clean Agent service restart | PASS | `agent-post-cutover-health.json` |
+| Repository and model-artifact scan for actual local DSN/password/bot token | PASS | Same health evidence; values were never printed |
+| Real-user Telegram model/draft/control/follow-up | **PENDING** | User must submit/observe the exchange |
+| Actual next 08:00 delivery | **PENDING** | User has not enabled a daily task |
+| Cold boot/logout, host-loss recovery, forced host resource exhaustion | **NOT TESTED** | Not inferred from unit settings or canaries |
 
-The visual task is a controlled synthetic smoke, not a blind computer-use benchmark.
-The model could only call `browser_lab`; the host checked the runtime-generated
-challenge/receipt after interaction. The final model run was rerun after review fixes.
+Ruff, diff whitespace and installed systemd unit syntax are also checked. The older
+visual browser tests (3 Node tests and real Astra visual receipt `PASS-852B10E0`)
+remain separate developer-tool evidence; they do not certify Telegram browser access.
 
-The Nimbus model test really invokes Astra through Pi's existing Codex provider;
-Telegram uses `httpx.MockTransport`. It **does not** establish real Telegram delivery
-or its actual rate limits. Model cancellation tests use a controlled child executable
-inside the real Nimbus task nesting, not a claim of server-side inference cancellation.
+## What the production canary actually established
 
-## Fault and boundary coverage
+1. Stopped ingress/drained the old worker; made a private backup and restored it to
+   a newly named PG 18 database, never over the production database.
+2. Applied additive Agent tables/views as the no-login owner and granted only DML /
+   sequence access to the existing app role. No app superuser, role/database creation
+   or schema CREATE rights. The exact single allowlist remained unchanged.
+3. Installed Agent worker and scheduler units. A synthetic turn in isolated history
+   epoch `-1` was handled by the **real worker service**, not a foreground substitute.
+4. Actual Astra tools wrote/read a nonce in gVisor and wrote/read persistent memory;
+   exactly one attempt and one pending, never-attempted final notification existed.
+5. Removed the exact synthetic turn/events/attempt/outbox, nonce memory and matching
+   workspace before reopening ingress. No Telegram update/cursor was forged and
+   no user message was sent. No schedule was created, even temporarily.
+6. Gateway, worker A, scheduler and PG were running; all Agent application services
+   were cleanly restarted afterward. `Linger=yes`; worker B remains stopped.
 
-- Eight concurrent claims of one turn → exactly one live attempt.
-- Duplicate Telegram update → no duplicate turn/model execution; unauthorized updates
-  get durable rejected dispositions and do not block polling offset progress.
-- Exact user/chat allowlist, group @ with emoji/UTF-16 offsets, forwarded/anonymous/bot
-  messages, wrong bot command target and unknown approval callbacks fail closed.
-- Queue cap, per-conversation active constraint, `/new` epoch, recent-context isolation.
-- Queued cancellation starts no attempt. Running cancellation is only reported
-  confirmed after the engine and its model process stop.
-- Expired lease cannot renew, emit progress or finish. A deliberate pause **between**
-  authority read and write cannot resurrect the lease: the write has its own predicate.
-- Stale incarnation and resumed old attempts cannot overwrite terminal state/result.
-- Real independent worker subprocesses: SIGKILL, SIGSTOP beyond lease, short SIGSTOP,
-  SIGTERM drain — **each scenario ran twice**. An independent worker completed a
-  follow-up after interruption; thawed worker A could not change the old result.
-- The signal fixture counts its synthetic operation starts, not remote sandbox
-  command starts. No remote C3 coverage is claimed.
-- Real restart of the dedicated test PostgreSQL: DB loss is unknown, worker stops;
-  after DB restart the scanner waits for actual lease expiry before interruption.
-- A model child in a separate process group dies when its worker is SIGKILLed via
-  Linux parent-death signaling. A cancellation-resistant engine retains active state;
-  the CLI's fail-stop path exits instead of hanging in asyncio shutdown.
-- Missing/ambiguous Telegram send receipt becomes `uncertain`; execution result stays
-  durable. Lost DB settlement after send never causes automatic message or model replay.
-- 429 persists cooldown, and a delayed first chunk cannot be overtaken by later
-  same-chat chunks. Optional draft rejection disables drafts, not durable final sends.
-- Bot identity discovery outputs numeric metadata only; it does not acknowledge
-  updates, print message bodies or grant authorization.
+The post-cutover database had zero schedules, memories, workspaces or active turns.
+That is a point-in-time deployment fact, not permission to delete future user data.
 
-## Independent review
+## Real sandbox checks
 
-A fresh-context Astra reviewer used read-only tools, without credentials or external
-tool access. Initial and follow-up reports are saved locally:
+- Official SHA512-verified gVisor release `release-20260831.0`; per-file SHA256
+  manifest enforced before execution. Installed in a permanent private data path.
+- Rootless Podman 6.1.1; immutable Python image digest; gVisor systrap runtime.
+- Host home/runtime sockets and credential env absent; external network and host
+  loopback denied; rootfs write rejected; workspace tmpfs verified at 64 MiB.
+- Actual gVisor sentry observed in the transient unit cgroup with MemoryMax 768 MiB,
+  TasksMax 256, CPUQuota 100%, RuntimeMax 70 s. This was also exercised under an
+  outer `NoNewPrivileges=yes` unit, matching the deployed worker's restriction.
+- Workspace write/read persisted; a read did not mutate the snapshot; archive path
+  traversal rejected. Missing runtime failed closed. Parallel snapshot writes have
+  regression coverage. Detached in-container writers are stopped before archiving.
+- Cancellation removed the owned transient unit/container; no running owned
+  container remained. No Docker socket permissions or personal browser profile used.
 
-- `.artifacts/review-initial.txt`
-- `.artifacts/review-followup.txt`
+These are observed containment/limit/cancellation checks, not an escape-proof security
+certification or a forced host OOM/CPU-exhaustion drill.
 
-Initial review identified seven concrete issues. All were addressed and regression
-coverage added:
+## Independent review and regressions
 
-1. Nimbus `asyncio.wait` child-task leak on parent cancellation → structured cleanup
-   in `src/nimbus/core/vcpu.py`, plus a core regression and nested-model subprocess test.
-2. Lease check/write gap → conditional authority checks at the mutation itself.
-3. Poisoned-worker hang / early admission release → fail-stop CLI and scanner-owned recovery.
-4. SIGKILL orphan model process → Linux parent-death exec launcher and direct process test.
-5. Retry reordering / partial cooldown → per-chat ordered outbox and persisted bot cooldown.
-6. Tool syntax falsely rejected in ordinary chat → explicit text-only decoder; actual calls rejected.
-7. Partial Chromium initialization leak → rollback and terminal fail-closed state.
+Fresh-context **Astra** reviews—not Fable reviews—are in `agent-review*.txt`.
+Concrete findings were corrected and tested:
 
-Follow-up review reported all seven addressed, with no remaining concrete high-impact
-issue identified in those fixes. This is static review, not a security certification.
+- Backend-injected kwargs incorrectly forwarded to handlers: closed-over handler,
+  explicit argument set and real error result; complete native multi-tool smoke passed.
+- Revocation/request/publication/delivery gaps: current authorization views plus
+  allowlist row locks at admission; regression holds revocation uncommitted and
+  proves request/delivery wait, then reject after it commits.
+- Disabled job revived by 429 retry: persisted run/generation metadata, validation
+  at retry/claim, schedule-change serialization; legacy linkage/backstop added.
+- Scheduled work admitted beyond expiry: independent authority predicates, final
+  mutation checks and deadline-capped leases; no reliance on scheduler polling.
+- Multi-day downtime skipping eligible catch-up: latest eligible daily slot selection.
+- Updating early-prepared jobs lost replacements: daily uniqueness includes generation.
+- 64 prepared future results blocking new immediate work: scan only actionable runs;
+  regression uses four users × 16 prepared jobs and verifies immediate admission.
+- Additional implementation check: parallel workspace native calls now serialize
+  the whole snapshot operation, preventing lost sibling writes.
 
-## Changes not made
+The earlier seven S1/core/browser review fixes remain in place: nested cancellation
+cleanup, write-time lease fences, poisoned-worker fail-stop, parent-death child cleanup,
+ordered/cooldown delivery, text-tool syntax handling and partial browser init rollback.
 
-- No Pi global settings, auth files, personal browser profiles or Hyprland config edited.
-- No Telegram bot created/connected, no webhook removed, no cloud API key added.
-- No new system services enabled; no root escalation, Docker socket permission change,
-  Podman/runsc installation, K3s/Redis/broker provisioning or existing lab-service restart.
-- Test PostgreSQL, Chromium and owned model/reviewer processes were closed after runs.
-- Source and safe local evidence remain; `.artifacts/`, `.runtime/` and virtualenvs are
-  gitignored. Code can be continued without waiting for Telegram authorization.
+Existing fault tests cover duplicate claims/intake, invalid identities/topics,
+expired/stale writers, queued/running cancellation, SIGKILL/SIGSTOP/SIGTERM, owned
+test-PG restart, uncertain delivery, 429 retries and epoch isolation. They do not
+prove cancellation or exactly-once effects inside an external provider.
 
-For the next operator steps, see [AUTHORIZATION.md](AUTHORIZATION.md).
+## Deliberate remaining scope
+
+- Live Telegram acceptance requires Dennis's message and receipt observation.
+- Only private text ingress is enabled. No bot desktop/browser/media/upload/download
+  connector, arbitrary external writes or arbitrary cron/weekly trigger implementation.
+- No automatic replay of interrupted work; no promise that sent means human-read.
+- Machine awake/online and usable provider authorization are required for on-time work.
+- No scheduled/off-host backup, retention, disk alarms or complete host-loss drill.
+- No multi-tenant/hostile-same-OS-user security claim. OAuth usability does not establish
+  subscription billing terms or a hard search-spend cap.
+
+See [AUTHORIZATION.md](AUTHORIZATION.md) for the user-copyable acceptance message.

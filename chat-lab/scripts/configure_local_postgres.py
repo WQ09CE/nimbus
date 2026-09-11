@@ -153,6 +153,7 @@ def bootstrap():
         c.execute("SET ROLE nimbus_chat_owner")
         c.execute("REVOKE CREATE ON SCHEMA public FROM PUBLIC")
         c.execute(files("nimbus_chat_lab").joinpath("schema.sql").read_text())
+        c.execute(files("nimbus_chat_lab").joinpath("agent_schema.sql").read_text())
         c.execute("GRANT USAGE ON SCHEMA public TO nimbus_chat")
         c.execute("GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO nimbus_chat")
         c.execute("GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO nimbus_chat")

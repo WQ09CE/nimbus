@@ -22,10 +22,13 @@ class Claim:
 
 
 class Store:
-    def __init__(self, dsn: str, *, lease_seconds: float = 30, queue_limit: int = 64):
+    def __init__(
+        self, dsn: str, *, lease_seconds: float = 30, queue_limit: int = 64, agent_mode=False
+    ):
         if lease_seconds <= 0 or not 1 <= queue_limit <= 1000:
             raise ValueError("Invalid lease/queue budget")
         self.dsn, self.lease_seconds, self.queue_limit = dsn, lease_seconds, queue_limit
+        self.agent_mode = agent_mode
 
     async def connect(self):
         return await psycopg.AsyncConnection.connect(
@@ -38,6 +41,7 @@ class Store:
     async def initialize(self):
         async with await self.connect() as c:
             await c.execute(files(__package__).joinpath("schema.sql").read_text())
+            await c.execute(files(__package__).joinpath("agent_schema.sql").read_text())
 
     async def authorize(self, bot: int, user: int, chat: int):
         async with await self.connect() as c:
@@ -55,14 +59,31 @@ class Store:
                 raise ValueError("Bot has no operator-provisioned allowlist")
             return r["poll_offset"]
 
-    async def _notify(self, c, key: str, session: dict, text: str):
+    async def _notify(
+        self,
+        c,
+        key: str,
+        session: dict,
+        text: str,
+        *,
+        schedule_run_id=None,
+        schedule_generation=None,
+    ):
+        allowed = await (
+            await c.execute(
+                "SELECT 1 FROM allowlist WHERE bot_id=%s AND user_id=%s AND chat_id=%s FOR KEY SHARE",
+                (session["bot_id"], session["user_id"], session["chat_id"]),
+            )
+        ).fetchone()
+        if not allowed:
+            return
         parts = split_text(text[:16000], limit=3400)
         for i, part in enumerate(parts):
             if len(parts) > 1:
                 part = f"[{key.split(':')[-1][:8]} · {i + 1}/{len(parts)}]\n{part}"
             await c.execute(
-                """INSERT INTO outbox(id,dedupe_key,bot_id,chat_id,thread_id,text)
-                VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (dedupe_key) DO NOTHING""",
+                """INSERT INTO outbox(id,dedupe_key,bot_id,chat_id,thread_id,text,user_id,schedule_run_id,schedule_generation)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (dedupe_key) DO NOTHING""",
                 (
                     uuid4(),
                     f"{key}:{i}",
@@ -70,6 +91,9 @@ class Store:
                     session["chat_id"],
                     session["thread_id"],
                     part,
+                    session["user_id"],
+                    schedule_run_id,
+                    schedule_generation,
                 ),
             )
 
@@ -103,7 +127,7 @@ class Store:
                 if command:
                     allowed = await (
                         await c.execute(
-                            "SELECT 1 FROM allowlist WHERE bot_id=%s AND user_id=%s AND chat_id=%s",
+                            "SELECT 1 FROM allowlist WHERE bot_id=%s AND user_id=%s AND chat_id=%s FOR KEY SHARE",
                             (bot, command.user_id, command.chat_id),
                         )
                     ).fetchone()
@@ -214,14 +238,22 @@ class Store:
                                 c,
                                 key,
                                 session,
-                                "本阶段只有当前对话近期上下文；跨会话长期记忆尚未启用。/new 可清空后续上下文。",
+                                (
+                                    "Agent 模式：可以通过自然语言保存、查询和删除长期记忆。/new 仅重置近期对话，不删除已保存记忆。"
+                                    if self.agent_mode
+                                    else "本阶段只有当前对话近期上下文；跨会话长期记忆尚未启用。/new 可清空后续上下文。"
+                                ),
                             )
                         else:
                             await self._notify(
                                 c,
                                 key,
                                 session,
-                                "Nimbus Telegram lab · 私人白名单\n直接发文字开始。/status /cancel /new /mem\n当前为无工具对话阶段，代码执行、文件和长期记忆尚未启用。",
+                                (
+                                    "Nimbus Agent 模式 · 私人白名单\n直接说目标即可：隔离工作区里的代码／文件操作、X／Web 搜索、长期记忆和持久化每日任务。\n可说：创建每天北京时间 08:00 的任务，并立即试跑。\n/status /cancel /new /mem\n定时任务需要本机开机联网；/cancel 取消当前执行，停用定时任务请在执行结束后直接告诉我。"
+                                    if self.agent_mode
+                                    else "Nimbus Telegram lab · 私人白名单\n直接发文字开始。/status /cancel /new /mem\n当前为无工具对话阶段，代码执行、文件和长期记忆尚未启用。"
+                                ),
                             )
                 await c.execute(
                     "UPDATE inbox SET disposition=%s,turn_id=%s WHERE bot_id=%s AND update_id=%s",
@@ -239,7 +271,17 @@ class Store:
         async with await self.connect() as c:
             t = await (
                 await c.execute(
-                    "SELECT * FROM turns WHERE state='queued' ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1"
+                    "SELECT * FROM turns WHERE state='queued' AND id IN (SELECT id FROM live_turn_authority) ORDER BY created_at,id LIMIT 1"
+                )
+            ).fetchone()
+            if not t:
+                return None
+            if not await self._authorize_turn(c, t["id"]):
+                return None
+            t = await (
+                await c.execute(
+                    "SELECT * FROM turns WHERE id=%s AND state='queued' AND id IN (SELECT id FROM live_turn_authority) FOR UPDATE SKIP LOCKED",
+                    (t["id"],),
                 )
             ).fetchone()
             if not t:
@@ -247,8 +289,8 @@ class Store:
             attempt, generation = uuid4(), t["generation"] + 1
             await c.execute(
                 """INSERT INTO attempts(id,turn_id,generation,incarnation,lease_until,state)
-                VALUES (%s,%s,%s,%s,clock_timestamp()+%s*interval '1 second','running')""",
-                (attempt, t["id"], generation, incarnation, self.lease_seconds),
+                VALUES (%s,%s,%s,%s,least(clock_timestamp()+%s*interval '1 second',coalesce((SELECT expires_at FROM schedule_runs WHERE turn_id=%s),'infinity'::timestamptz)),'running')""",
+                (attempt, t["id"], generation, incarnation, self.lease_seconds, t["id"]),
             )
             await c.execute(
                 "UPDATE turns SET state='running',attempt_id=%s,generation=%s WHERE id=%s",
@@ -258,11 +300,21 @@ class Store:
                 t["id"], attempt, generation, incarnation, t["input"], t["session_id"], t["epoch"]
             )
 
+    async def _authorize_turn(self, c, turn_id):
+        return await (
+            await c.execute(
+                "SELECT 1 FROM allowlist a JOIN sessions s ON (a.bot_id,a.user_id,a.chat_id)=(s.bot_id,s.user_id,s.chat_id) JOIN turns t ON t.session_id=s.id WHERE t.id=%s FOR KEY SHARE OF a",
+                (turn_id,),
+            )
+        ).fetchone()
+
     async def _owned(self, c, claim: Claim):
+        if not await self._authorize_turn(c, claim.turn_id):
+            return None
         t = await (
             await c.execute(
                 """SELECT * FROM turns WHERE id=%s AND attempt_id=%s AND generation=%s
-            AND state IN ('running','cancel_requested') FOR UPDATE""",
+            AND state IN ('running','cancel_requested') AND id IN (SELECT id FROM live_turn_authority) FOR UPDATE""",
                 (claim.turn_id, claim.attempt_id, claim.generation),
             )
         ).fetchone()
@@ -283,9 +335,9 @@ class Store:
             if t and renew:
                 renewed = await (
                     await c.execute(
-                        """UPDATE attempts SET lease_until=clock_timestamp()+%s*interval '1 second'
+                        """UPDATE attempts SET lease_until=least(clock_timestamp()+%s*interval '1 second',coalesce((SELECT expires_at FROM schedule_runs r WHERE r.turn_id=attempts.turn_id),'infinity'::timestamptz))
                     WHERE id=%s AND incarnation=%s AND generation=%s AND state='running'
-                    AND lease_until>clock_timestamp() RETURNING id""",
+                    AND lease_until>clock_timestamp() AND turn_id IN (SELECT id FROM live_turn_authority) RETURNING id""",
                         (self.lease_seconds, claim.attempt_id, claim.incarnation, claim.generation),
                     )
                 ).fetchone()
@@ -311,7 +363,8 @@ class Store:
                 await c.execute(
                     """INSERT INTO turn_events(turn_id,attempt_id,kind,text)
                 SELECT %s,id,'text',%s FROM attempts WHERE id=%s AND incarnation=%s
-                AND generation=%s AND state='running' AND lease_until>clock_timestamp() RETURNING seq""",
+                AND generation=%s AND state='running' AND lease_until>clock_timestamp()
+                AND turn_id IN (SELECT id FROM live_turn_authority) RETURNING seq""",
                     (
                         claim.turn_id,
                         text[:16000],
@@ -337,7 +390,8 @@ class Store:
             finished = await (
                 await c.execute(
                     """UPDATE attempts SET state=%s WHERE id=%s AND incarnation=%s AND generation=%s
-                AND state='running' AND lease_until>clock_timestamp() RETURNING id""",
+                AND state='running' AND lease_until>clock_timestamp()
+                AND turn_id IN (SELECT id FROM live_turn_authority) RETURNING id""",
                     (state, claim.attempt_id, claim.incarnation, claim.generation),
                 )
             ).fetchone()
@@ -350,13 +404,24 @@ class Store:
             session = await (
                 await c.execute("SELECT * FROM sessions WHERE id=%s", (claim.session_id,))
             ).fetchone()
-            await self._notify(
-                c, f"final:{claim.turn_id}", session, f"[{str(claim.turn_id)[:8]}] {state}\n{text}"
-            )
+            scheduled = await (
+                await c.execute("SELECT 1 FROM schedule_runs WHERE turn_id=%s", (claim.turn_id,))
+            ).fetchone()
+            if not scheduled:
+                await self._notify(
+                    c,
+                    f"final:{claim.turn_id}",
+                    session,
+                    f"[{str(claim.turn_id)[:8]}] {state}\n{text}",
+                )
             return True
 
     async def recover(self) -> int:
         async with await self.connect() as c:
+            await c.execute("SELECT 1 FROM allowlist ORDER BY bot_id,user_id,chat_id FOR KEY SHARE")
+            await c.execute(
+                "UPDATE turns SET state='cancelled',finished_at=clock_timestamp() WHERE state='queued' AND id NOT IN (SELECT id FROM live_turn_authority)"
+            )
             rows = await (
                 await c.execute("""SELECT t.* FROM turns t JOIN attempts a ON a.id=t.attempt_id
                 WHERE t.state IN ('running','cancel_requested') AND a.lease_until <= clock_timestamp()
@@ -383,9 +448,13 @@ class Store:
                 session = await (
                     await c.execute("SELECT * FROM sessions WHERE id=%s", (t["session_id"],))
                 ).fetchone()
-                await self._notify(
-                    c, f"final:{t['id']}", session, f"[{str(t['id'])[:8]}] interrupted\n{text}"
-                )
+                scheduled = await (
+                    await c.execute("SELECT 1 FROM schedule_runs WHERE turn_id=%s", (t["id"],))
+                ).fetchone()
+                if not scheduled:
+                    await self._notify(
+                        c, f"final:{t['id']}", session, f"[{str(t['id'])[:8]}] interrupted\n{text}"
+                    )
                 recovered += 1
             # Sending may have taken effect before the sender died. Never auto-retry it.
             await c.execute(
@@ -413,11 +482,22 @@ class Store:
 
     async def claim_delivery(self, bot: int):
         async with await self.connect() as c:
+            # Same lock as schedule changes: admission linearizes before disable/update.
+            await c.execute("SELECT pg_advisory_xact_lock(74192631)")
+            await c.execute(
+                "SELECT 1 FROM allowlist WHERE bot_id=%s ORDER BY user_id,chat_id FOR KEY SHARE",
+                (bot,),
+            )
+            await c.execute(
+                "UPDATE outbox SET state='failed',error_class='authorization_changed' WHERE bot_id=%s AND state='pending' AND id NOT IN (SELECT id FROM live_delivery_authority)",
+                (bot,),
+            )
             r = await (
                 await c.execute(
                     """SELECT o.* FROM outbox o JOIN bots b ON b.id=o.bot_id
                     WHERE o.bot_id=%s AND o.state='pending' AND o.available_at<=clock_timestamp()
                     AND b.send_after<=clock_timestamp()
+                    AND o.id IN (SELECT id FROM live_delivery_authority)
                     AND NOT EXISTS (SELECT 1 FROM outbox prior WHERE prior.bot_id=o.bot_id
                       AND prior.chat_id=o.chat_id AND prior.seq<o.seq AND prior.state IN ('pending','sending'))
                     ORDER BY o.seq FOR UPDATE OF o SKIP LOCKED LIMIT 1""",
@@ -442,6 +522,15 @@ class Store:
                     "UPDATE bots SET send_after=greatest(send_after,clock_timestamp()+%s*interval '1 second') WHERE id=%s",
                     (delay, row["bot_id"]),
                 )
+            if (
+                state == "pending"
+                and not await (
+                    await c.execute(
+                        "SELECT 1 FROM live_delivery_authority WHERE id=%s", (row["id"],)
+                    )
+                ).fetchone()
+            ):
+                state, error_class = "failed", "authorization_changed"
             await c.execute(
                 """UPDATE outbox SET state=%s,message_id=%s,error_class=%s,
                 available_at=clock_timestamp()+%s*interval '1 second'
@@ -462,9 +551,13 @@ class Store:
                 await c.execute(
                     """SELECT t.id,t.attempt_id,s.chat_id,s.thread_id,e.seq,e.text FROM turns t
                 JOIN sessions s ON s.id=t.session_id JOIN bots b ON b.id=s.bot_id JOIN attempts a ON a.id=t.attempt_id
+                JOIN allowlist u ON (u.bot_id,u.user_id,u.chat_id)=(s.bot_id,s.user_id,s.chat_id)
                 JOIN LATERAL (SELECT seq,text FROM turn_events WHERE turn_id=t.id AND attempt_id=t.attempt_id ORDER BY seq DESC LIMIT 1) e ON true
                 WHERE s.bot_id=%s AND s.chat_id>0 AND t.state='running' AND a.state='running'
-                AND a.lease_until>clock_timestamp() AND b.send_after<=clock_timestamp()""",
+                AND a.lease_until>clock_timestamp() AND b.send_after<=clock_timestamp()
+                AND t.id IN (SELECT id FROM live_turn_authority)
+                AND NOT EXISTS (SELECT 1 FROM schedule_runs r WHERE r.turn_id=t.id AND r.manual_key IS NULL)
+                FOR KEY SHARE OF u""",
                     (bot,),
                 )
             ).fetchall()

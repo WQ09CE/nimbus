@@ -48,7 +48,9 @@ async def execute(args):
                     },
                     "dsn_configured": bool(os.getenv("NIMBUS_LAB_DSN")),
                     "token_file_configured": bool(os.getenv("NIMBUS_TG_TOKEN_FILE")),
-                    "tool_execution": "DISABLED: no verified remote sandbox; no local fallback",
+                    "tool_execution": "Agent mode: verified gVisor required, no host fallback"
+                    if os.getenv("NIMBUS_AGENT_MODE") == "1"
+                    else "Text-only process configuration; running services are not inspected",
                 },
                 indent=2,
             )
@@ -64,7 +66,7 @@ async def execute(args):
     dsn = os.environ.get("NIMBUS_LAB_DSN")
     if not dsn:
         raise ValueError("Set NIMBUS_LAB_DSN to a dedicated PostgreSQL database")
-    store = Store(dsn, lease_seconds=args.lease)
+    store = Store(dsn, lease_seconds=args.lease, agent_mode=os.getenv("NIMBUS_AGENT_MODE") == "1")
     if args.command == "init":
         await store.initialize()
         return
@@ -77,6 +79,11 @@ async def execute(args):
     stop = asyncio.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         asyncio.get_running_loop().add_signal_handler(sig, stop.set)
+    if args.command == "scheduler":
+        from .scheduler import Scheduler
+
+        await Scheduler(store).run(stop)
+        return
     if args.command == "gateway":
         token = token_from_file(os.environ["NIMBUS_TG_TOKEN_FILE"])
         client = TelegramClient(token)
@@ -91,6 +98,17 @@ async def execute(args):
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     if args.engine == "echo":
         engine = EchoEngine()
+    elif args.engine == "nimbus-agent":
+        from .agent_engine import AgentEngine
+
+        config_path = Path(os.environ["NIMBUS_AGENT_RUNTIME_CONFIG"])
+        if (
+            config_path.is_symlink()
+            or config_path.stat().st_uid != os.getuid()
+            or config_path.stat().st_mode & 0o077
+        ):
+            raise ValueError("Runtime configuration must be owned and private")
+        engine = AgentEngine(store, root / "attempts", args.pi, json.loads(config_path.read_text()))
     elif args.engine == "nimbus-mock":
         from nimbus.testing.mock_llm import MockLLMAdapter
 
@@ -139,11 +157,11 @@ def main():
     os.umask(0o077)
     logger.disable("nimbus")  # Nimbus development logs can include model/tool bodies.
     parser = argparse.ArgumentParser(
-        description="Private Telegram lab: dedicated PG, no local code execution"
+        description="Private Telegram agent: dedicated PG, verified isolated execution, no host fallback"
     )
     parser.add_argument("--lease", type=float, default=30)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("doctor", "identify", "init", "scan"):
+    for name in ("doctor", "identify", "init", "scan", "scheduler"):
         sub.add_parser(name)
     allow = sub.add_parser("allow")
     for field in ("bot", "user", "chat"):
@@ -152,7 +170,9 @@ def main():
     gateway.add_argument("--bot", type=int, required=True)
     gateway.add_argument("--drafts", action="store_true")
     worker = sub.add_parser("worker")
-    worker.add_argument("--engine", choices=["echo", "nimbus-mock", "nimbus-pi"], required=True)
+    worker.add_argument(
+        "--engine", choices=["echo", "nimbus-mock", "nimbus-pi", "nimbus-agent"], required=True
+    )
     worker.add_argument("--state", default=".runtime/chat-lab")
     worker.add_argument("--pi", default="pi")
     worker.add_argument("--once", action="store_true")

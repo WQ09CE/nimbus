@@ -4,6 +4,8 @@ This is an **operator-invoked** deployment, not part of `uv sync` or tests. It u
 Arch's supported PostgreSQL package, a separate user service/data directory, and
 Unix sockets only. It does not initialize/start the system `postgresql.service`.
 On Dennis's host the installed version on 2026-09-10 is PostgreSQL **18.6**.
+The 2026-09-11 integrated Agent cutover is documented in [AGENT_MODE.md](../AGENT_MODE.md);
+PG/gateway/worker A/scheduler are now enabled and `Linger=yes`.
 
 ## One-time setup
 
@@ -37,12 +39,13 @@ uv run python scripts/configure_local_postgres.py bootstrap
 - `nimbus_chat`, SCRAM-authenticated application login, not a superuser, not a
   database/role creator, no schema CREATE privilege; only required data/sequence
   privileges in this database;
-- initialized S1 schema and matching random-password DSNs in both env files;
+- initialized S1 plus additive Agent schema/views and matching random-password DSNs in both env files;
   previous env files are saved in protected, dated `backups/` under the config dir.
 
 The local OS user retains administrative peer access. This is database privilege
 separation, **not isolation from a hostile process running as that same OS user**.
-The bot still has no tools. Statement/parameter logging is suppressed. PostgreSQL
+The integrated bot's code/file tools are separately isolated by verified gVisor.
+Statement/parameter logging is suppressed. PostgreSQL
 has no TCP listener, a 1 GiB memory limit, 128-task limit, normal durability defaults,
 and fast, orderly shutdown. Package major upgrades still require a planned upgrade;
 do not delete/reinitialize the data directory to make a new binary start.
@@ -61,22 +64,26 @@ bot/user/chat tuple, then run `nimbus-chat-lab allow` with the app environment l
 **without printing it**. Bootstrap already initialized the schema as the owner;
 ordinary `init` is not a migration mechanism for the restricted app role.
 
-Only after that gate:
+Only after the identity gate **and** the verified runtime/configuration in the Agent
+runbook, start the integrated service set:
 
 ```bash
-systemctl --user enable --now nimbus-chat-gateway.service nimbus-chat-worker@a.service
-# Have Dennis complete a real private conversation and control-command checks first.
-systemctl --user enable --now nimbus-chat-worker@b.service
+systemctl --user enable --now nimbus-chat-gateway.service nimbus-chat-worker@a.service nimbus-chat-scheduler.service
+# Worker B is optional; currently stopped, not necessary for one private user.
 ```
+
+Do not run these as a substitute for owner migration or runtime provisioning. A
+worker template now explicitly selects Agent mode and requires the private runtime config.
 
 App templates `Wants`/`After` the local PG service; they fail/restart on DB errors
 rather than falling back. These dependencies assume this local deployment: remove
 or override them if an operator later deliberately selects external PostgreSQL.
-For maintenance, explicitly stop gateway and both workers before PostgreSQL.
+For maintenance, explicitly stop gateway, running workers and scheduler before PostgreSQL.
 Their startup remains subject to normal user-manager lifetime. Check
 `loginctl show-user "$USER" -p Linger`: when false, enabling user units means start at
 user login, **not** guaranteed unattended startup after reboot or survival of logout.
-Enabling lingering is a separate operator decision, not done by this helper.
+This PG helper does not change lingering. It was separately enabled for Dennis's
+authorized resident-Agent deployment; an actual logout/cold boot was not tested.
 
 ## Backups and status
 
@@ -89,7 +96,8 @@ on a new host. Keep the Telegram token in a separate encrypted secret backup.
 
 An initial empty-schema backup/restore smoke is not a content-retention policy or
 continuous backup guarantee. Scheduled backups, encrypted off-host copies, disk
-alerts, content retention and a full host-loss drill remain pre-daily-use work.
+alerts, content retention and a full host-loss drill remain unimplemented operational
+safeguards. The Agent deployment does not pretend those protections are already active.
 Do not send company material/secrets through Telegram. A local model/mock test is
 not a real Telegram reply-service acceptance test.
 

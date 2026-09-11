@@ -1,50 +1,45 @@
-# Dennis 上线后需要授权的事项
+# 已授权范围与用户端验收
 
-本文件保留授权门槛。2026-09-10 更新：token 已安全落盘，`identify` 已验证 Telegram 连接；
-经 Dennis 授权，已安装 PostgreSQL 18.6 并启动专用 user service，受限应用角色、schema 和 DSN 已配置。
-初始空库备份／恢复检查通过，但不是定时或异地备份。Dennis 已明确确认数字私聊身份，
-唯一白名单已写入，gateway 和 worker A 已启用并运行；待处理的 `/start` 欢迎回复已获得 Telegram
-发送回执。新模型对话／用户端收件确认仍待验证，worker B 未启动。没有启用代码工具、群聊权限或用户 lingering。
+更新：2026-09-11（北京时间）。Dennis 已授权继续完成完整个人 Agent、整体切换与实机测试，
+完成后停止开发，日报订阅留给本人发送自然语言消息后启用。不再采用逐项能力授权或固定日报指令。
 
-## 1. Telegram 身份与 token
+## 已执行的整体授权
 
-- 用你的 Telegram 账号在 **BotFather** 创建一个新的私人 Nimbus bot。
-- token 放到本机 `~/.config/nimbus-chat-lab/telegram-token`：目录 0700、文件 0600。
-  **不要贴到聊天记录、仓库、命令行参数或截图里。**
-- 给新 bot 私聊发一次 `/start`，网关保持关闭，然后可由我们执行：
+- 专用 PostgreSQL 18.6、受限应用角色、gateway、worker A 和 scheduler 已运行；不是系统默认 PG。
+- AgentOS 实际注册代码／文件、X／网页搜索、记忆、任务调度、时钟工具；默认 Astra，搜索 Grok。
+- rootless Podman＋已校验的 gVisor 已安装，文件、网络、资源及取消清理做过真实测试。
+- Pi 正常管理 Codex/xAI OAuth 与刷新；没有索取额外 xAI API key 或把 OAuth 导出成另一个 key 文件。
+- 已启用用户 lingering，`Linger=yes`；服务独立于本次开发 Pi 会话。未做破坏性的注销／重启验收。
+- 迁移前备份与独立数据库恢复通过；生产 user worker 中的合成 Agent canary 通过并清理。
+  canary 没有伪造 Telegram update/cursor、没有发送 Telegram 消息、没有创建任何定时任务。
 
-  ```bash
-  export NIMBUS_TG_TOKEN_FILE="$HOME/.config/nimbus-chat-lab/telegram-token"
-  cd ~/Projects/nimbus-telegram/chat-lab
-  uv run nimbus-chat-lab identify
-  ```
+## 统一边界保持不变
 
-  只输出 bot/user/chat 数字 ID，不打印消息正文，不推进 polling offset，也不自动授权。
-  你确认哪个是自己的身份后，才写入精确 allowlist。
-- 首次只开私聊。群聊加入、群 chat ID 和允许调用的 user ID 另行确认；privacy mode 保持开启。
-- 不抢占已有 bot 的 poller，也不擅自删除 webhook。
+1. 只使用 Dennis 已确认的唯一私人 bot/user/chat 身份；没有新增群聊或其他用户权限。
+   不抢占其他 bot 的 poller，不删除 webhook。worker B 未启动。
+2. token 只在受保护文件中，目录 0700、文件 0600。不能进入仓库、模型、命令行参数或截图。
+   worker env 不含 Telegram token；Pi 子进程不继承 DSN/token 环境。
+3. 模型不能执行宿主 Bash、读宿主 home／个人浏览器 profile、访问 Docker/DBus/PG socket。
+   所有文件／代码工具进入同一验证过的 gVisor 边界，无网络、无宿主可写挂载，无本地 fallback。
+4. 模型可以调用已接入的通用能力，不必再次逐项开启。没有公开发帖、支付、账号修改等外部写接口。
+   登录失效仍由 Pi 正常重新授权，不能猜测、复制他人或绕过凭据。
+5. **没有替 Dennis 开启每日任务。** 任务创建会启用每日触发；必须有本人明确请求。
+   后台任务不能修改记忆／调度或递归建任务。停用不等于撤回在途发送，也不证明远端停止计费。
 
-## 2. 常驻 PostgreSQL 与用户服务
+## 留给 Dennis 的验收
 
-- 已部署专用 PostgreSQL 18.6，仅 Unix socket；系统默认 `postgresql.service` 未启动。
-- 数据目录、无登录 owner／受限 app 角色和初始备份已分离，详见 [部署说明](deploy/LOCAL_POSTGRES.md)。
-  `pgserver` 自带 PG 16.2 仍只用于合成测试；定时／异地备份、内容保留和磁盘告警仍待落实。
-- PG、gateway、worker A user units 已启用，白名单身份已由 Dennis 确认；真实模型对话成功后再开 B。
-  `Linger=no`，目前只保证用户登录期间的服务生命周期，无人登录常驻另行确认。
-- worker 的 Pi/Codex 通路已用真实 Astra 验证，不需要额外 API key。服务用户与登录用户不同时需正常重新授权，不能复制别人 token。
+先向已连接的 Nimbus bot 发送普通消息，再使用下面的自然语言创建日报并立即运行。
+确认它回复真实任务 ID、`Asia/Shanghai`、08:00 和启用状态；然后核对试跑内容及后续真实定时投递。
 
-## 3. 开代码工具前的系统权限门槛
+> 请为我创建并启用“AI Agent X 日报”：每天北京时间 08:00 发到本聊天。基于过去 24 小时 X 社区可核实的 AI Agent 动态，按事件去重、兼顾不同作者，最多 10 条，每条用中文简述价值并附原帖链接。证据不足就少报，不编造热度或全站排名。配置后请立即运行这个任务，并告诉我任务 ID、时区、下一次投递时间和当前启用状态。
 
-当前主机没有 `podman` / `runsc`，Docker socket 对当前用户拒绝访问；没有尝试 sudo 或放宽 socket 权限。
+可再问“列出我的任务和最近一次执行／投递状态”，或“停用 AI Agent X 日报”。
+执行繁忙时先 `/cancel`，等确认停止后再要求改任务。不要把“立即运行已排队”误认为日报已发送。
 
-需要你确认安装 rootless Podman＋gVisor 的方式、用户 namespace/cgroup 配置及资源预算。
-真正启用前必须证明：实际 runtime 是 runsc、无宿主敏感挂载／token、网络和资源约束有效、所有文件与 shell 工具都走沙箱、取消/TTL/操作 ID 与清理符合要求。
+真实 Telegram 普通对话、draft、`/status`、`/cancel`、`/new`、中断后的 follow-up 和下一次
+08:00 投递仍需要用户端验收。机器休眠、关机、离线或未解锁时不保证准点。
 
-**在此之前，Telegram bot 的工具集保持空，绝不回退为本地 Bash。** 开发用 computer use 独立可用，不受此授权阻塞，也不会被转交给 bot 用户。
+## 不隐瞒的运营缺口
 
-## 4. 最后实机验收
-
-有 token 后做一次真实 Telegram 对话、draft、`/status`、`/cancel`、`/new`，再做一次中断后的真实 follow-up。
-现在的 Telegram 测试使用模拟传输，不会冒充已通过真实平台验收。
-
-上线后还需确认内容保留期、磁盘告警和备份恢复；不把公司代码或凭据送入私人 Telegram bot。
+仍未配置定期／加密异地备份、自动内容保留、磁盘告警或完整丢机恢复；Telegram bot 不是端到端
+加密聊天。不要发送公司材料和凭据。Pi OAuth 搜索成功不代表搜索用量一定包干或无费用。

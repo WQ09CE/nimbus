@@ -1,0 +1,20 @@
+[Unit]
+Description=Nimbus persistent personal-agent scheduler
+After=nimbus-chat-postgres.service
+Wants=nimbus-chat-postgres.service
+
+[Service]
+WorkingDirectory=%h/Projects/nimbus-telegram/chat-lab
+EnvironmentFile=%h/.config/nimbus-chat-lab/worker.env
+ExecStart=%h/Projects/nimbus-telegram/chat-lab/.venv/bin/nimbus-chat-lab scheduler
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+MemoryMax=256M
+TasksMax=128
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=default.target
