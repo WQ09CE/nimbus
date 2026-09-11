@@ -5,7 +5,9 @@ Arch's supported PostgreSQL package, a separate user service/data directory, and
 Unix sockets only. It does not initialize/start the system `postgresql.service`.
 On Dennis's host the installed version on 2026-09-10 is PostgreSQL **18.6**.
 The 2026-09-11 integrated Agent cutover is documented in [AGENT_MODE.md](../AGENT_MODE.md);
-PG/gateway/worker A/scheduler are now enabled and `Linger=yes`.
+PG/gateway/scheduler and workers A/B/C are now enabled, with `Linger=yes`.
+The subsequent [conversation upgrade](../CONVERSATION_UX.md) reserves A for chat and
+B/C for two background slots, preserving the user's existing daily task.
 
 ## One-time setup
 
@@ -68,8 +70,8 @@ Only after the identity gate **and** the verified runtime/configuration in the A
 runbook, start the integrated service set:
 
 ```bash
-systemctl --user enable --now nimbus-chat-gateway.service nimbus-chat-worker@a.service nimbus-chat-scheduler.service
-# Worker B is optional; currently stopped, not necessary for one private user.
+# Install deploy/background-lane.conf as lane.conf in @b/@c.service.d first.
+systemctl --user enable --now nimbus-chat-gateway.service nimbus-chat-worker@{a,b,c}.service nimbus-chat-scheduler.service
 ```
 
 Do not run these as a substitute for owner migration or runtime provisioning. A

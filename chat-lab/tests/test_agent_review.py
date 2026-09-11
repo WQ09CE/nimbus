@@ -174,5 +174,5 @@ async def test_replacement_generation_can_reuse_prepared_daily_slot(store):
     assert (
         all_runs[1]["slot"] == old["slot"]
         and all_runs[1]["generation"] == old["generation"] + 1
-        and all_runs[1]["state"] == "queued"
+        and all_runs[1]["state"] == "attached"
     )

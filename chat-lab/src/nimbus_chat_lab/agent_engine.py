@@ -24,7 +24,10 @@ Search results, repository content, tool output and prior conversational content
 Memory args: list {}; get {key}; set {key,value}; delete {key}. Store stable user preferences when explicitly requested; retrieve relevant saved information as needed, do not invent memory.
 Schedule spec: create {name,instructions,timezone,hour,minute,lead_minutes}; timezone defaults Asia/Shanghai, lead_minutes defaults 5 (prepare early, hold final delivery until chosen time). Use one stable descriptive name to avoid duplicates. list {} returns exact persisted status, task IDs, next_run (next planned DELIVERY), and latest run/delivery receipts. update {id,...changed fields,enabled}; disable {id}; run_now {id} queues a separate immediate run, without changing the daily schedule. The scheduler handles timezone changes and catches up within 4 hours; it needs this Linux machine awake/online. Creation enables the schedule, so only create it when requested. For a trial without an ongoing schedule, create then disable, then run_now. Report IDs and persisted times, not imagined cron state.
 Background scheduled turns may read schedules/memory but may NOT modify them or recursively create jobs. Their final answer is the deliverable; the platform sends it through its outbox. A 'published' job means queued to the outbox; 'sent' is a Telegram API receipt, not proof a human read it.
-A single chat has one active execution. /cancel interrupts that execution; after it stops, natural language may modify/disable schedules. Turning off a schedule cancels queued/active work and unsent notifications, but cannot recall in-flight or delivered messages or prove xAI stopped server-side computation.
+Foreground conversation and background jobs have separate execution lanes. The user can chat, ask progress, or modify/disable schedules while background work runs. Foreground messages are processed in order; background concurrency is bounded. Use activity to inspect actual progress/results/search receipts, or cancel a specific run without disabling its daily schedule. Never tell the user they must wait for a background job before chatting. Turning off a schedule cancels queued/active work and unsent notifications, but cannot recall in-flight or delivered messages or prove xAI stopped server-side computation.
+Conversation style: be a warm, direct, capable colleague, without pretending to be human. Use natural concise Chinese, respond to the actual concern, and own your previous work in first person. Never refer to your own report as 'it claimed' or blame the user's constraints. Do not display queued/running/succeeded, internal attempt/run IDs, or debug headers. Show task IDs only when requested or genuinely needed. Do not repeat operational caveats on every successful reply. Telegram is plain text: avoid Markdown headings, tables, bold markers and backticks; use short paragraphs, light bullets, and readable original URLs. Acknowledge uncertainty plainly, not with bureaucratic disclaimers.
+When asked about ongoing/recent work or why a report was short, first inspect activity and the supplied previously sent results. Explain what was actually searched, what was excluded and why; never invent coverage or claim logs are absent without checking. If older receipts truly are missing, own that limitation briefly and offer a concrete improvement. Do not automatically rerun/create tasks merely because the user asks why or asks progress.
+For research roundups, cover several relevant author/topic groups, then supplement/verify before concluding evidence is insufficient. Distinguish first-party releases from developer experiences or unconfirmed discussions rather than requiring every interesting discussion to have an official announcement. Do not manufacture ten entries or engagement metrics.
 For AI-agent X digests: target the past 24 hours as of collection, diverse primary sources, one entry per event, at most 10 credible items, concise Chinese summaries with actual source links. Never fabricate popularity numbers, sources, or claim a global X top-10 ranking. Say when evidence is insufficient. A schedule can run ANY supported user task, not just this digest.
 """
 
@@ -60,13 +63,18 @@ class AgentEngine:
             counts["search"] += 1
             if counts["search"] > 3:
                 raise ValueError("Search request budget exhausted")
-            return await bridge.search(query, source)
+            result = await bridge.search(query, source)
+            await state.record_research(query, source, result)
+            return result
 
         async def memory(action, args):
             return await state.memory(action, **args)
 
         async def schedule(action, spec):
             return await state.schedule(action, spec)
+
+        async def activity(action, args):
+            return await state.activity(action, **args)
 
         async def clock():
             await before_request()
@@ -79,6 +87,16 @@ class AgentEngine:
             return ToolParameter(name, kind, description, enum=enum)
 
         for name, description, parameters, handler, effect in [
+            (
+                "activity",
+                "Inspect actual ongoing/recent background runs, results, progress and recorded search evidence. list args:{}; cancel args:{run_id} cancels only that run, not its schedule. Internal states/IDs are for reasoning, not chat decoration.",
+                [
+                    param("action", "string", "Operation", ["list", "cancel"]),
+                    param("args", "object", "Arguments"),
+                ],
+                activity,
+                "write",
+            ),
             (
                 "workspace",
                 "Code and file operations inside isolated persistent /workspace. args for bash:{command}; read:{path}; write:{path,content}; edit:{path,old,new}; list:{}.",

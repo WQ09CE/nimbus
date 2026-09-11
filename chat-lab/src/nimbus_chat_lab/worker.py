@@ -16,12 +16,13 @@ class WorkerPoisoned(Exception):
 
 
 class Worker:
-    def __init__(self, store, engine, *, run_timeout=180):
+    def __init__(self, store, engine, *, run_timeout=180, lane="all"):
         self.store, self.engine, self.run_timeout = store, engine, run_timeout
+        self.lane = lane
         self.incarnation = uuid4()
 
     async def run_once(self):
-        claim = await self.store.claim(self.incarnation)
+        claim = await self.store.claim(self.incarnation, lane=self.lane)
         if claim is None:
             return None
 

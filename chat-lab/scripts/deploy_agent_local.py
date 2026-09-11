@@ -94,7 +94,7 @@ async def canary(report, identity):
         assert not (await (await c.execute("SELECT 1 FROM agent_workspaces LIMIT 1")).fetchone())
         session = await (
             await c.execute(
-                "SELECT * FROM sessions WHERE bot_id=%s AND user_id=%s AND chat_id=%s AND thread_id=0",
+                "SELECT * FROM sessions WHERE bot_id=%s AND user_id=%s AND chat_id=%s AND thread_id=0 AND lane='chat'",
                 identity,
             )
         ).fetchone()
@@ -184,10 +184,10 @@ def apply():
     Sandbox(None, None, config).verify_runtime()
     run("podman", "image", "exists", config["image"])
     with admin() as c:
-        identities = c.execute('SELECT bot_id,user_id,chat_id FROM allowlist').fetchall()
+        identities = c.execute("SELECT bot_id,user_id,chat_id FROM allowlist").fetchall()
         assert len(identities) == 1
         identity = identities[0]  # Existing operator-confirmed identity; never add/infer a sender.
-        assert identity[0] == int(env_values(CONFIG / 'gateway.env')['NIMBUS_BOT_ID'])
+        assert identity[0] == int(env_values(CONFIG / "gateway.env")["NIMBUS_BOT_ID"])
         assert identity[1] == identity[2] and identity[1] > 0
         assert (
             c.execute(
@@ -207,7 +207,13 @@ def apply():
     for name in ("nimbus-chat-gateway.service", "nimbus-chat-worker@.service"):
         shutil.copy2(UNITS / name, backup / name)
     run(
-        "systemctl", "--user", "stop", "nimbus-chat-gateway.service", "nimbus-chat-worker@a.service"
+        "systemctl",
+        "--user",
+        "stop",
+        "nimbus-chat-gateway.service",
+        "nimbus-chat-worker@a.service",
+        "nimbus-chat-worker@b.service",
+        "nimbus-chat-worker@c.service",
     )
     dump = backup / "pre-agent.dump"
     pgargs = ["-h", SOCKET, "-p", "55432", "-U", pwd.getpwuid(os.getuid()).pw_name]
@@ -228,6 +234,7 @@ def apply():
     with admin() as c:
         c.execute("SET LOCAL ROLE nimbus_chat_owner")
         c.execute((REPO / "chat-lab/src/nimbus_chat_lab/agent_schema.sql").read_text())
+        c.execute((REPO / "chat-lab/src/nimbus_chat_lab/conversation_schema.sql").read_text())
         c.execute("GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO nimbus_chat")
         c.execute("GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO nimbus_chat")
         assert c.execute("SELECT count(*) FROM schedules").fetchone()[0] == 0
@@ -242,6 +249,13 @@ def apply():
     )
     for name in ("nimbus-chat-worker@.service", "nimbus-chat-scheduler.service"):
         shutil.copy2(REPO / "chat-lab/deploy" / name, UNITS / name)
+    for instance in ("b", "c"):
+        dropin = UNITS / f"nimbus-chat-worker@{instance}.service.d"
+        dropin.mkdir(exist_ok=True)
+        target = dropin / "lane.conf"
+        if target.exists():
+            raise RuntimeError("Existing background lane configuration; inspect explicitly")
+        shutil.copy2(REPO / "chat-lab/deploy/background-lane.conf", target)
     run(
         "systemd-analyze",
         "--user",
@@ -256,6 +270,8 @@ def apply():
         "enable",
         "--now",
         "nimbus-chat-worker@a.service",
+        "nimbus-chat-worker@b.service",
+        "nimbus-chat-worker@c.service",
         "nimbus-chat-scheduler.service",
     )
     asyncio.run(canary(report, identity))
@@ -264,6 +280,8 @@ def apply():
         "nimbus-chat-postgres.service",
         "nimbus-chat-gateway.service",
         "nimbus-chat-worker@a.service",
+        "nimbus-chat-worker@b.service",
+        "nimbus-chat-worker@c.service",
         "nimbus-chat-scheduler.service",
     ):
         run("systemctl", "--user", "is-active", "--quiet", unit)

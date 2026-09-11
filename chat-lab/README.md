@@ -1,9 +1,12 @@
 # Nimbus — private Telegram personal Agent
 
-**Current deployment (2026-09-11, Asia/Shanghai): integrated Agent mode is running.**
-PostgreSQL, gateway, worker A and the persistent scheduler are enabled user services.
-Linger is enabled. **No daily subscription has been created.** Real user Telegram
-conversation/control acceptance and the first 08:00 delivery remain pending.
+**Current deployment (2026-09-11 09:22, Asia/Shanghai): conversational Agent mode.**
+PostgreSQL, gateway, scheduler and three workers are enabled: A for chat, B/C for two
+background slots. Dennis has confirmed task creation and receipt of the immediate
+report, and has enabled his daily task himself. Its next delivery was preserved.
+New conversational UX and the future 08:00 delivery still need user observation.
+
+- [Latest conversation/concurrency upgrade and checks](CONVERSATION_UX.md)
 
 - [Capabilities, deployment and rollback](AGENT_MODE.md)
 - [Measured acceptance and outstanding checks](ACCEPTANCE.md)
@@ -26,7 +29,7 @@ per-capability activation sequence:
 | Public research | Grok X Search and web search through Pi-managed xAI OAuth |
 | Long-term memory | Identity-scoped key/value records; saved key index supplied to subsequent turns |
 | Persistent tasks | Arbitrary supported instructions, daily timezone-aware delivery, immediate run, list/update/disable |
-| Control | `/status`, `/cancel`, `/new`, `/help`, `/mem`; ordinary language invokes the tools |
+| Control | Natural-language `activity` progress/research inspection and per-run cancellation; `/status`, `/cancel`, `/new`, `/help`, `/mem` |
 
 **Nimbus owns all client tool execution.** Pi is a model/auth bridge, not a second
 agent executor. Its `--no-tools` flag is intentional: native model tool calls return
@@ -41,8 +44,8 @@ triggers are not implemented. This is not an unrestricted OpenClaw/cloud-agent c
 
 ## Reliability contract
 
-- Exact numeric bot/user/chat allowlist; one active execution per conversation and
-  64 queued/running/cancel-requested turns across the dedicated database.
+- Exact numeric bot/user/chat allowlist; foreground messages serialize with an eight-message
+  buffer; per-schedule background lanes run independently. Global admission is bounded at 64.
 - Transactional intake, cursor, dedupe, attempts, recent four-turn context and epochs.
   `/new` clears conversational context, not explicit long-term memory or schedules.
 - DB-clock leases: default 30 s, renew at most every 1 s, no renewal after expiry.
@@ -96,7 +99,8 @@ loginctl show-user "$USER" -p Linger
 Services no longer depend on this development Pi session. Linger is enabled, but
 08:00 delivery still requires the machine awake, online, disk unlocked and provider
 credentials usable. Cold reboot/logout and a real future 08:00 delivery have not
-been acceptance-tested. Worker B remains stopped; it is not required for one user.
+been acceptance-tested. Background concurrency is capped at two; foreground chat has
+its own worker and is not blocked by those jobs.
 
 Protected PG/session logs contain conversation/tool content. Telegram bot chats are
 not end-to-end encrypted secret chats. Do not submit company material or credentials.

@@ -115,7 +115,7 @@ async def execute(args):
         engine = NimbusEngine(root / "attempts", adapter_factory=MockLLMAdapter)
     else:
         engine = NimbusEngine(root / "attempts", pi_executable=args.pi)
-    worker = Worker(store, engine, run_timeout=args.run_timeout)
+    worker = Worker(store, engine, run_timeout=args.run_timeout, lane=args.lane)
     if args.once:
         claim = await worker.run_once()
         print(json.dumps({"attempt": str(claim.attempt_id) if claim else None}))
@@ -176,6 +176,9 @@ def main():
     worker.add_argument("--state", default=".runtime/chat-lab")
     worker.add_argument("--pi", default="pi")
     worker.add_argument("--once", action="store_true")
+    worker.add_argument(
+        "--lane", choices=["all", "chat", "jobs"], default=os.getenv("NIMBUS_WORKER_LANE", "all")
+    )
     worker.add_argument("--run-timeout", type=float, default=180)
     worker.add_argument("--drain-timeout", type=float, default=120)
     try:

@@ -1,8 +1,10 @@
 # Agent acceptance — 2026-09-11 (Asia/Shanghai)
 
-**Implemented and deployed:** integrated personal Agent, real native tools and persistent
-scheduler. **Not accepted yet:** a fresh real-user Telegram conversation/control cycle
-and an actual future 08:00 delivery. No daily subscription was created by deployment.
+**Latest, 09:22:** conversational UX upgrade is deployed. Dennis confirmed Telegram
+creation/enablement, immediate execution and report receipt. His single existing daily
+job was preserved. New UX and the actual future 08:00 delivery still need observation.
+See [CONVERSATION_UX.md](CONVERSATION_UX.md) for parallel lanes, quiet replies and context.
+No subscription or digest rerun was created by either deployment operation.
 
 This supersedes the earlier S1-only assessment. Model smoke, installed services and
 an operator canary are intentionally distinguished from Telegram user acceptance.
@@ -11,7 +13,7 @@ an operator canary are intentionally distinguished from Telegram user acceptance
 
 | Check | Result | Evidence under repository `.artifacts/` |
 |---|---|---|
-| Lab tests, actual isolated PG and subprocess fault drills | **67 passed** | `agent-unit.xml`, `agent-unit.txt` |
+| Current lab tests, actual isolated PG and subprocess fault drills | **75 passed** | `conversation-unit.xml`, `conversation-unit.txt`; earlier Agent suite: 67 |
 | Existing Nimbus core regression | **540 passed, 3 skipped** | `agent-core.xml`; external/slow tests excluded |
 | Native Astra → AgentOS → real gVisor → memory → daily create/disable → run_now → background/outbox | PASS | `agent-model-smoke/verification.json`; **mock Telegram, isolated PG** |
 | Native Astra tool call → Pi xAI OAuth → X Search, final uses provider source | PASS | `agent-search-smoke/verification.json`; one actual X Search call, one provider source; **mock Telegram** |
@@ -21,8 +23,9 @@ an operator canary are intentionally distinguished from Telegram user acceptance
 | Pre-cutover PG dump and independent PG 18 restore | PASS | Protected `backups/agent-cutover-20260910T173305Z/`; row counts checked |
 | Restricted production role; clean Agent service restart | PASS | `agent-post-cutover-health.json` |
 | Repository and model-artifact scan for actual local DSN/password/bot token | PASS | Same health evidence; values were never printed |
-| Real-user Telegram model/draft/control/follow-up | **PENDING** | User must submit/observe the exchange |
-| Actual next 08:00 delivery | **PENDING** | User has not enabled a daily task |
+| Real-user task creation, immediate run, report and follow-up | USER CONFIRMED | Dennis's morning transcript; quality problems prompted this UX upgrade |
+| New UX, draft/cancel/new cycle | **PENDING USER OBSERVATION** | Unit and real-model synthetic checks are not live UI acceptance |
+| Actual next 08:00 delivery | **PENDING** | User-enabled existing task preserved; next planned delivery September 12 |
 | Cold boot/logout, host-loss recovery, forced host resource exhaustion | **NOT TESTED** | Not inferred from unit settings or canaries |
 
 Ruff, diff whitespace and installed systemd unit syntax are also checked. The older
@@ -100,7 +103,7 @@ prove cancellation or exactly-once effects inside an external provider.
 
 ## Deliberate remaining scope
 
-- Live Telegram acceptance requires Dennis's message and receipt observation.
+- Updated Telegram UX and remaining controls require Dennis's observation; basic creation/manual receipt were confirmed.
 - Only private text ingress is enabled. No bot desktop/browser/media/upload/download
   connector, arbitrary external writes or arbitrary cron/weekly trigger implementation.
 - No automatic replay of interrupted work; no promise that sent means human-read.

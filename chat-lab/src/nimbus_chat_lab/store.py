@@ -42,6 +42,7 @@ class Store:
         async with await self.connect() as c:
             await c.execute(files(__package__).joinpath("schema.sql").read_text())
             await c.execute(files(__package__).joinpath("agent_schema.sql").read_text())
+            await c.execute(files(__package__).joinpath("conversation_schema.sql").read_text())
 
     async def authorize(self, bot: int, user: int, chat: int):
         async with await self.connect() as c:
@@ -80,7 +81,11 @@ class Store:
         parts = split_text(text[:16000], limit=3400)
         for i, part in enumerate(parts):
             if len(parts) > 1:
-                part = f"[{key.split(':')[-1][:8]} · {i + 1}/{len(parts)}]\n{part}"
+                part = (
+                    f"（{i + 1}/{len(parts)}）\n"
+                    if self.agent_mode
+                    else f"[{key.split(':')[-1][:8]} · {i + 1}/{len(parts)}]\n"
+                ) + part
             await c.execute(
                 """INSERT INTO outbox(id,dedupe_key,bot_id,chat_id,thread_id,text,user_id,schedule_run_id,schedule_generation)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (dedupe_key) DO NOTHING""",
@@ -141,14 +146,14 @@ class Store:
                         session = await (
                             await c.execute(
                                 """SELECT * FROM sessions
-                            WHERE bot_id=%s AND user_id=%s AND chat_id=%s AND thread_id=%s FOR UPDATE""",
+                            WHERE bot_id=%s AND user_id=%s AND chat_id=%s AND thread_id=%s AND lane='chat' FOR UPDATE""",
                                 (bot, command.user_id, command.chat_id, command.thread_id),
                             )
                         ).fetchone()
                         active = await (
                             await c.execute(
                                 """SELECT * FROM turns WHERE session_id=%s
-                            AND state IN ('queued','running','cancel_requested') FOR UPDATE""",
+                            AND state IN ('queued','running','cancel_requested') ORDER BY CASE WHEN state='queued' THEN 1 ELSE 0 END,created_at,id LIMIT 1 FOR UPDATE""",
                                 (session["id"],),
                             )
                         ).fetchone()
@@ -160,13 +165,27 @@ class Store:
                                     "SELECT count(*) AS n FROM turns WHERE state IN ('queued','running','cancel_requested')"
                                 )
                             ).fetchone()
-                            if active or count["n"] >= self.queue_limit:
+                            pending = (
+                                await (
+                                    await c.execute(
+                                        "SELECT count(*) AS n FROM turns WHERE session_id=%s AND state IN ('queued','running','cancel_requested')",
+                                        (session["id"],),
+                                    )
+                                ).fetchone()
+                            )["n"]
+                            if (
+                                (active and not self.agent_mode)
+                                or pending >= 8
+                                or count["n"] >= self.queue_limit
+                            ):
                                 disposition = "busy"
                                 await self._notify(
                                     c,
                                     key,
                                     session,
-                                    "已有任务执行中或队列已满。请用 /status 或 /cancel，稍后再试。",
+                                    "我手头待处理的消息有点多，稍等一下再发；已收到的不会丢。"
+                                    if self.agent_mode
+                                    else "已有任务执行中或队列已满。请用 /status 或 /cancel，稍后再试。",
                                 )
                             else:
                                 turn_id = uuid4()
@@ -174,10 +193,23 @@ class Store:
                                     "INSERT INTO turns(id,session_id,epoch,state,input) VALUES (%s,%s,%s,'queued',%s)",
                                     (turn_id, session["id"], session["epoch"], command.text),
                                 )
-                                await self._notify(
-                                    c, key, session, f"[{str(turn_id)[:8]}] queued · 已持久接收"
-                                )
+                                if not self.agent_mode:
+                                    await self._notify(
+                                        c, key, session, f"[{str(turn_id)[:8]}] queued · 已持久接收"
+                                    )
+                                elif active and pending == 1:
+                                    await self._notify(c, key, session, "收到，我接着处理你这条。")
                         elif command.action == "cancel":
+                            candidates = []
+                            if self.agent_mode and not active:
+                                candidates = await (
+                                    await c.execute(
+                                        "SELECT t.*,j.name FROM turns t JOIN schedule_runs r ON r.turn_id=t.id JOIN schedules j ON j.id=r.schedule_id WHERE (j.bot_id,j.user_id,j.chat_id)=(%s,%s,%s) AND t.state IN ('queued','running','cancel_requested') ORDER BY t.created_at LIMIT 2 FOR UPDATE OF t",
+                                        (bot, command.user_id, command.chat_id),
+                                    )
+                                ).fetchall()
+                                if len(candidates) == 1:
+                                    active = candidates[0]
                             if active:
                                 state = (
                                     "cancelled"
@@ -192,7 +224,11 @@ class Store:
                                     c,
                                     key,
                                     session,
-                                    f"[{str(active['id'])[:8]}] {state} · "
+                                    (
+                                        ""
+                                        if self.agent_mode
+                                        else f"[{str(active['id'])[:8]}] {state} · "
+                                    )
                                     + (
                                         "尚未执行，已取消"
                                         if state == "cancelled"
@@ -200,7 +236,14 @@ class Store:
                                     ),
                                 )
                             else:
-                                await self._notify(c, key, session, "没有待取消的任务。")
+                                await self._notify(
+                                    c,
+                                    key,
+                                    session,
+                                    "有多个后台任务，请告诉我要停止哪一个。定时计划不会因为取消一次执行而被删除。"
+                                    if candidates
+                                    else "没有待取消的任务。",
+                                )
                         elif command.action == "new":
                             if active:
                                 await self._notify(
@@ -208,7 +251,7 @@ class Store:
                                 )
                             else:
                                 await c.execute(
-                                    "UPDATE sessions SET epoch=epoch+1 WHERE id=%s",
+                                    "UPDATE sessions SET epoch=epoch+1,context_since=clock_timestamp() WHERE id=%s",
                                     (session["id"],),
                                 )
                                 await self._notify(
@@ -232,6 +275,24 @@ class Store:
                                 if not latest
                                 else f"[{str(latest['id'])[:8]}] {latest['state']}\n{latest['result']}"
                             )
+                            if self.agent_mode:
+                                jobs = await (
+                                    await c.execute(
+                                        "SELECT j.name,t.state FROM schedule_runs r JOIN schedules j ON j.id=r.schedule_id LEFT JOIN turns t ON t.id=r.turn_id WHERE (j.bot_id,j.user_id,j.chat_id)=(%s,%s,%s) AND r.state IN ('queued','attached') ORDER BY r.created_at LIMIT 8",
+                                        (bot, command.user_id, command.chat_id),
+                                    )
+                                ).fetchall()
+                                lines = ["我正在处理你的消息。"] if active else []
+                                lines += [
+                                    f"{j['name']}："
+                                    + (
+                                        "正在执行，完成后会发给你。"
+                                        if j["state"] == "running"
+                                        else "正在等待执行或投递。"
+                                    )
+                                    for j in jobs
+                                ]
+                                text = "\n".join(lines) or "目前没有正在执行的任务。"
                             await self._notify(c, key, session, text)
                         elif command.action == "mem":
                             await self._notify(
@@ -250,7 +311,7 @@ class Store:
                                 key,
                                 session,
                                 (
-                                    "Nimbus Agent 模式 · 私人白名单\n直接说目标即可：隔离工作区里的代码／文件操作、X／Web 搜索、长期记忆和持久化每日任务。\n可说：创建每天北京时间 08:00 的任务，并立即试跑。\n/status /cancel /new /mem\n定时任务需要本机开机联网；/cancel 取消当前执行，停用定时任务请在执行结束后直接告诉我。"
+                                    "Nimbus Agent 模式 · 私人白名单\n直接说目标即可：隔离工作区里的代码／文件操作、X／Web 搜索、长期记忆和持久化每日任务。\n可说：创建每天北京时间 08:00 的任务，并立即试跑。\n/status /cancel /new /mem\n后台任务运行时也可以继续聊天、询问进度或让我停用任务。/cancel 停止当前执行；定时投递需要本机开机联网。"
                                     if self.agent_mode
                                     else "Nimbus Telegram lab · 私人白名单\n直接发文字开始。/status /cancel /new /mem\n当前为无工具对话阶段，代码执行、文件和长期记忆尚未启用。"
                                 ),
@@ -267,20 +328,32 @@ class Store:
                 dispositions.append(disposition)
         return dispositions
 
-    async def claim(self, incarnation: UUID) -> Claim | None:
+    async def claim(self, incarnation: UUID, lane="all") -> Claim | None:
         async with await self.connect() as c:
             t = await (
                 await c.execute(
-                    "SELECT * FROM turns WHERE state='queued' AND id IN (SELECT id FROM live_turn_authority) ORDER BY created_at,id LIMIT 1"
+                    """SELECT t.* FROM turns t JOIN sessions s ON s.id=t.session_id WHERE t.state='queued'
+                    AND t.id IN (SELECT id FROM live_turn_authority)
+                    AND (%s='all' OR (%s='chat' AND s.lane='chat') OR (%s='jobs' AND s.lane<>'chat'))
+                    AND NOT EXISTS (SELECT 1 FROM turns busy WHERE busy.session_id=t.session_id AND busy.state IN ('running','cancel_requested'))
+                    ORDER BY t.created_at,t.id LIMIT 1""",
+                    (lane, lane, lane),
                 )
             ).fetchone()
             if not t:
                 return None
             if not await self._authorize_turn(c, t["id"]):
                 return None
+            locked = await (
+                await c.execute(
+                    "SELECT id FROM sessions WHERE id=%s FOR UPDATE SKIP LOCKED", (t["session_id"],)
+                )
+            ).fetchone()
+            if not locked:
+                return None
             t = await (
                 await c.execute(
-                    "SELECT * FROM turns WHERE id=%s AND state='queued' AND id IN (SELECT id FROM live_turn_authority) FOR UPDATE SKIP LOCKED",
+                    "SELECT * FROM turns t WHERE id=%s AND state='queued' AND id IN (SELECT id FROM live_turn_authority) AND NOT EXISTS (SELECT 1 FROM turns b WHERE b.session_id=t.session_id AND b.state IN ('running','cancel_requested')) FOR UPDATE SKIP LOCKED",
                     (t["id"],),
                 )
             ).fetchone()
@@ -412,7 +485,15 @@ class Store:
                     c,
                     f"final:{claim.turn_id}",
                     session,
-                    f"[{str(claim.turn_id)[:8]}] {state}\n{text}",
+                    (
+                        text
+                        if state == "succeeded"
+                        else "这次没能完成，任务已经停下，没有自动重跑。"
+                        if state in ("failed", "interrupted")
+                        else "这次执行已停下；已经完成的操作不会撤回。"
+                    )
+                    if self.agent_mode
+                    else f"[{str(claim.turn_id)[:8]}] {state}\n{text}",
                 )
             return True
 
@@ -453,7 +534,12 @@ class Store:
                 ).fetchone()
                 if not scheduled:
                     await self._notify(
-                        c, f"final:{t['id']}", session, f"[{str(t['id'])[:8]}] interrupted\n{text}"
+                        c,
+                        f"final:{t['id']}",
+                        session,
+                        "这次执行意外中断了，没有自动重跑。需要的话你可以让我再试一次。"
+                        if self.agent_mode
+                        else f"[{str(t['id'])[:8]}] interrupted\n{text}",
                     )
                 recovered += 1
             # Sending may have taken effect before the sender died. Never auto-retry it.
@@ -464,6 +550,40 @@ class Store:
 
     async def history(self, claim: Claim) -> list[dict]:
         async with await self.connect() as c:
+            if self.agent_mode:
+                rows = await (
+                    await c.execute(
+                        """SELECT * FROM (
+                    SELECT t.input,t.result,t.created_at AS at,false AS job FROM turns t
+                    WHERE t.session_id=%s AND t.epoch=%s AND t.state='succeeded' AND t.id<>%s
+                    AND NOT EXISTS (SELECT 1 FROM schedule_runs r WHERE r.turn_id=t.id)
+                    UNION ALL
+                    SELECT j.name,t.result,max(o.claimed_at) AS at,true AS job
+                    FROM schedule_runs r JOIN schedules j ON j.id=r.schedule_id JOIN turns t ON t.id=r.turn_id
+                    JOIN sessions s ON (s.bot_id,s.user_id,s.chat_id)=(j.bot_id,j.user_id,j.chat_id)
+                    JOIN outbox o ON o.schedule_run_id=r.id AND o.state='sent'
+                    WHERE s.id=%s AND r.state='published' AND t.state='succeeded' AND o.claimed_at>=s.context_since
+                    GROUP BY j.name,t.result,r.id
+                ) visible ORDER BY at DESC LIMIT 6""",
+                        (claim.session_id, claim.epoch, claim.turn_id, claim.session_id),
+                    )
+                ).fetchall()
+                history = []
+                for row in reversed(rows):
+                    if not row["job"]:
+                        history.append({"role": "user", "content": row["input"][:2000]})
+                    history.append(
+                        {
+                            "role": "assistant",
+                            "content": (
+                                ("【我已发送的后台任务：" + row["input"] + "】\n")
+                                if row["job"]
+                                else ""
+                            )
+                            + row["result"][:8000],
+                        }
+                    )
+                return history
             rows = await (
                 await c.execute(
                     """SELECT input,result FROM turns WHERE session_id=%s AND epoch=%s
@@ -545,6 +665,21 @@ class Store:
                 (seconds, bot),
             )
 
+    async def typing_chats(self, bot):
+        async with await self.connect() as c:
+            return await (
+                await c.execute(
+                    """SELECT s.chat_id,s.thread_id FROM turns t JOIN sessions s ON s.id=t.session_id
+                JOIN allowlist a ON (a.bot_id,a.user_id,a.chat_id)=(s.bot_id,s.user_id,s.chat_id)
+                JOIN bots b ON b.id=s.bot_id
+                WHERE s.bot_id=%s AND s.chat_id>0 AND s.lane='chat' AND t.state='running'
+                AND t.id IN (SELECT id FROM live_turn_authority) AND b.send_after<=clock_timestamp()
+                AND NOT EXISTS (SELECT 1 FROM schedule_runs r WHERE r.turn_id=t.id)
+                FOR KEY SHARE OF a""",
+                    (bot,),
+                )
+            ).fetchall()
+
     async def drafts(self, bot: int):
         async with await self.connect() as c:
             return await (
@@ -552,11 +687,11 @@ class Store:
                     """SELECT t.id,t.attempt_id,s.chat_id,s.thread_id,e.seq,e.text FROM turns t
                 JOIN sessions s ON s.id=t.session_id JOIN bots b ON b.id=s.bot_id JOIN attempts a ON a.id=t.attempt_id
                 JOIN allowlist u ON (u.bot_id,u.user_id,u.chat_id)=(s.bot_id,s.user_id,s.chat_id)
-                JOIN LATERAL (SELECT seq,text FROM turn_events WHERE turn_id=t.id AND attempt_id=t.attempt_id ORDER BY seq DESC LIMIT 1) e ON true
+                JOIN LATERAL (SELECT seq,text FROM turn_events WHERE turn_id=t.id AND attempt_id=t.attempt_id AND kind='text' ORDER BY seq DESC LIMIT 1) e ON true
                 WHERE s.bot_id=%s AND s.chat_id>0 AND t.state='running' AND a.state='running'
                 AND a.lease_until>clock_timestamp() AND b.send_after<=clock_timestamp()
                 AND t.id IN (SELECT id FROM live_turn_authority)
-                AND NOT EXISTS (SELECT 1 FROM schedule_runs r WHERE r.turn_id=t.id AND r.manual_key IS NULL)
+                AND NOT EXISTS (SELECT 1 FROM schedule_runs r WHERE r.turn_id=t.id)
                 FOR KEY SHARE OF u""",
                     (bot,),
                 )

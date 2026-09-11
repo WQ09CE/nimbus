@@ -89,7 +89,7 @@ class Scheduler:
                       OR (r.state='queued' AND NOT EXISTS (
                         SELECT 1 FROM turns active JOIN sessions sess ON sess.id=active.session_id
                         WHERE (sess.bot_id,sess.user_id,sess.chat_id,sess.thread_id)=(s.bot_id,s.user_id,s.chat_id,0)
-                        AND active.state IN ('queued','running','cancel_requested')))
+                        AND sess.lane='job:'||s.id::text AND active.state IN ('queued','running','cancel_requested')))
                     ) ORDER BY r.created_at,r.id FOR UPDATE OF r LIMIT 64"""
                 )
             ).fetchall()
@@ -120,13 +120,13 @@ class Scheduler:
                     continue
                 if r["state"] == "queued":
                     await c.execute(
-                        "INSERT INTO sessions(id,bot_id,user_id,chat_id,thread_id) VALUES (%s,%s,%s,%s,0) ON CONFLICT DO NOTHING",
-                        (uuid4(), *identity),
+                        "INSERT INTO sessions(id,bot_id,user_id,chat_id,thread_id,lane) VALUES (%s,%s,%s,%s,0,%s) ON CONFLICT DO NOTHING",
+                        (uuid4(), *identity, "job:" + str(r["schedule_id"])),
                     )
                     session = await (
                         await c.execute(
-                            "SELECT * FROM sessions WHERE bot_id=%s AND user_id=%s AND chat_id=%s AND thread_id=0 FOR UPDATE",
-                            identity,
+                            "SELECT * FROM sessions WHERE bot_id=%s AND user_id=%s AND chat_id=%s AND thread_id=0 AND lane=%s FOR UPDATE",
+                            (*identity, "job:" + str(r["schedule_id"])),
                         )
                     ).fetchone()
                     busy = await (
@@ -170,10 +170,10 @@ class Scheduler:
                         or now < r["slot"]
                     ):
                         continue
-                    text = f"{r['name']} · [{str(r['id'])[:8]}]\n" + (
+                    text = (
                         turn["result"]
                         if turn["state"] == "succeeded"
-                        else f"任务 {turn['state']}：{turn['result']}\n未自动重跑；可通过对话查询后决定是否试跑。"
+                        else f"{r['name']}这次没有完成，已经停下，没有自动重跑。你可以让我查一下或再试一次。"
                     )
                     await self.store._notify(
                         c,

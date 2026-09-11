@@ -10,6 +10,7 @@ class Gateway:
         self.enable_drafts = drafts
         self.draft_seen = {}
         self.draft_not_before = 0
+        self.typing_not_before = 0
 
     async def poll_once(self, username):
         updates = await self.telegram.call(
@@ -54,6 +55,23 @@ class Gateway:
             )
         # If DB write failed after send, leave sending: scanner -> uncertain, never rerun engine.
         return True
+
+    async def typing_once(self):
+        now = asyncio.get_running_loop().time()
+        if not getattr(self.store, "agent_mode", False) or now < self.typing_not_before:
+            return
+        self.typing_not_before = now + 4
+        for row in await self.store.typing_chats(self.bot_id):
+            payload = {"chat_id": row["chat_id"], "action": "typing"}
+            if row["thread_id"]:
+                payload["message_thread_id"] = row["thread_id"]
+            try:
+                await self.telegram.call("sendChatAction", payload)
+            except TelegramError as error:
+                if error.error_class == "rate_limit":
+                    await self.store.cooldown(self.bot_id, error.retry_after)
+                self.typing_not_before = now + max(10, error.retry_after)
+                return  # Cosmetic feedback must not break durable conversation.
 
     async def draft_once(self):
         if not self.enable_drafts or asyncio.get_running_loop().time() < self.draft_not_before:
@@ -123,6 +141,7 @@ class Gateway:
                         "SELECT 1"
                     )  # Loss of the single-active lock connection is fatal.
                     await self.store.recover()
+                    await self.typing_once()
                     await self.draft_once()
                     await asyncio.sleep(1)
 

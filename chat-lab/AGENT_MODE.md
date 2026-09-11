@@ -1,5 +1,9 @@
 # Integrated Agent — deployment and runbook
 
+**Latest (09:22):** see [CONVERSATION_UX.md](CONVERSATION_UX.md). The user has since
+created/enabled his daily job and confirmed the immediate report. Chat is now separate
+from two background slots. The initial cutover narrative below remains historical.
+
 ## Actual local deployment
 
 The 2026-09-11 cutover replaced text-only worker A with `nimbus-agent`, enabled the
@@ -13,7 +17,7 @@ No daily task was created. Evidence: `.artifacts/agent-local-deployment.json` an
 | Gateway | User `nimbus-chat-gateway.service`, exact existing private allowlist |
 | Agent | User `nimbus-chat-worker@a.service`, `--engine nimbus-agent` |
 | Scheduler | User `nimbus-chat-scheduler.service`, database-clock polling |
-| Worker B | Stopped; not required for one private user |
+| Workers B/C | Two background slots; A is reserved for chat (09:22 UX update) |
 | Lifetime | All four units enabled, `Linger=yes`; independent of this development Pi session |
 | Worker env | `~/.config/nimbus-chat-lab/worker.env`, 0600; DSN, Agent mode/config path, no bot token |
 | Gateway env/token | Same 0700 config directory; separate 0600 files |
@@ -29,7 +33,7 @@ Actual logout/cold boot and a real future timed Telegram delivery remain unteste
 ## Architecture and scope
 
 Astra plans using real Nimbus `AgentOS` native calls. The explicit tool registry is
-`workspace`, `search`, `memory`, `schedule`, `clock`. Pi handles one model/search
+`workspace`, `search`, `memory`, `schedule`, `activity`, `clock`. Pi handles one model/search
 request per private child process, using normal OAuth resolution/refresh. It cannot
 execute client tools. No plugin, skill or project-context auto-loading occurs there.
 
@@ -55,7 +59,8 @@ networked package installation and arbitrary external writes are not available.
 
 ## Bounds and semantics
 
-- 64 active/admitted turns globally; one per conversation; recent four-turn context.
+- 64 active/admitted turns globally; one running per lane. Chat buffers eight messages;
+  two background workers handle separate schedule lanes. Context also includes sent reports.
 - Turn bound 900 s; 20 model iterations; three search requests and 24 workspace
   operations per turn. xAI `max_turns=4` is not a hard search-count or spend cap.
 - Memory: 64 keys per identity, values up to 8000 characters. Schedule count: 16,
@@ -107,9 +112,9 @@ loginctl show-user "$USER" -p Linger
 
 # Maintenance: stop admission, then workers/scheduler, before PG if needed.
 systemctl --user stop nimbus-chat-gateway.service
-systemctl --user stop nimbus-chat-worker@a.service nimbus-chat-scheduler.service
+systemctl --user stop nimbus-chat-worker@{a,b,c}.service nimbus-chat-scheduler.service
 # ...owner migration/maintenance...
-systemctl --user start nimbus-chat-worker@a.service nimbus-chat-scheduler.service nimbus-chat-gateway.service
+systemctl --user start nimbus-chat-worker@{a,b,c}.service nimbus-chat-scheduler.service nimbus-chat-gateway.service
 ```
 
 A new model request during shutdown may be interrupted after the drain period; it
@@ -118,7 +123,7 @@ CLI fail-stops and database lease recovery, not early local reuse, owns interrup
 
 ## Roll back to text-only mode
 
-1. Stop gateway, worker A and scheduler. Do not remove data or rewind the polling cursor.
+1. Stop gateway, all three workers and scheduler; disable B/C for text-only fallback. Do not remove data or rewind the polling cursor.
 2. Disable the scheduler unit. Restore the backed-up `worker.env`, `gateway.env` and
    `nimbus-chat-worker@.service` from the cutover directory, preserving 0600 secret-file
    modes. They select the earlier text-only engine. Do not print their contents.
@@ -135,8 +140,7 @@ against the live database. The separate backup-restore test did run successfully
 
 Use the copyable message in [AUTHORIZATION.md](AUTHORIZATION.md). Confirm real task ID,
 `Asia/Shanghai`, next 08:00 delivery, enabled state, immediate output and original-post
-links. Then verify an actual future delivery and a natural-language disable. No task
-exists until Dennis requests it.
+links. Then verify an actual future delivery and a natural-language disable. Dennis has already enabled the daily job; do not create a duplicate during UX checks.
 
 No automatic/off-host encrypted backup, retention, disk alerting or host-loss recovery
 has been configured. Local backups share the host's failure domain. Protected logs

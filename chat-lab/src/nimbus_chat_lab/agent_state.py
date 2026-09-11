@@ -50,13 +50,14 @@ class AgentState:
         async with await self.store.connect() as c:
             s = await (
                 await c.execute(
-                    "SELECT bot_id,user_id,chat_id,thread_id FROM sessions WHERE id=%s",
+                    "SELECT bot_id,user_id,chat_id,thread_id,lane FROM sessions WHERE id=%s",
                     (self.claim.session_id,),
                 )
             ).fetchone()
             if not s or s["user_id"] != s["chat_id"] or s["thread_id"]:
                 raise PermissionError("Agent mode is private-chat only")
             self.identity = tuple(s[k] for k in ("bot_id", "user_id", "chat_id"))
+            self.lane = s["lane"]
             self.background = bool(
                 await (
                     await c.execute(
@@ -334,6 +335,112 @@ class AgentState:
                 "in_flight_delivery_recall_guaranteed": False,
             }
 
+    async def record_research(self, query, source, result):
+        receipt = {
+            "query": query[:1500],
+            "source": source,
+            "sources": result.get("sources", [])[:20],
+            "tool_usage": result.get("tool_usage", {}),
+            "text": result.get("text", "")[:5000],
+        }
+        text = json.dumps(receipt, ensure_ascii=False)
+        if len(text) > 15000:
+            receipt["sources"] = receipt["sources"][:5]
+            receipt["text"] = receipt["text"][:1000]
+            text = json.dumps(receipt, ensure_ascii=False)
+        async with self.transaction() as c:
+            await c.execute(
+                "INSERT INTO turn_events(turn_id,attempt_id,kind,text) VALUES (%s,%s,'research',%s)",
+                (self.claim.turn_id, self.claim.attempt_id, text[:16000]),
+            )
+
+    async def activity(self, action="list", run_id=""):
+        if action not in ("list", "cancel"):
+            raise ValueError("Unknown activity action")
+        async with self.transaction() as c:
+            if action == "cancel":
+                if self.background:
+                    raise PermissionError("Background cannot cancel other work")
+                run = await (
+                    await c.execute(
+                        "SELECT r.turn_id FROM schedule_runs r JOIN schedules j ON j.id=r.schedule_id WHERE r.id=%s AND (j.bot_id,j.user_id,j.chat_id)=(%s,%s,%s)",
+                        (UUID(run_id), *self.identity),
+                    )
+                ).fetchone()
+                if not run:
+                    raise ValueError("Run not found")
+                if run["turn_id"] is None:
+                    changed = await (
+                        await c.execute(
+                            "UPDATE schedule_runs SET state='cancelled' WHERE id=%s AND state='queued' AND turn_id IS NULL RETURNING state",
+                            (UUID(run_id),),
+                        )
+                    ).fetchone()
+                    return {
+                        "requested": bool(changed),
+                        "execution": changed,
+                        "daily_schedule_unchanged": True,
+                    }
+                changed = await (
+                    await c.execute(
+                        "UPDATE turns SET state=CASE WHEN state='queued' THEN 'cancelled' ELSE 'cancel_requested' END WHERE id=%s AND state IN ('queued','running','cancel_requested') RETURNING state",
+                        (run["turn_id"],),
+                    )
+                ).fetchone()
+                return {
+                    "requested": bool(changed),
+                    "execution": changed,
+                    "daily_schedule_unchanged": True,
+                }
+            rows = await (
+                await c.execute(
+                    """SELECT r.id AS run_id,j.name,r.state AS run_state,t.id AS turn_id,t.state AS execution,t.result,r.slot,
+                extract(epoch FROM coalesce(t.finished_at,clock_timestamp())-coalesce(t.created_at,r.created_at))::int AS elapsed_seconds
+                FROM schedule_runs r JOIN schedules j ON j.id=r.schedule_id LEFT JOIN turns t ON t.id=r.turn_id
+                WHERE (j.bot_id,j.user_id,j.chat_id)=(%s,%s,%s)
+                ORDER BY CASE WHEN r.state IN ('queued','attached') THEN 0 ELSE 1 END,r.created_at DESC LIMIT 4""",
+                    self.identity,
+                )
+            ).fetchall()
+            for row in rows:
+                # Completed results are conversational data only once publication is due.
+                row["result"] = (
+                    row["result"][:8000]
+                    if row["result"] and row["run_state"] == "published"
+                    else ""
+                )
+                row["research"] = []
+                if row["turn_id"]:
+                    events = await (
+                        await c.execute(
+                            "SELECT text FROM turn_events WHERE turn_id=%s AND kind='research' ORDER BY seq DESC LIMIT 3",
+                            (row["turn_id"],),
+                        )
+                    ).fetchall()
+                    progress = await (
+                        await c.execute(
+                            "SELECT text FROM turn_events WHERE turn_id=%s AND kind='text' ORDER BY seq DESC LIMIT 1",
+                            (row["turn_id"],),
+                        )
+                    ).fetchone()
+                    row["progress"] = progress["text"][:800] if progress else ""
+                    for e in reversed(events):
+                        try:
+                            receipt = json.loads(e["text"])
+                            receipt["query"] = receipt.get("query", "")[:600]
+                            receipt["text"] = receipt.get("text", "")[:600]
+                            receipt["sources"] = receipt.get("sources", [])[:4]
+                            row["research"].append(receipt)
+                        except ValueError:
+                            pass
+                row["delivery"] = await (
+                    await c.execute(
+                        "SELECT state,count(*) AS parts FROM outbox WHERE schedule_run_id=%s GROUP BY state",
+                        (row["run_id"],),
+                    )
+                ).fetchall()
+            return json.loads(json.dumps(rows, default=str))
+
     @staticmethod
     def check_time(hour, minute, lead):
         if (
@@ -351,14 +458,14 @@ class AgentState:
             if data is None:
                 row = await (
                     await c.execute(
-                        "SELECT archive FROM agent_workspaces WHERE bot_id=%s AND user_id=%s AND chat_id=%s",
-                        self.identity,
+                        "SELECT archive FROM agent_workspaces WHERE bot_id=%s AND user_id=%s AND chat_id=%s AND lane=%s",
+                        (*self.identity, self.lane),
                     )
                 ).fetchone()
                 return bytes(row["archive"]) if row else b""
             if len(data) > 16 * 1024 * 1024:
                 raise ValueError("Workspace archive exceeds 16 MiB")
             await c.execute(
-                "INSERT INTO agent_workspaces(bot_id,user_id,chat_id,archive) VALUES (%s,%s,%s,%s) ON CONFLICT(bot_id,user_id,chat_id) DO UPDATE SET archive=EXCLUDED.archive",
-                (*self.identity, data),
+                "INSERT INTO agent_workspaces(bot_id,user_id,chat_id,lane,archive) VALUES (%s,%s,%s,%s,%s) ON CONFLICT(bot_id,user_id,chat_id,lane) DO UPDATE SET archive=EXCLUDED.archive",
+                (*self.identity, self.lane, data),
             )

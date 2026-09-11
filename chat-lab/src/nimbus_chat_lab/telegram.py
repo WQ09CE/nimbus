@@ -128,7 +128,13 @@ class TelegramClient:
         )
 
     async def call(self, method: str, payload: dict):
-        if method not in {"getMe", "getUpdates", "sendMessage", "sendMessageDraft"}:
+        if method not in {
+            "getMe",
+            "getUpdates",
+            "sendMessage",
+            "sendMessageDraft",
+            "sendChatAction",
+        }:
             raise ValueError("Unsupported Telegram method")
         try:
             response = await self.client.post(method, json=payload)

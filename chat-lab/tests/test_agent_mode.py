@@ -67,7 +67,7 @@ async def test_schedule_create_dedupe_and_manual_run_idempotency(store):
     await scheduler.tick()
     assert (await rows(store, "SELECT state FROM schedule_runs"))[0][
         "state"
-    ] == "queued"  # user still active
+    ] == "attached"  # background admission no longer waits for foreground
     await store.finish(claim, "succeeded", "configuration done")
     await asyncio.gather(scheduler.tick(), scheduler.tick())
     assert len(await rows(store, "SELECT * FROM schedule_runs")) == 1
@@ -144,7 +144,8 @@ async def test_revocation_and_late_catchup_do_not_execute(store):
     ]
     async with await store.connect() as c:
         await c.execute(
-            "UPDATE schedules SET next_run=clock_timestamp()-interval '6 hours' WHERE id=%s", (s,)
+            "UPDATE schedules SET timezone='UTC',hour=extract(hour FROM timezone('UTC',clock_timestamp()-interval '6 hours')),minute=extract(minute FROM timezone('UTC',clock_timestamp()-interval '6 hours')),next_run=clock_timestamp()-interval '6 hours' WHERE id=%s",
+            (s,),
         )
     await store.finish(claim, "succeeded", "done")
     await Scheduler(store).tick()
@@ -177,7 +178,11 @@ async def test_interrupted_scheduled_turn_is_not_replayed(store):
     await scheduler.tick()
     assert not await store.claim(uuid4())
     notices = await rows(store, "SELECT * FROM outbox WHERE dedupe_key LIKE 'scheduled:%'")
-    assert len(notices) == 1 and "interrupted" in notices[0]["text"]
+    assert (
+        len(notices) == 1
+        and "没有自动重跑" in notices[0]["text"]
+        and "interrupted" not in notices[0]["text"]
+    )
 
 
 async def test_cross_identity_schedule_access_denied(store):
