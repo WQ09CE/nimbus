@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+*.sqlite3*
+*.db*
+.env
+.env.*
+garmin_tokens.json
+raw/
+tokens/
+reports/

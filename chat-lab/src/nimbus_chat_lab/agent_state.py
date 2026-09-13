@@ -45,6 +45,8 @@ class AgentState:
         self.store, self.claim = store, claim
         self.identity = None
         self.background = False
+        self.data_scope = "public"
+        self.report_slot = None
 
     async def initialize(self):
         async with await self.store.connect() as c:
@@ -58,6 +60,16 @@ class AgentState:
                 raise PermissionError("Agent mode is private-chat only")
             self.identity = tuple(s[k] for k in ("bot_id", "user_id", "chat_id"))
             self.lane = s["lane"]
+            scope = await (
+                await c.execute("SELECT data_scope FROM turns WHERE id=%s", (self.claim.turn_id,))
+            ).fetchone()
+            self.data_scope = scope["data_scope"]
+            scheduled = await (
+                await c.execute(
+                    "SELECT slot FROM schedule_runs WHERE turn_id=%s", (self.claim.turn_id,)
+                )
+            ).fetchone()
+            self.report_slot = scheduled["slot"] if scheduled else None
             self.background = bool(
                 await (
                     await c.execute(
@@ -90,6 +102,15 @@ class AgentState:
             ).fetchone()
             if not row:
                 raise AuthorityLost()
+
+    async def enter_health(self):
+        if self.background and self.data_scope != "health":
+            raise PermissionError("Public background tasks cannot access health data")
+        async with self.transaction() as c:
+            await c.execute(
+                "UPDATE turns SET data_scope='health' WHERE id=%s", (self.claim.turn_id,)
+            )
+        self.data_scope = "health"
 
     async def memory(self, action, key="", value=""):
         if action not in ("list", "get", "set", "delete"):
@@ -158,6 +179,11 @@ class AgentState:
                     )
                 ).fetchall()
                 for row in rows:
+                    if row["data_scope"] == "health":
+                        row["instructions"] = (
+                            "Private health task. Content is not loaded into public context."
+                        )
+                        row["name"] = "身体快报（私有健康任务）"
                     latest = await (
                         await c.execute(
                             "SELECT id,turn_id,state,slot FROM schedule_runs WHERE schedule_id=%s ORDER BY created_at DESC LIMIT 1",
@@ -187,6 +213,7 @@ class AgentState:
                     "hour",
                     "minute",
                     "lead_minutes",
+                    "data_scope",
                 }:
                     raise ValueError("Unexpected schedule fields")
                 name = spec.get("name", "")
@@ -205,6 +232,9 @@ class AgentState:
                     )
                 ).fetchone()
                 if existing:
+                    if existing["data_scope"] == "health":
+                        existing["instructions"] = "Private health task; content withheld."
+                        existing["name"] = "身体快报（私有健康任务）"
                     return json.loads(
                         json.dumps({"created": False, "existing": existing}, default=str)
                     )
@@ -222,11 +252,19 @@ class AgentState:
                 hour = spec.get("hour", 8)
                 minute = spec.get("minute", 0)
                 lead = spec.get("lead_minutes", 5)
+                scope = spec.get("data_scope", "public")
+                if scope not in ("public", "health"):
+                    raise ValueError("Invalid data scope")
+                if scope == "health":
+                    await c.execute(
+                        "UPDATE turns SET data_scope='health' WHERE id=%s", (self.claim.turn_id,)
+                    )
+                    self.data_scope = "health"
                 self.check_time(hour, minute, lead)
                 slot = next_slot(now, zone, hour, minute)
                 row = await (
                     await c.execute(
-                        "INSERT INTO schedules(id,bot_id,user_id,chat_id,name,instructions,timezone,hour,minute,lead_minutes,enabled,next_run) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,true,%s) RETURNING *",
+                        "INSERT INTO schedules(id,bot_id,user_id,chat_id,name,instructions,timezone,hour,minute,lead_minutes,enabled,next_run,data_scope) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,true,%s,%s) RETURNING *",
                         (
                             uuid4(),
                             *self.identity,
@@ -237,6 +275,7 @@ class AgentState:
                             minute,
                             lead,
                             slot,
+                            scope,
                         ),
                     )
                 ).fetchone()
@@ -343,6 +382,18 @@ class AgentState:
             "tool_usage": result.get("tool_usage", {}),
             "text": result.get("text", "")[:5000],
         }
+        observation = result.get("search_observation")
+        if isinstance(observation, dict):
+            modes = observation.get("keyword_modes", [])
+            receipt["search_observation"] = {
+                "trace_status": "observed"
+                if observation.get("trace_status") == "observed"
+                else "unavailable",
+                "keyword_modes": [m for m in ("Top", "Latest") if isinstance(modes, list) and m in modes],
+                "truncated": observation.get("truncated") is True,
+                "ranking_by_views_verified": False,
+                "engagement_filter_verified": False,
+            }
         text = json.dumps(receipt, ensure_ascii=False)
         if len(text) > 15000:
             receipt["sources"] = receipt["sources"][:5]
@@ -352,6 +403,27 @@ class AgentState:
             await c.execute(
                 "INSERT INTO turn_events(turn_id,attempt_id,kind,text) VALUES (%s,%s,'research',%s)",
                 (self.claim.turn_id, self.claim.attempt_id, text[:16000]),
+            )
+
+    async def record_search_event(self, receipt):
+        # Caller constructs a bounded safe receipt; no upstream body/stack/auth details.
+        text = json.dumps(receipt, ensure_ascii=False)
+        if len(text) > 4000:
+            raise ValueError("Research receipt bound")
+        async with self.transaction() as c:
+            count = (
+                await (
+                    await c.execute(
+                        "SELECT count(*) AS n FROM turn_events WHERE turn_id=%s AND kind='search_attempt'",
+                        (self.claim.turn_id,),
+                    )
+                ).fetchone()
+            )["n"]
+            if count >= 32:
+                return
+            await c.execute(
+                "INSERT INTO turn_events(turn_id,attempt_id,kind,text) VALUES (%s,%s,'search_attempt',%s)",
+                (self.claim.turn_id, self.claim.attempt_id, text),
             )
 
     async def activity(self, action="list", run_id=""):
@@ -394,7 +466,7 @@ class AgentState:
                 }
             rows = await (
                 await c.execute(
-                    """SELECT r.id AS run_id,j.name,r.state AS run_state,t.id AS turn_id,t.state AS execution,t.result,r.slot,
+                    """SELECT r.id AS run_id,j.name,r.state AS run_state,t.id AS turn_id,t.state AS execution,t.result,r.slot,coalesce(t.data_scope,j.data_scope) AS data_scope,
                 extract(epoch FROM coalesce(t.finished_at,clock_timestamp())-coalesce(t.created_at,r.created_at))::int AS elapsed_seconds
                 FROM schedule_runs r JOIN schedules j ON j.id=r.schedule_id LEFT JOIN turns t ON t.id=r.turn_id
                 WHERE (j.bot_id,j.user_id,j.chat_id)=(%s,%s,%s)
@@ -403,6 +475,19 @@ class AgentState:
                 )
             ).fetchall()
             for row in rows:
+                if row["data_scope"] == "health":
+                    row["name"] = "身体快报（私有健康任务）"
+                    row["result"] = "Private health content withheld; use the garmin tool."
+                    row["research"] = []
+                    row["search_attempts"] = []
+                    row["progress"] = ""
+                    row["delivery"] = await (
+                        await c.execute(
+                            "SELECT state,count(*) AS parts FROM outbox WHERE schedule_run_id=%s GROUP BY state",
+                            (row["run_id"],),
+                        )
+                    ).fetchall()
+                    continue
                 # Completed results are conversational data only once publication is due.
                 row["result"] = (
                     row["result"][:8000]
@@ -410,7 +495,27 @@ class AgentState:
                     else ""
                 )
                 row["research"] = []
+                row["search_attempts"] = []
                 if row["turn_id"]:
+                    attempts = await (
+                        await c.execute(
+                            "SELECT text FROM turn_events WHERE turn_id=%s AND kind='search_attempt' ORDER BY seq DESC LIMIT 32",
+                            (row["turn_id"],),
+                        )
+                    ).fetchall()
+                    seen = set()
+                    for item in attempts:
+                        try:
+                            receipt = json.loads(item["text"])
+                            key = receipt["request_id"]
+                            if key in seen or len(seen) >= 12:
+                                continue
+                            seen.add(key)
+                            receipt["query"] = receipt.get("query", "")[:200]
+                            row["search_attempts"].append(receipt)
+                        except (ValueError, KeyError, TypeError):
+                            continue
+                    row["search_attempts"].reverse()
                     events = await (
                         await c.execute(
                             "SELECT text FROM turn_events WHERE turn_id=%s AND kind='research' ORDER BY seq DESC LIMIT 3",

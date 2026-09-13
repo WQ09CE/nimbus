@@ -79,7 +79,7 @@ class Scheduler:
                 await c.execute("UPDATE schedules SET next_run=%s WHERE id=%s", (nxt, s["id"]))
             runs = await (
                 await c.execute(
-                    """SELECT r.*,s.bot_id,s.user_id,s.chat_id,s.name,s.instructions,s.generation AS current_generation,s.enabled
+                    """SELECT r.*,s.bot_id,s.user_id,s.chat_id,s.name,s.instructions,s.data_scope,s.generation AS current_generation,s.enabled
                     FROM schedule_runs r JOIN schedules s ON s.id=r.schedule_id LEFT JOIN turns t ON t.id=r.turn_id
                     WHERE r.state IN ('queued','attached') AND (
                       r.expires_at<=clock_timestamp() OR r.generation<>s.generation
@@ -152,8 +152,8 @@ class Scheduler:
                         + r["instructions"]
                     )
                     await c.execute(
-                        "INSERT INTO turns(id,session_id,epoch,state,input) VALUES (%s,%s,%s,'queued',%s)",
-                        (tid, session["id"], session["epoch"], prompt),
+                        "INSERT INTO turns(id,session_id,epoch,state,input,data_scope) VALUES (%s,%s,%s,'queued',%s,%s)",
+                        (tid, session["id"], session["epoch"], prompt, r["data_scope"]),
                     )
                     await c.execute(
                         "UPDATE schedule_runs SET state='attached',turn_id=%s WHERE id=%s",

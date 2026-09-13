@@ -43,6 +43,7 @@ class Store:
             await c.execute(files(__package__).joinpath("schema.sql").read_text())
             await c.execute(files(__package__).joinpath("agent_schema.sql").read_text())
             await c.execute(files(__package__).joinpath("conversation_schema.sql").read_text())
+            await c.execute(files(__package__).joinpath("health_schema.sql").read_text())
 
     async def authorize(self, bot: int, user: int, chat: int):
         async with await self.connect() as c:
@@ -425,7 +426,8 @@ class Store:
                 return False
             count = await (
                 await c.execute(
-                    "SELECT count(*) AS n FROM turn_events WHERE turn_id=%s", (claim.turn_id,)
+                    "SELECT count(*) AS n FROM turn_events WHERE turn_id=%s AND kind='text'",
+                    (claim.turn_id,),
                 )
             ).fetchone()
             if count["n"] >= 120:
@@ -445,6 +447,35 @@ class Store:
                         claim.incarnation,
                         claim.generation,
                     ),
+                )
+            ).fetchone()
+            return inserted is not None
+
+    async def record_telemetry(self, claim: Claim, receipt: dict) -> bool:
+        import json
+
+        from .telemetry import sanitize_receipt
+
+        text = json.dumps(sanitize_receipt(receipt), separators=(",", ":"))
+        async with await self.connect() as c:
+            t = await self._owned(c, claim)
+            if not t or t["state"] != "running":
+                return False
+            count = await (
+                await c.execute(
+                    "SELECT count(*) AS n FROM turn_events WHERE turn_id=%s AND attempt_id=%s AND kind='telemetry'",
+                    (claim.turn_id, claim.attempt_id),
+                )
+            ).fetchone()
+            if count["n"] >= 256:
+                return False
+            inserted = await (
+                await c.execute(
+                    """INSERT INTO turn_events(turn_id,attempt_id,kind,text)
+                SELECT %s,id,'telemetry',%s FROM attempts WHERE id=%s AND incarnation=%s
+                AND generation=%s AND state='running' AND lease_until>clock_timestamp()
+                AND turn_id IN (SELECT id FROM live_turn_authority) RETURNING seq""",
+                    (claim.turn_id, text, claim.attempt_id, claim.incarnation, claim.generation),
                 )
             ).fetchone()
             return inserted is not None
@@ -554,22 +585,30 @@ class Store:
                 rows = await (
                     await c.execute(
                         """SELECT * FROM (
-                    SELECT t.input,t.result,t.created_at AS at,false AS job FROM turns t
+                    SELECT t.input,t.result,t.created_at AS at,false AS job,t.data_scope FROM turns t
                     WHERE t.session_id=%s AND t.epoch=%s AND t.state='succeeded' AND t.id<>%s
                     AND NOT EXISTS (SELECT 1 FROM schedule_runs r WHERE r.turn_id=t.id)
                     UNION ALL
-                    SELECT j.name,t.result,max(o.claimed_at) AS at,true AS job
+                    SELECT j.name,t.result,max(o.claimed_at) AS at,true AS job,t.data_scope
                     FROM schedule_runs r JOIN schedules j ON j.id=r.schedule_id JOIN turns t ON t.id=r.turn_id
                     JOIN sessions s ON (s.bot_id,s.user_id,s.chat_id)=(j.bot_id,j.user_id,j.chat_id)
                     JOIN outbox o ON o.schedule_run_id=r.id AND o.state='sent'
                     WHERE s.id=%s AND r.state='published' AND t.state='succeeded' AND o.claimed_at>=s.context_since
-                    GROUP BY j.name,t.result,r.id
+                    GROUP BY j.name,t.result,r.id,t.data_scope
                 ) visible ORDER BY at DESC LIMIT 6""",
                         (claim.session_id, claim.epoch, claim.turn_id, claim.session_id),
                     )
                 ).fetchall()
                 history = []
                 for row in reversed(rows):
+                    if row["data_scope"] == "health":
+                        history.append(
+                            {
+                                "role": "assistant",
+                                "content": "【此前有私有健康对话或报告；此上下文不载入其内容。需要时通过garmin工具重新查询。】",
+                            }
+                        )
+                        continue
                     if not row["job"]:
                         history.append({"role": "user", "content": row["input"][:2000]})
                     history.append(
@@ -587,7 +626,7 @@ class Store:
             rows = await (
                 await c.execute(
                     """SELECT input,result FROM turns WHERE session_id=%s AND epoch=%s
-                AND state='succeeded' AND id<>%s ORDER BY created_at DESC,id DESC LIMIT 4""",
+                AND state='succeeded' AND data_scope='public' AND id<>%s ORDER BY created_at DESC,id DESC LIMIT 4""",
                     (claim.session_id, claim.epoch, claim.turn_id),
                 )
             ).fetchall()

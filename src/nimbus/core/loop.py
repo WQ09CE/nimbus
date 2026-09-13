@@ -587,6 +587,7 @@ class RuntimeLoop:
                         step_result.is_final = False
                         continue
                     else:
+                        self._save_core_dump("error")
                         self._turn_end("error", cause="context-overflow")
                         yield {"type": "final", "result": step_result.final_result}
                         return
@@ -619,6 +620,7 @@ class RuntimeLoop:
                         continue
                     else:
                         # Compaction failed -- hard stop
+                        self._save_core_dump("error")
                         self._turn_end("max-iterations")
                         yield {"type": "final", "result": step_result.final_result}
                         return
@@ -790,22 +792,33 @@ class RuntimeLoop:
                 if self.config.yield_interval > 0:
                     await asyncio.sleep(self.config.yield_interval)
 
+            # Exhausting the driver is not necessarily successful execution.
+            result = step_result.final_result or ToolResult(
+                status="ERROR", output="Loop ended without result.", is_final=True,
+            )
+            snapshot_status, end_reason = {
+                "OK": ("completed", "completed"),
+                "CANCELLED": ("suspended", "aborted"),
+                "PAUSED": ("paused", "paused"),
+            }.get(result.status, ("error", "error"))
+
             # OUTER: Check follow-up queue
             follow_ups = self.followup_queue.drain()
             if follow_ups:
                 # Close this turn before injecting: the follow-up messages
                 # belong to the NEXT turn (they land between the brackets as
                 # log-only prelude, claimed by the turn/start that follows).
-                self._turn_end("completed")
+                self._save_core_dump(snapshot_status)
+                self._turn_end(end_reason)
                 for msg in follow_ups:
                     self.mmu.add_user_message(msg)
                     yield {"type": "followup_injected", "content": msg}
                 continue  # re-enter inner loop
 
             # No follow-ups -- done
-            self._save_core_dump("completed")
-            self._turn_end("completed")
-            yield {"type": "final", "result": step_result.final_result}
+            self._save_core_dump(snapshot_status)
+            self._turn_end(end_reason)
+            yield {"type": "final", "result": result}
             return
 
     # --- Core Dump (pi-style minimalism) ---

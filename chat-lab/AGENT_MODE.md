@@ -30,6 +30,19 @@ Docker socket permission change, personal browser profile or developer browser l
 is needed. Linger does not wake a suspended/powered-off machine or unlock its disk.
 Actual logout/cold boot and a real future timed Telegram delivery remain untested.
 
+## Health integration update (2026-09-11 23:58)
+
+The current deployment also exposes the bounded native `garmin` summary tool, with
+persisted health data scopes, redacted public histories and a private local gateway.
+Health jobs are still ordinary scheduled AgentOS runs, with only health/clock tools;
+there is no second execution loop or generic Garmin SDK/host-shell access. See
+[actual scope and acceptance](../health-lab/INTEGRATION_STATUS.md).
+
+**Rollback warning:** after private reports exist, do not revert to old history/activity
+code that ignores `data_scope`. Disable the health schedule/tool if needed, but retain
+these data-isolation patches or stop admission for an explicit data-handling procedure.
+The older rollback narrative below is not sufficient for a database containing health data.
+
 ## Architecture and scope
 
 Astra plans using real Nimbus `AgentOS` native calls. The explicit tool registry is

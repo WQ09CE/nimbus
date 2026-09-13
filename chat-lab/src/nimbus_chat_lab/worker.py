@@ -2,6 +2,8 @@ import asyncio
 from contextlib import suppress
 from uuid import uuid4
 
+from .telemetry import Observer
+
 
 class AuthorityLost(Exception):
     pass
@@ -16,7 +18,8 @@ class WorkerPoisoned(Exception):
 
 
 class Worker:
-    def __init__(self, store, engine, *, run_timeout=180, lane="all"):
+    def __init__(self, store, engine, *, run_timeout=180, lane="all", observe=False):
+        self.observe = observe
         self.store, self.engine, self.run_timeout = store, engine, run_timeout
         self.lane = lane
         self.incarnation = uuid4()
@@ -39,10 +42,13 @@ class Worker:
                 raise AuthorityLost()
 
         async def execute():
-            history = await self.store.history(claim)
-            return await asyncio.wait_for(
-                self.engine.run(claim, history, emit, before_request), self.run_timeout
-            )
+            observer = Observer(self.store, claim, enabled=self.observe)
+            async with observer.span("history"):
+                history = await self.store.history(claim)
+            async with observer.span("runtime"):
+                return await asyncio.wait_for(
+                    self.engine.run(claim, history, emit, before_request), self.run_timeout
+                )
 
         async def guard():
             while True:

@@ -1,0 +1,26 @@
+[Unit]
+Description=Nimbus private Garmin summary gateway
+After=network-online.target
+
+[Service]
+Type=exec
+WorkingDirectory=%h/Projects/nimbus-telegram/health-lab
+ExecStart=%h/Projects/nimbus-telegram/health-lab/.venv/bin/python -m garmin_readiness.gateway --config %h/.config/garmin-readiness-cn/gateway.json
+UMask=0077
+RuntimeDirectory=nimbus-health
+RuntimeDirectoryMode=0700
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=%h/.local/share/garmin-readiness-cn %t/nimbus-health
+InaccessiblePaths=%h/.config/nimbus-chat-lab %h/.pi/agent/auth.json
+MemoryMax=512M
+TasksMax=64
+CPUQuota=100%
+TimeoutStopSec=10
+KillMode=control-group
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

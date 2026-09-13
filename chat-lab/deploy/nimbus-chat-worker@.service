@@ -8,7 +8,7 @@ Wants=network-online.target nimbus-chat-postgres.service
 WorkingDirectory=%h/Projects/nimbus-telegram/chat-lab
 EnvironmentFile=%h/.config/nimbus-chat-lab/worker.env
 Environment=NIMBUS_WORKER_LANE=chat
-ExecStart=%h/Projects/nimbus-telegram/chat-lab/.venv/bin/nimbus-chat-lab worker --engine nimbus-agent --run-timeout 900 --drain-timeout 30 --pi %h/.local/share/mise/installs/pi/0.85.1/pi/pi --state %h/.local/share/nimbus-chat-lab/worker-%i
+ExecStart=%h/Projects/nimbus-telegram/chat-lab/.venv/bin/nimbus-chat-lab worker --engine nimbus-agent --observe --run-timeout 900 --drain-timeout 30 --pi %h/.local/share/mise/installs/pi/0.85.1/pi/pi --state %h/.local/share/nimbus-chat-lab/worker-%i
 Restart=on-failure
 RestartSec=5
 KillMode=mixed

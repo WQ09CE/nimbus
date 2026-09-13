@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "garmin-readiness-lab"
+version = "0.1.0"
+description = "Private, read-only Garmin China collection and personal recovery research"
+requires-python = ">=3.12"
+dependencies = ["garminconnect==0.3.13", "curl-cffi>=0.13,<1"]
+
+[project.scripts]
+garmin-readiness = "garmin_readiness.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff>=0.12,<1"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/garmin_readiness"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]

@@ -8,6 +8,7 @@ import stat
 import sys
 from contextlib import suppress
 from pathlib import Path
+from uuid import UUID
 
 from loguru import logger
 
@@ -64,9 +65,31 @@ async def execute(args):
             await client.close()
         return
     dsn = os.environ.get("NIMBUS_LAB_DSN")
+    if args.command == "ops" and args.local:
+        from .operations import local_dsn
+
+        dsn = local_dsn()
     if not dsn:
         raise ValueError("Set NIMBUS_LAB_DSN to a dedicated PostgreSQL database")
     store = Store(dsn, lease_seconds=args.lease, agent_mode=os.getenv("NIMBUS_AGENT_MODE") == "1")
+    if args.command == "ops":
+        from .operations import Operations, read_cohort, write_cohort
+
+        ops = Operations(store)
+        if args.action == "capture":
+            cohort = await ops.capture(args.incarnation)
+            write_cohort(args.output, cohort)
+            print(
+                json.dumps({"captured_tasks": len(cohort["task_ids"]), "database_read_only": True})
+            )
+        else:
+            report = await ops.report(
+                cohort=read_cohort(args.cohort) if args.cohort else None,
+                limit=args.limit,
+                after=args.after,
+            )
+            print(json.dumps(report, indent=2))
+        return
     if args.command == "init":
         await store.initialize()
         return
@@ -108,14 +131,23 @@ async def execute(args):
             or config_path.stat().st_mode & 0o077
         ):
             raise ValueError("Runtime configuration must be owned and private")
-        engine = AgentEngine(store, root / "attempts", args.pi, json.loads(config_path.read_text()))
+        engine = AgentEngine(
+            store,
+            root / "attempts",
+            args.pi,
+            json.loads(config_path.read_text()),
+            observe=args.observe,
+            run_timeout=args.run_timeout,
+        )
     elif args.engine == "nimbus-mock":
         from nimbus.testing.mock_llm import MockLLMAdapter
 
         engine = NimbusEngine(root / "attempts", adapter_factory=MockLLMAdapter)
     else:
         engine = NimbusEngine(root / "attempts", pi_executable=args.pi)
-    worker = Worker(store, engine, run_timeout=args.run_timeout, lane=args.lane)
+    worker = Worker(
+        store, engine, run_timeout=args.run_timeout, lane=args.lane, observe=args.observe
+    )
     if args.once:
         claim = await worker.run_once()
         print(json.dumps({"attempt": str(claim.attempt_id) if claim else None}))
@@ -163,6 +195,22 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("doctor", "identify", "init", "scan", "scheduler"):
         sub.add_parser(name)
+    ops = sub.add_parser("ops", help="Read-only metadata and fixed incident accounting")
+    ops.add_argument(
+        "--local",
+        action="store_true",
+        help="Read the private local worker DSN as data, not shell code",
+    )
+    actions = ops.add_subparsers(dest="action", required=True)
+    report = actions.add_parser("report")
+    report.add_argument("--cohort", help="Owned mode-0600 incident JSON file")
+    report.add_argument("--limit", type=int, default=100)
+    report.add_argument("--after", default="", help="next_after cursor from preceding page")
+    capture = actions.add_parser("capture")
+    capture.add_argument("--incarnation", type=UUID, required=True)
+    capture.add_argument(
+        "--output", type=Path, required=True, help="New private file; never overwritten"
+    )
     allow = sub.add_parser("allow")
     for field in ("bot", "user", "chat"):
         allow.add_argument(f"--{field}", type=int, required=True)
@@ -176,6 +224,9 @@ def main():
     worker.add_argument("--state", default=".runtime/chat-lab")
     worker.add_argument("--pi", default="pi")
     worker.add_argument("--once", action="store_true")
+    worker.add_argument(
+        "--observe", action="store_true", help="Opt-in bounded metadata timing/usage events"
+    )
     worker.add_argument(
         "--lane", choices=["all", "chat", "jobs"], default=os.getenv("NIMBUS_WORKER_LANE", "all")
     )
